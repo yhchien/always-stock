@@ -1,0 +1,113 @@
+"""
+從 inst_stock_flow 彙整到 industry_daily_flow。
+
+彙整層級（effective_industry）：
+  - stocks_master.sub_industry 有值 → 使用 sub_industry
+  - 否則 → 使用 stocks_master.industry_name（FinMind 大分類）
+
+金額欄位來源：inst_stock_flow.{buy,sell,net}_amount_est
+  foreign_net_amount = SUM(net_amount_est WHERE inst_type='foreign')
+  trust_net_amount   = SUM(net_amount_est WHERE inst_type='trust')
+  dealer_net_amount  = SUM(net_amount_est WHERE inst_type='dealer')
+  total_net_amount   = foreign + trust + dealer
+  total_buy_amount   = SUM(buy_amount_est)  所有 inst_type
+  total_sell_amount  = SUM(sell_amount_est) 所有 inst_type
+"""
+import logging
+from collections import defaultdict
+from datetime import date
+
+from sqlalchemy.orm import Session
+
+from app.models import InstStockFlow, IndustryDailyFlow, StockMaster
+
+logger = logging.getLogger(__name__)
+
+
+def aggregate_industry_flow(db: Session, trade_date: date) -> int:
+    """
+    讀取指定日期的 inst_stock_flow，依 effective_industry 彙整後寫入 industry_daily_flow。
+
+    Args:
+        db: SQLAlchemy session
+        trade_date: 交易日期
+
+    Returns:
+        寫入（新增或更新）的產業筆數
+    """
+    # 建立 stock_id → effective_industry mapping
+    masters = db.query(StockMaster).all()
+    industry_map = {
+        m.stock_id: (m.sub_industry if m.sub_industry else m.industry_name)
+        for m in masters
+    }
+
+    # 讀取當日所有法人資料
+    flows = (
+        db.query(InstStockFlow)
+        .filter_by(trade_date=trade_date)
+        .all()
+    )
+
+    if not flows:
+        logger.warning("No inst_stock_flow found for %s, skipping aggregation", trade_date)
+        return 0
+
+    # 依 effective_industry 累加
+    # structure: {industry: {foreign_net, trust_net, dealer_net, total_buy, total_sell}}
+    agg = defaultdict(lambda: {
+        "foreign_net": 0.0,
+        "trust_net":   0.0,
+        "dealer_net":  0.0,
+        "total_buy":   0.0,
+        "total_sell":  0.0,
+    })
+
+    for flow in flows:
+        industry = industry_map.get(flow.stock_id)
+        if not industry:
+            continue  # 股票不在 stocks_master，跳過
+
+        bucket = agg[industry]
+        bucket["total_buy"]  += flow.buy_amount_est or 0.0
+        bucket["total_sell"] += flow.sell_amount_est or 0.0
+
+        if flow.inst_type == "foreign":
+            bucket["foreign_net"] += flow.net_amount_est or 0.0
+        elif flow.inst_type == "trust":
+            bucket["trust_net"] += flow.net_amount_est or 0.0
+        elif flow.inst_type == "dealer":
+            bucket["dealer_net"] += flow.net_amount_est or 0.0
+
+    count = 0
+    for industry, vals in agg.items():
+        total_net = vals["foreign_net"] + vals["trust_net"] + vals["dealer_net"]
+
+        existing = (
+            db.query(IndustryDailyFlow)
+            .filter_by(trade_date=trade_date, industry_name=industry)
+            .first()
+        )
+        if existing:
+            existing.total_buy_amount    = vals["total_buy"]
+            existing.total_sell_amount   = vals["total_sell"]
+            existing.total_net_amount    = total_net
+            existing.foreign_net_amount  = vals["foreign_net"]
+            existing.trust_net_amount    = vals["trust_net"]
+            existing.dealer_net_amount   = vals["dealer_net"]
+        else:
+            db.add(IndustryDailyFlow(
+                trade_date          = trade_date,
+                industry_name       = industry,
+                total_buy_amount    = vals["total_buy"],
+                total_sell_amount   = vals["total_sell"],
+                total_net_amount    = total_net,
+                foreign_net_amount  = vals["foreign_net"],
+                trust_net_amount    = vals["trust_net"],
+                dealer_net_amount   = vals["dealer_net"],
+            ))
+        count += 1
+
+    db.commit()
+    logger.info("Industry flow aggregated: %d industries for %s", count, trade_date)
+    return count
