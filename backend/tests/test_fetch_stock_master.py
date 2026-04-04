@@ -1,13 +1,17 @@
 """
 tests for backend/etl/fetch_stock_master.py
 使用 unittest.mock patch 掉 urllib.request.urlopen，不打真實 API。
+Fugle mapping 測試使用臨時 CSV 檔案。
 """
+import csv
 import json
+import os
+import tempfile
 from io import BytesIO
 from unittest.mock import patch, MagicMock
 import pytest
 
-from etl.fetch_stock_master import fetch_and_upsert_stock_master
+from etl.fetch_stock_master import fetch_and_upsert_stock_master, load_fugle_mapping
 from app.models import StockMaster
 
 
@@ -30,6 +34,52 @@ OTC_ROW = lambda sid, name: {
 }
 
 
+def make_fugle_csv(rows: list[dict]) -> str:
+    """建立臨時 Fugle CSV 檔，回傳路徑。呼叫端負責刪除。"""
+    fd, path = tempfile.mkstemp(suffix=".csv")
+    with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["stock_id", "stock_name", "industry", "chain", "sub_industry"])
+        writer.writeheader()
+        writer.writerows(rows)
+    return path
+
+
+class TestLoadFugleMapping:
+    def test_returns_first_row_per_stock(self):
+        path = make_fugle_csv([
+            {"stock_id": "2330", "stock_name": "台積電", "industry": "半導體", "chain": "中游", "sub_industry": "晶圓代工"},
+            {"stock_id": "2330", "stock_name": "台積電", "industry": "半導體", "chain": "下游", "sub_industry": "封裝測試"},
+            {"stock_id": "2454", "stock_name": "聯發科", "industry": "半導體", "chain": "上游", "sub_industry": "IC設計"},
+        ])
+        try:
+            mapping = load_fugle_mapping(path)
+            assert mapping["2330"]["sub_industry"] == "晶圓代工"
+            assert mapping["2330"]["chain"] == "中游"
+            assert mapping["2454"]["sub_industry"] == "IC設計"
+        finally:
+            os.unlink(path)
+
+    def test_strips_whitespace(self):
+        path = make_fugle_csv([
+            {"stock_id": " 2330 ", "stock_name": "台積電", "industry": " 半導體 ", "chain": " 中游 ", "sub_industry": " 晶圓代工 "},
+        ])
+        try:
+            mapping = load_fugle_mapping(path)
+            assert "2330" in mapping
+            assert mapping["2330"]["industry"] == "半導體"
+            assert mapping["2330"]["chain"] == "中游"
+            assert mapping["2330"]["sub_industry"] == "晶圓代工"
+        finally:
+            os.unlink(path)
+
+    def test_empty_csv_returns_empty_dict(self):
+        path = make_fugle_csv([])
+        try:
+            assert load_fugle_mapping(path) == {}
+        finally:
+            os.unlink(path)
+
+
 class TestFetchAndUpsertStockMaster:
     def test_inserts_twse_stocks(self, db):
         rows = [TWSE_ROW("2330", "台積電", "半導體業"), TWSE_ROW("2454", "聯發科", "IC設計")]
@@ -47,7 +97,6 @@ class TestFetchAndUpsertStockMaster:
         assert db.get(StockMaster, "6488") is None
 
     def test_deduplication_keeps_first_occurrence(self, db):
-        # 同一股票出現兩次（不同產業別），只保留第一筆
         rows = [
             TWSE_ROW("2330", "台積電", "半導體業"),
             TWSE_ROW("2330", "台積電", "電子工業"),
@@ -64,7 +113,6 @@ class TestFetchAndUpsertStockMaster:
         assert db.get(StockMaster, "9999").industry_name == "其他"
 
     def test_upsert_updates_existing_record(self, db):
-        # 先插入舊資料
         db.add(StockMaster(stock_id="2330", stock_name="舊名稱", industry_name="舊產業"))
         db.commit()
 
@@ -90,3 +138,58 @@ class TestFetchAndUpsertStockMaster:
         row = db.get(StockMaster, "2330")
         assert row is not None
         assert row.stock_name == "台積電"
+
+    def test_no_fugle_mapping_leaves_chain_and_sub_industry_null(self, db):
+        rows = [TWSE_ROW("2330", "台積電", "半導體業")]
+        with patch("etl.fetch_stock_master.urllib.request.urlopen", return_value=make_fake_response(rows)):
+            fetch_and_upsert_stock_master(db)
+        row = db.get(StockMaster, "2330")
+        assert row.chain is None
+        assert row.sub_industry is None
+
+    def test_fugle_mapping_overrides_industry(self, db):
+        path = make_fugle_csv([
+            {"stock_id": "2330", "stock_name": "台積電", "industry": "半導體", "chain": "中游", "sub_industry": "晶圓代工"},
+        ])
+        rows = [TWSE_ROW("2330", "台積電", "半導體業")]
+        try:
+            with patch("etl.fetch_stock_master.urllib.request.urlopen", return_value=make_fake_response(rows)):
+                fetch_and_upsert_stock_master(db, fugle_mapping_path=path)
+            row = db.get(StockMaster, "2330")
+            assert row.industry_name == "半導體"
+            assert row.chain == "中游"
+            assert row.sub_industry == "晶圓代工"
+        finally:
+            os.unlink(path)
+
+    def test_fugle_mapping_not_in_csv_uses_finmind(self, db):
+        # 2330 在 Fugle，2454 不在
+        path = make_fugle_csv([
+            {"stock_id": "2330", "stock_name": "台積電", "industry": "半導體", "chain": "中游", "sub_industry": "晶圓代工"},
+        ])
+        rows = [TWSE_ROW("2330", "台積電", "半導體業"), TWSE_ROW("2454", "聯發科", "IC設計")]
+        try:
+            with patch("etl.fetch_stock_master.urllib.request.urlopen", return_value=make_fake_response(rows)):
+                fetch_and_upsert_stock_master(db, fugle_mapping_path=path)
+            tsmc = db.get(StockMaster, "2330")
+            mtk = db.get(StockMaster, "2454")
+            assert tsmc.sub_industry == "晶圓代工"
+            assert mtk.industry_name == "IC設計"
+            assert mtk.chain is None
+            assert mtk.sub_industry is None
+        finally:
+            os.unlink(path)
+
+    def test_fugle_mapping_first_row_wins_for_duplicate_stocks(self, db):
+        path = make_fugle_csv([
+            {"stock_id": "2330", "stock_name": "台積電", "industry": "半導體", "chain": "中游", "sub_industry": "晶圓代工"},
+            {"stock_id": "2330", "stock_name": "台積電", "industry": "半導體", "chain": "下游", "sub_industry": "封裝測試"},
+        ])
+        rows = [TWSE_ROW("2330", "台積電", "半導體業")]
+        try:
+            with patch("etl.fetch_stock_master.urllib.request.urlopen", return_value=make_fake_response(rows)):
+                fetch_and_upsert_stock_master(db, fugle_mapping_path=path)
+            row = db.get(StockMaster, "2330")
+            assert row.sub_industry == "晶圓代工"
+        finally:
+            os.unlink(path)

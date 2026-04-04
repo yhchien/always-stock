@@ -8,6 +8,8 @@ class StockMaster(Base):
     stock_id = Column(String, primary_key=True)
     stock_name = Column(String, nullable=False)
     industry_name = Column(String, nullable=False)
+    chain = Column(String, nullable=True)        # 供應鏈層級（上游/中游/下游），Fugle 分類才有
+    sub_industry = Column(String, nullable=True) # 子產業，Fugle 分類才有
     is_active = Column(Boolean, default=True)
 
 
