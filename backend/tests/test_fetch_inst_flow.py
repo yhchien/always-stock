@@ -171,3 +171,15 @@ class TestFetchAndUpsertInstFlow:
 
         assert count == 6
         assert db.query(InstStockFlow).count() == 6
+
+    def test_skips_rows_with_insufficient_columns(self, db):
+        # 16 欄的 row（認購權證格式）應被跳過
+        short_row = ["047037", "揚博購01", "0", "0", "0", "0", "0", "0",
+                     "239,000", "0", "0", "0", "239,000", "0", "239,000", "239,000"]
+        valid_row = t86_row("2330", 1000000, 200000, 0, 0, 0, 0, 0, 0)
+        with patch("etl.fetch_inst_flow.urllib.request.urlopen",
+                   return_value=make_fake_response([short_row, valid_row])):
+            count = fetch_and_upsert_inst_flow(db, TRADE_DATE)
+
+        assert count == 3  # 只有 valid_row 的 3 筆
+        assert db.query(InstStockFlow).filter_by(stock_id="047037").count() == 0

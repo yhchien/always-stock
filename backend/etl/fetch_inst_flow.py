@@ -96,6 +96,9 @@ def fetch_and_upsert_inst_flow(db: Session, trade_date: date) -> int:
     count = 0
 
     for row in data.get("data", []):
+        if len(row) < 19:
+            # 欄位不足的 row（認購權證、部分 ETF）格式不同，跳過
+            continue
         stock_id = row[0].strip()
         close = close_prices.get(stock_id, 0.0)
 
