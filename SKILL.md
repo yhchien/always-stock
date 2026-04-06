@@ -90,6 +90,19 @@ TWSE → ETL → SQLite → FastAPI → Frontend
 
 ---
 
+## 🐍 Python 版本限制
+
+本機 Python 3.9，以下語法**不可使用**，改用 `typing` 模組替代：
+
+| ❌ 不可用（3.10+） | ✅ 改用 |
+|-------------------|---------|
+| `str \| None` | `Optional[str]`（from typing import Optional） |
+| `list[str]` | `List[str]`（from typing import List） |
+| `dict[str, int]` | `Dict[str, int]`（from typing import Dict） |
+| `X \| Y` union | `Union[X, Y]`（from typing import Union） |
+
+---
+
 ## 🚫 Anti-patterns
 
 * ❌ Do NOT scrape HTML if API exists
