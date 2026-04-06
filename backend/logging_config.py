@@ -1,15 +1,15 @@
 """
-統一 logging 設定。
+Centralized logging configuration.
 
-使用方式（在任何入口點最開頭呼叫）:
+Usage (call once at the entry point):
     from logging_config import setup_logging
     setup_logging()
 
-預設輸出:
-  - console: INFO 以上，人類可讀格式
-  - logs/etl.log: DEBUG 以上，含完整 timestamp，滾動保留 7 天
+Default outputs:
+  - console: INFO and above, human-readable format
+  - logs/etl.log: DEBUG and above, full timestamp, rotated daily, kept for 7 days
 
-log 目錄在 backend/ 同層，首次執行自動建立。
+The log directory is created automatically on first run.
 """
 import logging
 import logging.handlers
@@ -25,17 +25,17 @@ DATE_FORMAT    = "%Y-%m-%d %H:%M:%S"
 
 def setup_logging(level: int = logging.INFO) -> None:
     """
-    初始化 logging。重複呼叫是安全的（會先清除既有 handler）。
+    Initialize logging. Safe to call multiple times (clears existing handlers first).
 
     Args:
-        level: root logger 的最低等級，預設 INFO
+        level: minimum level for the root logger, defaults to INFO
     """
     os.makedirs(LOG_DIR, exist_ok=True)
 
     root = logging.getLogger()
-    root.setLevel(logging.DEBUG)  # root 設最低，由各 handler 自己篩
+    root.setLevel(logging.DEBUG)  # root is set to lowest; each handler filters independently
 
-    # 避免重複 attach
+    # Avoid duplicate handlers on re-initialization
     if root.handlers:
         root.handlers.clear()
 
@@ -45,7 +45,7 @@ def setup_logging(level: int = logging.INFO) -> None:
     ch.setFormatter(logging.Formatter(CONSOLE_FORMAT, datefmt=DATE_FORMAT))
     root.addHandler(ch)
 
-    # File handler（滾動，每天換檔，保留 7 天）
+    # File handler (daily rotation, keep 7 days)
     fh = logging.handlers.TimedRotatingFileHandler(
         LOG_FILE, when="midnight", backupCount=7, encoding="utf-8"
     )

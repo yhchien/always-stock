@@ -1,21 +1,24 @@
 """
-從 FinMind 取得 TWSE 上市公司基本資料，並合併 Fugle 子產業 mapping。
+Fetch TWSE listed stock master data from FinMind and merge Fugle sub-industry mapping.
 
 API: https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInfo
-回傳欄位: stock_id, stock_name, industry_category, type, date
+Response fields: stock_id, stock_name, industry_category, type, date
 
-產業分類邏輯：
-- 若股票在 Fugle mapping CSV 中，取第一筆 row（主要子產業）作為 industry/chain/sub_industry
-- 否則使用 FinMind 的 industry_category，chain/sub_industry 留空
-- 同一股票 FinMind 可能有多筆，取第一筆（較細分類）
+Industry classification logic:
+- If a stock exists in the Fugle mapping CSV, use the first row (primary sub-industry)
+  to populate industry, chain, and sub_industry.
+- Otherwise fall back to FinMind's industry_category; chain and sub_industry are left null.
+- FinMind may return multiple rows per stock; only the first row is used (finer classification).
 """
 import csv
-import urllib.request
-import urllib.parse
 import json
 import logging
+import urllib.parse
+import urllib.request
 from typing import Optional
+
 from sqlalchemy.orm import Session
+
 from app.models import StockMaster
 
 logger = logging.getLogger(__name__)
@@ -25,10 +28,10 @@ FINMIND_URL = "https://api.finmindtrade.com/api/v4/data"
 
 def load_fugle_mapping(csv_path: str) -> "dict[str, dict]":
     """
-    讀取 Fugle 產業分類 CSV，回傳 {stock_id: {industry, chain, sub_industry}}。
-    同一股票出現多筆時，取第一筆（主要子產業）。
+    Load Fugle industry mapping CSV and return {stock_id: {industry, chain, sub_industry}}.
+    When a stock appears multiple times, only the first row is kept (primary sub-industry).
 
-    CSV 格式: stock_id, stock_name, industry, chain, sub_industry
+    CSV columns: stock_id, stock_name, industry, chain, sub_industry
     """
     mapping = {}  # type: dict[str, dict]
     with open(csv_path, encoding="utf-8", newline="") as f:
@@ -41,6 +44,7 @@ def load_fugle_mapping(csv_path: str) -> "dict[str, dict]":
                     "chain": row["chain"].strip(),
                     "sub_industry": row["sub_industry"].strip(),
                 }
+    logger.debug("Fugle mapping loaded: %d stocks from %s", len(mapping), csv_path)
     return mapping
 
 
@@ -50,15 +54,15 @@ def fetch_and_upsert_stock_master(
     fugle_mapping_path: Optional[str] = None,
 ) -> int:
     """
-    從 FinMind 抓取 TWSE 上市股票清單，合併 Fugle 子產業 mapping 後寫入 DB。
+    Fetch TWSE listed stocks from FinMind, merge Fugle sub-industry mapping, and upsert into DB.
 
     Args:
         db: SQLAlchemy session
-        token: FinMind API token（免費額度無需填）
-        fugle_mapping_path: Fugle 產業分類 CSV 路徑，None 則不套用
+        token: FinMind API token (not required for free tier)
+        fugle_mapping_path: path to Fugle industry mapping CSV; skipped if None
 
     Returns:
-        寫入（新增或更新）的股票數量
+        number of stocks inserted or updated
     """
     params = {"dataset": "TaiwanStockInfo"}
     if token:
@@ -67,6 +71,7 @@ def fetch_and_upsert_stock_master(
     url = FINMIND_URL + "?" + urllib.parse.urlencode(params)
     req = urllib.request.Request(url, headers={"User-Agent": "tw-stock-dashboard/1.0"})
 
+    logger.debug("Fetching stock master from FinMind: %s", url)
     with urllib.request.urlopen(req, timeout=30) as resp:
         data = json.loads(resp.read())
 
@@ -74,8 +79,9 @@ def fetch_and_upsert_stock_master(
         raise RuntimeError(f"FinMind API error: {data.get('msg')}")
 
     rows = data.get("data", [])
+    logger.debug("FinMind returned %d rows", len(rows))
 
-    # 每支股票只保留第一筆（最細的 FinMind 產業分類），且只取 TWSE 上市
+    # Keep only the first row per stock, TWSE-listed only
     seen = {}  # type: dict[str, dict]
     for row in rows:
         if row.get("type") != "twse":

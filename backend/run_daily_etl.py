@@ -1,31 +1,32 @@
 """
-每日 ETL 主流程。
+Daily ETL entry point.
 
-執行順序（單日）:
-  1. fetch_stock_master   — 更新股票基本資料（含 Fugle 子產業）
-  2. fetch_daily_price    — 抓當日收盤價
-  3. fetch_inst_flow      — 抓三大法人買賣超（金額估計依賴 step 2）
-  4. aggregate_industry   — 彙整到 industry_daily_flow
+Execution order (per day):
+  1. fetch_stock_master   — refresh stock master data (with Fugle sub-industry)
+  2. fetch_daily_price    — fetch closing prices for the day
+  3. fetch_inst_flow      — fetch institutional buy/sell (amount estimate depends on step 2)
+  4. aggregate_industry   — aggregate into industry_daily_flow
 
-使用方式:
-  # 跑今天
+Usage:
+  # Run for today
   python run_daily_etl.py
 
-  # 指定日期
+  # Run for a specific date
   python run_daily_etl.py --date 2025-04-01
 
-  # 歷史 backfill（往前 N 個日曆天，跳過非交易日）
+  # Backfill N calendar days (non-trading days are skipped automatically)
   python run_daily_etl.py --backfill-days 30
 
-  # 指定 Fugle mapping
+  # Specify a custom Fugle mapping file
   python run_daily_etl.py --date 2025-04-01 \\
       --fugle-mapping ../tools/output/fugle_industry_mapping.csv
 
-  # 不更新 stock master（backfill 時加速）
+  # Skip stock master update (speeds up backfill)
   python run_daily_etl.py --backfill-days 30 --skip-master
 """
 import argparse
 import logging
+import os
 import sys
 from datetime import date, timedelta
 from typing import Optional
@@ -48,7 +49,7 @@ def run_one_day(
     token: str,
 ) -> bool:
     """
-    跑單日 ETL。回傳 True 表示有資料成功入庫，False 表示非交易日或失敗。
+    Run ETL for a single day. Returns True if data was committed, False for non-trading days or errors.
     """
     db = SessionLocal()
     try:
@@ -85,29 +86,28 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="tw-stock-dashboard daily ETL")
     parser.add_argument(
         "--date", type=str, default=None,
-        help="交易日期 YYYY-MM-DD，預設為今天",
+        help="trade date in YYYY-MM-DD format, defaults to today",
     )
     parser.add_argument(
         "--backfill-days", type=int, default=0,
-        help="往前 N 個日曆天做 backfill（--date 會被忽略）",
+        help="backfill N calendar days (--date is ignored when this is set)",
     )
     parser.add_argument(
         "--fugle-mapping", type=str, default=None,
         dest="fugle_mapping",
-        help="Fugle 子產業 CSV 路徑（預設: ../tools/output/fugle_industry_mapping.csv）",
+        help="path to Fugle sub-industry CSV (default: ../tools/output/fugle_industry_mapping.csv)",
     )
     parser.add_argument(
         "--skip-master", action="store_true",
-        help="不更新 stock_master（backfill 時加速）",
+        help="skip stock_master update (speeds up backfill runs)",
     )
     parser.add_argument(
         "--token", type=str, default="",
-        help="FinMind API token（免費額度可省略）",
+        help="FinMind API token (optional for free tier)",
     )
     args = parser.parse_args()
 
-    # 解析 Fugle mapping 路徑
-    import os
+    # Resolve Fugle mapping path
     fugle_mapping = args.fugle_mapping
     if fugle_mapping is None:
         default_path = os.path.join(
@@ -117,10 +117,10 @@ def main() -> None:
             fugle_mapping = os.path.normpath(default_path)
             logger.info("Using default Fugle mapping: %s", fugle_mapping)
 
-    # 初始化 DB（idempotent）
+    # Initialize DB (idempotent)
     init_db()
 
-    # 決定要跑哪幾天
+    # Determine which dates to process
     if args.backfill_days > 0:
         today = date.today()
         dates = [today - timedelta(days=i) for i in range(args.backfill_days - 1, -1, -1)]

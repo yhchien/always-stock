@@ -1,3 +1,4 @@
+import logging
 from datetime import date, timedelta
 from typing import List, Optional
 
@@ -7,6 +8,8 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import DailyPrice, InstStockFlow, StockMaster
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["stocks"])
 
@@ -19,7 +22,7 @@ class StockHistoryItem(BaseModel):
     foreign_net_shares: float
     trust_net_shares: float
     dealer_net_shares: float
-    foreign_cumulative: float   # 累積淨買超股數
+    foreign_cumulative: float   # cumulative net shares bought
     trust_cumulative: float
     dealer_cumulative: float
 
@@ -37,15 +40,19 @@ class StockHistoryResponse(BaseModel):
 @router.get("/stocks/{stock_id}/history", response_model=StockHistoryResponse)
 def get_stock_history(
     stock_id: str,
-    days: int = Query(default=60, ge=1, le=365, description="往前幾天，預設 60"),
-    end_date: date = Query(default=None, description="結束日期，預設今天"),
+    days: int = Query(default=60, ge=1, le=365, description="number of days to look back, default 60"),
+    end_date: date = Query(default=None, description="end date, defaults to today"),
     db: Session = Depends(get_db),
 ):
     """
-    L2：回傳個股過去 N 天的收盤價與三大法人每日 / 累積淨買超。
+    L2: Return daily closing price and institutional net buy/sell for the past N days,
+    including running cumulative totals per institution type.
     """
+    logger.info("GET /stocks/%s/history days=%d end_date=%s", stock_id, days, end_date)
+
     stock = db.get(StockMaster, stock_id)
     if not stock:
+        logger.warning("Stock not found: %s", stock_id)
         raise HTTPException(status_code=404, detail=f"Stock not found: {stock_id}")
 
     if end_date is None:
@@ -63,6 +70,7 @@ def get_stock_history(
         .all()
     )
     if not prices:
+        logger.warning("No price data for %s in range %s–%s", stock_id, start_date, end_date)
         raise HTTPException(status_code=404, detail=f"No price data for {stock_id}")
 
     flows = (
@@ -75,7 +83,7 @@ def get_stock_history(
         .all()
     )
 
-    # {date: {inst_type: net_shares}}
+    # Index flows by {date: {inst_type: net_shares}}
     flow_map: dict = {}
     for f in flows:
         d = f.trade_date
@@ -108,6 +116,7 @@ def get_stock_history(
             dealer_cumulative=dealer_cum,
         ))
 
+    logger.debug("Returning %d days of history for %s", len(history), stock_id)
     return StockHistoryResponse(
         stock_id=stock_id,
         stock_name=stock.stock_name,

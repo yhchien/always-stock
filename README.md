@@ -18,7 +18,7 @@ tw-stock-dashboard/
 │   ├── app/
 │   │   ├── database.py          # SQLAlchemy engine / session
 │   │   ├── models.py            # ORM 資料表定義（4 張表）
-│   │   └── routers/             # FastAPI routers（M2 待完成）
+│   │   └── routers/             # FastAPI routers（industries / stocks）
 │   ├── etl/
 │   │   ├── fetch_stock_master.py    # FinMind 股票基本資料 + Fugle 子產業 mapping
 │   │   ├── fetch_daily_price.py     # TWSE STOCK_DAY_ALL 收盤價
@@ -87,12 +87,21 @@ python run_daily_etl.py --date 2025-04-01
 python run_daily_etl.py --backfill-days 30 --skip-master
 ```
 
-### 4. 啟動 API（M2 完成後）
+### 4. 啟動 API
 
 ```bash
-uvicorn app.main:app --reload
+python3 -m uvicorn app.main:app --reload
 # Swagger UI: http://localhost:8000/docs
 ```
+
+**Endpoints：**
+
+| Method | Path | 說明 |
+|--------|------|------|
+| GET | `/health` | 健康檢查 |
+| GET | `/api/industries?date=YYYY-MM-DD` | L0：產業排行榜（依三大法人合計淨買超降冪排序） |
+| GET | `/api/industries/{industry_name}/stocks?date=YYYY-MM-DD` | L1：指定產業個股明細 |
+| GET | `/api/stocks/{stock_id}/history?days=60&end_date=YYYY-MM-DD` | L2：個股收盤價 + 法人累積買超（過去 N 天） |
 
 ### 5. 啟動前端（M3 完成後）
 
@@ -113,8 +122,10 @@ npm run dev
 - [x] ETL：三大法人買賣超（TWSE T86）
 - [x] ETL：產業流向彙整
 - [x] ETL 主程式（CLI，支援 backfill）
-- [x] 統一 logging（console + file）
+- [x] 統一 logging（console + file，所有模組皆輸出至 `logs/etl.log`）
 - [x] 單元測試（70+ tests）
+- [x] FastAPI routers（L0 產業排行榜、L1 個股明細、L2 個股走勢）
+- [x] 程式碼與 comment 統一使用英文
 
 ---
 
@@ -123,7 +134,7 @@ npm run dev
 | # | 目標 | 狀態 |
 |---|------|------|
 | M1 | ETL 完整跑通，資料入庫 | ✅ 完成 |
-| M2 | FastAPI 回傳產業/個股 JSON | 進行中 |
+| M2 | FastAPI 回傳產業/個股 JSON | ✅ 完成 |
 | M3 | Next.js L0 產業排行榜頁面 | 待開始 |
 | M4 | L1 個股列表 + L2 走勢圖 | 待開始 |
 
@@ -133,7 +144,7 @@ npm run dev
 
 ### 核心功能
 
-- [ ] **M2** FastAPI routers（產業排行榜 API、個股法人明細 API）
+- [x] **M2** FastAPI routers（產業排行榜 API、個股法人明細 API、個股走勢 API）
 - [ ] **M3** 前端 L0：產業排行榜（日期選擇 + foreign/trust/dealer tab）
 - [ ] **M4** 前端 L1：sub_industry 個股列表（可依法人欄排序）
 - [ ] **M4** 前端 L2：個股雙軸走勢圖（收盤價 + 三大法人累積淨買超，60 天）

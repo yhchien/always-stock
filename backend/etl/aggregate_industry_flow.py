@@ -1,17 +1,17 @@
 """
-從 inst_stock_flow 彙整到 industry_daily_flow。
+Aggregate inst_stock_flow into industry_daily_flow.
 
-彙整層級（effective_industry）：
-  - stocks_master.sub_industry 有值 → 使用 sub_industry
-  - 否則 → 使用 stocks_master.industry_name（FinMind 大分類）
+Aggregation level (effective_industry):
+  - Use stocks_master.sub_industry if set
+  - Otherwise fall back to stocks_master.industry_name (FinMind top-level)
 
-金額欄位來源：inst_stock_flow.{buy,sell,net}_amount_est
+Amount columns sourced from inst_stock_flow.{buy,sell,net}_amount_est:
   foreign_net_amount = SUM(net_amount_est WHERE inst_type='foreign')
   trust_net_amount   = SUM(net_amount_est WHERE inst_type='trust')
   dealer_net_amount  = SUM(net_amount_est WHERE inst_type='dealer')
   total_net_amount   = foreign + trust + dealer
-  total_buy_amount   = SUM(buy_amount_est)  所有 inst_type
-  total_sell_amount  = SUM(sell_amount_est) 所有 inst_type
+  total_buy_amount   = SUM(buy_amount_est)  across all inst_types
+  total_sell_amount  = SUM(sell_amount_est) across all inst_types
 """
 import logging
 from collections import defaultdict
@@ -26,23 +26,25 @@ logger = logging.getLogger(__name__)
 
 def aggregate_industry_flow(db: Session, trade_date: date) -> int:
     """
-    讀取指定日期的 inst_stock_flow，依 effective_industry 彙整後寫入 industry_daily_flow。
+    Read inst_stock_flow for the given date, aggregate by effective_industry,
+    and upsert into industry_daily_flow.
 
     Args:
         db: SQLAlchemy session
-        trade_date: 交易日期
+        trade_date: target date
 
     Returns:
-        寫入（新增或更新）的產業筆數
+        number of industry rows inserted or updated
     """
-    # 建立 stock_id → effective_industry mapping
+    # Build stock_id → effective_industry mapping
     masters = db.query(StockMaster).all()
     industry_map = {
         m.stock_id: (m.sub_industry if m.sub_industry else m.industry_name)
         for m in masters
     }
+    logger.debug("Industry map built: %d stocks", len(industry_map))
 
-    # 讀取當日所有法人資料
+    # Load all institutional flows for the day
     flows = (
         db.query(InstStockFlow)
         .filter_by(trade_date=trade_date)
@@ -53,7 +55,7 @@ def aggregate_industry_flow(db: Session, trade_date: date) -> int:
         logger.warning("No inst_stock_flow found for %s, skipping aggregation", trade_date)
         return 0
 
-    # 依 effective_industry 累加
+    # Accumulate by effective_industry
     # structure: {industry: {foreign_net, trust_net, dealer_net, total_buy, total_sell}}
     agg = defaultdict(lambda: {
         "foreign_net": 0.0,
@@ -66,7 +68,7 @@ def aggregate_industry_flow(db: Session, trade_date: date) -> int:
     for flow in flows:
         industry = industry_map.get(flow.stock_id)
         if not industry:
-            continue  # 股票不在 stocks_master，跳過
+            continue  # stock not in stocks_master, skip
 
         bucket = agg[industry]
         bucket["total_buy"]  += flow.buy_amount_est or 0.0

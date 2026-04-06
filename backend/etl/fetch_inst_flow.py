@@ -1,36 +1,36 @@
 """
-從 TWSE T86 取得每日三大法人買賣超資料。
+Fetch daily institutional investor buy/sell data from TWSE T86.
 
 API: https://www.twse.com.tw/rwd/zh/fund/T86
-參數: date=YYYYMMDD&selectType=ALL&response=json
+Params: date=YYYYMMDD&selectType=ALL&response=json
 
-欄位順序:
-  0:  證券代號
-  1:  證券名稱
-  2:  外陸資買進股數（不含外資自營商）
-  3:  外陸資賣出股數（不含外資自營商）
-  4:  外陸資買賣超股數
-  5:  外資自營商買進股數
-  6:  外資自營商賣出股數
-  7:  外資自營商買賣超股數
-  8:  投信買進股數
-  9:  投信賣出股數
-  10: 投信買賣超股數
-  11: 自營商買賣超股數（合計）
-  12: 自營商買進股數（自行買賣）
-  13: 自營商賣出股數（自行買賣）
-  14: 自營商買賣超股數（自行買賣）
-  15: 自營商買進股數（避險）
-  16: 自營商賣出股數（避險）
-  17: 自營商買賣超股數（避險）
-  18: 三大法人買賣超股數
+Column order:
+  0:  stock_id
+  1:  stock_name
+  2:  foreign buy shares (excl. foreign dealers)
+  3:  foreign sell shares (excl. foreign dealers)
+  4:  foreign net shares
+  5:  foreign dealer buy shares
+  6:  foreign dealer sell shares
+  7:  foreign dealer net shares
+  8:  trust buy shares
+  9:  trust sell shares
+  10: trust net shares
+  11: dealer net shares (total)
+  12: dealer self-trading buy shares
+  13: dealer self-trading sell shares
+  14: dealer self-trading net shares
+  15: dealer hedge buy shares
+  16: dealer hedge sell shares
+  17: dealer hedge net shares
+  18: total three-institution net shares
 
-法人類型對應:
-  foreign = 外陸資（index 2, 3, 4）
-  trust   = 投信（index 8, 9, 10）
-  dealer  = 自營商（buy = 12+15, sell = 13+16, net = 11）
+Institution type mapping:
+  foreign = foreign investors (index 2, 3, 4)
+  trust   = investment trust (index 8, 9, 10)
+  dealer  = dealers (buy = 12+15, sell = 13+16, net = 11)
 
-金額估計 = 股數 × 當日收盤價（若無收盤價則為 0）
+Amount estimate = shares * closing price for the day (0 if price unavailable)
 """
 import json
 import logging
@@ -51,7 +51,7 @@ INST_TYPES = ("foreign", "trust", "dealer")
 
 
 def _parse_shares(s: str) -> float:
-    """將 TWSE 股數字串（含千分位逗號）轉為 float，無效值回傳 0。"""
+    """Parse a TWSE share count string (with thousands commas) to float. Returns 0 for invalid values."""
     s = s.strip().replace(",", "")
     if not s or s == "--":
         return 0.0
@@ -62,29 +62,30 @@ def _parse_shares(s: str) -> float:
 
 
 def _load_close_prices(db: Session, trade_date: date) -> Dict[str, float]:
-    """從 DB 讀取指定日期的收盤價，回傳 {stock_id: close_price}。"""
+    """Load closing prices for the given date from DB. Returns {stock_id: close_price}."""
     rows = db.query(DailyPrice).filter_by(trade_date=trade_date).all()
     return {r.stock_id: r.close_price for r in rows if r.close_price is not None}
 
 
 def fetch_and_upsert_inst_flow(db: Session, trade_date: date) -> int:
     """
-    從 TWSE T86 抓取指定日三大法人買賣超，寫入 inst_stock_flow。
-    每支股票寫入 3 筆（foreign / trust / dealer）。
-    金額估計依當日收盤價計算；若無收盤價則為 0。
+    Fetch T86 institutional flow for the given date and upsert into inst_stock_flow.
+    Each stock produces 3 rows (foreign / trust / dealer).
+    Amount estimates are calculated using the day's closing price; defaults to 0 if unavailable.
 
     Args:
         db: SQLAlchemy session
-        trade_date: 交易日期（非交易日 stat != OK，回傳 0）
+        trade_date: target date (non-trading days return stat != OK, yielding 0)
 
     Returns:
-        寫入（新增或更新）的總筆數
+        total number of records inserted or updated
     """
     date_str = trade_date.strftime("%Y%m%d")
     params = {"date": date_str, "selectType": "ALL", "response": "json"}
     url = TWSE_T86_URL + "?" + urllib.parse.urlencode(params)
     req = urllib.request.Request(url, headers={"User-Agent": "tw-stock-dashboard/1.0"})
 
+    logger.debug("Fetching institutional flow for %s", date_str)
     with urllib.request.urlopen(req, timeout=30) as resp:
         data = json.loads(resp.read())
 
@@ -93,11 +94,12 @@ def fetch_and_upsert_inst_flow(db: Session, trade_date: date) -> int:
         return 0
 
     close_prices = _load_close_prices(db, trade_date)
+    logger.debug("Loaded close prices for %d stocks", len(close_prices))
     count = 0
 
     for row in data.get("data", []):
         if len(row) < 19:
-            # 欄位不足的 row（認購權證、部分 ETF）格式不同，跳過
+            # Rows with insufficient columns are warrants/ETFs with a different format — skip
             continue
         stock_id = row[0].strip()
         close = close_prices.get(stock_id, 0.0)

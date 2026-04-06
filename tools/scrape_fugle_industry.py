@@ -1,28 +1,39 @@
 #!/usr/bin/env python3
 """
-從 Fugle 產業頁面爬取所有主產業 → 子產業 → 股票清單。
-只保留上市（TWSE）股票，過濾上櫃。
+Scrape all main industries → sub-industries → stock listings from Fugle.
+Only TWSE-listed stocks are kept; OTC (上櫃) stocks are filtered out.
 
-輸出（tools/output/）：
-  - fugle_industry_mapping.json   巢狀結構，供前端使用
-  - fugle_industry_mapping.csv    扁平結構，供 ETL 使用
+Outputs (tools/output/):
+  - fugle_industry_mapping.json   nested structure for frontend use
+  - fugle_industry_mapping.csv    flat structure for ETL use
 
-用法：
+Usage:
   python3 -u tools/scrape_fugle_industry.py
 
-需要套件：requests
+Requires: requests
 """
 
-import json
-import time
 import csv
+import json
+import logging
 import sys
+import time
 from collections import defaultdict
 from pathlib import Path
 
 import requests
 
-sys.stdout.reconfigure(line_buffering=True)
+# ── Logging setup ────────────────────────────────────────────────────────────
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
+logger = logging.getLogger(__name__)
+
+# ── Constants ─────────────────────────────────────────────────────────────────
 
 FUGLE_BASE = "https://www.fugle.tw/api/v2/data"
 FINMIND_URL = "https://api.finmindtrade.com/api/v4/data"
@@ -33,7 +44,7 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 JSON_OUTPUT = OUTPUT_DIR / "fugle_industry_mapping.json"
 CSV_OUTPUT  = OUTPUT_DIR / "fugle_industry_mapping.csv"
 
-SLEEP = 0.4   # 每次 API 請求間隔（秒）
+SLEEP = 0.4   # seconds between API requests
 RETRIES = 3
 RETRY_WAIT = 3
 
@@ -44,10 +55,10 @@ SESSION.headers.update({
 })
 
 
-# ── HTTP ────────────────────────────────────────────────────────────────────
+# ── HTTP ─────────────────────────────────────────────────────────────────────
 
 def get_json(url: str) -> dict:
-    """帶 retry 的 GET。4xx 直接 raise；5xx / timeout / 連線錯誤才重試。"""
+    """GET with retry. 4xx errors raise immediately; 5xx / timeout / connection errors are retried."""
     last_err = None
     for attempt in range(1, RETRIES + 1):
         try:
@@ -57,7 +68,7 @@ def get_json(url: str) -> dict:
         except requests.exceptions.HTTPError as e:
             status = e.response.status_code
             if status < 500:
-                raise RuntimeError(f"HTTP {status}，不重試：{url}") from e
+                raise RuntimeError(f"HTTP {status}, not retrying: {url}") from e
             last_err = f"HTTP {status}"
         except requests.exceptions.Timeout:
             last_err = "timeout"
@@ -66,77 +77,75 @@ def get_json(url: str) -> dict:
         except Exception as e:
             last_err = f"{type(e).__name__}: {e}"
 
-        print(f"    [warn] {last_err}（第 {attempt}/{RETRIES} 次），等 {RETRY_WAIT}s...")
+        logger.warning("Attempt %d/%d failed (%s), retrying in %ds...", attempt, RETRIES, last_err, RETRY_WAIT)
         time.sleep(RETRY_WAIT)
 
-    raise RuntimeError(f"連續失敗 {RETRIES} 次，放棄：{url}（最後錯誤：{last_err}）")
+    raise RuntimeError(f"Failed after {RETRIES} attempts: {url} (last error: {last_err})")
 
 
 # ── FinMind ──────────────────────────────────────────────────────────────────
 
-def fetch_twse_stock_info() -> dict[str, str]:
+def fetch_twse_stock_info() -> dict:
     """
-    回傳 {stock_id: stock_name}，只含上市（TWSE）股票。
-    FinMind 掛掉時回傳空 dict，後續不過濾也不補名稱。
+    Return {stock_id: stock_name} for TWSE-listed stocks only.
+    Returns an empty dict on failure; downstream code will skip TWSE filtering.
     """
-    print("從 FinMind 取得 TWSE 股票清單與名稱...")
+    logger.info("Fetching TWSE stock list from FinMind...")
     try:
         data = get_json(f"{FINMIND_URL}?dataset=TaiwanStockInfo")
     except RuntimeError as e:
-        print(f"  [ERROR] FinMind 無法連線：{e}")
-        print("  → fallback：所有股票都保留，名稱欄位留空")
+        logger.error("FinMind unreachable: %s", e)
+        logger.warning("Fallback: keeping all stocks, stock names will be empty")
         return {}
 
     stocks = data.get("data", [])
     if not stocks:
-        print("  [WARN] FinMind 回傳空資料，可能 API 異常")
+        logger.warning("FinMind returned empty data, API may be down")
         return {}
 
     result = {s["stock_id"]: s["stock_name"]
               for s in stocks if s.get("type") == "twse"}
-    print(f"  → TWSE 股票數：{len(result)}")
+    logger.info("TWSE stock count: %d", len(result))
     return result
 
 
-# ── Fugle ────────────────────────────────────────────────────────────────────
+# ── Fugle ─────────────────────────────────────────────────────────────────────
 
-def fetch_main_topics() -> list[dict]:
-    print("取得主產業列表...")
+def fetch_main_topics() -> list:
+    logger.info("Fetching main industry list...")
     data = get_json(f"{FUGLE_BASE}/industry-main-topics")
     topics = data["data"]["topics"]
-    print(f"  → 主產業數：{len(topics)}")
+    logger.info("Main industries: %d", len(topics))
     return topics
 
 
-def fetch_sub_topics(main_code: str) -> list[dict]:
+def fetch_sub_topics(main_code: str) -> list:
     data = get_json(f"{FUGLE_BASE}/industry-sub-topics/{main_code}")
     return data["data"].get("topics", [])
 
 
-def fetch_symbol_ids(sub_code: str) -> list[str]:
+def fetch_symbol_ids(sub_code: str) -> list:
     data = get_json(f"{FUGLE_BASE}/industry-topic-detail/{sub_code}")
     symbol_list = data["data"]["topic"].get("symbolList", [])
     return [s["symbolId"] for s in symbol_list]
 
 
-# ── 建構巢狀結構 ──────────────────────────────────────────────────────────────
+# ── Build nested structure ────────────────────────────────────────────────────
 
-def build_nested(main_topics: list[dict],
-                 twse_info: dict[str, str],
-                 failed: list[str]) -> list[dict]:
+def build_nested(main_topics: list, twse_info: dict, failed: list) -> list:
     """
-    回傳格式：
+    Build and return nested industry structure:
     [
       {
-        "industry": "印刷電路板",
+        "industry": "Printed Circuit Board",
         "chain": [
           {
-            "name": "上游",
+            "name": "Upstream",
             "sub_industries": [
               {
-                "name": "玻璃纖維/玻纖布",
+                "name": "Glass fiber / woven fabric",
                 "stocks": [
-                  { "code": "1234", "name": "某公司" }
+                  { "code": "1234", "name": "Company Name" }
                 ]
               }
             ]
@@ -151,35 +160,34 @@ def build_nested(main_topics: list[dict],
     for i, main in enumerate(main_topics, 1):
         main_code = main["code"]
         main_name = main["name"]
-        print(f"\n[{i}/{len(main_topics)}] {main_code} {main_name}")
+        logger.info("[%d/%d] %s %s", i, len(main_topics), main_code, main_name)
 
         try:
             sub_topics = fetch_sub_topics(main_code)
             time.sleep(SLEEP)
         except RuntimeError as e:
-            print(f"  [ERROR] 取得子產業失敗，跳過：{e}")
+            logger.error("Failed to fetch sub-industries for %s, skipping: %s", main_code, e)
             failed.append(main_code)
             continue
 
-        # 依 chain 分組，保留順序
-        chain_map: dict[str, list[dict]] = defaultdict(list)
-        chain_order: list[str] = []
+        # Group by chain, preserving order
+        chain_map: dict = defaultdict(list)
+        chain_order: list = []
 
         for sub in sub_topics:
             sub_code = sub["code"]
             sub_name = sub["name"]
             chain    = sub.get("chain", "其他")
-            print(f"  [{sub_code}] {sub_name} ({chain}) — {sub['numOfStocks']} 支", end="")
 
             try:
                 symbol_ids = fetch_symbol_ids(sub_code)
                 time.sleep(SLEEP)
             except RuntimeError as e:
-                print(f" → [ERROR] {e}")
+                logger.error("Failed to fetch stocks for sub-industry %s: %s", sub_code, e)
                 failed.append(sub_code)
                 continue
 
-            # 過濾 + 補名稱
+            # Filter to TWSE only and fill in stock names
             stocks = []
             for sid in symbol_ids:
                 if filter_twse and sid not in twse_info:
@@ -189,7 +197,8 @@ def build_nested(main_topics: list[dict],
                     "name": twse_info.get(sid, ""),
                 })
 
-            print(f" → {len(stocks)} 支上市股票")
+            logger.debug("  [%s] %s (%s): %d TWSE stocks (of %d total)",
+                         sub_code, sub_name, chain, len(stocks), sub["numOfStocks"])
 
             if chain not in chain_order:
                 chain_order.append(chain)
@@ -209,9 +218,9 @@ def build_nested(main_topics: list[dict],
     return result
 
 
-# ── 輸出 CSV（扁平，供 ETL 用）──────────────────────────────────────────────
+# ── Write CSV (flat, for ETL) ─────────────────────────────────────────────────
 
-def write_csv(nested: list[dict]) -> None:
+def write_csv(nested: list) -> None:
     with open(CSV_OUTPUT, "w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(
             f, fieldnames=["stock_id", "stock_name", "industry", "chain", "sub_industry"]
@@ -230,7 +239,7 @@ def write_csv(nested: list[dict]) -> None:
                         })
 
 
-# ── main ─────────────────────────────────────────────────────────────────────
+# ── main ──────────────────────────────────────────────────────────────────────
 
 def main():
     twse_info = fetch_twse_stock_info()
@@ -238,33 +247,33 @@ def main():
     try:
         main_topics = fetch_main_topics()
     except RuntimeError as e:
-        print(f"[ERROR] 無法取得主產業列表，中止：{e}")
+        logger.error("Cannot fetch main industry list, aborting: %s", e)
         sys.exit(1)
 
-    failed: list[str] = []
+    failed: list = []
     nested = build_nested(main_topics, twse_info, failed)
 
-    # 彙總
     total_stocks = sum(
         len(s["stocks"])
         for ind in nested
         for ch in ind["chain"]
         for s in ch["sub_industries"]
     )
-    print(f"\n{'='*50}")
-    print(f"完成！{len(nested)} 個產業，共 {total_stocks} 筆上市股票分類")
-    if failed:
-        print(f"[WARN] 以下 {len(failed)} 個代碼爬取失敗：{', '.join(failed)}")
-    print(f"{'='*50}\n")
 
-    # 寫出 JSON
+    logger.info("=" * 50)
+    logger.info("Done! %d industries, %d TWSE stock classifications", len(nested), total_stocks)
+    if failed:
+        logger.warning("Failed codes (%d): %s", len(failed), ", ".join(failed))
+    logger.info("=" * 50)
+
+    # Write JSON
     with open(JSON_OUTPUT, "w", encoding="utf-8") as f:
         json.dump(nested, f, ensure_ascii=False, indent=2)
-    print(f"JSON → {JSON_OUTPUT}")
+    logger.info("JSON → %s", JSON_OUTPUT)
 
-    # 寫出 CSV
+    # Write CSV
     write_csv(nested)
-    print(f"CSV  → {CSV_OUTPUT}")
+    logger.info("CSV  → %s", CSV_OUTPUT)
 
 
 if __name__ == "__main__":
