@@ -1,6 +1,6 @@
 """
 tests for backend/etl/fetch_daily_price.py
-使用 unittest.mock patch 掉 urllib.request.urlopen，不打真實 API。
+Uses unittest.mock to patch urllib.request.urlopen — no real API calls.
 """
 import json
 from datetime import date
@@ -14,8 +14,18 @@ from etl.fetch_daily_price import _parse_number, fetch_and_upsert_daily_price
 TRADE_DATE = date(2025, 4, 3)
 
 
-def make_fake_response(rows: list, stat: str = "OK") -> MagicMock:
-    payload = json.dumps({"stat": stat, "data": rows}).encode()
+def make_fake_response(stock_rows: list, stat: str = "OK") -> MagicMock:
+    """Build a mock MI_INDEX API response with stock data in tables[8]."""
+    tables = [{"title": "", "fields": [], "data": []} for _ in range(8)]
+    tables.append({
+        "title": "每日收盤行情",
+        "fields": ["證券代號", "證券名稱", "成交股數", "成交筆數", "成交金額",
+                    "開盤價", "最高價", "最低價", "收盤價", "漲跌(+/-)",
+                    "漲跌價差", "最後揭示買價", "最後揭示買量", "最後揭示賣價",
+                    "最後揭示賣量", "本益比"],
+        "data": stock_rows,
+    })
+    payload = json.dumps({"stat": stat, "tables": tables}).encode()
     mock_resp = MagicMock()
     mock_resp.read.return_value = payload
     mock_resp.__enter__ = lambda s: s
@@ -23,9 +33,12 @@ def make_fake_response(rows: list, stat: str = "OK") -> MagicMock:
     return mock_resp
 
 
-def twse_row(sid, name, volume, turnover, close, spread="0.00"):
-    """產生一筆 TWSE STOCK_DAY_ALL 格式的 row（index 0-9）。"""
-    return [sid, name, volume, turnover, "100.00", "105.00", "99.00", close, spread, "1,000"]
+def mi_row(sid, name, volume, turnover, close):
+    """Build a MI_INDEX tables[8] row (16 columns)."""
+    return [sid, name, volume, "1,000", turnover,
+            "100.00", "105.00", "99.00", close,
+            '<p style= color:red>+</p>', "1.00",
+            close, "10", close, "10", "15.00"]
 
 
 class TestParseNumber:
@@ -51,8 +64,8 @@ class TestParseNumber:
 class TestFetchAndUpsertDailyPrice:
     def test_inserts_records(self, db):
         rows = [
-            twse_row("2330", "台積電", "1,000,000", "100,000,000", "100.00"),
-            twse_row("2454", "聯發科", "500,000", "80,000,000", "160.00"),
+            mi_row("2330", "台積電", "1,000,000", "100,000,000", "100.00"),
+            mi_row("2454", "聯發科", "500,000", "80,000,000", "160.00"),
         ]
         with patch("etl.fetch_daily_price.urllib.request.urlopen",
                    return_value=make_fake_response(rows)):
@@ -73,8 +86,8 @@ class TestFetchAndUpsertDailyPrice:
 
     def test_skips_rows_with_no_close_price(self, db):
         rows = [
-            twse_row("2330", "台積電", "1,000,000", "100,000,000", "--"),  # 停牌
-            twse_row("2454", "聯發科", "500,000", "80,000,000", "160.00"),
+            mi_row("2330", "台積電", "1,000,000", "100,000,000", "--"),  # suspended
+            mi_row("2454", "聯發科", "500,000", "80,000,000", "160.00"),
         ]
         with patch("etl.fetch_daily_price.urllib.request.urlopen",
                    return_value=make_fake_response(rows)):
@@ -85,7 +98,7 @@ class TestFetchAndUpsertDailyPrice:
 
     def test_calculates_avg_price(self, db):
         # avg_price = turnover / volume = 100_000_000 / 1_000_000 = 100.0
-        rows = [twse_row("2330", "台積電", "1,000,000", "100,000,000", "100.00")]
+        rows = [mi_row("2330", "台積電", "1,000,000", "100,000,000", "100.00")]
         with patch("etl.fetch_daily_price.urllib.request.urlopen",
                    return_value=make_fake_response(rows)):
             fetch_and_upsert_daily_price(db, TRADE_DATE)
@@ -94,7 +107,7 @@ class TestFetchAndUpsertDailyPrice:
         assert rec.avg_price == pytest.approx(100.0)
 
     def test_avg_price_none_when_volume_zero(self, db):
-        rows = [twse_row("2330", "台積電", "0", "0", "100.00")]
+        rows = [mi_row("2330", "台積電", "0", "0", "100.00")]
         with patch("etl.fetch_daily_price.urllib.request.urlopen",
                    return_value=make_fake_response(rows)):
             fetch_and_upsert_daily_price(db, TRADE_DATE)
@@ -109,17 +122,17 @@ class TestFetchAndUpsertDailyPrice:
         ))
         db.commit()
 
-        rows = [twse_row("2330", "台積電", "1,000,000", "100,000,000", "100.00")]
+        rows = [mi_row("2330", "台積電", "1,000,000", "100,000,000", "100.00")]
         with patch("etl.fetch_daily_price.urllib.request.urlopen",
                    return_value=make_fake_response(rows)):
             fetch_and_upsert_daily_price(db, TRADE_DATE)
 
         rec = db.query(DailyPrice).filter_by(stock_id="2330").first()
         assert rec.close_price == 100.0
-        assert db.query(DailyPrice).count() == 1  # 沒有重複插入
+        assert db.query(DailyPrice).count() == 1  # no duplicates
 
     def test_strips_whitespace_from_stock_id(self, db):
-        rows = [twse_row(" 2330 ", "台積電", "1,000,000", "100,000,000", "100.00")]
+        rows = [mi_row(" 2330 ", "台積電", "1,000,000", "100,000,000", "100.00")]
         with patch("etl.fetch_daily_price.urllib.request.urlopen",
                    return_value=make_fake_response(rows)):
             fetch_and_upsert_daily_price(db, TRADE_DATE)
@@ -131,4 +144,10 @@ class TestFetchAndUpsertDailyPrice:
                    return_value=make_fake_response([])):
             count = fetch_and_upsert_daily_price(db, TRADE_DATE)
 
+        assert count == 0
+
+    def test_skips_weekend(self, db):
+        # 2025-04-05 is a Saturday
+        saturday = date(2025, 4, 5)
+        count = fetch_and_upsert_daily_price(db, saturday)
         assert count == 0

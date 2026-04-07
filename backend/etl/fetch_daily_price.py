@@ -1,20 +1,23 @@
 """
-Fetch daily closing prices for all TWSE stocks from STOCK_DAY_ALL.
+Fetch daily closing prices for all TWSE stocks from MI_INDEX (historical).
 
-API: https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY_ALL
-Params: date=YYYYMMDD&response=json
+API: https://www.twse.com.tw/exchangeReport/MI_INDEX
+Params: date=YYYYMMDD&response=json&type=ALLBUT0999
 
-Column order:
-  0: stock_id
-  1: stock_name
-  2: volume (shares traded)
-  3: turnover (NT$)
-  4: open
-  5: high
-  6: low
-  7: close_price
-  8: price change
-  9: transaction count
+Response: { stat, tables: [...] }
+  tables[8] = "每日收盤行情" with fields:
+    0: stock_id (證券代號)
+    1: stock_name (證券名稱)
+    2: volume in shares (成交股數)
+    3: transaction count (成交筆數)
+    4: turnover in NT$ (成交金額)
+    5: open
+    6: high
+    7: low
+    8: close_price (收盤價)
+    9: change direction HTML tag
+   10: change amount
+   ...
 
 avg_price = turnover / volume (volume-weighted average price, NT$)
 """
@@ -31,7 +34,10 @@ from app.models import DailyPrice
 
 logger = logging.getLogger(__name__)
 
-TWSE_STOCK_DAY_ALL_URL = "https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY_ALL"
+TWSE_MI_INDEX_URL = "https://www.twse.com.tw/exchangeReport/MI_INDEX"
+
+# Stock data table index within the MI_INDEX response
+_STOCK_TABLE_INDEX = 8
 
 
 def _parse_number(s: str) -> Optional[float]:
@@ -57,14 +63,13 @@ def fetch_and_upsert_daily_price(db: Session, trade_date: date) -> int:
         number of records inserted or updated
     """
     # Skip weekends — TWSE never trades on Saturday/Sunday.
-    # The API may still return stat="OK" with the previous trading day's data.
     if trade_date.weekday() >= 5:
         logger.info("Skipping weekend: %s (weekday=%d)", trade_date, trade_date.weekday())
         return 0
 
     date_str = trade_date.strftime("%Y%m%d")
-    params = {"date": date_str, "response": "json"}
-    url = TWSE_STOCK_DAY_ALL_URL + "?" + urllib.parse.urlencode(params)
+    params = {"date": date_str, "response": "json", "type": "ALLBUT0999"}
+    url = TWSE_MI_INDEX_URL + "?" + urllib.parse.urlencode(params)
     req = urllib.request.Request(url, headers={"User-Agent": "tw-stock-dashboard/1.0"})
 
     logger.debug("Fetching daily price for %s", date_str)
@@ -72,15 +77,28 @@ def fetch_and_upsert_daily_price(db: Session, trade_date: date) -> int:
         data = json.loads(resp.read())
 
     if data.get("stat") != "OK":
-        logger.warning("TWSE STOCK_DAY_ALL non-OK for %s: %s", date_str, data.get("stat"))
+        logger.warning("TWSE MI_INDEX non-OK for %s: %s", date_str, data.get("stat"))
         return 0
 
+    # Extract stock data from the response tables
+    tables = data.get("tables", [])
+    if len(tables) <= _STOCK_TABLE_INDEX:
+        logger.warning("MI_INDEX response has only %d tables for %s, expected > %d",
+                        len(tables), date_str, _STOCK_TABLE_INDEX)
+        return 0
+
+    stock_table = tables[_STOCK_TABLE_INDEX]
+    rows = stock_table.get("data", [])
+
     count = 0
-    for row in data.get("data", []):
+    for row in rows:
+        if len(row) < 9:
+            continue
+
         stock_id = row[0].strip()
-        close_price = _parse_number(row[7])
+        close_price = _parse_number(row[8])
         volume = _parse_number(row[2])
-        turnover = _parse_number(row[3])
+        turnover = _parse_number(row[4])
 
         if close_price is None:
             continue  # suspended or no closing price for the day
