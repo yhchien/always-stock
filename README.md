@@ -32,7 +32,17 @@ tw-stock-dashboard/
 │   ├── init_db.py               # 初始化資料表
 │   ├── run_daily_etl.py         # 每日 ETL 主程式（CLI）
 │   └── requirements.txt
-├── frontend/                    # Next.js 前端（M3/M4 待完成）
+├── frontend/                    # Next.js 前端
+│   ├── src/
+│   │   ├── app/                 # Next.js App Router（layout、page）
+│   │   ├── components/
+│   │   │   ├── ui/              # shadcn/ui 元件
+│   │   │   └── IndustryDashboard.tsx  # L0 產業排行榜
+│   │   ├── lib/
+│   │   │   └── api.ts           # API fetch helpers + 格式化工具
+│   │   └── __tests__/           # Jest 單元測試
+│   ├── jest.config.ts
+│   └── package.json
 └── tools/
     ├── output/
     │   ├── fugle_industry_mapping.csv   # Fugle 子產業分類（stock_id → sub_industry）
@@ -103,13 +113,20 @@ python3 -m uvicorn app.main:app --reload
 | GET | `/api/industries/{industry_name}/stocks?date=YYYY-MM-DD` | L1：指定產業個股明細 |
 | GET | `/api/stocks/{stock_id}/history?days=60&end_date=YYYY-MM-DD` | L2：個股收盤價 + 法人累積買超（過去 N 天） |
 
-### 5. 啟動前端（M3 完成後）
+### 5. 啟動前端
 
 ```bash
 cd frontend
 npm install
 npm run dev
 # http://localhost:3000
+```
+
+### 6. 執行前端測試
+
+```bash
+cd frontend
+npm test
 ```
 
 ---
@@ -126,6 +143,8 @@ npm run dev
 - [x] 單元測試（70+ tests）
 - [x] FastAPI routers（L0 產業排行榜、L1 個股明細、L2 個股走勢）
 - [x] 程式碼與 comment 統一使用英文
+- [x] Next.js L0 產業排行榜頁面（日期選擇 + 外資/投信/自營商/合計 tab）
+- [x] 前端單元測試（21 tests：api helpers + IndustryDashboard component）
 
 ---
 
@@ -135,7 +154,7 @@ npm run dev
 |---|------|------|
 | M1 | ETL 完整跑通，資料入庫 | ✅ 完成 |
 | M2 | FastAPI 回傳產業/個股 JSON | ✅ 完成 |
-| M3 | Next.js L0 產業排行榜頁面 | 待開始 |
+| M3 | Next.js L0 產業排行榜頁面 | ✅ 完成 |
 | M4 | L1 個股列表 + L2 走勢圖 | 待開始 |
 
 ---
@@ -145,7 +164,7 @@ npm run dev
 ### 核心功能
 
 - [x] **M2** FastAPI routers（產業排行榜 API、個股法人明細 API、個股走勢 API）
-- [ ] **M3** 前端 L0：產業排行榜（日期選擇 + foreign/trust/dealer tab）
+- [x] **M3** 前端 L0：產業排行榜（日期選擇 + foreign/trust/dealer tab）
 - [ ] **M4** 前端 L1：sub_industry 個股列表（可依法人欄排序）
 - [ ] **M4** 前端 L2：個股雙軸走勢圖（收盤價 + 三大法人累積淨買超，60 天）
 
