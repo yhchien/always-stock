@@ -5,7 +5,7 @@ from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import func
+from sqlalchemy import and_, func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -267,20 +267,29 @@ def get_industry_stocks(
     )
     price_map = {p.stock_id: p.close_price for p in prices}
 
-    # Load previous trading day's prices for price change calculation
-    prev_date = (
-        db.query(func.max(DailyPrice.trade_date))
-        .filter(DailyPrice.trade_date < date)
-        .scalar()
-    )
-    prev_price_map: dict = {}
-    if prev_date:
-        prev_prices = (
-            db.query(DailyPrice)
-            .filter(DailyPrice.trade_date == prev_date, DailyPrice.stock_id.in_(stock_ids))
-            .all()
+    # Load previous trading day's prices for price change calculation.
+    # Use per-stock lookup so suspended stocks still get their most recent prev close.
+    prev_subq = (
+        db.query(
+            DailyPrice.stock_id,
+            func.max(DailyPrice.trade_date).label("prev_date"),
         )
-        prev_price_map = {p.stock_id: p.close_price for p in prev_prices}
+        .filter(DailyPrice.trade_date < date, DailyPrice.stock_id.in_(stock_ids))
+        .group_by(DailyPrice.stock_id)
+        .subquery()
+    )
+    prev_prices = (
+        db.query(DailyPrice)
+        .join(
+            prev_subq,
+            and_(
+                DailyPrice.stock_id == prev_subq.c.stock_id,
+                DailyPrice.trade_date == prev_subq.c.prev_date,
+            ),
+        )
+        .all()
+    )
+    prev_price_map = {p.stock_id: p.close_price for p in prev_prices}
 
     # Load institutional flows
     flows = (
