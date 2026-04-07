@@ -2,9 +2,10 @@
 Telegram Bot for tw-stock-dashboard.
 
 Commands:
-    /start      - Welcome message and usage instructions
-    /help       - Show available commands
-    <stock_id>  - Query institutional flow for a stock (e.g. "2330")
+    /start          - Welcome message and usage instructions
+    /help           - Show available commands
+    /ai <stock_id>  - AI analysis for a stock (e.g. "/ai 2330")
+    <stock_id>      - Query institutional flow for a stock (e.g. "2330")
 
 The bot queries the local database for the most recent trading day's data
 and returns institutional net buy/sell details + industry classification.
@@ -37,10 +38,12 @@ HELP_TEXT = (
     "直接輸入股票代號即可查詢最近一個交易日的三大法人買賣超。\n\n"
     "*指令：*\n"
     "/start — 歡迎訊息\n"
-    "/help — 顯示此說明\n\n"
+    "/help — 顯示此說明\n"
+    "/ai `股號` — AI 籌碼分析（如 `/ai 2330`）\n\n"
     "*範例：*\n"
-    "`2330` — 查詢台積電\n"
-    "`2317` — 查詢鴻海\n"
+    "`2330` — 查詢台積電法人資料\n"
+    "`2317` — 查詢鴻海法人資料\n"
+    "/ai `2330` — AI 分析台積電籌碼動向\n"
 )
 
 
@@ -175,6 +178,34 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(HELP_TEXT, parse_mode="Markdown")
 
 
+async def ai_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /ai <stock_id> command — AI-powered stock analysis."""
+    from app.ai_analyst import analyze_stock
+
+    if not context.args or len(context.args) < 1:
+        await update.message.reply_text(
+            "請提供股票代號，例如 `/ai 2330`。",
+            parse_mode="Markdown",
+        )
+        return
+
+    stock_id = context.args[0].strip()
+    if not stock_id.isdigit() or len(stock_id) < 4 or len(stock_id) > 6:
+        await update.message.reply_text(
+            "請輸入 4~6 碼的股票代號，例如 `/ai 2330`。",
+            parse_mode="Markdown",
+        )
+        return
+
+    logger.info("AI analysis: stock_id=%s from user=%s", stock_id, update.effective_user.id)
+
+    # Send "typing" indicator since AI call takes a few seconds
+    await update.message.chat.send_action("typing")
+
+    result = analyze_stock(stock_id)
+    await update.message.reply_text(result, parse_mode="Markdown")
+
+
 async def stock_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle plain text messages — treat as stock ID query."""
     text = update.message.text.strip()
@@ -204,6 +235,7 @@ def create_bot_app(token: str = "") -> Application:
     app = Application.builder().token(bot_token).build()
     app.add_handler(CommandHandler("start", start_handler))
     app.add_handler(CommandHandler("help", help_handler))
+    app.add_handler(CommandHandler("ai", ai_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, stock_query_handler))
 
     logger.info("Telegram bot application created")
