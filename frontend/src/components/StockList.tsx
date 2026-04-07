@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useState, useCallback, useMemo } from "react"
-import { useRouter } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 import {
   Table,
   TableBody,
@@ -167,16 +167,27 @@ function FlowBadge({ label, value }: { label: string; value: number }) {
 interface Props {
   industryName: string
   defaultDate: string
+  defaultSubFilter?: string | null
 }
 
-export default function StockList({ industryName, defaultDate }: Props) {
+export default function StockList({ industryName, defaultDate, defaultSubFilter = null }: Props) {
   const router = useRouter()
+  const searchParams = useSearchParams()
   const [date, setDate] = useState(defaultDate)
   const [rows, setRows] = useState<StockFlowItem[]>([])
   const [summary, setSummary] = useState<SubIndustrySummaryItem[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [subFilter, setSubFilter] = useState<string | null>(null)
+  const [subFilter, setSubFilter] = useState<string | null>(defaultSubFilter)
+
+  // Sync state changes to URL (without navigation)
+  const syncUrl = useCallback((d: string, sub: string | null) => {
+    const params = new URLSearchParams()
+    params.set("date", d)
+    if (sub) params.set("sub", sub)
+    const url = `/industries/${encodeURIComponent(industryName)}?${params}`
+    router.replace(url, { scroll: false })
+  }, [router, industryName])
 
   const load = useCallback(async (d: string) => {
     setLoading(true)
@@ -251,7 +262,7 @@ export default function StockList({ industryName, defaultDate }: Props) {
         <input
           type="date"
           value={date}
-          onChange={(e) => setDate(e.target.value)}
+          onChange={(e) => { setDate(e.target.value); syncUrl(e.target.value, subFilter) }}
           className="rounded-md border border-zinc-600 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-100 focus:outline-none focus:ring-1 focus:ring-zinc-400"
         />
       </div>
@@ -267,14 +278,14 @@ export default function StockList({ industryName, defaultDate }: Props) {
             <h2 className="text-sm font-medium text-zinc-300">子產業彙總</h2>
             {subFilter && (
               <button
-                onClick={() => setSubFilter(null)}
+                onClick={() => { setSubFilter(null); syncUrl(date, null) }}
                 className="text-xs text-zinc-300 hover:text-zinc-100 border border-zinc-600 bg-zinc-800 rounded px-2 py-0.5"
               >
                 清除篩選: {subFilter} &times;
               </button>
             )}
           </div>
-          <SummaryTable rows={summary} onFilter={setSubFilter} activeFilter={subFilter} />
+          <SummaryTable rows={summary} onFilter={(sub) => { setSubFilter(sub); syncUrl(date, sub) }} activeFilter={subFilter} />
         </div>
       )}
 

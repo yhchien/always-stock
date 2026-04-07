@@ -205,6 +205,9 @@ npm test
 - [x] 每晚自動更新：launchd plist（週一至週五 20:00 觸發 `run_daily_etl.py`）
 - [x] 即時盤中報價 API（`/api/realtime/quotes`，串接 TWSE mis API）
 - [x] L1 卡片 + L2 走勢圖整合即時報價（15 秒自動刷新，盤中顯示「即時」標記）
+- [x] L2 走勢圖支援時間軸拖拉縮放（ECharts dataZoom）
+- [x] L2 tooltip 顯示單位（收盤價 元、累積張數 萬股）
+- [x] 返回上一頁保留日期 / 子產業篩選（URL search params 狀態同步）
 
 ---
 
@@ -232,6 +235,10 @@ npm test
 
 - [x] **每晚自動更新資料庫**（launchd plist，週一至週五 20:00 觸發 `run_daily_etl.py`）
 - [x] **即時股價**（串接 TWSE mis 盤中報價 API，L1 卡片 + L2 走勢頁即時顯示）
+
+### UI 增強
+
+- [ ] **L2 K 線圖**：股價改用 candlestick（需後端擴充 OHLC 到 daily_price + ETL 存入 open/high/low）
 
 ### 擴充功能
 

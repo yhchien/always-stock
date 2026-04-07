@@ -54,6 +54,21 @@ export default function StockChart({ stockId, defaultDate, days = 90 }: Props) {
         borderColor: "#3f3f46",
         textStyle: { color: "#fafafa", fontSize: 12 },
         axisPointer: { type: "cross" as const },
+        formatter: (params: Array<{ seriesName: string; value: number; marker: string; axisValue: string }>) => {
+          if (!Array.isArray(params) || params.length === 0) return ""
+          let html = `<div style="font-size:12px">${params[0].axisValue}</div>`
+          for (const p of params) {
+            const v = p.value
+            let display: string
+            if (p.seriesName === "收盤價") {
+              display = `${v.toFixed(2)} 元`
+            } else {
+              display = fmtShares(v)
+            }
+            html += `<div>${p.marker} ${p.seriesName}: <b>${display}</b></div>`
+          }
+          return html
+        },
       },
       legend: {
         data: ["收盤價", "外資累積", "投信累積", "自營商累積"],
@@ -64,8 +79,33 @@ export default function StockChart({ stockId, defaultDate, days = 90 }: Props) {
         left: 60,
         right: 70,
         top: 40,
-        bottom: 40,
+        bottom: 70,
       },
+      dataZoom: [
+        {
+          type: "slider",
+          xAxisIndex: 0,
+          start: 0,
+          end: 100,
+          height: 20,
+          bottom: 10,
+          borderColor: "#3f3f46",
+          backgroundColor: "#27272a",
+          fillerColor: "rgba(113,113,122,0.2)",
+          handleStyle: { color: "#71717a" },
+          textStyle: { color: "#a1a1aa", fontSize: 10 },
+          dataBackground: {
+            lineStyle: { color: "#52525b" },
+            areaStyle: { color: "#3f3f46" },
+          },
+        },
+        {
+          type: "inside",
+          xAxisIndex: 0,
+          start: 0,
+          end: 100,
+        },
+      ],
       xAxis: {
         type: "category" as const,
         data: dates,

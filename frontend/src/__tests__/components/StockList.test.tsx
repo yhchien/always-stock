@@ -6,8 +6,10 @@ import * as api from "@/lib/api"
 // Mock next/navigation
 const mockPush = jest.fn()
 const mockBack = jest.fn()
+const mockReplace = jest.fn()
 jest.mock("next/navigation", () => ({
-  useRouter: () => ({ push: mockPush, back: mockBack }),
+  useRouter: () => ({ push: mockPush, back: mockBack, replace: mockReplace }),
+  useSearchParams: () => new URLSearchParams(),
 }))
 
 const MOCK_SUMMARY: api.SubIndustrySummaryItem[] = [

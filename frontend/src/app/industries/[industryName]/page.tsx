@@ -17,10 +17,11 @@ export default function IndustryStocksPage({
   const decoded = decodeURIComponent(industryName)
   const searchParams = useSearchParams()
   const date = searchParams.get("date") ?? todayString()
+  const sub = searchParams.get("sub") ?? null
 
   return (
     <main className="mx-auto w-full max-w-6xl px-4 py-8">
-      <StockList industryName={decoded} defaultDate={date} />
+      <StockList industryName={decoded} defaultDate={date} defaultSubFilter={sub} />
     </main>
   )
 }

@@ -1,7 +1,6 @@
 "use client"
 
-import { useState } from "react"
-import { useRouter } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 import IndustryDashboard from "@/components/IndustryDashboard"
 
 function todayString() {
@@ -10,13 +9,14 @@ function todayString() {
 
 export default function Home() {
   const router = useRouter()
-  const [date, setDate] = useState(todayString())
+  const searchParams = useSearchParams()
+  const date = searchParams.get("date") ?? todayString()
 
   return (
     <main className="mx-auto w-full max-w-5xl px-4 py-8">
       <IndustryDashboard
         defaultDate={date}
-        onDateChange={setDate}
+        onDateChange={(d) => router.replace(`/?date=${d}`, { scroll: false })}
         onSelectIndustry={(name) =>
           router.push(`/industries/${encodeURIComponent(name)}?date=${date}`)
         }
