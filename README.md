@@ -102,6 +102,29 @@ python run_daily_etl.py --date 2025-04-01
 python run_daily_etl.py --backfill-days 30 --skip-master
 ```
 
+### 3a. 歷史資料批次回補（可斷點續傳）
+
+```bash
+# 預設抓 2023-01-01 ~ 2026-04-01
+python run_backfill.py
+
+# 自訂區間
+python run_backfill.py --start 2024-01-01 --end 2025-12-31
+
+# 斷線後重跑會自動從上次成功的日期繼續
+python run_backfill.py
+
+# 強制重頭開始（忽略 checkpoint）
+python run_backfill.py --reset
+```
+
+**特性：**
+- 自動跳過週末（TWSE 無交易）
+- 斷點續傳：checkpoint 存在 `db/backfill_checkpoint.txt`
+- 連續 5 次錯誤自動停止，重跑即可續傳
+- TWSE API rate limiting 防護（預設每筆間隔 3.5 秒）
+- 支援 SIGINT/SIGTERM 優雅終止
+
 ### 4. 啟動 API
 
 ```bash
@@ -159,6 +182,7 @@ npm test
 - [x] 漲跌幅計算改用 per-stock prev close（停牌股也能正確顯示漲跌）
 - [x] 深色主題調亮：提升底色亮度、filter/input/tab/badge 對比度改善可見性
 - [x] ETL 加入週末偵測：跳過 Saturday/Sunday，防止 TWSE API 回傳重複前日資料
+- [x] 可斷點續傳的歷史 backfill 腳本（`run_backfill.py`，支援 2023-01-01 ~ 2026-04-01）
 
 ---
 
