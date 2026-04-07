@@ -35,6 +35,7 @@ tw-stock-dashboard/
 │   ├── scripts/
 │   │   ├── daily_update.sh      # 每日自動更新 shell script
 │   │   └── com.tw-stock-dashboard.daily-etl.plist  # macOS launchd 排程
+│   ├── run_telegram_bot.py      # Telegram Bot 啟動腳本（long-polling）
 │   └── requirements.txt
 ├── frontend/                    # Next.js 前端
 │   ├── src/
@@ -161,7 +162,23 @@ python3 -m uvicorn app.main:app --reload
 | GET | `/api/stocks/{stock_id}/history?days=90&end_date=YYYY-MM-DD` | L2：個股收盤價 + 法人累積買超（預設 90 天） |
 | GET | `/api/realtime/quotes?stock_ids=2330,2317` | 即時盤中報價（TWSE mis API，最多 50 檔） |
 
-### 5. 啟動前端
+### 5. 啟動 Telegram Bot
+
+```bash
+# 設定 Bot Token（從 @BotFather 取得）
+export TELEGRAM_BOT_TOKEN="your-token-here"
+
+# 啟動 bot（long-polling 模式，不需 webhook）
+cd backend
+python run_telegram_bot.py
+```
+
+**功能：**
+- 輸入股票代號（如 `2330`）→ 回報最近一個交易日的三大法人買賣超
+- 顯示所屬產業、子產業、供應鏈位置
+- `/start`、`/help` 查看使用說明
+
+### 6. 啟動前端
 
 ```bash
 cd frontend
@@ -170,7 +187,7 @@ npm run dev
 # http://localhost:3000
 ```
 
-### 6. 執行前端測試
+### 7. 執行前端測試
 
 ```bash
 cd frontend
@@ -208,6 +225,7 @@ npm test
 - [x] L2 走勢圖支援時間軸拖拉縮放（ECharts dataZoom）
 - [x] L2 tooltip 顯示單位（收盤價 元、累積張數 萬股）
 - [x] 返回上一頁保留日期 / 子產業篩選（URL search params 狀態同步）
+- [x] Telegram Bot：輸入股票代號查詢三大法人買賣超（long-polling 模式）
 
 ---
 
@@ -219,39 +237,55 @@ npm test
 | M2 | FastAPI 回傳產業/個股 JSON | ✅ 完成 |
 | M3 | Next.js L0 產業排行榜頁面 | ✅ 完成 |
 | M4 | L1 個股列表 + L2 走勢圖 | ✅ 完成 |
+| M5 | Telegram Bot 個股籌碼查詢 | ✅ 完成 |
+| M6 | 10 年歷史股市資料庫 | 🔄 進行中（backfill 2016 ~ 2026） |
+| M7 | K 線圖（OHLC candlestick） | ⬜ 待開始 |
+| M8 | 財報資料庫（含 PE / 基本面指標） | ⬜ 待開始 |
+| M9 | AI Sub-agent（接 LLM，投資策略初版） | ⬜ 待開始 |
+| M10 | 部署上線（Cloud） | ⬜ 待開始 |
+| M11 | 回測程式（策略績效驗證） | ⬜ 待開始 |
+| M12 | 文字化投資策略輸入 | ⬜ 待開始 |
+| M13 | 關鍵券商分點爬蟲 | ⬜ 待開始 |
+| M14 | LLM 輿情爬文分析 | ⬜ 待開始 |
+| M15 | Telegram 電子報（定期投資推薦推播） | ⬜ 待開始 |
 
 ---
 
-## TODO
+## TODO Roadmap
 
-### 核心功能
+以下為整體開發路線圖，依序推進：
 
-- [x] **M2** FastAPI routers（產業排行榜 API、個股法人明細 API、個股走勢 API）
-- [x] **M3** 前端 L0：產業排行榜（日期選擇 + foreign/trust/dealer tab）
-- [x] **M4** 前端 L1：sub_industry 個股列表（可依法人欄排序）
-- [x] **M4** 前端 L2：個股雙軸走勢圖（收盤價 + 三大法人累積淨買超，60 天）
+### Phase 1 — 資料基礎建設
 
-### 資料更新
+- [x] **M1~M4** ETL + API + 前端儀表板（產業排行榜、個股列表、走勢圖）
+- [x] **M5 Telegram Bot 個股籌碼查詢**：輸入股號 → 回報三大法人買賣超 + 所屬產業
+- [ ] **M6 10 年歷史股市資料庫**：將 backfill 區間從 4 年擴充至 2016 ~ 2026（約 10 年）
+  - 擴充 OHLC 欄位（open/high/low）到 `daily_price`
+- [ ] **M7 K 線圖**：前端 L2 股價改用 candlestick 呈現（需 M6 OHLC 資料）
+- [ ] **M8 財報資料庫**：建立季度財報資料表（營收、EPS、PE ratio、本益比河流圖等）
+  - 資料來源：公開資訊觀測站 / FinMind
 
-- [x] **每晚自動更新資料庫**（launchd plist，週一至週五 20:00 觸發 `run_daily_etl.py`）
-- [x] **即時股價**（串接 TWSE mis 盤中報價 API，L1 卡片 + L2 走勢頁即時顯示）
+### Phase 2 — AI 策略引擎
 
-### UI 增強
+- [ ] **M9 AI Sub-agent**：接 LLM API，初版先做自由問答式投資策略建議
+  - 接收：股號 + 法人動向 + 財報數據
+  - 輸出：結合籌碼面 / 技術面 / 基本面的 AI 觀點
+- [ ] **M11 回測程式**：指定策略 + 時間區間，計算績效指標（勝率、最大回撤、夏普比率等）
+- [ ] **M12 文字化投資策略輸入**：用自然語言描述策略，LLM 解析為可執行的回測條件
 
-- [ ] **L2 K 線圖**：股價改用 candlestick（需後端擴充 OHLC 到 daily_price + ETL 存入 open/high/low）
+### Phase 3 — 資訊聚合
 
-### 擴充功能
+- [ ] **M13 關鍵券商分點爬蟲**：追蹤特定券商分點的進出（如外資常用券商）
+- [ ] **M14 LLM 輿情爬文分析**：自動爬取財經新聞 / PTT Stock / 社群，LLM 摘要與情緒分析
 
-- [ ] **Telegram 機器人**：輸入股號 → 回報昨日法人買賣情況 + 所屬產業
-  - 找不到股號 → 回「沒有此股」
-  - 找到 → 列出 foreign/trust/dealer 淨買超股數與金額估計
-- [ ] **交易策略模組**：每個策略寫成獨立 Python 腳本，統一介面，便於回測與組合
-- [ ] **回測程式**：指定策略 + 時間區間，計算績效指標（勝率、最大回撤、夏普比率等）
-- [ ] **策略追蹤 threads**：整合社群或筆記，記錄各策略的觀察盤點
-- [ ] **AI 策略助手**：接 ChatGPT API，根據使用者目前關注的策略，針對特定股票提供分析想法
-  - 接收：股號 + 使用者策略偏好
-  - 輸出：結合近期法人動向、技術面的 AI 觀點
-- [ ] **部署上線**：從 localhost 轉為公開網站（Fly.io / Render / VPS）
+### Phase 4 — 部署 & 推播
+
+- [ ] **M10 部署上線**：從 localhost 轉為 cloud 部署（Fly.io / Render / VPS）
+  - 後端 API + Telegram Bot 一起部署
+  - launchd 改為 cron job 或平台內建排程
+- [ ] **M15 Telegram 電子報**：定期推播投資推薦到 Telegram
+  - 結合法人籌碼 + 財報 + AI 策略 + 輿情分析
+  - 每日 / 每週摘要報告
 
 ---
 
