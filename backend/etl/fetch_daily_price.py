@@ -56,6 +56,12 @@ def fetch_and_upsert_daily_price(db: Session, trade_date: date) -> int:
     Returns:
         number of records inserted or updated
     """
+    # Skip weekends — TWSE never trades on Saturday/Sunday.
+    # The API may still return stat="OK" with the previous trading day's data.
+    if trade_date.weekday() >= 5:
+        logger.info("Skipping weekend: %s (weekday=%d)", trade_date, trade_date.weekday())
+        return 0
+
     date_str = trade_date.strftime("%Y%m%d")
     params = {"date": date_str, "response": "json"}
     url = TWSE_STOCK_DAY_ALL_URL + "?" + urllib.parse.urlencode(params)

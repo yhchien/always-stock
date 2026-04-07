@@ -80,6 +80,11 @@ def fetch_and_upsert_inst_flow(db: Session, trade_date: date) -> int:
     Returns:
         total number of records inserted or updated
     """
+    # Skip weekends — TWSE never trades on Saturday/Sunday.
+    if trade_date.weekday() >= 5:
+        logger.info("Skipping weekend: %s (weekday=%d)", trade_date, trade_date.weekday())
+        return 0
+
     date_str = trade_date.strftime("%Y%m%d")
     params = {"date": date_str, "selectType": "ALL", "response": "json"}
     url = TWSE_T86_URL + "?" + urllib.parse.urlencode(params)
