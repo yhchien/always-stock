@@ -157,6 +157,7 @@ npm test
 - [x] L1 子產業彙總表格（排序 + 趨勢 + 子產業 filter）
 - [x] 前端單元測試（51 tests：api helpers + IndustryDashboard + StockList + StockChart）
 - [x] 漲跌幅計算改用 per-stock prev close（停牌股也能正確顯示漲跌）
+- [x] 深色主題調亮：提升底色亮度、filter/input/tab/badge 對比度改善可見性
 
 ---
 

@@ -120,18 +120,18 @@ export default function IndustryDashboard({ defaultDate, onDateChange, onSelectI
           type="date"
           value={date}
           onChange={(e) => { setDate(e.target.value); onDateChange?.(e.target.value) }}
-          className="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-100 focus:outline-none focus:ring-1 focus:ring-zinc-500"
+          className="rounded-md border border-zinc-600 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-100 focus:outline-none focus:ring-1 focus:ring-zinc-400"
         />
       </div>
 
       {/* Tabs */}
       <Tabs value={tab} onValueChange={(v) => handleTabChange(v as Tab)}>
-        <TabsList className="bg-zinc-900 border border-zinc-800">
+        <TabsList className="bg-zinc-800 border border-zinc-600">
           {(Object.keys(TAB_LABELS) as Tab[]).map((t) => (
             <TabsTrigger
               key={t}
               value={t}
-              className="data-[state=active]:bg-zinc-700 data-[state=active]:text-white text-zinc-400"
+              className="data-[state=active]:bg-zinc-600 data-[state=active]:text-white text-zinc-300"
             >
               {TAB_LABELS[t]}
             </TabsTrigger>
@@ -145,38 +145,38 @@ export default function IndustryDashboard({ defaultDate, onDateChange, onSelectI
 
       {/* Table */}
       {!loading && !error && sorted.length > 0 && (
-        <div className="rounded-lg border border-zinc-800 overflow-hidden">
+        <div className="rounded-lg border border-zinc-700 overflow-hidden">
           <Table>
             <TableHeader>
-              <TableRow className="border-zinc-800 hover:bg-transparent">
-                <TableHead className="text-zinc-400 w-8">#</TableHead>
-                <TableHead className="text-zinc-400">產業</TableHead>
+              <TableRow className="border-zinc-700 hover:bg-transparent">
+                <TableHead className="text-zinc-300 w-8">#</TableHead>
+                <TableHead className="text-zinc-300">產業</TableHead>
                 <TableHead
-                  className="text-zinc-400 text-right cursor-pointer select-none hover:text-zinc-200"
+                  className="text-zinc-300 text-right cursor-pointer select-none hover:text-zinc-100"
                   onClick={() => handleSort("foreign")}
                 >
                   外資{sortIndicator("foreign")}
                 </TableHead>
                 <TableHead
-                  className="text-zinc-400 text-right cursor-pointer select-none hover:text-zinc-200"
+                  className="text-zinc-300 text-right cursor-pointer select-none hover:text-zinc-100"
                   onClick={() => handleSort("trust")}
                 >
                   投信{sortIndicator("trust")}
                 </TableHead>
                 <TableHead
-                  className="text-zinc-400 text-right cursor-pointer select-none hover:text-zinc-200"
+                  className="text-zinc-300 text-right cursor-pointer select-none hover:text-zinc-100"
                   onClick={() => handleSort("dealer")}
                 >
                   自營商{sortIndicator("dealer")}
                 </TableHead>
                 <TableHead
-                  className="text-zinc-400 text-right cursor-pointer select-none hover:text-zinc-200"
+                  className="text-zinc-300 text-right cursor-pointer select-none hover:text-zinc-100"
                   onClick={() => handleSort("total")}
                 >
                   合計{sortIndicator("total")}
                 </TableHead>
                 <TableHead
-                  className="text-zinc-400 text-center cursor-pointer select-none hover:text-zinc-200"
+                  className="text-zinc-300 text-center cursor-pointer select-none hover:text-zinc-100"
                   onClick={() => handleSort("streak")}
                 >
                   趨勢{sortIndicator("streak")}
@@ -187,7 +187,7 @@ export default function IndustryDashboard({ defaultDate, onDateChange, onSelectI
               {sorted.map((row, i) => (
                 <TableRow
                   key={row.industry_name}
-                  className="border-zinc-800 hover:bg-zinc-900 cursor-pointer"
+                  className="border-zinc-700 hover:bg-zinc-800 cursor-pointer"
                   onClick={() => onSelectIndustry?.(row.industry_name)}
                 >
                   <TableCell className="text-zinc-600 text-xs">{i + 1}</TableCell>

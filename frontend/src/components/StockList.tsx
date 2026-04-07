@@ -80,25 +80,25 @@ function SummaryTable({
   }
 
   return (
-    <div className="rounded-lg border border-zinc-800 overflow-hidden">
+    <div className="rounded-lg border border-zinc-700 overflow-hidden">
       <Table>
         <TableHeader>
-          <TableRow className="border-zinc-800 hover:bg-transparent">
-            <TableHead className="text-zinc-400">鏈</TableHead>
-            <TableHead className="text-zinc-400">子產業</TableHead>
-            <TableHead className="text-zinc-400 text-right cursor-pointer select-none hover:text-zinc-200" onClick={() => handleSort("foreign")}>
+          <TableRow className="border-zinc-700 hover:bg-transparent">
+            <TableHead className="text-zinc-300">鏈</TableHead>
+            <TableHead className="text-zinc-300">子產業</TableHead>
+            <TableHead className="text-zinc-300 text-right cursor-pointer select-none hover:text-zinc-100" onClick={() => handleSort("foreign")}>
               外資{indicator("foreign")}
             </TableHead>
-            <TableHead className="text-zinc-400 text-right cursor-pointer select-none hover:text-zinc-200" onClick={() => handleSort("trust")}>
+            <TableHead className="text-zinc-300 text-right cursor-pointer select-none hover:text-zinc-100" onClick={() => handleSort("trust")}>
               投信{indicator("trust")}
             </TableHead>
-            <TableHead className="text-zinc-400 text-right cursor-pointer select-none hover:text-zinc-200" onClick={() => handleSort("dealer")}>
+            <TableHead className="text-zinc-300 text-right cursor-pointer select-none hover:text-zinc-100" onClick={() => handleSort("dealer")}>
               自營商{indicator("dealer")}
             </TableHead>
-            <TableHead className="text-zinc-400 text-right cursor-pointer select-none hover:text-zinc-200" onClick={() => handleSort("total")}>
+            <TableHead className="text-zinc-300 text-right cursor-pointer select-none hover:text-zinc-100" onClick={() => handleSort("total")}>
               合計{indicator("total")}
             </TableHead>
-            <TableHead className="text-zinc-400 text-center cursor-pointer select-none hover:text-zinc-200" onClick={() => handleSort("streak")}>
+            <TableHead className="text-zinc-300 text-center cursor-pointer select-none hover:text-zinc-100" onClick={() => handleSort("streak")}>
               趨勢{indicator("streak")}
             </TableHead>
           </TableRow>
@@ -109,12 +109,12 @@ function SummaryTable({
             return (
               <TableRow
                 key={row.sub_industry}
-                className={`border-zinc-800 cursor-pointer ${isActive ? "bg-zinc-800" : "hover:bg-zinc-900"}`}
+                className={`border-zinc-700 cursor-pointer ${isActive ? "bg-zinc-700" : "hover:bg-zinc-800"}`}
                 onClick={() => onFilter(isActive ? null : row.sub_industry)}
               >
                 <TableCell>
                   {row.chain && (
-                    <Badge variant="outline" className="text-xs text-zinc-400 border-zinc-700">
+                    <Badge variant="outline" className="text-xs text-zinc-300 border-zinc-600">
                       {row.chain}
                     </Badge>
                   )}
@@ -247,7 +247,7 @@ export default function StockList({ industryName, defaultDate }: Props) {
           type="date"
           value={date}
           onChange={(e) => setDate(e.target.value)}
-          className="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-100 focus:outline-none focus:ring-1 focus:ring-zinc-500"
+          className="rounded-md border border-zinc-600 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-100 focus:outline-none focus:ring-1 focus:ring-zinc-400"
         />
       </div>
 
@@ -263,7 +263,7 @@ export default function StockList({ industryName, defaultDate }: Props) {
             {subFilter && (
               <button
                 onClick={() => setSubFilter(null)}
-                className="text-xs text-zinc-500 hover:text-zinc-300 border border-zinc-700 rounded px-2 py-0.5"
+                className="text-xs text-zinc-300 hover:text-zinc-100 border border-zinc-600 bg-zinc-800 rounded px-2 py-0.5"
               >
                 清除篩選: {subFilter} &times;
               </button>
@@ -279,7 +279,7 @@ export default function StockList({ industryName, defaultDate }: Props) {
           {[...grouped.entries()].map(([chain, items]) => (
             <section key={chain}>
               <div className="flex items-center gap-2 mb-3">
-                <Badge variant="outline" className="text-sm text-zinc-300 border-zinc-600 px-3 py-0.5">
+                <Badge variant="outline" className="text-sm text-zinc-200 border-zinc-500 px-3 py-0.5">
                   {chain}
                 </Badge>
                 <span className="text-xs text-zinc-600">{items.length} 檔</span>
@@ -289,7 +289,7 @@ export default function StockList({ industryName, defaultDate }: Props) {
                   <div
                     key={stock.stock_id}
                     onClick={() => router.push(`/stocks/${stock.stock_id}?date=${date}`)}
-                    className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4 cursor-pointer hover:border-zinc-600 hover:bg-zinc-900 transition-colors"
+                    className="rounded-lg border border-zinc-700 bg-zinc-800/50 p-4 cursor-pointer hover:border-zinc-500 hover:bg-zinc-800 transition-colors"
                   >
                     {/* Stock header */}
                     <div className="flex items-baseline justify-between mb-2">
@@ -311,14 +311,14 @@ export default function StockList({ industryName, defaultDate }: Props) {
                     </div>
 
                     {/* Institutional flows */}
-                    <div className="flex flex-col gap-1 border-t border-zinc-800 pt-2">
+                    <div className="flex flex-col gap-1 border-t border-zinc-700 pt-2">
                       <FlowBadge label="外資" value={stock.foreign_net_shares} />
                       <FlowBadge label="投信" value={stock.trust_net_shares} />
                       <FlowBadge label="自營" value={stock.dealer_net_shares} />
                     </div>
 
                     {/* Total net amount */}
-                    <div className="flex items-center justify-between mt-2 pt-2 border-t border-zinc-800">
+                    <div className="flex items-center justify-between mt-2 pt-2 border-t border-zinc-700">
                       <span className="text-xs text-zinc-500">法人合計</span>
                       <span className={`font-mono text-xs ${
                         stock.foreign_net_amount + stock.trust_net_amount + stock.dealer_net_amount > 0
