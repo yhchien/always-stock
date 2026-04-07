@@ -1,9 +1,8 @@
 """
 Aggregate inst_stock_flow into industry_daily_flow.
 
-Aggregation level (effective_industry):
-  - Use stocks_master.sub_industry if set
-  - Otherwise fall back to stocks_master.industry_name (FinMind top-level)
+Aggregation level: stocks_master.industry_name (Fugle broad category for mapped stocks,
+FinMind industry_category as fallback for unmapped stocks).
 
 Amount columns sourced from inst_stock_flow.{buy,sell,net}_amount_est:
   foreign_net_amount = SUM(net_amount_est WHERE inst_type='foreign')
@@ -36,10 +35,10 @@ def aggregate_industry_flow(db: Session, trade_date: date) -> int:
     Returns:
         number of industry rows inserted or updated
     """
-    # Build stock_id → effective_industry mapping
+    # Build stock_id → industry mapping (broad Fugle category or FinMind fallback)
     masters = db.query(StockMaster).all()
     industry_map = {
-        m.stock_id: (m.sub_industry if m.sub_industry else m.industry_name)
+        m.stock_id: m.industry_name
         for m in masters
     }
     logger.debug("Industry map built: %d stocks", len(industry_map))

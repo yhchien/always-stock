@@ -12,6 +12,7 @@ const MOCK_ROWS: api.IndustryFlowItem[] = [
     dealer_net_amount: 200_000_000,
     total_buy_amount: 5_000_000_000,
     total_sell_amount: 3_000_000_000,
+    streak: 3,
   },
   {
     industry_name: "電子零組件",
@@ -21,6 +22,7 @@ const MOCK_ROWS: api.IndustryFlowItem[] = [
     dealer_net_amount: -50_000_000,
     total_buy_amount: 1_000_000_000,
     total_sell_amount: 1_500_000_000,
+    streak: -2,
   },
 ]
 
@@ -104,5 +106,46 @@ describe("IndustryDashboard", () => {
     expect(screen.getByRole("tab", { name: "外資" })).toBeInTheDocument()
     expect(screen.getByRole("tab", { name: "投信" })).toBeInTheDocument()
     expect(screen.getByRole("tab", { name: "自營商" })).toBeInTheDocument()
+  })
+
+  it("displays streak column with correct text", async () => {
+    jest.spyOn(api, "fetchIndustries").mockResolvedValue(MOCK_ROWS)
+
+    render(<IndustryDashboard defaultDate="2026-04-01" />)
+
+    await waitFor(() => {
+      expect(screen.getByText("連買3天")).toBeInTheDocument()
+      expect(screen.getByText("連賣2天")).toBeInTheDocument()
+    })
+  })
+
+  it("renders sortable column headers", async () => {
+    jest.spyOn(api, "fetchIndustries").mockResolvedValue(MOCK_ROWS)
+
+    render(<IndustryDashboard defaultDate="2026-04-01" />)
+
+    await waitFor(() => screen.getByText("半導體"))
+
+    // Column headers should contain sort indicator for active column
+    const headerCells = screen.getAllByRole("columnheader")
+    const headerTexts = headerCells.map((h) => h.textContent)
+    // "合計" is the default sort key, should have ▼ indicator
+    expect(headerTexts.some((t) => t?.includes("合計") && t?.includes("▼"))).toBe(true)
+  })
+
+  it("toggles sort direction when clicking active column header", async () => {
+    jest.spyOn(api, "fetchIndustries").mockResolvedValue(MOCK_ROWS)
+
+    render(<IndustryDashboard defaultDate="2026-04-01" />)
+    await waitFor(() => screen.getByText("半導體"))
+
+    // Click "合計" header to toggle ascending
+    const totalHeader = screen.getAllByRole("columnheader").find((h) => h.textContent?.includes("合計"))
+    fireEvent.click(totalHeader!)
+
+    // After clicking, sort should flip — 電子零組件 (negative) should be first
+    const rows = screen.getAllByRole("row")
+    // rows[0] is header, rows[1] is first data row
+    expect(rows[1].textContent).toContain("電子零組件")
   })
 })

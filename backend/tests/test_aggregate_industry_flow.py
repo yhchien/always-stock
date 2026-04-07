@@ -36,7 +36,7 @@ def add_flow(db, stock_id, inst_type, buy_amt, sell_amt, net_amt):
 
 class TestAggregateIndustryFlow:
     def test_basic_aggregation(self, db):
-        add_stock(db, "2330", "半導體業", sub_industry="晶圓代工")
+        add_stock(db, "2330", "半導體", sub_industry="晶圓代工")
         add_flow(db, "2330", "foreign", 1000, 200, 800)
         add_flow(db, "2330", "trust",   100,  50,  50)
         add_flow(db, "2330", "dealer",  300, 100, 200)
@@ -45,7 +45,7 @@ class TestAggregateIndustryFlow:
         count = aggregate_industry_flow(db, TRADE_DATE)
 
         assert count == 1
-        row = db.query(IndustryDailyFlow).filter_by(industry_name="晶圓代工").first()
+        row = db.query(IndustryDailyFlow).filter_by(industry_name="半導體").first()
         assert row is not None
         assert row.foreign_net_amount == 800.0
         assert row.trust_net_amount   == 50.0
@@ -54,8 +54,9 @@ class TestAggregateIndustryFlow:
         assert row.total_buy_amount   == 1400.0
         assert row.total_sell_amount  == 350.0
 
-    def test_uses_sub_industry_over_industry_name(self, db):
-        add_stock(db, "2330", "半導體業", sub_industry="晶圓代工")
+    def test_aggregates_by_industry_name_not_sub_industry(self, db):
+        """Aggregation groups by industry_name (broad category), not sub_industry."""
+        add_stock(db, "2330", "半導體", sub_industry="晶圓代工")
         add_flow(db, "2330", "foreign", 0, 0, 100)
         add_flow(db, "2330", "trust",   0, 0, 0)
         add_flow(db, "2330", "dealer",  0, 0, 0)
@@ -63,10 +64,10 @@ class TestAggregateIndustryFlow:
 
         aggregate_industry_flow(db, TRADE_DATE)
 
-        assert db.query(IndustryDailyFlow).filter_by(industry_name="晶圓代工").first() is not None
-        assert db.query(IndustryDailyFlow).filter_by(industry_name="半導體業").first() is None
+        assert db.query(IndustryDailyFlow).filter_by(industry_name="半導體").first() is not None
+        assert db.query(IndustryDailyFlow).filter_by(industry_name="晶圓代工").first() is None
 
-    def test_fallback_to_industry_name_when_no_sub_industry(self, db):
+    def test_fallback_industry_name_for_unmapped_stocks(self, db):
         add_stock(db, "2454", "IC設計業", sub_industry=None)
         add_flow(db, "2454", "foreign", 0, 0, 500)
         add_flow(db, "2454", "trust",   0, 0, 0)
@@ -77,9 +78,9 @@ class TestAggregateIndustryFlow:
 
         assert db.query(IndustryDailyFlow).filter_by(industry_name="IC設計業").first() is not None
 
-    def test_multiple_stocks_same_sub_industry_summed(self, db):
-        add_stock(db, "2330", "半導體業", sub_industry="晶圓代工")
-        add_stock(db, "5347", "半導體業", sub_industry="晶圓代工")
+    def test_multiple_stocks_same_industry_summed(self, db):
+        add_stock(db, "2330", "半導體", sub_industry="晶圓代工")
+        add_stock(db, "5347", "半導體", sub_industry="晶圓代工")
         add_flow(db, "2330", "foreign", 0, 0, 300)
         add_flow(db, "2330", "trust",   0, 0, 0)
         add_flow(db, "2330", "dealer",  0, 0, 0)
@@ -90,11 +91,12 @@ class TestAggregateIndustryFlow:
 
         aggregate_industry_flow(db, TRADE_DATE)
 
-        row = db.query(IndustryDailyFlow).filter_by(industry_name="晶圓代工").first()
+        row = db.query(IndustryDailyFlow).filter_by(industry_name="半導體").first()
+        assert row is not None
         assert row.foreign_net_amount == 500.0
 
     def test_skips_stocks_not_in_master(self, db):
-        # 只有 flow，沒有 stock master → 跳過
+        # Only flow, no stock master → skip
         add_flow(db, "9999", "foreign", 0, 0, 999)
         add_flow(db, "9999", "trust",   0, 0, 0)
         add_flow(db, "9999", "dealer",  0, 0, 0)
@@ -108,9 +110,9 @@ class TestAggregateIndustryFlow:
         assert count == 0
 
     def test_upsert_updates_existing(self, db):
-        add_stock(db, "2330", "半導體業", sub_industry="晶圓代工")
+        add_stock(db, "2330", "半導體", sub_industry="晶圓代工")
         db.add(IndustryDailyFlow(
-            trade_date=TRADE_DATE, industry_name="晶圓代工",
+            trade_date=TRADE_DATE, industry_name="半導體",
             total_buy_amount=0, total_sell_amount=0, total_net_amount=0,
             foreign_net_amount=0, trust_net_amount=0, dealer_net_amount=0,
         ))
@@ -121,6 +123,6 @@ class TestAggregateIndustryFlow:
 
         aggregate_industry_flow(db, TRADE_DATE)
 
-        rows = db.query(IndustryDailyFlow).filter_by(industry_name="晶圓代工").all()
+        rows = db.query(IndustryDailyFlow).filter_by(industry_name="半導體").all()
         assert len(rows) == 1
         assert rows[0].foreign_net_amount == 400.0

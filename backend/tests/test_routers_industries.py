@@ -115,13 +115,52 @@ class TestGetIndustries:
         assert "foreign_net_amount" in item
         assert "trust_net_amount" in item
         assert "dealer_net_amount" in item
+        assert "streak" in item
+
+    def test_streak_positive_consecutive_buy(self, api):
+        """Streak should be positive when multiple consecutive days have positive net amount."""
+        client, db = api
+        # Seed 3 consecutive positive days
+        for i, d in enumerate([date(2025, 4, 1), date(2025, 3, 31), date(2025, 3, 28)]):
+            db.add(IndustryDailyFlow(
+                trade_date=d, industry_name="半導體",
+                total_net_amount=1000 + i, total_buy_amount=2000, total_sell_amount=1000,
+                foreign_net_amount=800, trust_net_amount=100, dealer_net_amount=100,
+            ))
+        db.commit()
+
+        resp = client.get(f"/api/industries?date={TRADE_DATE}")
+        assert resp.status_code == 200
+        item = resp.json()[0]
+        assert item["streak"] == 3
+
+    def test_streak_negative_consecutive_sell(self, api):
+        """Streak should be negative when consecutive days have negative net amount."""
+        client, db = api
+        for d in [date(2025, 4, 1), date(2025, 3, 31)]:
+            db.add(IndustryDailyFlow(
+                trade_date=d, industry_name="半導體",
+                total_net_amount=-500, total_buy_amount=1000, total_sell_amount=1500,
+                foreign_net_amount=-400, trust_net_amount=-50, dealer_net_amount=-50,
+            ))
+        # Day before that was positive — breaks the streak
+        db.add(IndustryDailyFlow(
+            trade_date=date(2025, 3, 28), industry_name="半導體",
+            total_net_amount=100, total_buy_amount=1100, total_sell_amount=1000,
+            foreign_net_amount=80, trust_net_amount=10, dealer_net_amount=10,
+        ))
+        db.commit()
+
+        resp = client.get(f"/api/industries?date={TRADE_DATE}")
+        item = resp.json()[0]
+        assert item["streak"] == -2
 
 
 class TestGetIndustryStocks:
-    def test_returns_stocks_for_sub_industry(self, api):
+    def test_returns_stocks_for_industry(self, api):
         client, db = api
-        seed_stock(db, "2330", "台積電", "半導體業", sub_industry="晶圓代工", chain="中游")
-        seed_stock(db, "5347", "世界先進", "半導體業", sub_industry="晶圓代工", chain="中游")
+        seed_stock(db, "2330", "台積電", "半導體", sub_industry="晶圓代工", chain="中游")
+        seed_stock(db, "5347", "世界先進", "半導體", sub_industry="晶圓代工", chain="中游")
         seed_price(db, "2330", 1000.0)
         seed_price(db, "5347", 200.0)
         seed_flow(db, "2330", "foreign", 500, 500000)
@@ -132,11 +171,14 @@ class TestGetIndustryStocks:
         seed_flow(db, "5347", "dealer",    0, 0)
         db.commit()
 
-        resp = client.get(f"/api/industries/晶圓代工/stocks?date={TRADE_DATE}")
+        resp = client.get(f"/api/industries/半導體/stocks?date={TRADE_DATE}")
         assert resp.status_code == 200
         data = resp.json()
         assert len(data) == 2
         assert data[0]["stock_id"] == "2330"
+        # Verify price change fields are present
+        assert "price_change" in data[0]
+        assert "price_change_pct" in data[0]
 
     def test_404_for_unknown_industry(self, api):
         client, db = api
@@ -155,3 +197,46 @@ class TestGetIndustryStocks:
         resp = client.get(f"/api/industries/IC設計業/stocks?date={TRADE_DATE}")
         assert resp.status_code == 200
         assert resp.json()[0]["stock_id"] == "2454"
+
+
+class TestGetSubIndustrySummary:
+    def test_returns_sub_industry_summary(self, api):
+        client, db = api
+        seed_stock(db, "2330", "台積電", "半導體", sub_industry="晶圓製造", chain="上游")
+        seed_stock(db, "3711", "日月光投控", "半導體", sub_industry="IC封裝測試", chain="下游")
+        seed_flow(db, "2330", "foreign", 500, 500000)
+        seed_flow(db, "2330", "trust", 100, 100000)
+        seed_flow(db, "2330", "dealer", 50, 50000)
+        seed_flow(db, "3711", "foreign", 200, 30000)
+        seed_flow(db, "3711", "trust", 0, 0)
+        seed_flow(db, "3711", "dealer", 0, 0)
+        db.commit()
+
+        resp = client.get(f"/api/industries/半導體/summary?date={TRADE_DATE}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 2
+        subs = {d["sub_industry"] for d in data}
+        assert "晶圓製造" in subs
+        assert "IC封裝測試" in subs
+
+    def test_summary_includes_chain_and_streak(self, api):
+        client, db = api
+        seed_stock(db, "2330", "台積電", "半導體", sub_industry="晶圓製造", chain="上游")
+        seed_flow(db, "2330", "foreign", 500, 500000)
+        db.commit()
+
+        resp = client.get(f"/api/industries/半導體/summary?date={TRADE_DATE}")
+        item = resp.json()[0]
+        assert "chain" in item
+        assert item["chain"] == "上游"
+        assert "streak" in item
+        assert "total_net_amount" in item
+        assert "foreign_net_amount" in item
+
+    def test_summary_404_for_unknown_industry(self, api):
+        client, db = api
+        resp = client.get(f"/api/industries/不存在的產業/summary?date={TRADE_DATE}")
+        assert resp.status_code == 404
+
+

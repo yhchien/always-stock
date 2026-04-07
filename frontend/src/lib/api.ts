@@ -8,6 +8,7 @@ export interface IndustryFlowItem {
   dealer_net_amount: number
   total_buy_amount: number
   total_sell_amount: number
+  streak: number // positive = consecutive buy days, negative = sell days
 }
 
 export interface StockFlowItem {
@@ -17,12 +18,25 @@ export interface StockFlowItem {
   chain: string | null
   sub_industry: string | null
   close_price: number | null
+  prev_close_price: number | null
+  price_change: number | null
+  price_change_pct: number | null
   foreign_net_shares: number
   trust_net_shares: number
   dealer_net_shares: number
   foreign_net_amount: number
   trust_net_amount: number
   dealer_net_amount: number
+}
+
+export interface SubIndustrySummaryItem {
+  sub_industry: string
+  chain: string | null
+  total_net_amount: number
+  foreign_net_amount: number
+  trust_net_amount: number
+  dealer_net_amount: number
+  streak: number
 }
 
 export interface StockHistoryItem {
@@ -58,6 +72,14 @@ export async function fetchIndustryStocks(industryName: string, date: string): P
   return res.json()
 }
 
+export async function fetchSubIndustrySummary(industryName: string, date: string): Promise<SubIndustrySummaryItem[]> {
+  const res = await fetch(
+    `${API_BASE}/api/industries/${encodeURIComponent(industryName)}/summary?date=${date}`
+  )
+  if (!res.ok) throw new Error(`Failed to fetch summary: ${res.status}`)
+  return res.json()
+}
+
 export async function fetchStockHistory(
   stockId: string,
   days = 60,
@@ -80,4 +102,10 @@ export function fmtAmount(val: number): string {
 export function fmtShares(val: number): string {
   const wan = val / 1e4
   return (wan >= 0 ? "+" : "") + wan.toFixed(0) + "萬"
+}
+
+/** Format streak: +5 → "連買5天", -3 → "連賣3天", 0 → "-" */
+export function fmtStreak(streak: number): string {
+  if (streak === 0) return "-"
+  return streak > 0 ? `連買${streak}天` : `連賣${Math.abs(streak)}天`
 }

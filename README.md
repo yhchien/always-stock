@@ -34,10 +34,15 @@ tw-stock-dashboard/
 │   └── requirements.txt
 ├── frontend/                    # Next.js 前端
 │   ├── src/
-│   │   ├── app/                 # Next.js App Router（layout、page）
+│   │   ├── app/                 # Next.js App Router
+│   │   │   ├── page.tsx                        # 首頁（L0 入口）
+│   │   │   ├── industries/[industryName]/page.tsx  # L1 個股列表頁
+│   │   │   └── stocks/[stockId]/page.tsx           # L2 個股走勢頁
 │   │   ├── components/
 │   │   │   ├── ui/              # shadcn/ui 元件
-│   │   │   └── IndustryDashboard.tsx  # L0 產業排行榜
+│   │   │   ├── IndustryDashboard.tsx  # L0 產業排行榜
+│   │   │   ├── StockList.tsx          # L1 個股列表（可排序）
+│   │   │   └── StockChart.tsx         # L2 雙軸走勢圖（ECharts）
 │   │   ├── lib/
 │   │   │   └── api.ts           # API fetch helpers + 格式化工具
 │   │   └── __tests__/           # Jest 單元測試
@@ -57,7 +62,7 @@ tw-stock-dashboard/
 | `stocks_master` | 股票基本資料，含 industry / chain / sub_industry |
 | `daily_price` | 每日收盤價、成交量、成交金額 |
 | `inst_stock_flow` | 個股三大法人買賣超（每股 3 筆：foreign / trust / dealer） |
-| `industry_daily_flow` | 產業別每日法人資金流向（由 inst_stock_flow 彙整） |
+| `industry_daily_flow` | 產業別每日法人資金流向（以 Fugle 大類彙整） |
 
 ### 技術堆疊
 
@@ -109,9 +114,10 @@ python3 -m uvicorn app.main:app --reload
 | Method | Path | 說明 |
 |--------|------|------|
 | GET | `/health` | 健康檢查 |
-| GET | `/api/industries?date=YYYY-MM-DD` | L0：產業排行榜（依三大法人合計淨買超降冪排序） |
-| GET | `/api/industries/{industry_name}/stocks?date=YYYY-MM-DD` | L1：指定產業個股明細 |
-| GET | `/api/stocks/{stock_id}/history?days=60&end_date=YYYY-MM-DD` | L2：個股收盤價 + 法人累積買超（過去 N 天） |
+| GET | `/api/industries?date=YYYY-MM-DD` | L0：產業排行榜（以 Fugle 大類彙總，含連續買賣超天數） |
+| GET | `/api/industries/{industry_name}/summary?date=YYYY-MM-DD` | L1 彙總：子產業層級法人金額 + 連續買賣超天數 |
+| GET | `/api/industries/{industry_name}/stocks?date=YYYY-MM-DD` | L1：指定產業個股明細（含漲跌幅、chain 分組） |
+| GET | `/api/stocks/{stock_id}/history?days=90&end_date=YYYY-MM-DD` | L2：個股收盤價 + 法人累積買超（預設 90 天） |
 
 ### 5. 啟動前端
 
@@ -143,8 +149,13 @@ npm test
 - [x] 單元測試（70+ tests）
 - [x] FastAPI routers（L0 產業排行榜、L1 個股明細、L2 個股走勢）
 - [x] 程式碼與 comment 統一使用英文
-- [x] Next.js L0 產業排行榜頁面（日期選擇 + 外資/投信/自營商/合計 tab）
-- [x] 前端單元測試（21 tests：api helpers + IndustryDashboard component）
+- [x] Next.js L0 產業排行榜頁面（以 Fugle 大類彙總 + 外資/投信/自營商/合計 tab）
+- [x] Next.js L1 個股卡片頁面（依 chain 上中下游分組，卡片顯示股價漲跌 + 三大法人買賣）
+- [x] Next.js L2 個股走勢圖（ECharts 雙軸：收盤價 + 三大法人累積淨買超，90 天）
+- [x] 三層 drill-down 日期正確傳遞（L0 → L1 → L2）
+- [x] L0 欄位排序（外資/投信/自營商/合計）+ 趨勢欄（連續買賣超天數）
+- [x] L1 子產業彙總表格（排序 + 趨勢 + 子產業 filter）
+- [x] 前端單元測試（51 tests：api helpers + IndustryDashboard + StockList + StockChart）
 
 ---
 
@@ -155,7 +166,7 @@ npm test
 | M1 | ETL 完整跑通，資料入庫 | ✅ 完成 |
 | M2 | FastAPI 回傳產業/個股 JSON | ✅ 完成 |
 | M3 | Next.js L0 產業排行榜頁面 | ✅ 完成 |
-| M4 | L1 個股列表 + L2 走勢圖 | 待開始 |
+| M4 | L1 個股列表 + L2 走勢圖 | ✅ 完成 |
 
 ---
 
@@ -165,8 +176,8 @@ npm test
 
 - [x] **M2** FastAPI routers（產業排行榜 API、個股法人明細 API、個股走勢 API）
 - [x] **M3** 前端 L0：產業排行榜（日期選擇 + foreign/trust/dealer tab）
-- [ ] **M4** 前端 L1：sub_industry 個股列表（可依法人欄排序）
-- [ ] **M4** 前端 L2：個股雙軸走勢圖（收盤價 + 三大法人累積淨買超，60 天）
+- [x] **M4** 前端 L1：sub_industry 個股列表（可依法人欄排序）
+- [x] **M4** 前端 L2：個股雙軸走勢圖（收盤價 + 三大法人累積淨買超，60 天）
 
 ### 資料更新
 

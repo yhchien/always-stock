@@ -10,9 +10,10 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { fetchIndustries, fmtAmount, type IndustryFlowItem } from "@/lib/api"
+import { fetchIndustries, fmtAmount, fmtStreak, type IndustryFlowItem } from "@/lib/api"
 
 type Tab = "total" | "foreign" | "trust" | "dealer"
+type SortKey = "total" | "foreign" | "trust" | "dealer" | "streak"
 
 const TAB_LABELS: Record<Tab, string> = {
   total: "合計",
@@ -30,23 +31,42 @@ function getAmount(row: IndustryFlowItem, tab: Tab): number {
   }
 }
 
+function getSortValue(row: IndustryFlowItem, key: SortKey): number {
+  switch (key) {
+    case "foreign": return row.foreign_net_amount
+    case "trust":   return row.trust_net_amount
+    case "dealer":  return row.dealer_net_amount
+    case "streak":  return row.streak
+    default:        return row.total_net_amount
+  }
+}
+
 function AmountCell({ value }: { value: number }) {
   const formatted = fmtAmount(value)
   const color = value > 0 ? "text-red-400" : value < 0 ? "text-green-400" : "text-zinc-400"
   return <span className={`font-mono text-sm ${color}`}>{formatted}</span>
 }
 
+function StreakCell({ value }: { value: number }) {
+  const text = fmtStreak(value)
+  const color = value > 0 ? "text-red-400" : value < 0 ? "text-green-400" : "text-zinc-500"
+  return <span className={`text-xs font-medium ${color}`}>{text}</span>
+}
+
 interface Props {
   defaultDate: string
+  onDateChange?: (date: string) => void
   onSelectIndustry?: (name: string) => void
 }
 
-export default function IndustryDashboard({ defaultDate, onSelectIndustry }: Props) {
+export default function IndustryDashboard({ defaultDate, onDateChange, onSelectIndustry }: Props) {
   const [date, setDate] = useState(defaultDate)
   const [tab, setTab] = useState<Tab>("total")
   const [rows, setRows] = useState<IndustryFlowItem[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [sortKey, setSortKey] = useState<SortKey>("total")
+  const [sortAsc, setSortAsc] = useState(false)
 
   const load = useCallback(async (d: string) => {
     setLoading(true)
@@ -66,8 +86,30 @@ export default function IndustryDashboard({ defaultDate, onSelectIndustry }: Pro
     load(date)
   }, [date, load])
 
-  // Sort by selected tab
-  const sorted = [...rows].sort((a, b) => getAmount(b, tab) - getAmount(a, tab))
+  // Sync tab → sortKey when tab changes
+  const handleTabChange = (t: Tab) => {
+    setTab(t)
+    setSortKey(t)
+    setSortAsc(false)
+  }
+
+  const handleSort = (key: SortKey) => {
+    if (key === sortKey) {
+      setSortAsc(!sortAsc)
+    } else {
+      setSortKey(key)
+      setSortAsc(false)
+    }
+  }
+
+  const sorted = [...rows].sort((a, b) => {
+    const va = getSortValue(a, sortKey)
+    const vb = getSortValue(b, sortKey)
+    return sortAsc ? va - vb : vb - va
+  })
+
+  const sortIndicator = (key: SortKey) =>
+    sortKey === key ? (sortAsc ? " \u25B2" : " \u25BC") : ""
 
   return (
     <div className="flex flex-col gap-4">
@@ -77,13 +119,13 @@ export default function IndustryDashboard({ defaultDate, onSelectIndustry }: Pro
         <input
           type="date"
           value={date}
-          onChange={(e) => setDate(e.target.value)}
+          onChange={(e) => { setDate(e.target.value); onDateChange?.(e.target.value) }}
           className="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-100 focus:outline-none focus:ring-1 focus:ring-zinc-500"
         />
       </div>
 
       {/* Tabs */}
-      <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)}>
+      <Tabs value={tab} onValueChange={(v) => handleTabChange(v as Tab)}>
         <TabsList className="bg-zinc-900 border border-zinc-800">
           {(Object.keys(TAB_LABELS) as Tab[]).map((t) => (
             <TabsTrigger
@@ -109,10 +151,36 @@ export default function IndustryDashboard({ defaultDate, onSelectIndustry }: Pro
               <TableRow className="border-zinc-800 hover:bg-transparent">
                 <TableHead className="text-zinc-400 w-8">#</TableHead>
                 <TableHead className="text-zinc-400">產業</TableHead>
-                <TableHead className="text-zinc-400 text-right">外資</TableHead>
-                <TableHead className="text-zinc-400 text-right">投信</TableHead>
-                <TableHead className="text-zinc-400 text-right">自營商</TableHead>
-                <TableHead className="text-zinc-400 text-right">合計</TableHead>
+                <TableHead
+                  className="text-zinc-400 text-right cursor-pointer select-none hover:text-zinc-200"
+                  onClick={() => handleSort("foreign")}
+                >
+                  外資{sortIndicator("foreign")}
+                </TableHead>
+                <TableHead
+                  className="text-zinc-400 text-right cursor-pointer select-none hover:text-zinc-200"
+                  onClick={() => handleSort("trust")}
+                >
+                  投信{sortIndicator("trust")}
+                </TableHead>
+                <TableHead
+                  className="text-zinc-400 text-right cursor-pointer select-none hover:text-zinc-200"
+                  onClick={() => handleSort("dealer")}
+                >
+                  自營商{sortIndicator("dealer")}
+                </TableHead>
+                <TableHead
+                  className="text-zinc-400 text-right cursor-pointer select-none hover:text-zinc-200"
+                  onClick={() => handleSort("total")}
+                >
+                  合計{sortIndicator("total")}
+                </TableHead>
+                <TableHead
+                  className="text-zinc-400 text-center cursor-pointer select-none hover:text-zinc-200"
+                  onClick={() => handleSort("streak")}
+                >
+                  趨勢{sortIndicator("streak")}
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -128,6 +196,7 @@ export default function IndustryDashboard({ defaultDate, onSelectIndustry }: Pro
                   <TableCell className="text-right"><AmountCell value={row.trust_net_amount} /></TableCell>
                   <TableCell className="text-right"><AmountCell value={row.dealer_net_amount} /></TableCell>
                   <TableCell className="text-right"><AmountCell value={row.total_net_amount} /></TableCell>
+                  <TableCell className="text-center"><StreakCell value={row.streak} /></TableCell>
                 </TableRow>
               ))}
             </TableBody>

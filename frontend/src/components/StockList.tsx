@@ -1,0 +1,346 @@
+"use client"
+
+import { useEffect, useState, useCallback, useMemo } from "react"
+import { useRouter } from "next/navigation"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
+import { Badge } from "@/components/ui/badge"
+import {
+  fetchIndustryStocks,
+  fetchSubIndustrySummary,
+  fmtAmount,
+  fmtShares,
+  fmtStreak,
+  type StockFlowItem,
+  type SubIndustrySummaryItem,
+} from "@/lib/api"
+
+// ── Chain ordering ────────────────────────────────────────────────────────────
+
+const CHAIN_ORDER: Record<string, number> = { "上游": 0, "中游": 1, "下游": 2 }
+
+function chainSortKey(chain: string | null): number {
+  if (!chain) return 99
+  return CHAIN_ORDER[chain] ?? 50
+}
+
+// ── Sub-industry summary table ────────────────────────────────────────────────
+
+type SummarySortKey = "total" | "foreign" | "trust" | "dealer" | "streak"
+
+function SummaryTable({
+  rows,
+  onFilter,
+  activeFilter,
+}: {
+  rows: SubIndustrySummaryItem[]
+  onFilter: (sub: string | null) => void
+  activeFilter: string | null
+}) {
+  const [sortKey, setSortKey] = useState<SummarySortKey>("total")
+  const [sortAsc, setSortAsc] = useState(false)
+
+  const handleSort = (key: SummarySortKey) => {
+    if (key === sortKey) setSortAsc(!sortAsc)
+    else { setSortKey(key); setSortAsc(false) }
+  }
+
+  const sorted = useMemo(() => {
+    return [...rows].sort((a, b) => {
+      // Primary: chain order, secondary: sortKey
+      const ca = chainSortKey(a.chain)
+      const cb = chainSortKey(b.chain)
+      if (ca !== cb) return ca - cb
+
+      let va: number, vb: number
+      switch (sortKey) {
+        case "foreign": va = a.foreign_net_amount; vb = b.foreign_net_amount; break
+        case "trust":   va = a.trust_net_amount; vb = b.trust_net_amount; break
+        case "dealer":  va = a.dealer_net_amount; vb = b.dealer_net_amount; break
+        case "streak":  va = a.streak; vb = b.streak; break
+        default:        va = a.total_net_amount; vb = b.total_net_amount; break
+      }
+      return sortAsc ? va - vb : vb - va
+    })
+  }, [rows, sortKey, sortAsc])
+
+  const indicator = (key: SummarySortKey) =>
+    sortKey === key ? (sortAsc ? " \u25B2" : " \u25BC") : ""
+
+  function AmountCell({ value }: { value: number }) {
+    const formatted = fmtAmount(value)
+    const color = value > 0 ? "text-red-400" : value < 0 ? "text-green-400" : "text-zinc-400"
+    return <span className={`font-mono text-sm ${color}`}>{formatted}</span>
+  }
+
+  return (
+    <div className="rounded-lg border border-zinc-800 overflow-hidden">
+      <Table>
+        <TableHeader>
+          <TableRow className="border-zinc-800 hover:bg-transparent">
+            <TableHead className="text-zinc-400">鏈</TableHead>
+            <TableHead className="text-zinc-400">子產業</TableHead>
+            <TableHead className="text-zinc-400 text-right cursor-pointer select-none hover:text-zinc-200" onClick={() => handleSort("foreign")}>
+              外資{indicator("foreign")}
+            </TableHead>
+            <TableHead className="text-zinc-400 text-right cursor-pointer select-none hover:text-zinc-200" onClick={() => handleSort("trust")}>
+              投信{indicator("trust")}
+            </TableHead>
+            <TableHead className="text-zinc-400 text-right cursor-pointer select-none hover:text-zinc-200" onClick={() => handleSort("dealer")}>
+              自營商{indicator("dealer")}
+            </TableHead>
+            <TableHead className="text-zinc-400 text-right cursor-pointer select-none hover:text-zinc-200" onClick={() => handleSort("total")}>
+              合計{indicator("total")}
+            </TableHead>
+            <TableHead className="text-zinc-400 text-center cursor-pointer select-none hover:text-zinc-200" onClick={() => handleSort("streak")}>
+              趨勢{indicator("streak")}
+            </TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {sorted.map((row) => {
+            const isActive = activeFilter === row.sub_industry
+            return (
+              <TableRow
+                key={row.sub_industry}
+                className={`border-zinc-800 cursor-pointer ${isActive ? "bg-zinc-800" : "hover:bg-zinc-900"}`}
+                onClick={() => onFilter(isActive ? null : row.sub_industry)}
+              >
+                <TableCell>
+                  {row.chain && (
+                    <Badge variant="outline" className="text-xs text-zinc-400 border-zinc-700">
+                      {row.chain}
+                    </Badge>
+                  )}
+                </TableCell>
+                <TableCell className="font-medium text-sm">{row.sub_industry}</TableCell>
+                <TableCell className="text-right"><AmountCell value={row.foreign_net_amount} /></TableCell>
+                <TableCell className="text-right"><AmountCell value={row.trust_net_amount} /></TableCell>
+                <TableCell className="text-right"><AmountCell value={row.dealer_net_amount} /></TableCell>
+                <TableCell className="text-right"><AmountCell value={row.total_net_amount} /></TableCell>
+                <TableCell className="text-center">
+                  <span className={`text-xs font-medium ${row.streak > 0 ? "text-red-400" : row.streak < 0 ? "text-green-400" : "text-zinc-500"}`}>
+                    {fmtStreak(row.streak)}
+                  </span>
+                </TableCell>
+              </TableRow>
+            )
+          })}
+        </TableBody>
+      </Table>
+    </div>
+  )
+}
+
+// ── Card helpers ──────────────────────────────────────────────────────────────
+
+function PriceChange({ change, pct }: { change: number | null; pct: number | null }) {
+  if (change == null || pct == null) return <span className="text-zinc-500 text-xs">-</span>
+  const color = change > 0 ? "text-red-400" : change < 0 ? "text-green-400" : "text-zinc-400"
+  const arrow = change > 0 ? "\u25B2" : change < 0 ? "\u25BC" : ""
+  return (
+    <span className={`font-mono text-sm ${color}`}>
+      {arrow} {Math.abs(change).toFixed(2)} ({pct >= 0 ? "+" : ""}{pct.toFixed(2)}%)
+    </span>
+  )
+}
+
+function FlowBadge({ label, value }: { label: string; value: number }) {
+  const color = value > 0 ? "text-red-400" : value < 0 ? "text-green-400" : "text-zinc-500"
+  return (
+    <div className="flex items-center justify-between text-xs">
+      <span className="text-zinc-500">{label}</span>
+      <span className={`font-mono ${color}`}>{fmtShares(value)}</span>
+    </div>
+  )
+}
+
+// ── Main component ───────────────────────────────────────────────────────────
+
+interface Props {
+  industryName: string
+  defaultDate: string
+}
+
+export default function StockList({ industryName, defaultDate }: Props) {
+  const router = useRouter()
+  const [date, setDate] = useState(defaultDate)
+  const [rows, setRows] = useState<StockFlowItem[]>([])
+  const [summary, setSummary] = useState<SubIndustrySummaryItem[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [subFilter, setSubFilter] = useState<string | null>(null)
+
+  const load = useCallback(async (d: string) => {
+    setLoading(true)
+    setError(null)
+    try {
+      const [stockData, summaryData] = await Promise.all([
+        fetchIndustryStocks(industryName, d),
+        fetchSubIndustrySummary(industryName, d),
+      ])
+      setRows(stockData)
+      setSummary(summaryData)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "載入失敗")
+      setRows([])
+      setSummary([])
+    } finally {
+      setLoading(false)
+    }
+  }, [industryName])
+
+  useEffect(() => {
+    load(date)
+  }, [date, load])
+
+  // Filter stocks by sub_industry
+  const filteredRows = useMemo(() => {
+    if (!subFilter) return rows
+    return rows.filter((r) => (r.sub_industry || r.industry_name) === subFilter)
+  }, [rows, subFilter])
+
+  // Group filtered stocks by chain (with proper ordering)
+  const grouped = useMemo(() => {
+    const map = new Map<string, StockFlowItem[]>()
+    for (const row of filteredRows) {
+      const key = row.chain ?? "其他"
+      if (!map.has(key)) map.set(key, [])
+      map.get(key)!.push(row)
+    }
+    // Sort each group by total net amount desc
+    for (const items of map.values()) {
+      items.sort(
+        (a, b) =>
+          (b.foreign_net_amount + b.trust_net_amount + b.dealer_net_amount) -
+          (a.foreign_net_amount + a.trust_net_amount + a.dealer_net_amount)
+      )
+    }
+    // Sort groups by chain order
+    const sorted = new Map(
+      [...map.entries()].sort((a, b) => chainSortKey(a[0]) - chainSortKey(b[0]))
+    )
+    return sorted
+  }, [filteredRows])
+
+  return (
+    <div className="flex flex-col gap-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => router.back()}
+            className="text-zinc-400 hover:text-zinc-100 text-sm"
+          >
+            &larr; 返回
+          </button>
+          <h1 className="text-xl font-semibold tracking-tight">{industryName}</h1>
+          <span className="text-sm text-zinc-500">{rows.length} 檔</span>
+        </div>
+        <input
+          type="date"
+          value={date}
+          onChange={(e) => setDate(e.target.value)}
+          className="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-100 focus:outline-none focus:ring-1 focus:ring-zinc-500"
+        />
+      </div>
+
+      {/* Status */}
+      {loading && <p className="text-sm text-zinc-500">載入中...</p>}
+      {error && <p className="text-sm text-red-400">{error}</p>}
+
+      {/* Sub-industry summary table */}
+      {!loading && !error && summary.length > 0 && (
+        <div>
+          <div className="flex items-center gap-2 mb-2">
+            <h2 className="text-sm font-medium text-zinc-300">子產業彙總</h2>
+            {subFilter && (
+              <button
+                onClick={() => setSubFilter(null)}
+                className="text-xs text-zinc-500 hover:text-zinc-300 border border-zinc-700 rounded px-2 py-0.5"
+              >
+                清除篩選: {subFilter} &times;
+              </button>
+            )}
+          </div>
+          <SummaryTable rows={summary} onFilter={setSubFilter} activeFilter={subFilter} />
+        </div>
+      )}
+
+      {/* Cards grouped by chain */}
+      {!loading && !error && grouped.size > 0 && (
+        <div className="flex flex-col gap-8">
+          {[...grouped.entries()].map(([chain, items]) => (
+            <section key={chain}>
+              <div className="flex items-center gap-2 mb-3">
+                <Badge variant="outline" className="text-sm text-zinc-300 border-zinc-600 px-3 py-0.5">
+                  {chain}
+                </Badge>
+                <span className="text-xs text-zinc-600">{items.length} 檔</span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                {items.map((stock) => (
+                  <div
+                    key={stock.stock_id}
+                    onClick={() => router.push(`/stocks/${stock.stock_id}?date=${date}`)}
+                    className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4 cursor-pointer hover:border-zinc-600 hover:bg-zinc-900 transition-colors"
+                  >
+                    {/* Stock header */}
+                    <div className="flex items-baseline justify-between mb-2">
+                      <div className="flex items-baseline gap-2">
+                        <span className="font-mono text-sm text-zinc-400">{stock.stock_id}</span>
+                        <span className="font-medium text-sm">{stock.stock_name}</span>
+                      </div>
+                      {stock.sub_industry && (
+                        <span className="text-xs text-zinc-600 truncate ml-2">{stock.sub_industry}</span>
+                      )}
+                    </div>
+
+                    {/* Price + change */}
+                    <div className="flex items-baseline gap-3 mb-3">
+                      <span className="font-mono text-lg text-zinc-100">
+                        {stock.close_price != null ? stock.close_price.toFixed(2) : "-"}
+                      </span>
+                      <PriceChange change={stock.price_change} pct={stock.price_change_pct} />
+                    </div>
+
+                    {/* Institutional flows */}
+                    <div className="flex flex-col gap-1 border-t border-zinc-800 pt-2">
+                      <FlowBadge label="外資" value={stock.foreign_net_shares} />
+                      <FlowBadge label="投信" value={stock.trust_net_shares} />
+                      <FlowBadge label="自營" value={stock.dealer_net_shares} />
+                    </div>
+
+                    {/* Total net amount */}
+                    <div className="flex items-center justify-between mt-2 pt-2 border-t border-zinc-800">
+                      <span className="text-xs text-zinc-500">法人合計</span>
+                      <span className={`font-mono text-xs ${
+                        stock.foreign_net_amount + stock.trust_net_amount + stock.dealer_net_amount > 0
+                          ? "text-red-400"
+                          : stock.foreign_net_amount + stock.trust_net_amount + stock.dealer_net_amount < 0
+                          ? "text-green-400"
+                          : "text-zinc-400"
+                      }`}>
+                        {fmtAmount(stock.foreign_net_amount + stock.trust_net_amount + stock.dealer_net_amount)}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          ))}
+        </div>
+      )}
+
+      {!loading && !error && rows.length === 0 && (
+        <p className="text-sm text-zinc-500">此日期無資料，請選擇交易日。</p>
+      )}
+    </div>
+  )
+}

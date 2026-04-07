@@ -1,4 +1,4 @@
-import { fmtAmount, fmtShares, fetchIndustries, fetchIndustryStocks, fetchStockHistory } from "@/lib/api"
+import { fmtAmount, fmtShares, fmtStreak, fetchIndustries, fetchIndustryStocks, fetchStockHistory, fetchSubIndustrySummary } from "@/lib/api"
 
 // ── fmtAmount ────────────────────────────────────────────────────────────────
 
@@ -33,6 +33,60 @@ describe("fmtShares", () => {
 
   it("rounds to 0 decimal places", () => {
     expect(fmtShares(12_345)).toBe("+1萬")
+  })
+})
+
+// ── fmtStreak ───────────────────────────────────────────────────────────────
+
+describe("fmtStreak", () => {
+  it("formats positive streak as consecutive buy days", () => {
+    expect(fmtStreak(5)).toBe("連買5天")
+  })
+
+  it("formats negative streak as consecutive sell days", () => {
+    expect(fmtStreak(-3)).toBe("連賣3天")
+  })
+
+  it("formats zero streak as dash", () => {
+    expect(fmtStreak(0)).toBe("-")
+  })
+})
+
+// ── fetchSubIndustrySummary ─────────────────────────────────────────────────
+
+describe("fetchSubIndustrySummary", () => {
+  afterEach(() => jest.restoreAllMocks())
+
+  it("returns parsed JSON on success", async () => {
+    const mockData = [{ sub_industry: "晶圓製造", total_net_amount: 1e9, streak: 3 }]
+    jest.spyOn(global, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => mockData,
+    } as Response)
+
+    const result = await fetchSubIndustrySummary("半導體", "2026-04-01")
+    expect(result).toEqual(mockData)
+    expect(fetch).toHaveBeenCalledWith(expect.stringContaining("/summary"))
+    expect(fetch).toHaveBeenCalledWith(expect.stringContaining("date=2026-04-01"))
+  })
+
+  it("encodes industry name in URL", async () => {
+    jest.spyOn(global, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => [],
+    } as Response)
+
+    await fetchSubIndustrySummary("IC 設計", "2026-04-01")
+    expect(fetch).toHaveBeenCalledWith(expect.stringContaining("IC%20%E8%A8%AD%E8%A8%88"))
+  })
+
+  it("throws on non-ok response", async () => {
+    jest.spyOn(global, "fetch").mockResolvedValue({
+      ok: false,
+      status: 404,
+    } as Response)
+
+    await expect(fetchSubIndustrySummary("半導體", "2026-04-01")).rejects.toThrow("404")
   })
 })
 
