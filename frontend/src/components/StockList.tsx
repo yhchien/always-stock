@@ -20,6 +20,7 @@ import {
   type StockFlowItem,
   type SubIndustrySummaryItem,
 } from "@/lib/api"
+import { useRealtimeQuotes } from "@/lib/useRealtimeQuotes"
 
 // ── Chain ordering ────────────────────────────────────────────────────────────
 
@@ -200,6 +201,10 @@ export default function StockList({ industryName, defaultDate }: Props) {
     load(date)
   }, [date, load])
 
+  // Real-time quotes (poll every 15s)
+  const stockIds = useMemo(() => rows.map((r) => r.stock_id), [rows])
+  const realtimeQuotes = useRealtimeQuotes(stockIds)
+
   // Filter stocks by sub_industry
   const filteredRows = useMemo(() => {
     if (!subFilter) return rows
@@ -302,13 +307,27 @@ export default function StockList({ industryName, defaultDate }: Props) {
                       )}
                     </div>
 
-                    {/* Price + change */}
-                    <div className="flex items-baseline gap-3 mb-3">
-                      <span className="font-mono text-lg text-zinc-100">
-                        {stock.close_price != null ? stock.close_price.toFixed(2) : "-"}
-                      </span>
-                      <PriceChange change={stock.price_change} pct={stock.price_change_pct} />
-                    </div>
+                    {/* Price + change (real-time if available) */}
+                    {(() => {
+                      const rt = realtimeQuotes.get(stock.stock_id)
+                      const hasRt = rt && rt.price != null
+                      const displayPrice = hasRt ? rt.price : stock.close_price
+                      const displayChange = hasRt ? rt.change : stock.price_change
+                      const displayPct = hasRt ? rt.change_pct : stock.price_change_pct
+                      return (
+                        <div className="flex items-baseline gap-3 mb-3">
+                          <span className="font-mono text-lg text-zinc-100">
+                            {displayPrice != null ? displayPrice.toFixed(2) : "-"}
+                          </span>
+                          <PriceChange change={displayChange ?? null} pct={displayPct ?? null} />
+                          {hasRt && (
+                            <span className="text-[10px] text-yellow-500 font-medium">
+                              即時
+                            </span>
+                          )}
+                        </div>
+                      )
+                    })()}
 
                     {/* Institutional flows */}
                     <div className="flex flex-col gap-1 border-t border-zinc-700 pt-2">

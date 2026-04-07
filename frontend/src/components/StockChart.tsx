@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, useMemo } from "react"
 import { useRouter } from "next/navigation"
 import ReactECharts from "echarts-for-react"
 import { fetchStockHistory, fmtShares, type StockHistoryResponse } from "@/lib/api"
+import { useRealtimeQuotes } from "@/lib/useRealtimeQuotes"
 
 interface Props {
   stockId: string
@@ -16,6 +17,7 @@ export default function StockChart({ stockId, defaultDate, days = 90 }: Props) {
   const [data, setData] = useState<StockHistoryResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const realtimeQuotes = useRealtimeQuotes([stockId])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -145,23 +147,41 @@ export default function StockChart({ stockId, defaultDate, days = 90 }: Props) {
   return (
     <div className="flex flex-col gap-4">
       {/* Header */}
-      <div className="flex items-center gap-3">
-        <button
-          onClick={() => router.back()}
-          className="text-zinc-400 hover:text-zinc-100 text-sm"
-        >
-          &larr; 返回
-        </button>
-        {data && (
-          <div className="flex items-baseline gap-2">
-            <h1 className="text-xl font-semibold tracking-tight">
-              {data.stock_id} {data.stock_name}
-            </h1>
-            <span className="text-sm text-zinc-500">
-              {data.sub_industry ?? data.industry_name}
-            </span>
-          </div>
-        )}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => router.back()}
+            className="text-zinc-400 hover:text-zinc-100 text-sm"
+          >
+            &larr; 返回
+          </button>
+          {data && (
+            <div className="flex items-baseline gap-2">
+              <h1 className="text-xl font-semibold tracking-tight">
+                {data.stock_id} {data.stock_name}
+              </h1>
+              <span className="text-sm text-zinc-500">
+                {data.sub_industry ?? data.industry_name}
+              </span>
+            </div>
+          )}
+        </div>
+        {/* Real-time quote */}
+        {(() => {
+          const rt = realtimeQuotes.get(stockId)
+          if (!rt || rt.price == null) return null
+          const color = (rt.change ?? 0) > 0 ? "text-red-400" : (rt.change ?? 0) < 0 ? "text-green-400" : "text-zinc-300"
+          const arrow = (rt.change ?? 0) > 0 ? "\u25B2" : (rt.change ?? 0) < 0 ? "\u25BC" : ""
+          return (
+            <div className="flex items-baseline gap-3">
+              <span className="font-mono text-2xl text-zinc-100">{rt.price.toFixed(2)}</span>
+              <span className={`font-mono text-sm ${color}`}>
+                {arrow} {Math.abs(rt.change ?? 0).toFixed(2)} ({rt.change_pct != null ? (rt.change_pct >= 0 ? "+" : "") + rt.change_pct.toFixed(2) : "0.00"}%)
+              </span>
+              <span className="text-[10px] text-yellow-500 font-medium">即時 {rt.trade_time ?? ""}</span>
+            </div>
+          )
+        })()}
       </div>
 
       {/* Status */}

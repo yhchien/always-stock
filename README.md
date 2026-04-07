@@ -31,6 +31,10 @@ tw-stock-dashboard/
 │   ├── logging_config.py        # 統一 logging 設定
 │   ├── init_db.py               # 初始化資料表
 │   ├── run_daily_etl.py         # 每日 ETL 主程式（CLI）
+│   ├── run_backfill.py          # 歷史 backfill（可斷點續傳）
+│   ├── scripts/
+│   │   ├── daily_update.sh      # 每日自動更新 shell script
+│   │   └── com.tw-stock-dashboard.daily-etl.plist  # macOS launchd 排程
 │   └── requirements.txt
 ├── frontend/                    # Next.js 前端
 │   ├── src/
@@ -125,6 +129,20 @@ python run_backfill.py --reset
 - TWSE API rate limiting 防護（預設每筆間隔 3.5 秒）
 - 支援 SIGINT/SIGTERM 優雅終止
 
+### 3b. 設定每晚自動更新（macOS launchd）
+
+```bash
+# 安裝 launchd plist（週一至週五 20:00 自動執行）
+cp backend/scripts/com.tw-stock-dashboard.daily-etl.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.tw-stock-dashboard.daily-etl.plist
+
+# 手動測試
+bash backend/scripts/daily_update.sh
+
+# 停用
+launchctl unload ~/Library/LaunchAgents/com.tw-stock-dashboard.daily-etl.plist
+```
+
 ### 4. 啟動 API
 
 ```bash
@@ -141,6 +159,7 @@ python3 -m uvicorn app.main:app --reload
 | GET | `/api/industries/{industry_name}/summary?date=YYYY-MM-DD` | L1 彙總：子產業層級法人金額 + 連續買賣超天數 |
 | GET | `/api/industries/{industry_name}/stocks?date=YYYY-MM-DD` | L1：指定產業個股明細（含漲跌幅、chain 分組） |
 | GET | `/api/stocks/{stock_id}/history?days=90&end_date=YYYY-MM-DD` | L2：個股收盤價 + 法人累積買超（預設 90 天） |
+| GET | `/api/realtime/quotes?stock_ids=2330,2317` | 即時盤中報價（TWSE mis API，最多 50 檔） |
 
 ### 5. 啟動前端
 
@@ -183,6 +202,9 @@ npm test
 - [x] 深色主題調亮：提升底色亮度、filter/input/tab/badge 對比度改善可見性
 - [x] ETL 加入週末偵測：跳過 Saturday/Sunday，防止 TWSE API 回傳重複前日資料
 - [x] 可斷點續傳的歷史 backfill 腳本（`run_backfill.py`，支援 2023-01-01 ~ 2026-04-01）
+- [x] 每晚自動更新：launchd plist（週一至週五 20:00 觸發 `run_daily_etl.py`）
+- [x] 即時盤中報價 API（`/api/realtime/quotes`，串接 TWSE mis API）
+- [x] L1 卡片 + L2 走勢圖整合即時報價（15 秒自動刷新，盤中顯示「即時」標記）
 
 ---
 
@@ -208,8 +230,8 @@ npm test
 
 ### 資料更新
 
-- [ ] **每晚自動更新資料庫**（cron job 或 launchd，收盤後約 20:00 觸發 `run_daily_etl.py`）
-- [ ] **即時股價**（串接 TWSE 盤中報價 API 或 WebSocket）
+- [x] **每晚自動更新資料庫**（launchd plist，週一至週五 20:00 觸發 `run_daily_etl.py`）
+- [x] **即時股價**（串接 TWSE mis 盤中報價 API，L1 卡片 + L2 走勢頁即時顯示）
 
 ### 擴充功能
 

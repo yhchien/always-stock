@@ -92,6 +92,28 @@ export async function fetchStockHistory(
   return res.json()
 }
 
+export interface RealtimeQuote {
+  stock_id: string
+  stock_name: string
+  price: number | null
+  prev_close: number
+  change: number | null
+  change_pct: number | null
+  open: number | null
+  high: number | null
+  low: number | null
+  volume: number | null
+  trade_time: string | null
+}
+
+export async function fetchRealtimeQuotes(stockIds: string[]): Promise<RealtimeQuote[]> {
+  if (stockIds.length === 0) return []
+  const ids = stockIds.join(",")
+  const res = await fetch(`${API_BASE}/api/realtime/quotes?stock_ids=${ids}`)
+  if (!res.ok) return [] // graceful fallback if market is closed
+  return res.json()
+}
+
 /** Format NT$ amount (raw value is NT$1) → display in 億元 */
 export function fmtAmount(val: number): string {
   const yi = val / 1e8
