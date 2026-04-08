@@ -34,7 +34,8 @@ describe("IndustryDashboard", () => {
 
     render(<IndustryDashboard defaultDate="2026-04-01" />)
 
-    expect(screen.getByText("載入中...")).toBeInTheDocument()
+    // Skeleton is shown while loading — data not yet visible
+    expect(screen.queryByText("半導體")).not.toBeInTheDocument()
 
     await waitFor(() => {
       expect(screen.getByText("半導體")).toBeInTheDocument()
@@ -117,6 +118,43 @@ describe("IndustryDashboard", () => {
       expect(screen.getByText("連買3天")).toBeInTheDocument()
       expect(screen.getByText("連賣2天")).toBeInTheDocument()
     })
+  })
+
+  it("filters industries by search term", async () => {
+    jest.spyOn(api, "fetchIndustries").mockResolvedValue(MOCK_ROWS)
+
+    render(<IndustryDashboard defaultDate="2026-04-01" />)
+    await waitFor(() => screen.getByText("半導體"))
+
+    fireEvent.change(screen.getByPlaceholderText("搜尋產業..."), { target: { value: "半導體" } })
+
+    expect(screen.getByText("半導體")).toBeInTheDocument()
+    expect(screen.queryByText("電子零組件")).not.toBeInTheDocument()
+  })
+
+  it("shows result count X / Y when search is active", async () => {
+    jest.spyOn(api, "fetchIndustries").mockResolvedValue(MOCK_ROWS)
+
+    render(<IndustryDashboard defaultDate="2026-04-01" />)
+    await waitFor(() => screen.getByText("半導體"))
+
+    fireEvent.change(screen.getByPlaceholderText("搜尋產業..."), { target: { value: "半導體" } })
+
+    expect(screen.getByText("1 / 2")).toBeInTheDocument()
+  })
+
+  it("clears search and restores all rows when × is clicked", async () => {
+    jest.spyOn(api, "fetchIndustries").mockResolvedValue(MOCK_ROWS)
+
+    render(<IndustryDashboard defaultDate="2026-04-01" />)
+    await waitFor(() => screen.getByText("半導體"))
+
+    fireEvent.change(screen.getByPlaceholderText("搜尋產業..."), { target: { value: "半導體" } })
+    expect(screen.queryByText("電子零組件")).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByLabelText("清除搜尋"))
+
+    expect(screen.getByText("電子零組件")).toBeInTheDocument()
   })
 
   it("renders sortable column headers", async () => {

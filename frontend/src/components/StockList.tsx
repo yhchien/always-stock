@@ -11,6 +11,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
+import { Skeleton } from "@/components/ui/skeleton"
 import {
   fetchIndustryStocks,
   fetchSubIndustrySummary,
@@ -268,7 +269,16 @@ export default function StockList({ industryName, defaultDate, defaultSubFilter 
       </div>
 
       {/* Status */}
-      {loading && <p className="text-sm text-zinc-500">載入中...</p>}
+      {loading && (
+        <div className="flex flex-col gap-4">
+          <Skeleton className="h-8 w-full" />
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <Skeleton key={i} className="h-40 w-full rounded-lg" />
+            ))}
+          </div>
+        </div>
+      )}
       {error && <p className="text-sm text-red-400">{error}</p>}
 
       {/* Sub-industry summary table */}
@@ -301,11 +311,24 @@ export default function StockList({ industryName, defaultDate, defaultSubFilter 
                 <span className="text-xs text-zinc-600">{items.length} 檔</span>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                {items.map((stock) => (
+                {items.map((stock) => {
+                  const rt = realtimeQuotes.get(stock.stock_id)
+                  const hasRt = rt && rt.price != null
+                  const displayPrice = hasRt ? rt.price : stock.close_price
+                  const displayChange = hasRt ? rt.change : stock.price_change
+                  const displayPct = hasRt ? rt.change_pct : stock.price_change_pct
+                  const chg = displayChange ?? 0
+                  const tintClass = chg > 0
+                    ? "border-red-900/40 bg-red-950/20 hover:bg-red-950/30 hover:border-red-800/50"
+                    : chg < 0
+                    ? "border-green-900/40 bg-green-950/20 hover:bg-green-950/30 hover:border-green-800/50"
+                    : "border-zinc-700 bg-zinc-800/50 hover:border-zinc-500 hover:bg-zinc-800"
+
+                  return (
                   <div
                     key={stock.stock_id}
                     onClick={() => router.push(`/stocks/${stock.stock_id}?date=${date}`)}
-                    className="rounded-lg border border-zinc-700 bg-zinc-800/50 p-4 cursor-pointer hover:border-zinc-500 hover:bg-zinc-800 transition-colors"
+                    className={`rounded-lg border p-4 cursor-pointer transition-colors ${tintClass}`}
                   >
                     {/* Stock header */}
                     <div className="flex items-baseline justify-between mb-2">
@@ -318,27 +341,16 @@ export default function StockList({ industryName, defaultDate, defaultSubFilter 
                       )}
                     </div>
 
-                    {/* Price + change (real-time if available) */}
-                    {(() => {
-                      const rt = realtimeQuotes.get(stock.stock_id)
-                      const hasRt = rt && rt.price != null
-                      const displayPrice = hasRt ? rt.price : stock.close_price
-                      const displayChange = hasRt ? rt.change : stock.price_change
-                      const displayPct = hasRt ? rt.change_pct : stock.price_change_pct
-                      return (
-                        <div className="flex items-baseline gap-3 mb-3">
-                          <span className="font-mono text-lg text-zinc-100">
-                            {displayPrice != null ? displayPrice.toFixed(2) : "-"}
-                          </span>
-                          <PriceChange change={displayChange ?? null} pct={displayPct ?? null} />
-                          {hasRt && (
-                            <span className="text-[10px] text-yellow-500 font-medium">
-                              即時
-                            </span>
-                          )}
-                        </div>
-                      )
-                    })()}
+                    {/* Price + change */}
+                    <div className="flex items-baseline gap-3 mb-3">
+                      <span className="font-mono text-lg text-zinc-100">
+                        {displayPrice != null ? displayPrice.toFixed(2) : "-"}
+                      </span>
+                      <PriceChange change={displayChange ?? null} pct={displayPct ?? null} />
+                      {hasRt && (
+                        <span className="text-[10px] text-yellow-500 font-medium">即時</span>
+                      )}
+                    </div>
 
                     {/* Institutional flows */}
                     <div className="flex flex-col gap-1 border-t border-zinc-700 pt-2">
@@ -361,7 +373,8 @@ export default function StockList({ industryName, defaultDate, defaultSubFilter 
                       </span>
                     </div>
                   </div>
-                ))}
+                  )
+                })}
               </div>
             </section>
           ))}

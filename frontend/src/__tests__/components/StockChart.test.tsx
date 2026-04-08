@@ -62,7 +62,8 @@ describe("StockChart", () => {
 
     render(<StockChart stockId="2330" />)
 
-    expect(screen.getByText("載入中...")).toBeInTheDocument()
+    // Skeleton shown while loading — chart not yet visible
+    expect(screen.queryByTestId("echart")).not.toBeInTheDocument()
 
     await waitFor(() => {
       expect(screen.getByText(/2330/)).toBeInTheDocument()

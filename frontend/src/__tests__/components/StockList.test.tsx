@@ -104,7 +104,8 @@ describe("StockList", () => {
 
     render(<StockList industryName="半導體" defaultDate="2026-04-01" />)
 
-    expect(screen.getByText("載入中...")).toBeInTheDocument()
+    // Skeleton shown while loading — data not yet visible
+    expect(screen.queryByText("台積電")).not.toBeInTheDocument()
 
     await waitFor(() => {
       expect(screen.getByText("台積電")).toBeInTheDocument()
@@ -238,6 +239,28 @@ describe("StockList", () => {
       // 台積電 and 聯電 (晶圓製造) should be filtered out
       expect(screen.queryByText("台積電")).not.toBeInTheDocument()
     })
+  })
+
+  it("applies red tint class to cards with positive price change", async () => {
+    mockBothApis()
+
+    render(<StockList industryName="半導體" defaultDate="2026-04-01" />)
+    await waitFor(() => screen.getByText("台積電"))
+
+    // 台積電: price_change 10.0 (positive) → border-red-900/40
+    const card = screen.getByText("台積電").closest("[class*='border-red-900']")
+    expect(card).toBeTruthy()
+  })
+
+  it("applies green tint class to cards with negative price change", async () => {
+    mockBothApis()
+
+    render(<StockList industryName="半導體" defaultDate="2026-04-01" />)
+    await waitFor(() => screen.getByText("聯電"))
+
+    // 聯電: price_change -1.0 (negative) → border-green-900/40
+    const card = screen.getByText("聯電").closest("[class*='border-green-900']")
+    expect(card).toBeTruthy()
   })
 
   it("clears filter when clicking clear button", async () => {

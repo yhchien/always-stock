@@ -3,10 +3,22 @@
 import { useEffect, useRef, useState } from "react"
 import { fetchRealtimeQuotes, type RealtimeQuote } from "@/lib/api"
 
+/** Returns true if current time is within TWSE trading hours (09:00–13:30, Mon–Fri, UTC+8). */
+function isTradingHours(): boolean {
+  const now = new Date()
+  const utcMs = now.getTime() + now.getTimezoneOffset() * 60 * 1000
+  const tw = new Date(utcMs + 8 * 60 * 60 * 1000)
+  const day = tw.getDay() // 0=Sun, 6=Sat
+  if (day === 0 || day === 6) return false
+  const mins = tw.getHours() * 60 + tw.getMinutes()
+  return mins >= 9 * 60 && mins <= 13 * 60 + 30
+}
+
 /**
  * Poll real-time quotes for a list of stock IDs.
  * Returns a map of stock_id → RealtimeQuote, refreshed every `intervalMs`.
- * Automatically pauses outside TWSE trading hours (09:00-13:30 weekdays, UTC+8).
+ * Polling only starts during TWSE trading hours (09:00-13:30 weekdays, UTC+8).
+ * One initial fetch always runs on mount to show the latest available data.
  */
 export function useRealtimeQuotes(
   stockIds: string[],
@@ -33,15 +45,18 @@ export function useRealtimeQuotes(
       }
     }
 
-    // Initial fetch
+    // Always do one initial fetch (shows last known price even outside trading hours)
     poll()
 
-    // Set up polling interval
-    const timer = setInterval(poll, intervalMs)
+    // Continuous polling only during trading hours
+    let timer: ReturnType<typeof setInterval> | null = null
+    if (isTradingHours()) {
+      timer = setInterval(poll, intervalMs)
+    }
 
     return () => {
       active = false
-      clearInterval(timer)
+      if (timer) clearInterval(timer)
     }
   }, [stockIds.join(","), intervalMs])
 

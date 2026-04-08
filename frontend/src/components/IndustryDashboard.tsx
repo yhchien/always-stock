@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState, useCallback } from "react"
+import { useEffect, useState, useCallback, useMemo } from "react"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   Table,
@@ -10,6 +10,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { Skeleton } from "@/components/ui/skeleton"
 import { fetchIndustries, fmtAmount, fmtStreak, type IndustryFlowItem } from "@/lib/api"
 
 type Tab = "total" | "foreign" | "trust" | "dealer"
@@ -47,6 +48,18 @@ function AmountCell({ value }: { value: number }) {
   return <span className={`font-mono text-sm ${color}`}>{formatted}</span>
 }
 
+function BarAmountCell({ value, maxAbs }: { value: number; maxAbs: number }) {
+  const pct = maxAbs > 0 ? Math.min((Math.abs(value) / maxAbs) * 100, 100) : 0
+  const barColor = value > 0 ? "bg-red-500/15" : value < 0 ? "bg-green-500/15" : ""
+  const textColor = value > 0 ? "text-red-400" : value < 0 ? "text-green-400" : "text-zinc-400"
+  return (
+    <div className="relative flex items-center justify-end">
+      <div className={`absolute inset-y-0 right-0 rounded-sm ${barColor}`} style={{ width: `${pct}%` }} />
+      <span className={`relative font-mono text-sm ${textColor}`}>{fmtAmount(value)}</span>
+    </div>
+  )
+}
+
 function StreakCell({ value }: { value: number }) {
   const text = fmtStreak(value)
   const color = value > 0 ? "text-red-400" : value < 0 ? "text-green-400" : "text-zinc-500"
@@ -67,6 +80,7 @@ export default function IndustryDashboard({ defaultDate, onDateChange, onSelectI
   const [error, setError] = useState<string | null>(null)
   const [sortKey, setSortKey] = useState<SortKey>("total")
   const [sortAsc, setSortAsc] = useState(false)
+  const [search, setSearch] = useState("")
 
   const load = useCallback(async (d: string) => {
     setLoading(true)
@@ -102,11 +116,20 @@ export default function IndustryDashboard({ defaultDate, onDateChange, onSelectI
     }
   }
 
-  const sorted = [...rows].sort((a, b) => {
+  const filtered = search
+    ? rows.filter((r) => r.industry_name.toLowerCase().includes(search.toLowerCase()))
+    : rows
+
+  const sorted = [...filtered].sort((a, b) => {
     const va = getSortValue(a, sortKey)
     const vb = getSortValue(b, sortKey)
     return sortAsc ? va - vb : vb - va
   })
+
+  const maxTotalAbs = useMemo(
+    () => Math.max(1, ...filtered.map((r) => Math.abs(r.total_net_amount))),
+    [filtered],
+  )
 
   const sortIndicator = (key: SortKey) =>
     sortKey === key ? (sortAsc ? " \u25B2" : " \u25BC") : ""
@@ -124,23 +147,52 @@ export default function IndustryDashboard({ defaultDate, onDateChange, onSelectI
         />
       </div>
 
-      {/* Tabs */}
-      <Tabs value={tab} onValueChange={(v) => handleTabChange(v as Tab)}>
-        <TabsList className="bg-zinc-800 border border-zinc-600">
-          {(Object.keys(TAB_LABELS) as Tab[]).map((t) => (
-            <TabsTrigger
-              key={t}
-              value={t}
-              className="data-[state=active]:bg-zinc-600 data-[state=active]:text-white text-zinc-300"
+      {/* Search + Tabs（同一列）*/}
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="relative">
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="搜尋產業..."
+            className="rounded-md border border-zinc-600 bg-zinc-800 px-3 py-1.5 pr-8 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-zinc-400 w-36"
+          />
+          {search && (
+            <button
+              onClick={() => setSearch("")}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 text-base leading-none"
+              aria-label="清除搜尋"
             >
-              {TAB_LABELS[t]}
-            </TabsTrigger>
-          ))}
-        </TabsList>
-      </Tabs>
+              ×
+            </button>
+          )}
+        </div>
+        {search && (
+          <span className="text-xs text-zinc-500">{sorted.length} / {rows.length}</span>
+        )}
+        <Tabs value={tab} onValueChange={(v) => handleTabChange(v as Tab)}>
+          <TabsList className="bg-zinc-800 border border-zinc-600">
+            {(Object.keys(TAB_LABELS) as Tab[]).map((t) => (
+              <TabsTrigger
+                key={t}
+                value={t}
+                className="data-[state=active]:bg-zinc-600 data-[state=active]:text-white text-zinc-300"
+              >
+                {TAB_LABELS[t]}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
+      </div>
 
       {/* Status */}
-      {loading && <p className="text-sm text-zinc-500">載入中...</p>}
+      {loading && (
+        <div className="flex flex-col gap-2">
+          {Array.from({ length: 8 }).map((_, i) => (
+            <Skeleton key={i} className="h-10 w-full" />
+          ))}
+        </div>
+      )}
       {error && <p className="text-sm text-red-400">{error}</p>}
 
       {/* Table */}
@@ -152,19 +204,19 @@ export default function IndustryDashboard({ defaultDate, onDateChange, onSelectI
                 <TableHead className="text-zinc-300 w-8">#</TableHead>
                 <TableHead className="text-zinc-300">產業</TableHead>
                 <TableHead
-                  className="text-zinc-300 text-right cursor-pointer select-none hover:text-zinc-100"
+                  className="text-zinc-300 text-right cursor-pointer select-none hover:text-zinc-100 hidden sm:table-cell"
                   onClick={() => handleSort("foreign")}
                 >
                   外資{sortIndicator("foreign")}
                 </TableHead>
                 <TableHead
-                  className="text-zinc-300 text-right cursor-pointer select-none hover:text-zinc-100"
+                  className="text-zinc-300 text-right cursor-pointer select-none hover:text-zinc-100 hidden sm:table-cell"
                   onClick={() => handleSort("trust")}
                 >
                   投信{sortIndicator("trust")}
                 </TableHead>
                 <TableHead
-                  className="text-zinc-300 text-right cursor-pointer select-none hover:text-zinc-100"
+                  className="text-zinc-300 text-right cursor-pointer select-none hover:text-zinc-100 hidden sm:table-cell"
                   onClick={() => handleSort("dealer")}
                 >
                   自營商{sortIndicator("dealer")}
@@ -192,10 +244,10 @@ export default function IndustryDashboard({ defaultDate, onDateChange, onSelectI
                 >
                   <TableCell className="text-zinc-600 text-xs">{i + 1}</TableCell>
                   <TableCell className="font-medium text-sm">{row.industry_name}</TableCell>
-                  <TableCell className="text-right"><AmountCell value={row.foreign_net_amount} /></TableCell>
-                  <TableCell className="text-right"><AmountCell value={row.trust_net_amount} /></TableCell>
-                  <TableCell className="text-right"><AmountCell value={row.dealer_net_amount} /></TableCell>
-                  <TableCell className="text-right"><AmountCell value={row.total_net_amount} /></TableCell>
+                  <TableCell className="text-right hidden sm:table-cell"><AmountCell value={row.foreign_net_amount} /></TableCell>
+                  <TableCell className="text-right hidden sm:table-cell"><AmountCell value={row.trust_net_amount} /></TableCell>
+                  <TableCell className="text-right hidden sm:table-cell"><AmountCell value={row.dealer_net_amount} /></TableCell>
+                  <TableCell className="text-right"><BarAmountCell value={row.total_net_amount} maxAbs={maxTotalAbs} /></TableCell>
                   <TableCell className="text-center"><StreakCell value={row.streak} /></TableCell>
                 </TableRow>
               ))}

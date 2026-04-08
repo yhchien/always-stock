@@ -3,8 +3,17 @@
 import { useEffect, useState, useCallback, useMemo } from "react"
 import { useRouter } from "next/navigation"
 import ReactECharts from "echarts-for-react"
+import { Skeleton } from "@/components/ui/skeleton"
 import { fetchStockHistory, fmtShares, type StockHistoryResponse } from "@/lib/api"
 import { useRealtimeQuotes } from "@/lib/useRealtimeQuotes"
+
+const RANGE_OPTIONS = [
+  { label: "1M", days: 30 },
+  { label: "3M", days: 90 },
+  { label: "6M", days: 180 },
+  { label: "1Y", days: 365 },
+  { label: "All", days: 3650 },
+] as const
 
 interface Props {
   stockId: string
@@ -12,8 +21,9 @@ interface Props {
   days?: number
 }
 
-export default function StockChart({ stockId, defaultDate, days = 90 }: Props) {
+export default function StockChart({ stockId, defaultDate, days: initialDays = 90 }: Props) {
   const router = useRouter()
+  const [days, setDays] = useState(initialDays)
   const [data, setData] = useState<StockHistoryResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -265,8 +275,30 @@ export default function StockChart({ stockId, defaultDate, days = 90 }: Props) {
         })()}
       </div>
 
+      {/* Range selector */}
+      <div className="flex gap-1">
+        {RANGE_OPTIONS.map((opt) => (
+          <button
+            key={opt.label}
+            onClick={() => setDays(opt.days)}
+            className={`px-3 py-1 text-xs rounded-md border transition-colors ${
+              days === opt.days
+                ? "bg-zinc-700 border-zinc-500 text-zinc-100"
+                : "bg-zinc-900 border-zinc-700 text-zinc-400 hover:text-zinc-200 hover:border-zinc-500"
+            }`}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
+
       {/* Status */}
-      {loading && <p className="text-sm text-zinc-500">載入中...</p>}
+      {loading && (
+        <div className="flex flex-col gap-4">
+          <Skeleton className="h-8 w-48" />
+          <Skeleton className="h-[400px] w-full rounded-lg" />
+        </div>
+      )}
       {error && <p className="text-sm text-red-400">{error}</p>}
 
       {/* Chart */}
