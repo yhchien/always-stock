@@ -195,6 +195,24 @@ cd frontend
 npm test
 ```
 
+### 本地完整啟動（不需雲端）
+
+除了 Fly.io 雲端版本，你也可以完全在本機跑，使用本地 SQLite 資料庫：
+
+```bash
+# 終端機 1：啟動後端 API
+cd backend
+python3 -m uvicorn app.main:app --reload
+# API: http://localhost:8000  |  Swagger: http://localhost:8000/docs
+
+# 終端機 2：啟動前端
+cd frontend
+npm run dev
+# 前端: http://localhost:3000
+```
+
+本地模式直接讀取 `backend/db/tw_stock.db`，不需要任何雲端服務。適合開發、除錯、以及在 backfill 完成前搶先查看資料。
+
 ---
 
 ## 已完成項目
