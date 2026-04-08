@@ -7,11 +7,11 @@ if the process is interrupted (network error, Ctrl-C, etc.), restarting
 the script will pick up from the last successfully completed date.
 
 Usage:
-    python run_backfill.py --start 2023-01-01 --end 2026-04-01
+    python run_backfill.py --start 2019-01-01 --end 2026-04-08
 
 Options:
-    --start         Start date (YYYY-MM-DD), default 2023-01-01
-    --end           End date (YYYY-MM-DD), default 2026-04-01
+    --start         Start date (YYYY-MM-DD), default 2019-01-01
+    --end           End date (YYYY-MM-DD), default 2026-04-08
     --checkpoint    Checkpoint file path (default: db/backfill_checkpoint.txt)
     --delay         Seconds between API requests (default: 3.5, TWSE rate limit)
     --skip-master   Skip stock_master update
@@ -111,8 +111,8 @@ def main() -> None:
     setup_logging()
 
     parser = argparse.ArgumentParser(description="Resumable historical backfill")
-    parser.add_argument("--start", type=str, default="2023-01-01", help="Start date YYYY-MM-DD")
-    parser.add_argument("--end", type=str, default="2026-04-01", help="End date YYYY-MM-DD")
+    parser.add_argument("--start", type=str, default="2019-01-01", help="Start date YYYY-MM-DD")
+    parser.add_argument("--end", type=str, default="2026-04-08", help="End date YYYY-MM-DD")
     parser.add_argument(
         "--checkpoint", type=str, default="db/backfill_checkpoint.txt",
         help="Checkpoint file path",

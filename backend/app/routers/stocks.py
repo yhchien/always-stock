@@ -18,6 +18,9 @@ router = APIRouter(tags=["stocks"])
 
 class StockHistoryItem(BaseModel):
     trade_date: date
+    open_price: Optional[float]
+    high_price: Optional[float]
+    low_price: Optional[float]
     close_price: float
     foreign_net_shares: float
     trust_net_shares: float
@@ -107,6 +110,9 @@ def get_stock_history(
 
         history.append(StockHistoryItem(
             trade_date=d,
+            open_price=p.open_price,
+            high_price=p.high_price,
+            low_price=p.low_price,
             close_price=p.close_price,
             foreign_net_shares=foreign_net,
             trust_net_shares=trust_net,

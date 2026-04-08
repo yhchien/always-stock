@@ -47,9 +47,12 @@ def seed_stock(db, stock_id="2344", name="華邦電", industry="半導體業", s
     ))
 
 
-def seed_price(db, stock_id, trade_date, close):
+def seed_price(db, stock_id, trade_date, close, open_p=None, high=None, low=None):
     db.add(DailyPrice(
         trade_date=trade_date, stock_id=stock_id,
+        open_price=open_p or close - 1,
+        high_price=high or close + 1,
+        low_price=low or close - 2,
         close_price=close, volume=1000000,
         turnover=close * 1000000, avg_price=close,
     ))
@@ -87,6 +90,12 @@ class TestGetStockHistory:
         assert data["stock_name"] == "華邦電"
         assert data["sub_industry"] == "記憶體IC"
         assert len(data["history"]) == 2
+        # Verify OHLC fields are returned
+        item = data["history"][1]
+        assert item["open_price"] == 90.0   # close - 1
+        assert item["high_price"] == 92.0   # close + 1
+        assert item["low_price"] == 89.0    # close - 2
+        assert item["close_price"] == 91.0
 
     def test_cumulative_net_shares(self, api):
         client, db = api

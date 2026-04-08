@@ -211,7 +211,7 @@ npm test
 - [x] 程式碼與 comment 統一使用英文
 - [x] Next.js L0 產業排行榜頁面（以 Fugle 大類彙總 + 外資/投信/自營商/合計 tab）
 - [x] Next.js L1 個股卡片頁面（依 chain 上中下游分組，卡片顯示股價漲跌 + 三大法人買賣）
-- [x] Next.js L2 個股走勢圖（ECharts 雙軸：收盤價 + 三大法人累積淨買超，90 天）
+- [x] Next.js L2 個股 K 線圖（ECharts candlestick OHLC + 三大法人累積淨買超，紅漲綠跌）
 - [x] 三層 drill-down 日期正確傳遞（L0 → L1 → L2）
 - [x] L0 欄位排序（外資/投信/自營商/合計）+ 趨勢欄（連續買賣超天數）
 - [x] L1 子產業彙總表格（排序 + 趨勢 + 子產業 filter）
@@ -219,7 +219,7 @@ npm test
 - [x] 漲跌幅計算改用 per-stock prev close（停牌股也能正確顯示漲跌）
 - [x] 深色主題調亮：提升底色亮度、filter/input/tab/badge 對比度改善可見性
 - [x] ETL 加入週末偵測：跳過 Saturday/Sunday，防止 TWSE API 回傳重複前日資料
-- [x] 可斷點續傳的歷史 backfill 腳本（`run_backfill.py`，支援 2023-01-01 ~ 2026-04-01）
+- [x] 可斷點續傳的歷史 backfill 腳本（`run_backfill.py`，支援 2019-01-01 ~ 2026-04-07）
 - [x] 每晚自動更新：launchd plist（週一至週五 20:00 觸發 `run_daily_etl.py`）
 - [x] 即時盤中報價 API（`/api/realtime/quotes`，串接 TWSE mis API）
 - [x] L1 卡片 + L2 走勢圖整合即時報價（15 秒自動刷新，盤中顯示「即時」標記）
@@ -228,6 +228,9 @@ npm test
 - [x] 返回上一頁保留日期 / 子產業篩選（URL search params 狀態同步）
 - [x] Telegram Bot：輸入股票代號查詢三大法人買賣超（long-polling 模式）
 - [x] AI 籌碼分析：`/ai` 指令接 OpenAI GPT，根據近期法人動向提供投資觀點
+- [x] daily_price 擴充 OHLC 欄位（open_price / high_price / low_price）
+- [x] L2 K 線圖（candlestick）：紅漲綠跌、hover 顯示開高低收、舊資料自動 fallback 折線圖
+- [x] 歷史 backfill 區間擴充至 2019-01-01 ~ 2026-04-07（8 年）
 
 ---
 
@@ -240,8 +243,8 @@ npm test
 | M3 | Next.js L0 產業排行榜頁面 | ✅ 完成 |
 | M4 | L1 個股列表 + L2 走勢圖 | ✅ 完成 |
 | M5 | Telegram Bot 個股籌碼查詢 | ✅ 完成 |
-| M6 | 10 年歷史股市資料庫 | 🔄 進行中（backfill 2016 ~ 2026） |
-| M7 | K 線圖（OHLC candlestick） | ⬜ 待開始 |
+| M6 | 8 年歷史股市資料庫 | 🔄 進行中（backfill 2019 ~ 2026，OHLC 已加入） |
+| M7 | K 線圖（OHLC candlestick） | ✅ 完成 |
 | M8 | 財報資料庫（含 PE / 基本面指標） | ⬜ 待開始 |
 | M9 | AI Sub-agent（接 LLM，投資策略初版） | ✅ 完成 |
 | M10 | 部署上線（Cloud） | ⬜ 待開始 |
@@ -261,9 +264,8 @@ npm test
 
 - [x] **M1~M4** ETL + API + 前端儀表板（產業排行榜、個股列表、走勢圖）
 - [x] **M5 Telegram Bot 個股籌碼查詢**：輸入股號 → 回報三大法人買賣超 + 所屬產業
-- [ ] **M6 10 年歷史股市資料庫**：將 backfill 區間從 4 年擴充至 2016 ~ 2026（約 10 年）
-  - 擴充 OHLC 欄位（open/high/low）到 `daily_price`
-- [ ] **M7 K 線圖**：前端 L2 股價改用 candlestick 呈現（需 M6 OHLC 資料）
+- [ ] **M6 8 年歷史股市資料庫**：backfill 2019 ~ 2026（OHLC 欄位已加入 `daily_price`）
+- [x] **M7 K 線圖**：前端 L2 股價改用 candlestick 呈現（紅漲綠跌，舊資料 fallback 折線圖）
 - [ ] **M8 財報資料庫**：建立季度財報資料表（營收、EPS、PE ratio、本益比河流圖等）
   - 資料來源：公開資訊觀測站 / FinMind
 

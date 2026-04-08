@@ -128,6 +128,27 @@ Every Python file produced MUST have a corresponding test file:
 
 ---
 
+## 🧠 Shared Memory
+
+This project uses Claude Code's auto-memory system to persist context across conversations.
+
+Memory location: `~/.claude/projects/-Users-brian-yh-chien--gstack-projects-always-stock/memory/`
+
+- `MEMORY.md` — index of all memory files (auto-loaded each conversation)
+- `project_overview.md` — project architecture, milestones, and progress
+
+**When to check memory:**
+- Before starting a new feature — read `MEMORY.md` to understand current project state
+- After completing a milestone — update `project_overview.md` progress
+- When the user references past decisions — check for relevant memory files
+
+**When to update memory:**
+- Milestone status changes (started / completed)
+- Non-obvious architectural decisions or trade-offs
+- User preferences learned during the conversation
+
+---
+
 ## ✅ Definition of Done
 
 * User opens page → sees all industries latest net flow

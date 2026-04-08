@@ -41,6 +41,9 @@ export interface SubIndustrySummaryItem {
 
 export interface StockHistoryItem {
   trade_date: string
+  open_price: number | null
+  high_price: number | null
+  low_price: number | null
   close_price: number
   foreign_net_shares: number
   trust_net_shares: number

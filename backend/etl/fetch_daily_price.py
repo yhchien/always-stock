@@ -96,6 +96,9 @@ def fetch_and_upsert_daily_price(db: Session, trade_date: date) -> int:
             continue
 
         stock_id = row[0].strip()
+        open_price = _parse_number(row[5])
+        high_price = _parse_number(row[6])
+        low_price = _parse_number(row[7])
         close_price = _parse_number(row[8])
         volume = _parse_number(row[2])
         turnover = _parse_number(row[4])
@@ -111,6 +114,9 @@ def fetch_and_upsert_daily_price(db: Session, trade_date: date) -> int:
             .first()
         )
         if existing:
+            existing.open_price = open_price
+            existing.high_price = high_price
+            existing.low_price = low_price
             existing.close_price = close_price
             existing.volume = volume
             existing.turnover = turnover
@@ -119,6 +125,9 @@ def fetch_and_upsert_daily_price(db: Session, trade_date: date) -> int:
             db.add(DailyPrice(
                 trade_date=trade_date,
                 stock_id=stock_id,
+                open_price=open_price,
+                high_price=high_price,
+                low_price=low_price,
                 close_price=close_price,
                 volume=volume,
                 turnover=turnover,

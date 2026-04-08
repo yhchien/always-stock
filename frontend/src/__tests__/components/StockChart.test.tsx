@@ -24,6 +24,9 @@ const MOCK_HISTORY: api.StockHistoryResponse = {
   history: [
     {
       trade_date: "2026-03-01",
+      open_price: 835,
+      high_price: 845,
+      low_price: 830,
       close_price: 840,
       foreign_net_shares: 3000,
       trust_net_shares: 500,
@@ -34,6 +37,9 @@ const MOCK_HISTORY: api.StockHistoryResponse = {
     },
     {
       trade_date: "2026-03-02",
+      open_price: 842,
+      high_price: 855,
+      low_price: 840,
       close_price: 850,
       foreign_net_shares: 2000,
       trust_net_shares: 500,

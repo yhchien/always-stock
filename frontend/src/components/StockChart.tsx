@@ -41,10 +41,54 @@ export default function StockChart({ stockId, defaultDate, days = 90 }: Props) {
     if (!data || data.history.length === 0) return null
 
     const dates = data.history.map((h) => h.trade_date)
-    const prices = data.history.map((h) => h.close_price)
     const foreignCum = data.history.map((h) => h.foreign_cumulative)
     const trustCum = data.history.map((h) => h.trust_cumulative)
     const dealerCum = data.history.map((h) => h.dealer_cumulative)
+
+    // Check if OHLC data is available (may be null for older records)
+    const hasOHLC = data.history.some((h) => h.open_price != null)
+
+    // Candlestick data: [open, close, low, high]
+    const candleData = hasOHLC
+      ? data.history.map((h) => [
+          h.open_price ?? h.close_price,
+          h.close_price,
+          h.low_price ?? h.close_price,
+          h.high_price ?? h.close_price,
+        ])
+      : null
+
+    // Fallback: line chart with close prices only
+    const closePrices = data.history.map((h) => h.close_price)
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const priceSeries: any = hasOHLC && candleData
+      ? {
+          name: "股價",
+          type: "candlestick",
+          yAxisIndex: 0,
+          data: candleData,
+          itemStyle: {
+            color: "#ef4444",          // 漲 (收 > 開) — 紅色填充
+            color0: "#22c55e",         // 跌 (收 < 開) — 綠色填充
+            borderColor: "#ef4444",    // 漲 — 紅色邊框
+            borderColor0: "#22c55e",   // 跌 — 綠色邊框
+          },
+        }
+      : {
+          name: "收盤價",
+          type: "line",
+          yAxisIndex: 0,
+          data: closePrices,
+          smooth: true,
+          symbol: "none",
+          lineStyle: { color: "#f4f4f5", width: 2 },
+          itemStyle: { color: "#f4f4f5" },
+        }
+
+    const legendData = hasOHLC
+      ? ["股價", "外資累積", "投信累積", "自營商累積"]
+      : ["收盤價", "外資累積", "投信累積", "自營商累積"]
 
     return {
       backgroundColor: "transparent",
@@ -54,24 +98,29 @@ export default function StockChart({ stockId, defaultDate, days = 90 }: Props) {
         borderColor: "#3f3f46",
         textStyle: { color: "#fafafa", fontSize: 12 },
         axisPointer: { type: "cross" as const },
-        formatter: (params: Array<{ seriesName: string; value: number; marker: string; axisValue: string }>) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        formatter: (params: any[]) => {
           if (!Array.isArray(params) || params.length === 0) return ""
           let html = `<div style="font-size:12px">${params[0].axisValue}</div>`
           for (const p of params) {
-            const v = p.value
-            let display: string
-            if (p.seriesName === "收盤價") {
-              display = `${v.toFixed(2)} 元`
+            if (p.seriesType === "candlestick") {
+              // p.data = [index, open, close, low, high]
+              const [, open, close, low, high] = p.data as number[]
+              const color = close >= open ? "#ef4444" : "#22c55e"
+              html += `<div style="color:${color}">` +
+                `開 ${open.toFixed(2)}　高 ${high.toFixed(2)}　` +
+                `低 ${low.toFixed(2)}　收 <b>${close.toFixed(2)}</b> 元</div>`
+            } else if (p.seriesName === "收盤價") {
+              html += `<div>${p.marker} ${p.seriesName}: <b>${(p.value as number).toFixed(2)} 元</b></div>`
             } else {
-              display = fmtShares(v)
+              html += `<div>${p.marker} ${p.seriesName}: <b>${fmtShares(p.value as number)}</b></div>`
             }
-            html += `<div>${p.marker} ${p.seriesName}: <b>${display}</b></div>`
           }
           return html
         },
       },
       legend: {
-        data: ["收盤價", "外資累積", "投信累積", "自營商累積"],
+        data: legendData,
         textStyle: { color: "#a1a1aa", fontSize: 12 },
         top: 0,
       },
@@ -120,11 +169,12 @@ export default function StockChart({ stockId, defaultDate, days = 90 }: Props) {
       yAxis: [
         {
           type: "value" as const,
-          name: "收盤價",
+          name: hasOHLC ? "股價" : "收盤價",
           nameTextStyle: { color: "#a1a1aa", fontSize: 11 },
           axisLabel: { color: "#a1a1aa", fontSize: 11 },
           axisLine: { lineStyle: { color: "#3f3f46" } },
           splitLine: { lineStyle: { color: "#27272a" } },
+          scale: true,
         },
         {
           type: "value" as const,
@@ -140,16 +190,7 @@ export default function StockChart({ stockId, defaultDate, days = 90 }: Props) {
         },
       ],
       series: [
-        {
-          name: "收盤價",
-          type: "line",
-          yAxisIndex: 0,
-          data: prices,
-          smooth: true,
-          symbol: "none",
-          lineStyle: { color: "#f4f4f5", width: 2 },
-          itemStyle: { color: "#f4f4f5" },
-        },
+        priceSeries,
         {
           name: "外資累積",
           type: "line",

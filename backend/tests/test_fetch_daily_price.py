@@ -74,6 +74,9 @@ class TestFetchAndUpsertDailyPrice:
         assert count == 2
         rec = db.query(DailyPrice).filter_by(trade_date=TRADE_DATE, stock_id="2330").first()
         assert rec is not None
+        assert rec.open_price == 100.0
+        assert rec.high_price == 105.0
+        assert rec.low_price == 99.0
         assert rec.close_price == 100.0
 
     def test_returns_zero_on_non_ok_stat(self, db):
@@ -118,6 +121,7 @@ class TestFetchAndUpsertDailyPrice:
     def test_upsert_updates_existing_record(self, db):
         db.add(DailyPrice(
             trade_date=TRADE_DATE, stock_id="2330",
+            open_price=98.0, high_price=99.5, low_price=97.0,
             close_price=99.0, volume=500000, turnover=49500000, avg_price=99.0,
         ))
         db.commit()
@@ -128,6 +132,9 @@ class TestFetchAndUpsertDailyPrice:
             fetch_and_upsert_daily_price(db, TRADE_DATE)
 
         rec = db.query(DailyPrice).filter_by(stock_id="2330").first()
+        assert rec.open_price == 100.0
+        assert rec.high_price == 105.0
+        assert rec.low_price == 99.0
         assert rec.close_price == 100.0
         assert db.query(DailyPrice).count() == 1  # no duplicates
 
