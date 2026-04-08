@@ -10,7 +10,8 @@
 - **DB**: SQLite (`backend/db/tw_stock.db`)
 - **ETL 資料來源**: TWSE 公開資料（T86、STOCK_DAY_ALL）、FinMind API、Fugle 子產業分類
 - **Bot**: Telegram Bot（long-polling）+ Gemini AI 籌碼分析
-- **排程**: macOS launchd（週一至週五 20:00 自動 ETL）
+- **排程**: macOS launchd（本地）/ cron（Fly.io，19:00 + 21:30 台灣時間）
+- **部署**: Fly.io（API: always-stock-api.fly.dev / 前端: always-stock-web.fly.dev）
 
 ## Milestones 進度
 
@@ -19,13 +20,13 @@
 - M5: Telegram Bot 個股籌碼查詢
 - M7: K 線圖（L2 candlestick + 法人累積買超，舊資料自動 fallback 折線圖）
 - M9: AI 籌碼分析（`/ai` 指令，接 Gemini）
+- M10: Fly.io 雲端部署（API + Bot + 前端 + cron ETL + persistent volume 12GB）
 
 ### 進行中
 - M6: 8 年歷史資料 backfill（2019~2026），OHLC 欄位已加入 daily_price
 
 ### 待開始
 - M8 財報
-- M10 雲端部署
 - M11 回測
 - M12 自然語言策略
 - M13 券商分點

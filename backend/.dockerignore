@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+db/*.db
+db/*.db-journal
+db/*.db-wal
+db/*.db-shm
+db/backfill_checkpoint.txt
+logs/
+.env

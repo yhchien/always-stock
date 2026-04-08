@@ -1,5 +1,6 @@
 "use client"
 
+import { Suspense } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import IndustryDashboard from "@/components/IndustryDashboard"
 
@@ -7,7 +8,7 @@ function todayString() {
   return new Date().toISOString().slice(0, 10)
 }
 
-export default function Home() {
+function HomeContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const date = searchParams.get("date") ?? todayString()
@@ -22,5 +23,13 @@ export default function Home() {
         }
       />
     </main>
+  )
+}
+
+export default function Home() {
+  return (
+    <Suspense>
+      <HomeContent />
+    </Suspense>
   )
 }

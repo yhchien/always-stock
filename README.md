@@ -231,6 +231,9 @@ npm test
 - [x] daily_price 擴充 OHLC 欄位（open_price / high_price / low_price）
 - [x] L2 K 線圖（candlestick）：紅漲綠跌、hover 顯示開高低收、舊資料自動 fallback 折線圖
 - [x] 歷史 backfill 區間擴充至 2019-01-01 ~ 2026-04-07（8 年）
+- [x] Fly.io 雲端部署（後端 API + Telegram Bot + 前端）
+- [x] ETL 排程（cron，每天 19:00 + 21:30 台灣時間自動更新）
+- [x] SQLite 持久化（Fly.io persistent volume 12 GB）
 
 ---
 
@@ -247,7 +250,7 @@ npm test
 | M7 | K 線圖（OHLC candlestick） | ✅ 完成 |
 | M8 | 財報資料庫（含 PE / 基本面指標） | ⬜ 待開始 |
 | M9 | AI Sub-agent（接 LLM，投資策略初版） | ✅ 完成 |
-| M10 | 部署上線（Cloud） | ⬜ 待開始 |
+| M10 | 部署上線（Cloud） | ✅ 完成（Fly.io） |
 | M11 | 回測程式（策略績效驗證） | ⬜ 待開始 |
 | M12 | 文字化投資策略輸入 | ⬜ 待開始 |
 | M13 | 關鍵券商分點爬蟲 | ⬜ 待開始 |
@@ -284,9 +287,11 @@ npm test
 
 ### Phase 4 — 部署 & 推播
 
-- [ ] **M10 部署上線**：從 localhost 轉為 cloud 部署（Fly.io / Render / VPS）
-  - 後端 API + Telegram Bot 一起部署
-  - launchd 改為 cron job 或平台內建排程
+- [x] **M10 部署上線**：Fly.io 雲端部署
+  - 後端 API + Telegram Bot → `always-stock-api.fly.dev`
+  - 前端 → `always-stock-web.fly.dev`
+  - SQLite → Fly persistent volume（12 GB）
+  - ETL 排程 → container 內 cron（19:00 + 21:30 台灣時間）
 - [ ] **M15 Telegram 電子報**：定期推播投資推薦到 Telegram
   - 結合法人籌碼 + 財報 + AI 策略 + 輿情分析
   - 每日 / 每週摘要報告
@@ -301,6 +306,83 @@ npm test
 | 每日收盤價 | TWSE `STOCK_DAY_ALL` | 公開免費 |
 | 三大法人買賣超 | TWSE `T86` | 公開免費 |
 | 子產業分類 | Fugle（自定義爬取） | 本地 CSV |
+
+## 部署架構（Fly.io）
+
+| 服務 | App 名稱 | URL |
+|------|---------|-----|
+| 後端 API + Telegram Bot | `always-stock-api` | https://always-stock-api.fly.dev |
+| 前端 | `always-stock-web` | https://always-stock-web.fly.dev |
+
+### 部署指令
+
+```bash
+# 後端（含 API + Telegram Bot + cron ETL）
+cd backend && fly deploy
+
+# 前端
+cd frontend && fly deploy
+```
+
+### DB 上傳 / 下載
+
+```bash
+# 上傳本地 DB 到雲端
+fly proxy 10022:22 --app always-stock-api &
+scp -P 10022 backend/db/tw_stock.db root@localhost:/data/tw_stock.db
+
+# 下載雲端 DB（備份）
+scp -P 10022 root@localhost:/data/tw_stock.db ./backup.db
+```
+
+### 日常維護
+
+```bash
+# 查看 app 狀態
+fly status --app always-stock-api
+
+# 即時 logs
+fly logs --app always-stock-api
+
+# 檢查 ETL 排程執行紀錄
+fly ssh console --app always-stock-api -C "tail -20 /data/logs/etl_cron.log"
+
+# 手動觸發 ETL（不等排程）
+fly ssh console --app always-stock-api -C "cd /app && python run_daily_etl.py --skip-master"
+
+# 管理 secrets
+fly secrets list --app always-stock-api
+fly secrets set GEMINI_API_KEY="new-key" --app always-stock-api
+
+# SSH 進 container 除錯
+fly ssh console --app always-stock-api
+```
+
+### 自動化機制
+
+| 項目 | 說明 |
+|------|------|
+| ETL 排程 | cron：週一至週五 19:00 + 21:30（台灣時間） |
+| SSL 憑證 | Fly.io 自動管理 |
+| 閒置省錢 | `auto_stop_machines = "suspend"`，無流量時自動暫停 |
+| DB 備份 | Fly volume 每日自動 snapshot（保留 5 份） |
+
+---
+
+## Claude Code 協作
+
+本專案使用 Claude Code 協助開發與維護。Claude 的 memory 系統已記錄完整的部署架構、URL、secrets、排程、維護指令等資訊。
+
+你可以直接用自然語言請 Claude 幫忙，例如：
+- 「幫我檢查 ETL 有沒有正常跑」
+- 「重新部署後端」
+- 「更新 Gemini key」
+- 「下載雲端 DB 備份」
+- 「幫我看 Fly.io logs」
+
+Claude 會自動從 memory 取得正確的 app 名稱、指令和上下文來執行。
+
+---
 
 ## 參考資源
 

@@ -13,9 +13,20 @@ app = FastAPI(
     version="0.1.0",
 )
 
+import os
+
+_allowed_origins = [
+    "http://localhost:3000",
+    "https://always-stock-web.fly.dev",
+]
+# Allow custom origins via env var (comma-separated)
+_extra = os.getenv("CORS_ORIGINS", "")
+if _extra:
+    _allowed_origins.extend(o.strip() for o in _extra.split(",") if o.strip())
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=_allowed_origins,
     allow_methods=["GET"],
     allow_headers=["*"],
 )
