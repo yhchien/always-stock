@@ -1,5 +1,5 @@
 """
-Telegram Bot for tw-stock-dashboard.
+Telegram Bot for always-stock.
 
 Commands:
     /start          - Welcome message and usage instructions

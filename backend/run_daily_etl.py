@@ -83,7 +83,7 @@ def run_one_day(
 def main() -> None:
     setup_logging()
 
-    parser = argparse.ArgumentParser(description="tw-stock-dashboard daily ETL")
+    parser = argparse.ArgumentParser(description="always-stock daily ETL")
     parser.add_argument(
         "--date", type=str, default=None,
         help="trade date in YYYY-MM-DD format, defaults to today",

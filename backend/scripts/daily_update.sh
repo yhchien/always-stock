@@ -1,5 +1,5 @@
 #!/bin/bash
-# Daily ETL update script for tw-stock-dashboard.
+# Daily ETL update script for always-stock.
 # Intended to be triggered by launchd (macOS) or cron at ~20:00 after market close.
 #
 # Usage:
@@ -14,7 +14,7 @@ LOG_FILE="$PROJECT_DIR/logs/daily_update_$(date +%Y%m%d).log"
 
 cd "$PROJECT_DIR"
 
-echo "=== tw-stock-dashboard daily update ===" >> "$LOG_FILE"
+echo "=== always-stock daily update ===" >> "$LOG_FILE"
 echo "Started at: $(date)" >> "$LOG_FILE"
 
 DATE_ARG=""

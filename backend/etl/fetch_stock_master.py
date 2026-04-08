@@ -69,7 +69,7 @@ def fetch_and_upsert_stock_master(
         params["token"] = token
 
     url = FINMIND_URL + "?" + urllib.parse.urlencode(params)
-    req = urllib.request.Request(url, headers={"User-Agent": "tw-stock-dashboard/1.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "always-stock/1.0"})
 
     logger.debug("Fetching stock master from FinMind: %s", url)
     with urllib.request.urlopen(req, timeout=30) as resp:

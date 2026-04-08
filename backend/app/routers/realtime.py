@@ -64,7 +64,7 @@ def _fetch_quotes(stock_ids: List[str]) -> List[dict]:
     ex_ch = "|".join(f"tse_{sid}.tw" for sid in stock_ids)
     params = {"ex_ch": ex_ch}
     url = TWSE_REALTIME_URL + "?" + urllib.parse.urlencode(params)
-    req = urllib.request.Request(url, headers={"User-Agent": "tw-stock-dashboard/1.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "always-stock/1.0"})
 
     with urllib.request.urlopen(req, timeout=10) as resp:
         data = json.loads(resp.read())

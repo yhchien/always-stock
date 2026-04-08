@@ -8,7 +8,7 @@ from app.routers import industries, realtime, stocks
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
-    title="tw-stock-dashboard API",
+    title="always-stock API",
     description="Taiwan stock institutional flow API by industry",
     version="0.1.0",
 )
@@ -24,7 +24,7 @@ app.include_router(industries.router, prefix="/api")
 app.include_router(stocks.router, prefix="/api")
 app.include_router(realtime.router, prefix="/api")
 
-logger.info("tw-stock-dashboard API initialized")
+logger.info("always-stock API initialized")
 
 
 @app.get("/health")

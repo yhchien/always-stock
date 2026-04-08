@@ -70,7 +70,7 @@ def fetch_and_upsert_daily_price(db: Session, trade_date: date) -> int:
     date_str = trade_date.strftime("%Y%m%d")
     params = {"date": date_str, "response": "json", "type": "ALLBUT0999"}
     url = TWSE_MI_INDEX_URL + "?" + urllib.parse.urlencode(params)
-    req = urllib.request.Request(url, headers={"User-Agent": "tw-stock-dashboard/1.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "always-stock/1.0"})
 
     logger.debug("Fetching daily price for %s", date_str)
     with urllib.request.urlopen(req, timeout=30) as resp:

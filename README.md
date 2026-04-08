@@ -1,4 +1,4 @@
-# tw-stock-dashboard
+# always-stock
 
 台股產業別三大法人資金流向分析儀表板。
 
@@ -13,7 +13,7 @@
 ## 專案架構
 
 ```
-tw-stock-dashboard/
+always-stock/
 ├── backend/
 │   ├── app/
 │   │   ├── database.py          # SQLAlchemy engine / session
@@ -34,7 +34,7 @@ tw-stock-dashboard/
 │   ├── run_backfill.py          # 歷史 backfill（可斷點續傳）
 │   ├── scripts/
 │   │   ├── daily_update.sh      # 每日自動更新 shell script
-│   │   └── com.tw-stock-dashboard.daily-etl.plist  # macOS launchd 排程
+│   │   └── com.always-stock.daily-etl.plist  # macOS launchd 排程
 │   ├── run_telegram_bot.py      # Telegram Bot 啟動腳本（long-polling）
 │   └── requirements.txt
 ├── frontend/                    # Next.js 前端
@@ -134,14 +134,14 @@ python run_backfill.py --reset
 
 ```bash
 # 安裝 launchd plist（週一至週五 20:00 自動執行）
-cp backend/scripts/com.tw-stock-dashboard.daily-etl.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.tw-stock-dashboard.daily-etl.plist
+cp backend/scripts/com.always-stock.daily-etl.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.always-stock.daily-etl.plist
 
 # 手動測試
 bash backend/scripts/daily_update.sh
 
 # 停用
-launchctl unload ~/Library/LaunchAgents/com.tw-stock-dashboard.daily-etl.plist
+launchctl unload ~/Library/LaunchAgents/com.always-stock.daily-etl.plist
 ```
 
 ### 4. 啟動 API
@@ -299,3 +299,8 @@ npm test
 | 每日收盤價 | TWSE `STOCK_DAY_ALL` | 公開免費 |
 | 三大法人買賣超 | TWSE `T86` | 公開免費 |
 | 子產業分類 | Fugle（自定義爬取） | 本地 CSV |
+
+## 參考資源
+
+- [FinLab AI 回測筆記本](https://ai.finlab.tw/notebook/?uid=tBcYFAAsnvMS4Wuhv1NOuKouf5e2&sid=0ef97103-3998-439d-986a-806bfad785b3&name=%E6%9C%AA%E5%91%BD%E5%90%8D1) — M11 回測程式的目標參考，希望做到類似的互動式回測體驗
+- ⚠️ **API Key 管理**：所有 API key（Telegram Bot Token、Gemini API Key、FinMind Token）統一存放在 `.env` 檔案中，切換環境時記得重新設定

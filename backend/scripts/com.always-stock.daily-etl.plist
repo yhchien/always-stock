@@ -3,12 +3,12 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.tw-stock-dashboard.daily-etl</string>
+    <string>com.always-stock.daily-etl</string>
 
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Users/brian.yh.chien/.gstack/projects/tw-stock-dashboard/backend/scripts/daily_update.sh</string>
+        <string>/Users/brian.yh.chien/.gstack/projects/always-stock/backend/scripts/daily_update.sh</string>
     </array>
 
     <!-- Run at 20:00 every weekday (Mon-Fri) -->
@@ -42,10 +42,10 @@
     </array>
 
     <key>StandardOutPath</key>
-    <string>/Users/brian.yh.chien/.gstack/projects/tw-stock-dashboard/backend/logs/launchd_stdout.log</string>
+    <string>/Users/brian.yh.chien/.gstack/projects/always-stock/backend/logs/launchd_stdout.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/brian.yh.chien/.gstack/projects/tw-stock-dashboard/backend/logs/launchd_stderr.log</string>
+    <string>/Users/brian.yh.chien/.gstack/projects/always-stock/backend/logs/launchd_stderr.log</string>
 
     <!-- Retry if missed (e.g. laptop was asleep) -->
     <key>StartInterval</key>

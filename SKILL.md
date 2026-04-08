@@ -1,5 +1,5 @@
 ---
-name: tw-stock-dashboard
+name: always-stock
 description: Taiwan stock industry-level institutional money flow dashboard — ETL, API, and frontend rules.
 ---
 
