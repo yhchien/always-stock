@@ -76,6 +76,9 @@ always-stock/
 - **ETL 資料來源**: FinMind API + TWSE 公開資料
 - **Frontend**: Next.js + Tailwind CSS + shadcn/ui + ECharts
 - **產業分類**: Fugle 自定義供應鏈子產業（三層：大類 → chain → sub_industry）
+- **AI 分析**: OpenAI GPT（gpt-4o-mini，Telegram `/ai` 指令觸發籌碼分析）
+- **Bot**: Telegram Bot（long-polling）
+- **部署**: Fly.io（API + Bot + 前端 + cron ETL + persistent volume 12GB）
 
 ---
 
