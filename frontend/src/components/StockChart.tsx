@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState, useCallback, useMemo } from "react"
+import { useEffect, useState, useCallback, useMemo, useRef } from "react"
 import { useRouter } from "next/navigation"
 import ReactECharts from "echarts-for-react"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -15,6 +15,25 @@ const RANGE_OPTIONS = [
   { label: "All", days: 3650 },
 ] as const
 
+// ── MA colours ────────────────────────────────────────────────────────────────
+const MA_CONFIGS: Record<number, { color: string; label: string }> = {
+  10:  { color: "#fbbf24", label: "MA10" },
+  20:  { color: "#34d399", label: "MA20" },
+  60:  { color: "#f472b6", label: "MA60" },
+}
+const CUSTOM_MA_COLOR = "#94a3b8"
+const DEFAULT_MAS = new Set([10, 20, 60])
+
+// ── MA calculation ────────────────────────────────────────────────────────────
+function calcMA(prices: (number | null)[], period: number): (number | null)[] {
+  return prices.map((_, i) => {
+    if (i < period - 1) return null
+    const slice = prices.slice(i - period + 1, i + 1)
+    if (slice.some((v) => v == null)) return null
+    return (slice as number[]).reduce((a, b) => a + b, 0) / period
+  })
+}
+
 interface Props {
   stockId: string
   defaultDate?: string
@@ -23,11 +42,17 @@ interface Props {
 
 export default function StockChart({ stockId, defaultDate, days: initialDays = 90 }: Props) {
   const router = useRouter()
+  const chartRef = useRef<HTMLDivElement>(null)
   const [days, setDays] = useState(initialDays)
   const [data, setData] = useState<StockHistoryResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const realtimeQuotes = useRealtimeQuotes([stockId])
+
+  // MA state
+  const [activeMAs, setActiveMAs] = useState<Set<number>>(DEFAULT_MAS)
+  const [customMA, setCustomMA] = useState<string>("")
+  const [customMAPeriod, setCustomMAPeriod] = useState<number | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -47,18 +72,33 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
     load()
   }, [load])
 
+  const toggleMA = (period: number) => {
+    setActiveMAs((prev) => {
+      const next = new Set(prev)
+      if (next.has(period)) next.delete(period)
+      else next.add(period)
+      return next
+    })
+  }
+
+  const addCustomMA = () => {
+    const n = parseInt(customMA, 10)
+    if (!n || n < 2 || n > 200) return
+    setCustomMAPeriod(n)
+    setActiveMAs((prev) => new Set([...prev, n]))
+    setCustomMA("")
+  }
+
   const chartOption = useMemo(() => {
     if (!data || data.history.length === 0) return null
 
     const dates = data.history.map((h) => h.trade_date)
+    const closePrices = data.history.map((h) => h.close_price)
     const foreignCum = data.history.map((h) => h.foreign_cumulative)
     const trustCum = data.history.map((h) => h.trust_cumulative)
     const dealerCum = data.history.map((h) => h.dealer_cumulative)
 
-    // Check if OHLC data is available (may be null for older records)
     const hasOHLC = data.history.some((h) => h.open_price != null)
-
-    // Candlestick data: [open, close, low, high]
     const candleData = hasOHLC
       ? data.history.map((h) => [
           h.open_price ?? h.close_price,
@@ -68,9 +108,6 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
         ])
       : null
 
-    // Fallback: line chart with close prices only
-    const closePrices = data.history.map((h) => h.close_price)
-
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const priceSeries: any = hasOHLC && candleData
       ? {
@@ -79,10 +116,10 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
           yAxisIndex: 0,
           data: candleData,
           itemStyle: {
-            color: "#ef4444",          // 漲 (收 > 開) — 紅色填充
-            color0: "#22c55e",         // 跌 (收 < 開) — 綠色填充
-            borderColor: "#ef4444",    // 漲 — 紅色邊框
-            borderColor0: "#22c55e",   // 跌 — 綠色邊框
+            color: "#ef4444",
+            color0: "#22c55e",
+            borderColor: "#ef4444",
+            borderColor0: "#22c55e",
           },
         }
       : {
@@ -96,9 +133,30 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
           itemStyle: { color: "#f4f4f5" },
         }
 
-    const legendData = hasOHLC
-      ? ["股價", "外資累積", "投信累積", "自營商累積"]
-      : ["收盤價", "外資累積", "投信累積", "自營商累積"]
+    // Build MA series for all active periods
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const maSeries: any[] = []
+    const allActivePeriods = [...activeMAs].filter((p) => p > 0)
+    for (const period of allActivePeriods) {
+      const maData = calcMA(closePrices, period)
+      const isCustom = !MA_CONFIGS[period]
+      const color = isCustom ? CUSTOM_MA_COLOR : MA_CONFIGS[period].color
+      const label = isCustom ? `MA${period}` : MA_CONFIGS[period].label
+      maSeries.push({
+        name: label,
+        type: "line",
+        yAxisIndex: 0,
+        data: maData,
+        smooth: false,
+        symbol: "none",
+        lineStyle: { color, width: 1.5, type: "solid" },
+        itemStyle: { color },
+      })
+    }
+
+    const priceName = hasOHLC ? "股價" : "收盤價"
+    const maNames = allActivePeriods.map((p) => (MA_CONFIGS[p]?.label ?? `MA${p}`))
+    const legendData = [priceName, ...maNames, "外資累積", "投信累積", "自營商累積"]
 
     return {
       backgroundColor: "transparent",
@@ -114,7 +172,6 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
           let html = `<div style="font-size:12px">${params[0].axisValue}</div>`
           for (const p of params) {
             if (p.seriesType === "candlestick") {
-              // p.data = [index, open, close, low, high]
               const [, open, close, low, high] = p.data as number[]
               const color = close >= open ? "#ef4444" : "#22c55e"
               html += `<div style="color:${color}">` +
@@ -122,7 +179,9 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
                 `低 ${low.toFixed(2)}　收 <b>${close.toFixed(2)}</b> 元</div>`
             } else if (p.seriesName === "收盤價") {
               html += `<div>${p.marker} ${p.seriesName}: <b>${(p.value as number).toFixed(2)} 元</b></div>`
-            } else {
+            } else if (typeof p.value === "number" && p.seriesName?.startsWith("MA")) {
+              html += `<div>${p.marker} ${p.seriesName}: <b>${(p.value as number).toFixed(2)} 元</b></div>`
+            } else if (p.value != null) {
               html += `<div>${p.marker} ${p.seriesName}: <b>${fmtShares(p.value as number)}</b></div>`
             }
           }
@@ -131,15 +190,12 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
       },
       legend: {
         data: legendData,
-        textStyle: { color: "#a1a1aa", fontSize: 12 },
+        textStyle: { color: "#a1a1aa", fontSize: 11 },
         top: 0,
+        itemWidth: 16,
+        itemHeight: 10,
       },
-      grid: {
-        left: 60,
-        right: 70,
-        top: 40,
-        bottom: 70,
-      },
+      grid: { left: 60, right: 70, top: 40, bottom: 70 },
       dataZoom: [
         {
           type: "slider",
@@ -158,12 +214,7 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
             areaStyle: { color: "#3f3f46" },
           },
         },
-        {
-          type: "inside",
-          xAxisIndex: 0,
-          start: 0,
-          end: 100,
-        },
+        { type: "inside", xAxisIndex: 0, start: 0, end: 100 },
       ],
       xAxis: {
         type: "category" as const,
@@ -171,7 +222,7 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
         axisLabel: {
           color: "#71717a",
           fontSize: 11,
-          formatter: (v: string) => v.slice(5), // MM-DD
+          formatter: (v: string) => v.slice(5),
         },
         axisLine: { lineStyle: { color: "#3f3f46" } },
         splitLine: { show: false },
@@ -201,6 +252,7 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
       ],
       series: [
         priceSeries,
+        ...maSeries,
         {
           name: "外資累積",
           type: "line",
@@ -233,12 +285,12 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
         },
       ],
     }
-  }, [data])
+  }, [data, activeMAs])
 
   return (
     <div className="flex flex-col gap-4">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-3">
           <button
             onClick={() => router.back()}
@@ -275,38 +327,105 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
         })()}
       </div>
 
-      {/* Range selector */}
-      <div className="flex gap-1">
-        {RANGE_OPTIONS.map((opt) => (
-          <button
-            key={opt.label}
-            onClick={() => setDays(opt.days)}
-            className={`px-3 py-1 text-xs rounded-md border transition-colors ${
-              days === opt.days
-                ? "bg-zinc-700 border-zinc-500 text-zinc-100"
-                : "bg-zinc-900 border-zinc-700 text-zinc-400 hover:text-zinc-200 hover:border-zinc-500"
-            }`}
-          >
-            {opt.label}
-          </button>
-        ))}
+      {/* Range + MA controls */}
+      <div className="flex items-center gap-4 flex-wrap">
+        {/* Range selector */}
+        <div className="flex gap-1">
+          {RANGE_OPTIONS.map((opt) => (
+            <button
+              key={opt.label}
+              onClick={() => setDays(opt.days)}
+              className={`px-3 py-1 text-xs rounded-md border transition-colors ${
+                days === opt.days
+                  ? "bg-zinc-700 border-zinc-500 text-zinc-100"
+                  : "bg-zinc-900 border-zinc-700 text-zinc-400 hover:text-zinc-200 hover:border-zinc-500"
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+
+        {/* MA toggles */}
+        <div className="flex items-center gap-1 flex-wrap">
+          {Object.entries(MA_CONFIGS).map(([p, cfg]) => {
+            const period = Number(p)
+            const active = activeMAs.has(period)
+            return (
+              <button
+                key={period}
+                onClick={() => toggleMA(period)}
+                className={`flex items-center gap-1 px-2 py-1 text-xs rounded-md border transition-colors ${
+                  active
+                    ? "border-zinc-500 bg-zinc-700 text-zinc-100"
+                    : "border-zinc-700 bg-zinc-900 text-zinc-500 hover:text-zinc-300"
+                }`}
+              >
+                <span
+                  className="inline-block w-2.5 h-2.5 rounded-sm"
+                  style={{ backgroundColor: active ? cfg.color : "#52525b" }}
+                />
+                {cfg.label}
+              </button>
+            )
+          })}
+          {/* Custom MA */}
+          {customMAPeriod && (
+            <button
+              onClick={() => {
+                setCustomMAPeriod(null)
+                setActiveMAs((prev) => {
+                  const next = new Set(prev)
+                  next.delete(customMAPeriod)
+                  return next
+                })
+              }}
+              className={`flex items-center gap-1 px-2 py-1 text-xs rounded-md border transition-colors ${
+                activeMAs.has(customMAPeriod)
+                  ? "border-zinc-500 bg-zinc-700 text-zinc-100"
+                  : "border-zinc-700 bg-zinc-900 text-zinc-500"
+              }`}
+            >
+              <span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: CUSTOM_MA_COLOR }} />
+              MA{customMAPeriod} ×
+            </button>
+          )}
+          <div className="flex items-center gap-1">
+            <input
+              type="number"
+              value={customMA}
+              onChange={(e) => setCustomMA(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && addCustomMA()}
+              placeholder="自訂"
+              min={2}
+              max={200}
+              className="w-16 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-300 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-zinc-500"
+            />
+            <button
+              onClick={addCustomMA}
+              className="px-2 py-1 text-xs rounded-md border border-zinc-700 bg-zinc-900 text-zinc-400 hover:text-zinc-200 hover:border-zinc-500 transition-colors"
+            >
+              +
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* Status */}
       {loading && (
         <div className="flex flex-col gap-4">
           <Skeleton className="h-8 w-48" />
-          <Skeleton className="h-[400px] w-full rounded-lg" />
+          <Skeleton className="h-[60vh] min-h-[400px] w-full rounded-lg" />
         </div>
       )}
       {error && <p className="text-sm text-red-400">{error}</p>}
 
-      {/* Chart */}
+      {/* Chart — responsive height via CSS */}
       {!loading && !error && chartOption && (
-        <div className="rounded-lg border border-zinc-800 p-4">
+        <div ref={chartRef} className="rounded-lg border border-zinc-800 p-4">
           <ReactECharts
             option={chartOption}
-            style={{ height: 400, width: "100%" }}
+            style={{ height: "60vh", minHeight: 400, width: "100%" }}
             opts={{ renderer: "svg" }}
           />
         </div>
