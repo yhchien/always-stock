@@ -24,6 +24,14 @@ const MA_CONFIGS: Record<number, { color: string; label: string }> = {
 const CUSTOM_MA_COLOR = "#94a3b8"
 const DEFAULT_MAS = new Set([10, 20, 60])
 
+// ── Institutional line configs ─────────────────────────────────────────────────
+const INST_CONFIGS = [
+  { key: "foreign", label: "外資", color: "#f87171" },
+  { key: "trust",   label: "投信", color: "#60a5fa" },
+  { key: "dealer",  label: "自營", color: "#a78bfa" },
+] as const
+type InstKey = typeof INST_CONFIGS[number]["key"]
+
 // ── MA calculation ────────────────────────────────────────────────────────────
 function calcMA(prices: (number | null)[], period: number): (number | null)[] {
   return prices.map((_, i) => {
@@ -48,6 +56,18 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const realtimeQuotes = useRealtimeQuotes([stockId])
+
+  // Institutional line toggle state
+  const [activeInst, setActiveInst] = useState<Set<InstKey>>(new Set(["foreign", "trust", "dealer"]))
+
+  const toggleInst = (key: InstKey) => {
+    setActiveInst((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
 
   // MA state
   const [activeMAs, setActiveMAs] = useState<Set<number>>(DEFAULT_MAS)
@@ -156,7 +176,8 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
 
     const priceName = hasOHLC ? "股價" : "收盤價"
     const maNames = allActivePeriods.map((p) => (MA_CONFIGS[p]?.label ?? `MA${p}`))
-    const legendData = [priceName, ...maNames, "外資累積", "投信累積", "自營商累積"]
+    const instNames = INST_CONFIGS.filter((c) => activeInst.has(c.key)).map((c) => `${c.label}累積`)
+    const legendData = [priceName, ...maNames, ...instNames]
 
     return {
       backgroundColor: "transparent",
@@ -253,7 +274,7 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
       series: [
         priceSeries,
         ...maSeries,
-        {
+        ...(activeInst.has("foreign") ? [{
           name: "外資累積",
           type: "line",
           yAxisIndex: 1,
@@ -262,8 +283,8 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
           symbol: "none",
           lineStyle: { color: "#f87171", width: 1.5 },
           itemStyle: { color: "#f87171" },
-        },
-        {
+        }] : []),
+        ...(activeInst.has("trust") ? [{
           name: "投信累積",
           type: "line",
           yAxisIndex: 1,
@@ -272,8 +293,8 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
           symbol: "none",
           lineStyle: { color: "#60a5fa", width: 1.5 },
           itemStyle: { color: "#60a5fa" },
-        },
-        {
+        }] : []),
+        ...(activeInst.has("dealer") ? [{
           name: "自營商累積",
           type: "line",
           yAxisIndex: 1,
@@ -282,10 +303,10 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
           symbol: "none",
           lineStyle: { color: "#a78bfa", width: 1.5 },
           itemStyle: { color: "#a78bfa" },
-        },
+        }] : []),
       ],
     }
-  }, [data, activeMAs])
+  }, [data, activeMAs, activeInst])
 
   return (
     <div className="flex flex-col gap-4">
@@ -344,6 +365,30 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
               {opt.label}
             </button>
           ))}
+        </div>
+
+        {/* Institutional line toggles */}
+        <div className="flex items-center gap-1">
+          {INST_CONFIGS.map(({ key, label, color }) => {
+            const active = activeInst.has(key)
+            return (
+              <button
+                key={key}
+                onClick={() => toggleInst(key)}
+                className={`flex items-center gap-1 px-2 py-1 text-xs rounded-md border transition-colors ${
+                  active
+                    ? "border-zinc-500 bg-zinc-700 text-zinc-100"
+                    : "border-zinc-700 bg-zinc-900 text-zinc-500 hover:text-zinc-300"
+                }`}
+              >
+                <span
+                  className="inline-block w-2.5 h-2.5 rounded-sm"
+                  style={{ backgroundColor: active ? color : "#52525b" }}
+                />
+                {label}
+              </button>
+            )
+          })}
         </div>
 
         {/* MA toggles */}
@@ -425,6 +470,7 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
         <div ref={chartRef} className="rounded-lg border border-zinc-800 p-4">
           <ReactECharts
             option={chartOption}
+            notMerge
             style={{ height: "60vh", minHeight: 400, width: "100%" }}
             opts={{ renderer: "svg" }}
           />
