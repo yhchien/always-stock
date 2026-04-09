@@ -12,7 +12,7 @@ echo "TZ=${TZ:-not set}"
 mkdir -p /data/logs
 
 # Dump current env vars so cron jobs can inherit Fly secrets
-env | grep -E '^(DB_PATH|TZ|TELEGRAM_BOT_TOKEN|GEMINI_API_KEY|FINMIND_API_TOKEN|PATH|PYTHONPATH)=' \
+env | grep -E '^(DB_PATH|TZ|TELEGRAM_BOT_TOKEN|OPENAI_API_KEY|FINMIND_API_TOKEN|PATH|PYTHONPATH)=' \
     | sed 's/^/export /' > /app/scripts/env.sh
 chmod 600 /app/scripts/env.sh
 

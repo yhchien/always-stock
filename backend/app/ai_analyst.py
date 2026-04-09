@@ -1,15 +1,15 @@
 """
-AI analyst sub-agent powered by Google Gemini.
+AI analyst sub-agent powered by OpenAI.
 
 Takes stock data (institutional flow, price, industry) from the database
-and asks Gemini to provide investment analysis and commentary.
+and asks OpenAI to provide investment analysis and commentary.
 """
 import logging
 import os
 from datetime import date, timedelta
 from typing import Optional
 
-import google.generativeai as genai
+from openai import OpenAI
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -18,8 +18,8 @@ from app.models import DailyPrice, InstStockFlow, StockMaster
 
 logger = logging.getLogger(__name__)
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 SYSTEM_PROMPT = """你是一位專業的台股投資分析師，擅長籌碼面分析。
 你的任務是根據提供的三大法人買賣超資料，給出簡潔、有洞察力的分析。
@@ -118,8 +118,8 @@ def analyze_stock(stock_id: str) -> str:
     Run AI analysis for a given stock_id.
     Returns formatted analysis string.
     """
-    if not GEMINI_API_KEY:
-        return "⚠️ AI 分析功能未啟用（GEMINI_API_KEY 未設定）。"
+    if not OPENAI_API_KEY:
+        return "⚠️ AI 分析功能未啟用（OPENAI_API_KEY 未設定）。"
 
     db = SessionLocal()
     try:
@@ -129,20 +129,18 @@ def analyze_stock(stock_id: str) -> str:
 
         logger.info("AI analysis request: stock_id=%s", stock_id)
 
-        genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel(
-            model_name=GEMINI_MODEL,
-            system_instruction=SYSTEM_PROMPT,
-        )
-        response = model.generate_content(
-            f"請分析以下股票的近期籌碼動向：\n\n{context}",
-            generation_config=genai.types.GenerationConfig(
-                max_output_tokens=500,
-                temperature=0.7,
-            ),
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        response = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": f"請分析以下股票的近期籌碼動向：\n\n{context}"},
+            ],
+            max_tokens=500,
+            temperature=0.7,
         )
 
-        analysis = response.text.strip()
+        analysis = response.choices[0].message.content.strip()
         return f"🤖 *AI 籌碼分析 — {stock_id}*\n\n{analysis}"
 
     except Exception:

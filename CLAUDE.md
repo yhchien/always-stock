@@ -9,7 +9,7 @@
 - **Frontend**: Next.js + Tailwind CSS + shadcn/ui + ECharts
 - **DB**: SQLite (`backend/db/tw_stock.db`)
 - **ETL 資料來源**: TWSE 公開資料（T86、STOCK_DAY_ALL）、FinMind API、Fugle 子產業分類
-- **Bot**: Telegram Bot（long-polling）+ Gemini AI 籌碼分析
+- **Bot**: Telegram Bot（long-polling）+ OpenAI GPT 籌碼分析
 - **排程**: macOS launchd（本地）/ cron（Fly.io，19:00 + 21:30 台灣時間）
 - **部署**: Fly.io（API: always-stock-api.fly.dev / 前端: always-stock-web.fly.dev）
 
@@ -19,7 +19,7 @@
 - M1~M4: ETL pipeline、FastAPI API、Next.js 三層 drill-down 儀表板
 - M5: Telegram Bot 個股籌碼查詢
 - M7: K 線圖（L2 candlestick + 法人累積買超，舊資料自動 fallback 折線圖）
-- M9: AI 籌碼分析（`/ai` 指令，接 Gemini）
+- M9: AI 籌碼分析（`/ai` 指令，接 OpenAI GPT）
 - M10: Fly.io 雲端部署（API + Bot + 前端 + cron ETL + persistent volume 12GB）
 
 ### 進行中

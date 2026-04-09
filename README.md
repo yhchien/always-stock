@@ -267,10 +267,10 @@ npm run dev
 
 ### L2 頁面進階功能
 
-- [ ] 均線疊加（MA10 / MA20 / MA60 + 自定義期數，可個別切換，各自不同顏色）
-- [ ] K 線圖響應式放大（高度隨視窗縮放，不固定 px）
-- [ ] 回測策略框架（L2 下半部左：策略條件輸入 + 績效結果佔位）
-- [ ] 關注券商買賣長條圖（L2 下半部右：輸入券商代號，對齊 K 線日期顯示買賣量）
+- [x] 均線疊加（MA10 / MA20 / MA60 + 自定義期數，可個別切換，各自不同顏色）
+- [x] K 線圖響應式放大（高度隨視窗縮放，不固定 px）
+- [x] 回測策略框架（L2 下半部左：策略條件輸入 + 績效結果佔位）
+- [x] 關注券商買賣長條圖（L2 下半部右：輸入券商代號，對齊 K 線日期顯示買賣量）
 
 ---
 
@@ -389,7 +389,7 @@ fly ssh console --app always-stock-api -C "cd /app && python run_daily_etl.py --
 
 # 管理 secrets
 fly secrets list --app always-stock-api
-fly secrets set GEMINI_API_KEY="new-key" --app always-stock-api
+fly secrets set OPENAI_API_KEY="new-key" --app always-stock-api
 
 # SSH 進 container 除錯
 fly ssh console --app always-stock-api
@@ -413,7 +413,7 @@ fly ssh console --app always-stock-api
 你可以直接用自然語言請 Claude 幫忙，例如：
 - 「幫我檢查 ETL 有沒有正常跑」
 - 「重新部署後端」
-- 「更新 Gemini key」
+- 「更新 OpenAI key」
 - 「下載雲端 DB 備份」
 - 「幫我看 Fly.io logs」
 
@@ -424,4 +424,4 @@ Claude 會自動從 memory 取得正確的 app 名稱、指令和上下文來執
 ## 參考資源
 
 - [FinLab AI 回測筆記本](https://ai.finlab.tw/notebook/?uid=tBcYFAAsnvMS4Wuhv1NOuKouf5e2&sid=0ef97103-3998-439d-986a-806bfad785b3&name=%E6%9C%AA%E5%91%BD%E5%90%8D1) — M11 回測程式的目標參考，希望做到類似的互動式回測體驗
-- ⚠️ **API Key 管理**：所有 API key（Telegram Bot Token、Gemini API Key、FinMind Token）統一存放在 `.env` 檔案中，切換環境時記得重新設定
+- ⚠️ **API Key 管理**：所有 API key（Telegram Bot Token、OpenAI API Key、FinMind Token）統一存放在 `.env` 檔案中，切換環境時記得重新設定

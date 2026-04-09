@@ -1,5 +1,5 @@
 """
-Tests for AI analyst module.
+Tests for AI analyst module (OpenAI backend).
 
 These tests verify data collection and formatting logic against an in-memory DB,
 and mock the OpenAI API call to avoid real API usage.
@@ -134,13 +134,13 @@ class TestCollectStockContext:
 
 class TestAnalyzeStock:
     def test_no_api_key(self, db):
-        with patch("app.ai_analyst.GEMINI_API_KEY", ""):
+        with patch("app.ai_analyst.OPENAI_API_KEY", ""):
             result = analyze_stock("2330")
         assert "未啟用" in result
 
     def test_stock_not_found(self, db):
         with (
-            patch("app.ai_analyst.GEMINI_API_KEY", "fake-key"),
+            patch("app.ai_analyst.OPENAI_API_KEY", "fake-key"),
             patch("app.ai_analyst.SessionLocal", return_value=db),
         ):
             result = analyze_stock("9999")
@@ -151,18 +151,23 @@ class TestAnalyzeStock:
         _seed_prices(db)
         _seed_flows(db, trade_date=date(2025, 4, 1))
 
-        mock_response = MagicMock()
-        mock_response.text = "外資連續買超，短期偏多。⚠️ 以上為 AI 分析僅供參考，不構成投資建議。"
+        mock_message = MagicMock()
+        mock_message.content = "外資連續買超，短期偏多。⚠️ 以上為 AI 分析僅供參考，不構成投資建議。"
 
-        mock_model = MagicMock()
-        mock_model.generate_content.return_value = mock_response
+        mock_choice = MagicMock()
+        mock_choice.message = mock_message
+
+        mock_response = MagicMock()
+        mock_response.choices = [mock_choice]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = mock_response
 
         with (
-            patch("app.ai_analyst.GEMINI_API_KEY", "fake-key"),
+            patch("app.ai_analyst.OPENAI_API_KEY", "fake-key"),
             patch("app.ai_analyst.SessionLocal", return_value=db),
-            patch("app.ai_analyst.genai") as mock_genai,
+            patch("app.ai_analyst.OpenAI", return_value=mock_client),
         ):
-            mock_genai.GenerativeModel.return_value = mock_model
             result = analyze_stock("2330")
 
         assert "AI 籌碼分析" in result
@@ -173,15 +178,14 @@ class TestAnalyzeStock:
         _seed_stock(db)
         _seed_prices(db)
 
-        mock_model = MagicMock()
-        mock_model.generate_content.side_effect = Exception("API error")
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = Exception("API error")
 
         with (
-            patch("app.ai_analyst.GEMINI_API_KEY", "fake-key"),
+            patch("app.ai_analyst.OPENAI_API_KEY", "fake-key"),
             patch("app.ai_analyst.SessionLocal", return_value=db),
-            patch("app.ai_analyst.genai") as mock_genai,
+            patch("app.ai_analyst.OpenAI", return_value=mock_client),
         ):
-            mock_genai.GenerativeModel.return_value = mock_model
             result = analyze_stock("2330")
 
         assert "發生錯誤" in result
@@ -227,17 +231,20 @@ class TestAiHandler:
         context = AsyncMock()
         context.args = ["2330"]
 
+        mock_message = MagicMock()
+        mock_message.content = "測試 AI 分析結果"
+        mock_choice = MagicMock()
+        mock_choice.message = mock_message
         mock_response = MagicMock()
-        mock_response.text = "測試 AI 分析結果"
-        mock_model = MagicMock()
-        mock_model.generate_content.return_value = mock_response
+        mock_response.choices = [mock_choice]
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = mock_response
 
         with (
-            patch("app.ai_analyst.GEMINI_API_KEY", "fake-key"),
+            patch("app.ai_analyst.OPENAI_API_KEY", "fake-key"),
             patch("app.ai_analyst.SessionLocal", return_value=db),
-            patch("app.ai_analyst.genai") as mock_genai,
+            patch("app.ai_analyst.OpenAI", return_value=mock_client),
         ):
-            mock_genai.GenerativeModel.return_value = mock_model
             await ai_handler(update, context)
 
         call_args = update.message.reply_text.call_args
