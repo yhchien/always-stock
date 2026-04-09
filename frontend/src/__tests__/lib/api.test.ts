@@ -50,6 +50,16 @@ describe("fmtStreak", () => {
   it("formats zero streak as dash", () => {
     expect(fmtStreak(0)).toBe("-")
   })
+
+  it("formats streak of 31 as 30+", () => {
+    expect(fmtStreak(31)).toBe("連買30+天")
+    expect(fmtStreak(-31)).toBe("連賣30+天")
+  })
+
+  it("formats streak of 30 normally", () => {
+    expect(fmtStreak(30)).toBe("連買30天")
+    expect(fmtStreak(-30)).toBe("連賣30天")
+  })
 })
 
 // ── fetchSubIndustrySummary ─────────────────────────────────────────────────

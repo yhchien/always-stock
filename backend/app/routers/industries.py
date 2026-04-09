@@ -103,13 +103,24 @@ def get_industries(
         logger.warning("No industry flow data for %s", date)
         raise HTTPException(status_code=404, detail=f"No data for {date}")
 
-    # Compute streaks: load recent history per industry (up to the given date)
+    # Compute streaks: load last 31 trading dates per industry (enough to detect 30+ streak)
     industry_names = [r.industry_name for r in rows]
+    recent_dates_l0 = (
+        db.query(IndustryDailyFlow.trade_date)
+        .filter(
+            IndustryDailyFlow.industry_name.in_(industry_names),
+            IndustryDailyFlow.trade_date <= date,
+        )
+        .distinct()
+        .order_by(IndustryDailyFlow.trade_date.desc())
+        .limit(31)
+        .subquery()
+    )
     history = (
         db.query(IndustryDailyFlow.industry_name, IndustryDailyFlow.trade_date, IndustryDailyFlow.total_net_amount)
         .filter(
             IndustryDailyFlow.industry_name.in_(industry_names),
-            IndustryDailyFlow.trade_date <= date,
+            IndustryDailyFlow.trade_date.in_(recent_dates_l0),
         )
         .order_by(IndustryDailyFlow.industry_name, IndustryDailyFlow.trade_date.desc())
         .all()
@@ -192,10 +203,19 @@ def get_industry_sub_summary(
         elif f.inst_type == "dealer":
             agg[sub]["dealer_net"] += f.net_amount_est or 0.0
 
-    # Load historical flows for streak calculation (all dates up to target)
+    # Load recent trading dates for streak calculation (last 31 distinct dates ≤ target)
+    # No need to load full history — streak only cares about consecutive days.
+    recent_dates = (
+        db.query(InstStockFlow.trade_date)
+        .filter(InstStockFlow.trade_date <= date, InstStockFlow.stock_id.in_(stock_ids))
+        .distinct()
+        .order_by(InstStockFlow.trade_date.desc())
+        .limit(31)
+        .subquery()
+    )
     all_flows = (
         db.query(InstStockFlow)
-        .filter(InstStockFlow.trade_date <= date, InstStockFlow.stock_id.in_(stock_ids))
+        .filter(InstStockFlow.trade_date.in_(recent_dates), InstStockFlow.stock_id.in_(stock_ids))
         .all()
     )
 

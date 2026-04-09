@@ -132,5 +132,7 @@ export function fmtShares(val: number): string {
 /** Format streak: +5 → "連買5天", -3 → "連賣3天", 0 → "-" */
 export function fmtStreak(streak: number): string {
   if (streak === 0) return "-"
-  return streak > 0 ? `連買${streak}天` : `連賣${Math.abs(streak)}天`
+  const abs = Math.abs(streak)
+  const days = abs >= 31 ? "30+" : `${abs}`
+  return streak > 0 ? `連買${days}天` : `連賣${days}天`
 }
