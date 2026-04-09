@@ -1,10 +1,26 @@
 "use client"
 
 import { Suspense, use } from "react"
+import dynamic from "next/dynamic"
 import { useSearchParams } from "next/navigation"
-import StockChart from "@/components/StockChart"
+import { Skeleton } from "@/components/ui/skeleton"
 import BacktestPanel from "@/components/BacktestPanel"
-import BrokerPanel from "@/components/BrokerPanel"
+
+// Lazy load ECharts-heavy components — excluded from initial bundle
+const StockChart = dynamic(() => import("@/components/StockChart"), {
+  ssr: false,
+  loading: () => (
+    <div className="flex flex-col gap-4">
+      <Skeleton className="h-8 w-64" />
+      <Skeleton className="h-[60vh] min-h-[400px] w-full rounded-lg" />
+    </div>
+  ),
+})
+
+const BrokerPanel = dynamic(() => import("@/components/BrokerPanel"), {
+  ssr: false,
+  loading: () => <Skeleton className="h-full min-h-[360px] w-full rounded-lg" />,
+})
 
 function StockContent({ stockId }: { stockId: string }) {
   const searchParams = useSearchParams()

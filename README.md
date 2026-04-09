@@ -259,11 +259,11 @@ npm run dev
 - [x] 手機 RWD 優化（L0 表格小螢幕隱藏外資/投信/自營商欄位，只顯示合計+趨勢）
 - [x] L2 K 線圖天數切換按鈕（1M / 3M / 6M / 1Y / All）
 - [x] L0 產業搜尋框（即時篩選產業名稱）
-- [ ] 頂部 Navbar（全站導航列：Logo + 日期選擇器 + 回首頁）
+- [x] 頂部 Navbar（全站導航列：Logo + 回首頁）
 - [x] L1 卡片漲跌色背景（微弱紅/綠 tint，一眼掃過更直覺）
 - [x] L0 金額 inline bar chart（表格內視覺化金額大小）
 - [x] 即時報價只在盤中輪詢（09:00~13:30 週一至五才啟動，省流量）
-- [ ] L2 ECharts lazy load（`next/dynamic`，首頁不載入）
+- [x] L2 ECharts lazy load（`next/dynamic`，首頁不載入）
 
 ### L2 頁面進階功能
 
