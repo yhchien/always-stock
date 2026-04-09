@@ -117,6 +117,49 @@ export async function fetchRealtimeQuotes(stockIds: string[]): Promise<RealtimeQ
   return res.json()
 }
 
+// ── Broker trades (M13) ─────────────────────────────────────────────────────
+
+export type BrokerCategory = "day_trade" | "next_day" | "short_term" | "swing"
+
+export interface BrokerTradeItem {
+  broker_id: string
+  broker_name: string
+  display_name: string
+  buy_shares: number
+  sell_shares: number
+  net_shares: number
+}
+
+export interface BrokerTradeResponse {
+  stock_id: string
+  trade_date: string
+  category: string
+  category_label: string
+  brokers: BrokerTradeItem[]
+}
+
+export async function fetchBrokerTrades(
+  stockId: string,
+  category: BrokerCategory = "day_trade",
+  date?: string,
+  days = 1,
+): Promise<BrokerTradeResponse> {
+  const params = new URLSearchParams({ category, days: String(days) })
+  if (date) params.set("date", date)
+  const res = await fetch(`${API_BASE}/api/stocks/${stockId}/brokers?${params}`)
+  if (!res.ok) throw new Error(`Failed to fetch broker trades: ${res.status}`)
+  return res.json()
+}
+
+/** Format shares in 張 (lots of 1000 shares) */
+export function fmtLots(shares: number): string {
+  const lots = shares / 1000
+  if (Math.abs(lots) >= 10000) {
+    return (lots >= 0 ? "+" : "") + (lots / 10000).toFixed(1) + "萬張"
+  }
+  return (lots >= 0 ? "+" : "") + lots.toFixed(0) + "張"
+}
+
 /** Format NT$ amount (raw value is NT$1) → display in 億元 */
 export function fmtAmount(val: number): string {
   const yi = val / 1e8

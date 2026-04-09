@@ -1,139 +1,139 @@
 "use client"
 
-import { useState } from "react"
-import ReactECharts from "echarts-for-react"
+import { useEffect, useState } from "react"
+import {
+  BrokerCategory,
+  BrokerTradeItem,
+  fetchBrokerTrades,
+  fmtLots,
+} from "@/lib/api"
 
 interface Props {
   stockId: string
-  dates?: string[]  // aligned with K-line x-axis dates; provided when M13 is ready
+  date?: string
 }
 
-// Placeholder broker data type — will be filled in when M13 backend is ready
-interface BrokerVolume {
-  date: string
-  buy: number
-  sell: number
-}
+const CATEGORIES: { key: BrokerCategory; label: string }[] = [
+  { key: "day_trade", label: "當沖" },
+  { key: "next_day", label: "隔日沖" },
+  { key: "short_term", label: "短線" },
+  { key: "swing", label: "波段" },
+]
 
-const BROKER_COLORS = ["#60a5fa", "#f87171", "#34d399", "#fbbf24"]
+export default function BrokerPanel({ stockId, date }: Props) {
+  const [category, setCategory] = useState<BrokerCategory>("day_trade")
+  const [brokers, setBrokers] = useState<BrokerTradeItem[]>([])
+  const [tradeDate, setTradeDate] = useState<string>("")
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
-export default function BrokerPanel({ stockId, dates = [] }: Props) {
-  const [brokerInput, setBrokerInput] = useState("")
-  const [watchedBrokers, setWatchedBrokers] = useState<string[]>([])
-  // placeholder data keyed by broker
-  const [brokerData] = useState<Record<string, BrokerVolume[]>>({})
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    setError(null)
 
-  const addBroker = () => {
-    const code = brokerInput.trim()
-    if (!code || watchedBrokers.includes(code)) return
-    // TODO (M13): fetch broker volume for stockId + code
-    setWatchedBrokers((prev) => [...prev, code])
-    setBrokerInput("")
-  }
+    fetchBrokerTrades(stockId, category, date)
+      .then((data) => {
+        if (cancelled) return
+        setBrokers(data.brokers)
+        setTradeDate(data.trade_date)
+      })
+      .catch((err) => {
+        if (cancelled) return
+        setError("載入失敗")
+        console.error(err)
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
 
-  const removeBroker = (code: string) => {
-    setWatchedBrokers((prev) => prev.filter((b) => b !== code))
-  }
-
-  // Build ECharts bar option from placeholder / real data
-  const chartOption = watchedBrokers.length > 0 ? {
-    backgroundColor: "transparent",
-    tooltip: {
-      trigger: "axis" as const,
-      backgroundColor: "rgba(24,24,27,0.95)",
-      borderColor: "#3f3f46",
-      textStyle: { color: "#fafafa", fontSize: 12 },
-    },
-    legend: {
-      textStyle: { color: "#a1a1aa", fontSize: 11 },
-      top: 0,
-    },
-    grid: { left: 50, right: 20, top: 30, bottom: 40 },
-    xAxis: {
-      type: "category" as const,
-      data: dates.slice(-60), // show last 60 dates
-      axisLabel: { color: "#71717a", fontSize: 10, formatter: (v: string) => v.slice(5) },
-      axisLine: { lineStyle: { color: "#3f3f46" } },
-    },
-    yAxis: {
-      type: "value" as const,
-      axisLabel: { color: "#a1a1aa", fontSize: 10 },
-      splitLine: { lineStyle: { color: "#27272a" } },
-    },
-    series: watchedBrokers.map((broker, i) => {
-      const color = BROKER_COLORS[i % BROKER_COLORS.length]
-      const data = brokerData[broker] ?? dates.slice(-60).map((d) => ({
-        date: d,
-        buy: Math.floor(Math.random() * 500),   // placeholder
-        sell: -Math.floor(Math.random() * 500),  // placeholder
-      }))
-      return {
-        name: broker,
-        type: "bar",
-        stack: broker,
-        data: data.map((d) => d.buy),
-        itemStyle: { color },
-        barMaxWidth: 8,
-      }
-    }),
-  } : null
+    return () => { cancelled = true }
+  }, [stockId, category, date])
 
   return (
     <div className="flex flex-col gap-3 rounded-lg border border-zinc-700 bg-zinc-900 p-4 h-full">
+      {/* Header */}
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-zinc-200">關注券商買賣</h2>
-        <span className="text-xs text-zinc-600 border border-zinc-700 rounded px-1.5 py-0.5">M13 — 開發中</span>
+        <h2 className="text-sm font-semibold text-zinc-200">關鍵券商買賣</h2>
+        {tradeDate && (
+          <span className="text-[10px] text-zinc-500">{tradeDate}</span>
+        )}
       </div>
 
-      {/* Broker input */}
-      <div className="flex gap-2">
-        <input
-          value={brokerInput}
-          onChange={(e) => setBrokerInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && addBroker()}
-          placeholder="券商代號（如 1020）"
-          className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-200 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-zinc-500"
-        />
-        <button
-          onClick={addBroker}
-          className="rounded-md bg-zinc-700 hover:bg-zinc-600 px-3 py-1.5 text-sm text-zinc-100 transition-colors"
-        >
-          +
-        </button>
+      {/* Category tabs */}
+      <div className="flex gap-1">
+        {CATEGORIES.map(({ key, label }) => (
+          <button
+            key={key}
+            onClick={() => setCategory(key)}
+            className={`flex-1 rounded-md px-2 py-1.5 text-xs font-medium transition-colors ${
+              category === key
+                ? "bg-zinc-700 text-zinc-100"
+                : "bg-zinc-800/50 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
       </div>
 
-      {/* Active brokers */}
-      {watchedBrokers.length > 0 && (
-        <div className="flex gap-2 flex-wrap">
-          {watchedBrokers.map((broker, i) => (
-            <span
-              key={broker}
-              className="flex items-center gap-1 rounded-full px-2 py-0.5 text-xs border border-zinc-600"
-              style={{ borderColor: BROKER_COLORS[i % BROKER_COLORS.length] + "80" }}
-            >
-              <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: BROKER_COLORS[i % BROKER_COLORS.length] }} />
-              {broker}
-              <button onClick={() => removeBroker(broker)} className="text-zinc-500 hover:text-zinc-300 ml-0.5">×</button>
-            </span>
-          ))}
-        </div>
-      )}
-
-      {/* Chart or placeholder */}
-      {chartOption ? (
-        <div className="flex-1">
-          <ReactECharts
-            option={chartOption}
-            style={{ height: "100%", minHeight: 160, width: "100%" }}
-            opts={{ renderer: "svg" }}
-          />
-          <p className="text-[10px] text-zinc-600 mt-1 text-center">目前顯示模擬資料，M13 券商爬蟲完成後接實際數據</p>
-        </div>
-      ) : (
-        <div className="flex-1 flex items-center justify-center rounded-md border border-dashed border-zinc-700">
-          <p className="text-xs text-zinc-600">輸入券商代號後顯示買賣長條圖</p>
-        </div>
-      )}
+      {/* Content */}
+      <div className="flex-1 overflow-auto min-h-[200px]">
+        {loading ? (
+          <div className="flex items-center justify-center h-full">
+            <div className="flex flex-col items-center gap-2">
+              <div className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-600 border-t-zinc-300" />
+              <p className="text-xs text-zinc-500">正在從證交所取得資料...</p>
+            </div>
+          </div>
+        ) : error ? (
+          <div className="flex items-center justify-center h-full">
+            <p className="text-xs text-red-400">{error}</p>
+          </div>
+        ) : brokers.length === 0 ? (
+          <div className="flex items-center justify-center h-full">
+            <p className="text-xs text-zinc-600">此類別無券商交易紀錄</p>
+          </div>
+        ) : (
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b border-zinc-700/50 text-zinc-500">
+                <th className="text-left py-1.5 font-medium">券商</th>
+                <th className="text-right py-1.5 font-medium">買進</th>
+                <th className="text-right py-1.5 font-medium">賣出</th>
+                <th className="text-right py-1.5 font-medium">淨買超</th>
+              </tr>
+            </thead>
+            <tbody>
+              {brokers.map((b) => (
+                <tr
+                  key={b.broker_id}
+                  className="border-b border-zinc-800/50 hover:bg-zinc-800/30 transition-colors"
+                >
+                  <td className="py-1.5 text-zinc-300">{b.display_name}</td>
+                  <td className="py-1.5 text-right text-red-400">
+                    {fmtLots(b.buy_shares)}
+                  </td>
+                  <td className="py-1.5 text-right text-green-400">
+                    {fmtLots(b.sell_shares)}
+                  </td>
+                  <td
+                    className={`py-1.5 text-right font-medium ${
+                      b.net_shares > 0
+                        ? "text-red-400"
+                        : b.net_shares < 0
+                          ? "text-green-400"
+                          : "text-zinc-500"
+                    }`}
+                  >
+                    {fmtLots(b.net_shares)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
     </div>
   )
 }

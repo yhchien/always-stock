@@ -19,8 +19,9 @@ chmod 600 /app/scripts/env.sh
 # Initialize DB tables (idempotent)
 python init_db.py
 
-# Run OHLC migration (idempotent)
+# Run migrations (idempotent)
 python migrate_add_ohlc.py
+python migrate_add_broker_trade.py
 
 # Start cron daemon (ETL at 19:00 + 21:30 Mon-Fri)
 echo "Starting cron daemon..."

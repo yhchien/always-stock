@@ -65,3 +65,20 @@ class IndustryDailyFlow(Base):
     __table_args__ = (
         UniqueConstraint("trade_date", "industry_name", name="uq_industry_date"),
     )
+
+
+class BrokerTrade(Base):
+    __tablename__ = "broker_trade"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trade_date = Column(Date, nullable=False)
+    stock_id = Column(String, nullable=False)
+    broker_id = Column(String, nullable=False)   # TWSE BSR 4-digit code
+    broker_name = Column(String, nullable=False)  # e.g. "元大", "凱基台北"
+    buy_shares = Column(Float, default=0)
+    sell_shares = Column(Float, default=0)
+    net_shares = Column(Float, default=0)
+
+    __table_args__ = (
+        UniqueConstraint("trade_date", "stock_id", "broker_id", name="uq_broker_date_stock"),
+    )

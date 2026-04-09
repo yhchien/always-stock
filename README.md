@@ -17,12 +17,14 @@ always-stock/
 ├── backend/
 │   ├── app/
 │   │   ├── database.py          # SQLAlchemy engine / session
-│   │   ├── models.py            # ORM 資料表定義（4 張表）
-│   │   └── routers/             # FastAPI routers（industries / stocks）
+│   │   ├── models.py            # ORM 資料表定義（5 張表）
+│   │   ├── broker_config.py     # 關鍵券商分類設定（當沖/隔日沖/短線/波段）
+│   │   └── routers/             # FastAPI routers（industries / stocks / brokers）
 │   ├── etl/
 │   │   ├── fetch_stock_master.py    # FinMind 股票基本資料 + Fugle 子產業 mapping
 │   │   ├── fetch_daily_price.py     # TWSE STOCK_DAY_ALL 收盤價
 │   │   ├── fetch_inst_flow.py       # TWSE T86 三大法人買賣超
+│   │   ├── fetch_broker_trade.py    # TWSE BSR 分點買賣明細（on-demand + 背景回補）
 │   │   └── aggregate_industry_flow.py  # 彙整到產業日流向表
 │   ├── tests/                   # 每個 ETL 模組的單元測試
 │   ├── db/
@@ -30,6 +32,7 @@ always-stock/
 │   ├── logs/                    # ETL 執行 log（滾動保留 7 天）
 │   ├── logging_config.py        # 統一 logging 設定
 │   ├── init_db.py               # 初始化資料表
+│   ├── migrate_add_broker_trade.py  # 一次性 migration：建立 broker_trade 表
 │   ├── run_daily_etl.py         # 每日 ETL 主程式（CLI）
 │   ├── run_backfill.py          # 歷史 backfill（可斷點續傳）
 │   ├── scripts/
@@ -47,7 +50,8 @@ always-stock/
 │   │   │   ├── ui/              # shadcn/ui 元件
 │   │   │   ├── IndustryDashboard.tsx  # L0 產業排行榜
 │   │   │   ├── StockList.tsx          # L1 個股列表（可排序）
-│   │   │   └── StockChart.tsx         # L2 雙軸走勢圖（ECharts）
+│   │   │   ├── StockChart.tsx         # L2 雙軸走勢圖（ECharts）
+│   │   │   └── BrokerPanel.tsx        # L2 關鍵券商買賣長條表（分類 tab + 即時抓取）
 │   │   ├── lib/
 │   │   │   └── api.ts           # API fetch helpers + 格式化工具
 │   │   └── __tests__/           # Jest 單元測試
@@ -68,6 +72,7 @@ always-stock/
 | `daily_price` | 每日收盤價、成交量、成交金額 |
 | `inst_stock_flow` | 個股三大法人買賣超（每股 3 筆：foreign / trust / dealer） |
 | `industry_daily_flow` | 產業別每日法人資金流向（以 Fugle 大類彙整） |
+| `broker_trade` | 分點買賣明細（stock_id + date + broker_id，on-demand 從 TWSE BSR 抓取快取） |
 
 ### 技術堆疊
 
@@ -164,6 +169,8 @@ python3 -m uvicorn app.main:app --reload
 | GET | `/api/industries/{industry_name}/stocks?date=YYYY-MM-DD` | L1：指定產業個股明細（含漲跌幅、chain 分組） |
 | GET | `/api/stocks/{stock_id}/history?days=90&end_date=YYYY-MM-DD` | L2：個股收盤價 + 法人累積買超（預設 90 天） |
 | GET | `/api/realtime/quotes?stock_ids=2330,2317` | 即時盤中報價（TWSE mis API，最多 50 檔） |
+| GET | `/api/stocks/{stock_id}/brokers?category=day_trade&date=YYYY-MM-DD&days=1` | L2：關鍵券商分點買賣超（on-demand 抓 TWSE BSR，DB 快取） |
+| GET | `/api/stocks/{stock_id}/brokers/status?start=YYYY-MM-DD&end=YYYY-MM-DD` | 查詢分點資料快取狀況（已快取天數 / 總天數） |
 
 ### 5. 啟動 Telegram Bot
 
@@ -267,6 +274,8 @@ npm run dev
 - [x] L0 金額 inline bar chart（表格內視覺化金額大小）
 - [x] 即時報價只在盤中輪詢（09:00~13:30 週一至五才啟動，省流量）
 - [x] L2 ECharts lazy load（`next/dynamic`，首頁不載入）
+- [x] M13 關鍵券商分點爬蟲：TWSE BSR on-demand 抓取 + SQLite 快取，`broker_trade` 資料表
+- [x] L2 BrokerPanel：當沖/隔日沖/短線/波段 分類 tab，顯示 Top 10 分點淨買超
 
 ### L2 頁面進階功能
 
@@ -293,7 +302,7 @@ npm run dev
 | M10 | 部署上線（Cloud） | ✅ 完成（Fly.io） |
 | M11 | 回測程式（策略績效驗證） | ⬜ 待開始 |
 | M12 | 文字化投資策略輸入 | ⬜ 待開始 |
-| M13 | 關鍵券商分點爬蟲 | ⬜ 待開始 |
+| M13 | 關鍵券商分點爬蟲 | ✅ 完成 |
 | M14 | LLM 輿情爬文分析 | ⬜ 待開始 |
 | M15 | Telegram 電子報（定期投資推薦推播） | ⬜ 待開始 |
 
@@ -322,7 +331,7 @@ npm run dev
 
 ### Phase 3 — 資訊聚合
 
-- [ ] **M13 關鍵券商分點爬蟲**：追蹤特定券商分點的進出（如外資常用券商）
+- [x] **M13 關鍵券商分點爬蟲**：TWSE BSR on-demand 抓取，分類為當沖/隔日沖/短線/波段，快取進 `broker_trade` 表，L2 BrokerPanel 顯示 Top 10 分點
 - [ ] **M14 LLM 輿情爬文分析**：自動爬取財經新聞 / PTT Stock / 社群，LLM 摘要與情緒分析
 
 ### Phase 4 — 部署 & 推播
