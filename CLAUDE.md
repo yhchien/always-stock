@@ -42,3 +42,14 @@
 - 優先考慮資料正確性與 TWSE API rate limiting
 - 前端以深色主題為主
 - Brian 的個人專案，目標是從法人籌碼面輔助台股交易決策
+
+## 最近重要修正（2026-04-09）
+
+- README 已補上完整資料流與頁面 flow，位置在專案架構後，方便快速 onboarding
+- L2 頁面 `StockChart` 與 `BrokerPanel` 必須共用同一個 `date` query param，避免同頁不同日期資料混用
+- L0 / L1 前端預設日期必須用 `Asia/Taipei`，不可用 `toISOString().slice(0, 10)`，否則台灣凌晨會落到前一天
+- 即時報價 API `/api/realtime/quotes` 單次上限 50 檔；前端若要查整個產業，必須自動分 batch，不能假設所有股票可一次取回
+- `industry_daily_flow` 仍是 L0 主查詢來源；不要把產業聚合搬回 API 臨時計算或前端計算
+- `SKILL.md` 的產業分類規則已同步為實作現況：以 Fugle mapping 為主，FinMind / TWSE 類別僅作 fallback
+- backend `get_db()` 測試已改為驗證 `close()` 被呼叫，不再依賴 SQLAlchemy `Session.is_active` 判斷關閉狀態
+- `backend/app/routers/industries.py` 的 streak 查詢已改成 `select(subquery.c.trade_date)`，避免 SQLAlchemy `SAWarning`

@@ -5,7 +5,7 @@ from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import and_, func
+from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -120,7 +120,7 @@ def get_industries(
         db.query(IndustryDailyFlow.industry_name, IndustryDailyFlow.trade_date, IndustryDailyFlow.total_net_amount)
         .filter(
             IndustryDailyFlow.industry_name.in_(industry_names),
-            IndustryDailyFlow.trade_date.in_(recent_dates_l0),
+            IndustryDailyFlow.trade_date.in_(select(recent_dates_l0.c.trade_date)),
         )
         .order_by(IndustryDailyFlow.industry_name, IndustryDailyFlow.trade_date.desc())
         .all()
@@ -215,7 +215,10 @@ def get_industry_sub_summary(
     )
     all_flows = (
         db.query(InstStockFlow)
-        .filter(InstStockFlow.trade_date.in_(recent_dates), InstStockFlow.stock_id.in_(stock_ids))
+        .filter(
+            InstStockFlow.trade_date.in_(select(recent_dates.c.trade_date)),
+            InstStockFlow.stock_id.in_(stock_ids),
+        )
         .all()
     )
 

@@ -33,7 +33,7 @@ function StockContent({ stockId }: { stockId: string }) {
       {/* Bottom panels: Backtest (left) + Broker (right) */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 min-h-[360px]">
         <BacktestPanel stockId={stockId} />
-        <BrokerPanel stockId={stockId} />
+        <BrokerPanel stockId={stockId} date={date} />
       </div>
     </main>
   )

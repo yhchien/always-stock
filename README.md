@@ -64,6 +64,102 @@ always-stock/
     └── scrape_fugle_industry.py
 ```
 
+### 資料流
+
+```mermaid
+flowchart LR
+    A[TWSE MI_INDEX<br/>每日收盤 / OHLC / 成交量]
+    B[TWSE T86<br/>三大法人買賣超]
+    C[TWSE BSR<br/>券商分點明細]
+    D[FinMind TaiwanStockInfo<br/>股票基本資料]
+    E[Fugle mapping CSV / JSON<br/>industry / chain / sub_industry]
+
+    D --> F[fetch_stock_master.py]
+    E --> F
+    A --> G[fetch_daily_price.py]
+    B --> H[fetch_inst_flow.py]
+    C --> I[fetch_broker_trade.py]
+
+    F --> J[(stocks_master)]
+    G --> K[(daily_price)]
+    H --> L[(inst_stock_flow)]
+    I --> M[(broker_trade)]
+
+    K --> H
+    J --> N[aggregate_industry_flow.py]
+    L --> N
+    N --> O[(industry_daily_flow)]
+
+    O --> P[FastAPI /api/industries]
+    J --> P
+    L --> P
+    K --> P
+
+    J --> Q[FastAPI /api/stocks]
+    K --> Q
+    L --> Q
+
+    M --> R[FastAPI /api/stocks/{stock_id}/brokers]
+    C -. cache miss 時 on-demand 抓取 .-> R
+
+    P --> S[Next.js L0 / L1]
+    Q --> T[Next.js L2]
+    R --> T
+    Q --> U[Telegram Bot]
+```
+
+**重點說明：**
+- `run_daily_etl.py` 每日固定跑 `stock_master -> daily_price -> inst_flow -> industry_daily_flow`
+- `industry_daily_flow` 是 L0 排行榜的主查詢表，避免前端或 API 即時計算產業聚合
+- `broker_trade` 不在每日 ETL 主流程內，而是 L2 需要時才由 `/api/stocks/{stock_id}/brokers` 觸發抓取與快取
+- 前端 L1 / L2 顯示需要的個股與歷史細節，直接查 `stocks_master`、`daily_price`、`inst_stock_flow`
+
+### 頁面 Flow
+
+```mermaid
+flowchart TD
+    A[L0 首頁<br/>/]
+    A1[IndustryDashboard]
+    A2[日期切換]
+    A3[排行 / 搜尋 / streak]
+
+    B[L1 產業頁<br/>/industries/{industryName}?date=...]
+    B1[StockList]
+    B2[子產業 summary table]
+    B3[依 chain 分組個股]
+    B4[盤中即時報價補充]
+
+    C[L2 個股頁<br/>/stocks/{stockId}?date=...]
+    C1[StockChart]
+    C2[K 線 / 收盤價]
+    C3[法人累積買超]
+    C4[MA 與區間切換]
+    C5[BrokerPanel]
+    C6[BacktestPanel skeleton]
+
+    A --> A1
+    A1 --> A2
+    A1 --> A3
+    A1 -->|點擊產業| B
+    B --> B1
+    B1 --> B2
+    B1 --> B3
+    B1 --> B4
+    B2 -->|點擊子產業篩選| B3
+    B3 -->|點擊個股| C
+    C --> C1
+    C1 --> C2
+    C1 --> C3
+    C1 --> C4
+    C --> C5
+    C --> C6
+```
+
+**使用者視角：**
+- L0 看「今天哪些產業被買、被賣，且是否連買 / 連賣」
+- L1 看「某個產業裡，資金集中在哪些子產業、供應鏈哪一段、哪些股票」
+- L2 看「單一股票的價格走勢、法人累積部位、關鍵券商分點，以及後續回測擴充入口」
+
 ### 資料表
 
 | 資料表 | 說明 |

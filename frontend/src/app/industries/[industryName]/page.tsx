@@ -3,15 +3,12 @@
 import { Suspense, use } from "react"
 import { useSearchParams } from "next/navigation"
 import StockList from "@/components/StockList"
-
-function todayString() {
-  return new Date().toISOString().slice(0, 10)
-}
+import { todayInTaipei } from "@/lib/utils"
 
 function IndustryContent({ industryName }: { industryName: string }) {
   const decoded = decodeURIComponent(industryName)
   const searchParams = useSearchParams()
-  const date = searchParams.get("date") ?? todayString()
+  const date = searchParams.get("date") ?? todayInTaipei()
   const sub = searchParams.get("sub") ?? null
 
   return (

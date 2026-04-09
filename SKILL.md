@@ -34,8 +34,9 @@ industry_net = sum(stock_net)
 
 ## 🏭 Industry Definition
 
-* Use TWSE official industry classification
-* Do NOT create custom categories
+* Use Fugle industry mapping as the primary classification source
+* Fallback to FinMind / TWSE industry_category only when a stock is not covered by Fugle mapping
+* Industry hierarchy in this project is: industry -> chain -> sub_industry
 
 ---
 

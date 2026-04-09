@@ -1,4 +1,5 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"
+const REALTIME_BATCH_SIZE = 50
 
 export interface IndustryFlowItem {
   industry_name: string
@@ -111,10 +112,21 @@ export interface RealtimeQuote {
 
 export async function fetchRealtimeQuotes(stockIds: string[]): Promise<RealtimeQuote[]> {
   if (stockIds.length === 0) return []
-  const ids = stockIds.join(",")
-  const res = await fetch(`${API_BASE}/api/realtime/quotes?stock_ids=${ids}`)
-  if (!res.ok) return [] // graceful fallback if market is closed
-  return res.json()
+  const batches: string[][] = []
+  for (let i = 0; i < stockIds.length; i += REALTIME_BATCH_SIZE) {
+    batches.push(stockIds.slice(i, i + REALTIME_BATCH_SIZE))
+  }
+
+  const responses = await Promise.all(
+    batches.map(async (batch) => {
+      const ids = batch.join(",")
+      const res = await fetch(`${API_BASE}/api/realtime/quotes?stock_ids=${ids}`)
+      if (!res.ok) return []
+      return res.json() as Promise<RealtimeQuote[]>
+    })
+  )
+
+  return responses.flat()
 }
 
 // ── Broker trades (M13) ─────────────────────────────────────────────────────

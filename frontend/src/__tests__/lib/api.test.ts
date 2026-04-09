@@ -1,4 +1,4 @@
-import { fmtAmount, fmtShares, fmtStreak, fetchIndustries, fetchIndustryStocks, fetchStockHistory, fetchSubIndustrySummary } from "@/lib/api"
+import { fmtAmount, fmtShares, fmtStreak, fetchIndustries, fetchIndustryStocks, fetchRealtimeQuotes, fetchStockHistory, fetchSubIndustrySummary } from "@/lib/api"
 
 // ── fmtAmount ────────────────────────────────────────────────────────────────
 
@@ -185,5 +185,33 @@ describe("fetchStockHistory", () => {
     } as Response)
 
     await expect(fetchStockHistory("9999")).rejects.toThrow("404")
+  })
+})
+
+// ── fetchRealtimeQuotes ──────────────────────────────────────────────────────
+
+describe("fetchRealtimeQuotes", () => {
+  afterEach(() => jest.restoreAllMocks())
+
+  it("splits requests into batches of 50", async () => {
+    const mockFetch = jest.spyOn(global, "fetch")
+    mockFetch.mockClear()
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => [{ stock_id: "1101" }],
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => [{ stock_id: "9999" }],
+      } as Response)
+
+    const ids = Array.from({ length: 51 }, (_, i) => String(1000 + i))
+    const result = await fetchRealtimeQuotes(ids)
+
+    expect(mockFetch).toHaveBeenCalledTimes(2)
+    expect(mockFetch.mock.calls[0][0]).toEqual(expect.stringContaining("stock_ids=1000,1001"))
+    expect(mockFetch.mock.calls[1][0]).toEqual(expect.stringContaining("stock_ids=1050"))
+    expect(result).toEqual([{ stock_id: "1101" }, { stock_id: "9999" }])
   })
 })
