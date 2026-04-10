@@ -7,6 +7,7 @@ uvicorn[standard]>=0.30.0
 
 # Database ORM
 sqlalchemy>=2.0.0
+psycopg[binary]>=3.1.0
 
 # Data validation (FastAPI dependency)
 pydantic>=2.0.0

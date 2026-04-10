@@ -12,6 +12,30 @@ def test_database_url_is_sqlite():
     assert DATABASE_URL.startswith("sqlite:///")
 
 
+def test_build_database_url_prefers_database_url(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://user:pass@localhost/db")
+    monkeypatch.setenv("DB_PATH", "/tmp/should-not-be-used.db")
+
+    assert database.build_database_url() == "postgresql+psycopg://user:pass@localhost/db"
+
+
+def test_build_database_url_falls_back_to_sqlite(monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("DB_PATH", "/tmp/test-stock.db")
+
+    assert database.build_database_url() == "sqlite:////tmp/test-stock.db"
+
+
+def test_get_engine_kwargs_for_sqlite():
+    assert database.get_engine_kwargs("sqlite:////tmp/test.db") == {
+        "connect_args": {"check_same_thread": False}
+    }
+
+
+def test_get_engine_kwargs_for_postgres():
+    assert database.get_engine_kwargs("postgresql+psycopg://user:pass@localhost/db") == {}
+
+
 def test_engine_connects():
     with engine.connect() as conn:
         result = conn.execute(text("SELECT 1"))

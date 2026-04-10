@@ -6,12 +6,30 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = os.getenv("DB_PATH", os.path.join(os.path.dirname(__file__), "..", "db", "tw_stock.db"))
-DATABASE_URL = f"sqlite:///{os.path.abspath(DB_PATH)}"
+DEFAULT_DB_PATH = os.path.join(os.path.dirname(__file__), "..", "db", "tw_stock.db")
+
+
+def build_database_url() -> str:
+    database_url = os.getenv("DATABASE_URL")
+    if database_url:
+        return database_url
+
+    db_path = os.getenv("DB_PATH", DEFAULT_DB_PATH)
+    return f"sqlite:///{os.path.abspath(db_path)}"
+
+
+def get_engine_kwargs(database_url: str) -> dict:
+    if database_url.startswith("sqlite:///"):
+        return {"connect_args": {"check_same_thread": False}}
+
+    return {}
+
+
+DATABASE_URL = build_database_url()
 
 logger.debug("Database URL: %s", DATABASE_URL)
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+engine = create_engine(DATABASE_URL, **get_engine_kwargs(DATABASE_URL))
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
