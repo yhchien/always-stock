@@ -1,4 +1,14 @@
-import { fmtAmount, fmtShares, fmtStreak, fetchIndustries, fetchIndustryStocks, fetchRealtimeQuotes, fetchStockHistory, fetchSubIndustrySummary } from "@/lib/api"
+import {
+  fmtAmount,
+  fmtShares,
+  fmtStreak,
+  fetchBrokerTrades,
+  fetchIndustries,
+  fetchIndustryStocks,
+  fetchRealtimeQuotes,
+  fetchStockHistory,
+  fetchSubIndustrySummary,
+} from "@/lib/api"
 
 // ── fmtAmount ────────────────────────────────────────────────────────────────
 
@@ -69,25 +79,25 @@ describe("fetchSubIndustrySummary", () => {
 
   it("returns parsed JSON on success", async () => {
     const mockData = [{ sub_industry: "晶圓製造", total_net_amount: 1e9, streak: 3 }]
-    jest.spyOn(global, "fetch").mockResolvedValue({
+    const mockFetch = jest.spyOn(global, "fetch").mockResolvedValue({
       ok: true,
       json: async () => mockData,
     } as Response)
 
     const result = await fetchSubIndustrySummary("半導體", "2026-04-01")
     expect(result).toEqual(mockData)
-    expect(fetch).toHaveBeenCalledWith(expect.stringContaining("/summary"))
-    expect(fetch).toHaveBeenCalledWith(expect.stringContaining("date=2026-04-01"))
+    expect(mockFetch.mock.calls.at(-1)?.[0]).toEqual(expect.stringContaining("/summary"))
+    expect(mockFetch.mock.calls.at(-1)?.[0]).toEqual(expect.stringContaining("date=2026-04-01"))
   })
 
   it("encodes industry name in URL", async () => {
-    jest.spyOn(global, "fetch").mockResolvedValue({
+    const mockFetch = jest.spyOn(global, "fetch").mockResolvedValue({
       ok: true,
       json: async () => [],
     } as Response)
 
     await fetchSubIndustrySummary("IC 設計", "2026-04-01")
-    expect(fetch).toHaveBeenCalledWith(expect.stringContaining("IC%20%E8%A8%AD%E8%A8%88"))
+    expect(mockFetch.mock.calls.at(-1)?.[0]).toEqual(expect.stringContaining("IC%20%E8%A8%AD%E8%A8%88"))
   })
 
   it("throws on non-ok response", async () => {
@@ -107,14 +117,14 @@ describe("fetchIndustries", () => {
 
   it("returns parsed JSON on success", async () => {
     const mockData = [{ industry_name: "半導體", total_net_amount: 1e9 }]
-    jest.spyOn(global, "fetch").mockResolvedValue({
+    const mockFetch = jest.spyOn(global, "fetch").mockResolvedValue({
       ok: true,
       json: async () => mockData,
     } as Response)
 
     const result = await fetchIndustries("2026-04-01")
     expect(result).toEqual(mockData)
-    expect(fetch).toHaveBeenCalledWith(expect.stringContaining("date=2026-04-01"))
+    expect(mockFetch.mock.calls.at(-1)?.[0]).toEqual(expect.stringContaining("date=2026-04-01"))
   })
 
   it("throws on non-ok response", async () => {
@@ -133,13 +143,13 @@ describe("fetchIndustryStocks", () => {
   afterEach(() => jest.restoreAllMocks())
 
   it("encodes industry name in URL", async () => {
-    jest.spyOn(global, "fetch").mockResolvedValue({
+    const mockFetch = jest.spyOn(global, "fetch").mockResolvedValue({
       ok: true,
       json: async () => [],
     } as Response)
 
     await fetchIndustryStocks("IC 設計", "2026-04-01")
-    expect(fetch).toHaveBeenCalledWith(expect.stringContaining("IC%20%E8%A8%AD%E8%A8%88"))
+    expect(mockFetch.mock.calls.at(-1)?.[0]).toEqual(expect.stringContaining("IC%20%E8%A8%AD%E8%A8%88"))
   })
 
   it("throws on non-ok response", async () => {
@@ -159,23 +169,23 @@ describe("fetchStockHistory", () => {
 
   it("includes days param in URL", async () => {
     const mockData = { stock_id: "2330", stock_name: "台積電", industry_name: "半導體", sub_industry: null, history: [] }
-    jest.spyOn(global, "fetch").mockResolvedValue({
+    const mockFetch = jest.spyOn(global, "fetch").mockResolvedValue({
       ok: true,
       json: async () => mockData,
     } as Response)
 
     await fetchStockHistory("2330", 30)
-    expect(fetch).toHaveBeenCalledWith(expect.stringContaining("days=30"))
+    expect(mockFetch.mock.calls.at(-1)?.[0]).toEqual(expect.stringContaining("days=30"))
   })
 
   it("includes end_date param when provided", async () => {
-    jest.spyOn(global, "fetch").mockResolvedValue({
+    const mockFetch = jest.spyOn(global, "fetch").mockResolvedValue({
       ok: true,
       json: async () => ({ history: [] }),
     } as Response)
 
     await fetchStockHistory("2330", 60, "2026-04-01")
-    expect(fetch).toHaveBeenCalledWith(expect.stringContaining("end_date=2026-04-01"))
+    expect(mockFetch.mock.calls.at(-1)?.[0]).toEqual(expect.stringContaining("end_date=2026-04-01"))
   })
 
   it("throws on non-ok response", async () => {
@@ -213,5 +223,60 @@ describe("fetchRealtimeQuotes", () => {
     expect(mockFetch.mock.calls[0][0]).toEqual(expect.stringContaining("stock_ids=1000,1001"))
     expect(mockFetch.mock.calls[1][0]).toEqual(expect.stringContaining("stock_ids=1050"))
     expect(result).toEqual([{ stock_id: "1101" }, { stock_id: "9999" }])
+  })
+})
+
+// ── fetchBrokerTrades ───────────────────────────────────────────────────────
+
+describe("fetchBrokerTrades", () => {
+  afterEach(() => jest.restoreAllMocks())
+
+  it("passes AbortSignal to fetch", async () => {
+    const controller = new AbortController()
+    const mockData = {
+      stock_id: "2330",
+      trade_date: "2026-04-01",
+      category: "day_trade",
+      category_label: "當沖",
+      brokers: [],
+    }
+
+    const mockFetch = jest.spyOn(global, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => mockData,
+    } as Response)
+
+    await fetchBrokerTrades("2330", "day_trade", "2026-04-01", 1, {
+      signal: controller.signal,
+    })
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining("/api/stocks/2330/brokers?"),
+      expect.objectContaining({ signal: controller.signal }),
+    )
+  })
+
+  it("retries once on transient network failure", async () => {
+    const mockData = {
+      stock_id: "2330",
+      trade_date: "2026-04-01",
+      category: "day_trade",
+      category_label: "當沖",
+      brokers: [],
+    }
+
+    const mockFetch = jest.spyOn(global, "fetch")
+    mockFetch
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => mockData,
+      } as Response)
+    mockFetch.mockClear()
+
+    const result = await fetchBrokerTrades("2330", "day_trade", "2026-04-01")
+
+    expect(mockFetch.mock.calls.length).toBeGreaterThanOrEqual(2)
+    expect(result).toEqual(mockData)
   })
 })

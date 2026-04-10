@@ -6,6 +6,7 @@ import {
   BrokerTradeItem,
   fetchBrokerTrades,
   fmtLots,
+  toDisplayError,
 } from "@/lib/api"
 
 interface Props {
@@ -19,36 +20,54 @@ const CATEGORIES: { key: BrokerCategory; label: string }[] = [
   { key: "short_term", label: "短線" },
   { key: "swing", label: "波段" },
 ]
+const AUTO_REFRESH_MS = 4000
 
 export default function BrokerPanel({ stockId, date }: Props) {
   const [category, setCategory] = useState<BrokerCategory>("day_trade")
   const [brokers, setBrokers] = useState<BrokerTradeItem[]>([])
   const [tradeDate, setTradeDate] = useState<string>("")
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [resolvedRequestKey, setResolvedRequestKey] = useState("")
+  const [errorState, setErrorState] = useState<{ requestKey: string; message: string } | null>(null)
+  const [isRefreshing, setIsRefreshing] = useState(false)
+  const [reloadKey, setReloadKey] = useState(0)
+  const requestKey = `${stockId}:${category}:${date ?? ""}:${reloadKey}`
+  const error = errorState?.requestKey === requestKey ? errorState.message : null
+  const loading = !error && resolvedRequestKey !== requestKey
 
   useEffect(() => {
-    let cancelled = false
-    setLoading(true)
-    setError(null)
+    const controller = new AbortController()
 
-    fetchBrokerTrades(stockId, category, date)
+    fetchBrokerTrades(stockId, category, date, 1, { signal: controller.signal })
       .then((data) => {
-        if (cancelled) return
         setBrokers(data.brokers)
         setTradeDate(data.trade_date)
+        setIsRefreshing(Boolean(data.is_refreshing))
+        setErrorState(null)
+        setResolvedRequestKey(requestKey)
       })
       .catch((err) => {
-        if (cancelled) return
-        setError("載入失敗")
+        if (controller.signal.aborted) return
+        if (err instanceof DOMException && err.name === "AbortError") return
+        setIsRefreshing(false)
+        setErrorState({ requestKey, message: toDisplayError(err) })
+        setResolvedRequestKey(requestKey)
         console.error(err)
       })
-      .finally(() => {
-        if (!cancelled) setLoading(false)
-      })
 
-    return () => { cancelled = true }
-  }, [stockId, category, date])
+    return () => { controller.abort() }
+  }, [stockId, category, date, reloadKey, requestKey])
+
+  useEffect(() => {
+    if (!isRefreshing || loading || error) return
+
+    const timer = window.setTimeout(() => {
+      setReloadKey((value) => value + 1)
+    }, AUTO_REFRESH_MS)
+
+    return () => {
+      window.clearTimeout(timer)
+    }
+  }, [isRefreshing, loading, error])
 
   return (
     <div className="flex flex-col gap-3 rounded-lg border border-zinc-700 bg-zinc-900 p-4 h-full">
@@ -56,7 +75,12 @@ export default function BrokerPanel({ stockId, date }: Props) {
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold text-zinc-200">關鍵券商買賣</h2>
         {tradeDate && (
-          <span className="text-[10px] text-zinc-500">{tradeDate}</span>
+          <div className="flex items-center gap-2">
+            {isRefreshing && (
+              <span className="text-[10px] text-yellow-500">背景更新中</span>
+            )}
+            <span className="text-[10px] text-zinc-500">{tradeDate}</span>
+          </div>
         )}
       </div>
 
@@ -88,11 +112,22 @@ export default function BrokerPanel({ stockId, date }: Props) {
           </div>
         ) : error ? (
           <div className="flex items-center justify-center h-full">
-            <p className="text-xs text-red-400">{error}</p>
+            <div className="flex flex-col items-center gap-2">
+              <p className="text-xs text-red-400">{error}</p>
+              <button
+                type="button"
+                onClick={() => setReloadKey((value) => value + 1)}
+                className="rounded-md border border-zinc-700 px-2 py-1 text-[11px] text-zinc-300 transition-colors hover:bg-zinc-800"
+              >
+                重新載入
+              </button>
+            </div>
           </div>
         ) : brokers.length === 0 ? (
           <div className="flex items-center justify-center h-full">
-            <p className="text-xs text-zinc-600">此類別無券商交易紀錄</p>
+            <p className="text-xs text-zinc-600">
+              {isRefreshing ? "正在背景抓取券商資料，稍後可重新載入" : "此類別無券商交易紀錄"}
+            </p>
           </div>
         ) : (
           <table className="w-full text-xs">

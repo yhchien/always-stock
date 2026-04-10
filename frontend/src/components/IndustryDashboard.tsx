@@ -11,7 +11,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Skeleton } from "@/components/ui/skeleton"
-import { fetchIndustries, fmtAmount, fmtStreak, type IndustryFlowItem } from "@/lib/api"
+import { fetchIndustries, fmtAmount, fmtStreak, toDisplayError, type IndustryFlowItem } from "@/lib/api"
 
 type Tab = "total" | "foreign" | "trust" | "dealer"
 type SortKey = "total" | "foreign" | "trust" | "dealer" | "streak"
@@ -21,15 +21,6 @@ const TAB_LABELS: Record<Tab, string> = {
   foreign: "外資",
   trust: "投信",
   dealer: "自營商",
-}
-
-function getAmount(row: IndustryFlowItem, tab: Tab): number {
-  switch (tab) {
-    case "foreign": return row.foreign_net_amount
-    case "trust":   return row.trust_net_amount
-    case "dealer":  return row.dealer_net_amount
-    default:        return row.total_net_amount
-  }
 }
 
 function getSortValue(row: IndustryFlowItem, key: SortKey): number {
@@ -83,21 +74,34 @@ export default function IndustryDashboard({ defaultDate, onDateChange, onSelectI
   const [search, setSearch] = useState("")
 
   const load = useCallback(async (d: string) => {
+    const controller = new AbortController()
     setLoading(true)
     setError(null)
     try {
-      const data = await fetchIndustries(d)
-      setRows(data)
+      const data = await fetchIndustries(d, { signal: controller.signal })
+      if (!controller.signal.aborted) {
+        setRows(data)
+      }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "載入失敗")
+      if (controller.signal.aborted) return () => controller.abort()
+      setError(toDisplayError(e))
       setRows([])
     } finally {
-      setLoading(false)
+      if (!controller.signal.aborted) {
+        setLoading(false)
+      }
     }
+    return () => controller.abort()
   }, [])
 
   useEffect(() => {
-    load(date)
+    let cleanup: (() => void) | void
+    void load(date).then((fn) => {
+      cleanup = fn
+    })
+    return () => {
+      cleanup?.()
+    }
   }, [date, load])
 
   // Sync tab → sortKey when tab changes

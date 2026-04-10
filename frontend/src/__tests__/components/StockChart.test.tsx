@@ -122,7 +122,7 @@ describe("StockChart", () => {
     render(<StockChart stockId="2330" />)
 
     await waitFor(() => {
-      expect(spy).toHaveBeenCalledWith("2330", 90, undefined)
+      expect(spy).toHaveBeenCalledWith("2330", 90, undefined, expect.any(Object))
     })
   })
 
@@ -132,7 +132,7 @@ describe("StockChart", () => {
     render(<StockChart stockId="2330" days={30} defaultDate="2026-04-01" />)
 
     await waitFor(() => {
-      expect(spy).toHaveBeenCalledWith("2330", 30, "2026-04-01")
+      expect(spy).toHaveBeenCalledWith("2330", 30, "2026-04-01", expect.any(Object))
     })
   })
 

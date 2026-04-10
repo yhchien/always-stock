@@ -59,6 +59,7 @@
 - `SKILL.md` 的產業分類規則已同步為實作現況：以 Fugle mapping 為主，FinMind / TWSE 類別僅作 fallback
 - backend `get_db()` 測試已改為驗證 `close()` 被呼叫，不再依賴 SQLAlchemy `Session.is_active` 判斷關閉狀態
 - `backend/app/routers/industries.py` 的 streak 查詢已改成 `select(subquery.c.trade_date)`，避免 SQLAlchemy `SAWarning`
+- L2 個股頁的「回測程式」與「關鍵券商」已拆成兩個獨立 toggle，且會記住使用者上次的顯示偏好；被隱藏的 panel 不應 render，也不應觸發後續 API
 
 ## 資料狀態（2026-04-10）
 

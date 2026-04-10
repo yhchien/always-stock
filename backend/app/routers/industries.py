@@ -1,4 +1,5 @@
 import logging
+import time
 from collections import defaultdict
 from datetime import date
 from typing import Dict, List, Optional
@@ -6,6 +7,7 @@ from typing import Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import and_, func, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -14,6 +16,8 @@ from app.models import IndustryDailyFlow, InstStockFlow, StockMaster, DailyPrice
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["industries"])
+LOCK_RETRY_DELAY = 0.15
+LOCK_RETRY_ATTEMPTS = 2
 
 
 # ── Streak helper ────────────────────────────────────────────────────────────
@@ -37,6 +41,30 @@ def compute_streak(net_amounts_desc: list) -> int:
         else:
             break
     return count if positive else -count
+
+
+def _is_sqlite_lock_error(error: OperationalError) -> bool:
+    return "database is locked" in str(error).lower()
+
+
+def _run_with_lock_retry(db: Session, fn):
+    last_error = None
+    for attempt in range(LOCK_RETRY_ATTEMPTS):
+        try:
+            return fn()
+        except OperationalError as error:
+            db.rollback()
+            if not _is_sqlite_lock_error(error) or attempt == LOCK_RETRY_ATTEMPTS - 1:
+                raise
+            last_error = error
+            logger.warning(
+                "SQLite database is locked for industries query, retrying (%d/%d)",
+                attempt + 1,
+                LOCK_RETRY_ATTEMPTS,
+            )
+            time.sleep(LOCK_RETRY_DELAY)
+    if last_error is not None:
+        raise last_error
 
 
 # ── Response schemas ──────────────────────────────────────────────────────────
@@ -82,6 +110,12 @@ class SubIndustrySummaryItem(BaseModel):
     streak: int
 
 
+def _raise_busy_if_locked(error: OperationalError) -> None:
+    if _is_sqlite_lock_error(error):
+        raise HTTPException(status_code=503, detail="Data is temporarily busy, please retry")
+    raise error
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.get("/industries", response_model=List[IndustryFlowItem])
@@ -93,38 +127,50 @@ def get_industries(
     L0: Return all industries for the given date with streak info.
     """
     logger.info("GET /industries date=%s", date)
-    rows = (
-        db.query(IndustryDailyFlow)
-        .filter(IndustryDailyFlow.trade_date == date)
-        .order_by(IndustryDailyFlow.total_net_amount.desc())
-        .all()
-    )
+    try:
+        rows = _run_with_lock_retry(
+            db,
+            lambda: (
+                db.query(IndustryDailyFlow)
+                .filter(IndustryDailyFlow.trade_date == date)
+                .order_by(IndustryDailyFlow.total_net_amount.desc())
+                .all()
+            ),
+        )
+    except OperationalError as error:
+        _raise_busy_if_locked(error)
     if not rows:
         logger.warning("No industry flow data for %s", date)
         raise HTTPException(status_code=404, detail=f"No data for {date}")
 
     # Compute streaks: load last 31 trading dates per industry (enough to detect 30+ streak)
     industry_names = [r.industry_name for r in rows]
-    recent_dates_l0 = (
-        db.query(IndustryDailyFlow.trade_date)
-        .filter(
-            IndustryDailyFlow.industry_name.in_(industry_names),
-            IndustryDailyFlow.trade_date <= date,
+    try:
+        recent_dates_l0 = (
+            db.query(IndustryDailyFlow.trade_date)
+            .filter(
+                IndustryDailyFlow.industry_name.in_(industry_names),
+                IndustryDailyFlow.trade_date <= date,
+            )
+            .distinct()
+            .order_by(IndustryDailyFlow.trade_date.desc())
+            .limit(31)
+            .subquery()
         )
-        .distinct()
-        .order_by(IndustryDailyFlow.trade_date.desc())
-        .limit(31)
-        .subquery()
-    )
-    history = (
-        db.query(IndustryDailyFlow.industry_name, IndustryDailyFlow.trade_date, IndustryDailyFlow.total_net_amount)
-        .filter(
-            IndustryDailyFlow.industry_name.in_(industry_names),
-            IndustryDailyFlow.trade_date.in_(select(recent_dates_l0.c.trade_date)),
+        history = _run_with_lock_retry(
+            db,
+            lambda: (
+                db.query(IndustryDailyFlow.industry_name, IndustryDailyFlow.trade_date, IndustryDailyFlow.total_net_amount)
+                .filter(
+                    IndustryDailyFlow.industry_name.in_(industry_names),
+                    IndustryDailyFlow.trade_date.in_(select(recent_dates_l0.c.trade_date)),
+                )
+                .order_by(IndustryDailyFlow.industry_name, IndustryDailyFlow.trade_date.desc())
+                .all()
+            ),
         )
-        .order_by(IndustryDailyFlow.industry_name, IndustryDailyFlow.trade_date.desc())
-        .all()
-    )
+    except OperationalError as error:
+        _raise_busy_if_locked(error)
     # Group by industry → list of net amounts (date desc)
     streak_data: Dict[str, list] = defaultdict(list)
     for name, _, net_amt in history:
@@ -160,11 +206,17 @@ def get_industry_sub_summary(
     logger.info("GET /industries/%s/summary date=%s", industry_name, date)
 
     # Find all stocks in this industry
-    stocks = (
-        db.query(StockMaster)
-        .filter(StockMaster.industry_name == industry_name)
-        .all()
-    )
+    try:
+        stocks = _run_with_lock_retry(
+            db,
+            lambda: (
+                db.query(StockMaster)
+                .filter(StockMaster.industry_name == industry_name)
+                .all()
+            ),
+        )
+    except OperationalError as error:
+        _raise_busy_if_locked(error)
     if not stocks:
         raise HTTPException(status_code=404, detail=f"Industry not found: {industry_name}")
 
@@ -182,11 +234,17 @@ def get_industry_sub_summary(
             sub_chain[sub] = s.chain
 
     # Load flows for the target date
-    flows = (
-        db.query(InstStockFlow)
-        .filter(InstStockFlow.trade_date == date, InstStockFlow.stock_id.in_(stock_ids))
-        .all()
-    )
+    try:
+        flows = _run_with_lock_retry(
+            db,
+            lambda: (
+                db.query(InstStockFlow)
+                .filter(InstStockFlow.trade_date == date, InstStockFlow.stock_id.in_(stock_ids))
+                .all()
+            ),
+        )
+    except OperationalError as error:
+        _raise_busy_if_locked(error)
 
     # Aggregate by sub_industry for target date
     agg: Dict[str, dict] = defaultdict(lambda: {
@@ -213,14 +271,20 @@ def get_industry_sub_summary(
         .limit(31)
         .subquery()
     )
-    all_flows = (
-        db.query(InstStockFlow)
-        .filter(
-            InstStockFlow.trade_date.in_(select(recent_dates.c.trade_date)),
-            InstStockFlow.stock_id.in_(stock_ids),
+    try:
+        all_flows = _run_with_lock_retry(
+            db,
+            lambda: (
+                db.query(InstStockFlow)
+                .filter(
+                    InstStockFlow.trade_date.in_(select(recent_dates.c.trade_date)),
+                    InstStockFlow.stock_id.in_(stock_ids),
+                )
+                .all()
+            ),
         )
-        .all()
-    )
+    except OperationalError as error:
+        _raise_busy_if_locked(error)
 
     # Aggregate by (sub_industry, date) → total net
     daily_sub_net: Dict[str, Dict[date, float]] = defaultdict(lambda: defaultdict(float))
@@ -269,11 +333,17 @@ def get_industry_stocks(
     logger.info("GET /industries/%s/stocks date=%s", industry_name, date)
 
     # Find stocks belonging to this industry (by broad Fugle category)
-    stocks = (
-        db.query(StockMaster)
-        .filter(StockMaster.industry_name == industry_name)
-        .all()
-    )
+    try:
+        stocks = _run_with_lock_retry(
+            db,
+            lambda: (
+                db.query(StockMaster)
+                .filter(StockMaster.industry_name == industry_name)
+                .all()
+            ),
+        )
+    except OperationalError as error:
+        _raise_busy_if_locked(error)
     if not stocks:
         logger.warning("Industry not found: %s", industry_name)
         raise HTTPException(status_code=404, detail=f"Industry not found: {industry_name}")
@@ -283,11 +353,17 @@ def get_industry_stocks(
     logger.debug("Found %d stocks in industry '%s'", len(stock_ids), industry_name)
 
     # Load closing prices for the target date
-    prices = (
-        db.query(DailyPrice)
-        .filter(DailyPrice.trade_date == date, DailyPrice.stock_id.in_(stock_ids))
-        .all()
-    )
+    try:
+        prices = _run_with_lock_retry(
+            db,
+            lambda: (
+                db.query(DailyPrice)
+                .filter(DailyPrice.trade_date == date, DailyPrice.stock_id.in_(stock_ids))
+                .all()
+            ),
+        )
+    except OperationalError as error:
+        _raise_busy_if_locked(error)
     price_map = {p.stock_id: p.close_price for p in prices}
 
     # Load previous trading day's prices for price change calculation.
@@ -301,25 +377,37 @@ def get_industry_stocks(
         .group_by(DailyPrice.stock_id)
         .subquery()
     )
-    prev_prices = (
-        db.query(DailyPrice)
-        .join(
-            prev_subq,
-            and_(
-                DailyPrice.stock_id == prev_subq.c.stock_id,
-                DailyPrice.trade_date == prev_subq.c.prev_date,
+    try:
+        prev_prices = _run_with_lock_retry(
+            db,
+            lambda: (
+                db.query(DailyPrice)
+                .join(
+                    prev_subq,
+                    and_(
+                        DailyPrice.stock_id == prev_subq.c.stock_id,
+                        DailyPrice.trade_date == prev_subq.c.prev_date,
+                    ),
+                )
+                .all()
             ),
         )
-        .all()
-    )
+    except OperationalError as error:
+        _raise_busy_if_locked(error)
     prev_price_map = {p.stock_id: p.close_price for p in prev_prices}
 
     # Load institutional flows
-    flows = (
-        db.query(InstStockFlow)
-        .filter(InstStockFlow.trade_date == date, InstStockFlow.stock_id.in_(stock_ids))
-        .all()
-    )
+    try:
+        flows = _run_with_lock_retry(
+            db,
+            lambda: (
+                db.query(InstStockFlow)
+                .filter(InstStockFlow.trade_date == date, InstStockFlow.stock_id.in_(stock_ids))
+                .all()
+            ),
+        )
+    except OperationalError as error:
+        _raise_busy_if_locked(error)
 
     # Aggregate flows per stock_id
     agg: dict = {}

@@ -5,6 +5,7 @@ On-demand fetch: if data for a stock+date is not in DB, fetch from TWSE BSR
 and cache. Background backfill for date ranges.
 """
 import logging
+import threading
 import time
 from datetime import date, timedelta
 from typing import List, Optional
@@ -13,9 +14,10 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import OperationalError
 
 from app.broker_config import BROKER_LOOKUP, CATEGORY_LABELS, get_categories, normalize
-from app.database import SessionLocal, get_db
+from app.database import DATABASE_URL, SessionLocal, get_db
 from app.models import BrokerTrade
 
 logger = logging.getLogger(__name__)
@@ -24,6 +26,11 @@ router = APIRouter(tags=["brokers"])
 
 # Rate limit: minimum seconds between TWSE BSR requests
 BSR_RATE_LIMIT = 3.5
+LOCK_RETRY_DELAY = 0.25
+LOCK_RETRY_ATTEMPTS = 3
+_IN_FLIGHT_FETCH_LOCK = threading.Lock()
+_IN_FLIGHT_FETCHES: set[tuple[str, date]] = set()
+_BROKER_WRITE_LOCK = threading.Lock()
 
 
 # ── Response schemas ─────────────────────────────────────────────────────────
@@ -42,6 +49,7 @@ class BrokerTradeResponse(BaseModel):
     trade_date: date
     category: str
     category_label: str
+    is_refreshing: bool = False
     brokers: List[BrokerTradeItem]
 
 
@@ -77,6 +85,42 @@ def _get_cached_dates(db: Session, stock_id: str, start: date, end: date) -> set
     return {r[0] for r in rows}
 
 
+def _is_sqlite_lock_error(error: OperationalError) -> bool:
+    return "database is locked" in str(error).lower()
+
+
+def _run_with_lock_retry(db: Session, fn):
+    last_error = None
+    for attempt in range(LOCK_RETRY_ATTEMPTS):
+        try:
+            return fn()
+        except OperationalError as error:
+            db.rollback()
+            if not _is_sqlite_lock_error(error) or attempt == LOCK_RETRY_ATTEMPTS - 1:
+                raise
+            last_error = error
+            logger.warning(
+                "SQLite database is locked, retrying (%d/%d)",
+                attempt + 1,
+                LOCK_RETRY_ATTEMPTS,
+            )
+            time.sleep(LOCK_RETRY_DELAY)
+    if last_error is not None:
+        raise last_error
+
+
+def _mark_missing_for_backfill(stock_id: str, missing_dates: list[date]) -> list[date]:
+    queued: list[date] = []
+    with _IN_FLIGHT_FETCH_LOCK:
+        for trade_date in missing_dates:
+            key = (stock_id, trade_date)
+            if key in _IN_FLIGHT_FETCHES:
+                continue
+            _IN_FLIGHT_FETCHES.add(key)
+            queued.append(trade_date)
+    return queued
+
+
 def _trading_dates(start: date, end: date) -> list[date]:
     """Generate weekday dates in range."""
     dates = []
@@ -96,9 +140,15 @@ def _backfill_missing(stock_id: str, missing_dates: list[date]) -> None:
     try:
         for i, d in enumerate(missing_dates):
             try:
-                fetch_and_upsert_broker_trade(db, stock_id, d)
+                # SQLite only allows one writer at a time; serialize broker backfill writes.
+                with _BROKER_WRITE_LOCK:
+                    fetch_and_upsert_broker_trade(db, stock_id, d)
             except Exception:
+                db.rollback()
                 logger.exception("Backfill failed: %s on %s", stock_id, d)
+            finally:
+                with _IN_FLIGHT_FETCH_LOCK:
+                    _IN_FLIGHT_FETCHES.discard((stock_id, d))
             if i < len(missing_dates) - 1:
                 time.sleep(BSR_RATE_LIMIT)
     finally:
@@ -115,6 +165,10 @@ def _map_display_name(bsr_name: str) -> str:
             if normalize(display) == normalized:
                 return display
     return bsr_name
+
+
+def _is_sqlite_dev_mode() -> bool:
+    return DATABASE_URL.startswith("sqlite:///")
 
 
 # ── Endpoints ────────────────────────────────────────────────────────────────
@@ -158,39 +212,63 @@ def get_broker_trades(
 
     # Check cached dates and trigger backfill
     all_dates = _trading_dates(start_date, end_date)
-    cached = _get_cached_dates(db, stock_id, start_date, end_date)
+    cached = _run_with_lock_retry(db, lambda: _get_cached_dates(db, stock_id, start_date, end_date))
     missing = [d for d in all_dates if d not in cached]
 
+    is_refreshing = False
+    live_rows: list[BrokerTradeItem] = []
     if missing:
-        # Fetch first missing date synchronously for immediate result
-        from etl.fetch_broker_trade import fetch_and_upsert_broker_trade
-        try:
-            fetch_and_upsert_broker_trade(db, stock_id, missing[0])
-            cached.add(missing[0])
-        except Exception:
-            logger.exception("Sync fetch failed: %s on %s", stock_id, missing[0])
+        if _is_sqlite_dev_mode() and days == 1:
+            # In local SQLite mode, avoid background writes entirely; fetch live rows
+            # and return them directly so interactive browsing doesn't lock the DB.
+            from etl.fetch_broker_trade import fetch_broker_trade_rows
 
-        # Backfill remaining in background
-        if len(missing) > 1:
-            background_tasks.add_task(_backfill_missing, stock_id, missing[1:])
+            try:
+                raw_rows = fetch_broker_trade_rows(stock_id, missing[0])
+                for row in raw_rows:
+                    if row["broker_id"] == stock_id or str(row["broker_name"]).startswith("/"):
+                        continue
+                    live_rows.append(BrokerTradeItem(
+                        broker_id=row["broker_id"],
+                        broker_name=row["broker_name"],
+                        display_name=_map_display_name(row["broker_name"]),
+                        buy_shares=row["buy_shares"] or 0,
+                        sell_shares=row["sell_shares"] or 0,
+                        net_shares=row["net_shares"] or 0,
+                    ))
+            except Exception:
+                logger.exception("Live broker fetch failed: %s on %s", stock_id, missing[0])
+        else:
+            queued_dates = _mark_missing_for_backfill(stock_id, missing)
+            if queued_dates:
+                background_tasks.add_task(_backfill_missing, stock_id, queued_dates)
+            is_refreshing = True
 
     # Query aggregated broker data
-    rows = (
-        db.query(
-            BrokerTrade.broker_id,
-            BrokerTrade.broker_name,
-            func.sum(BrokerTrade.buy_shares).label("buy"),
-            func.sum(BrokerTrade.sell_shares).label("sell"),
-            func.sum(BrokerTrade.net_shares).label("net"),
+    try:
+        rows = _run_with_lock_retry(
+            db,
+            lambda: (
+                db.query(
+                    BrokerTrade.broker_id,
+                    BrokerTrade.broker_name,
+                    func.sum(BrokerTrade.buy_shares).label("buy"),
+                    func.sum(BrokerTrade.sell_shares).label("sell"),
+                    func.sum(BrokerTrade.net_shares).label("net"),
+                )
+                .filter(
+                    BrokerTrade.stock_id == stock_id,
+                    BrokerTrade.trade_date >= start_date,
+                    BrokerTrade.trade_date <= end_date,
+                )
+                .group_by(BrokerTrade.broker_id, BrokerTrade.broker_name)
+                .all()
+            )
         )
-        .filter(
-            BrokerTrade.stock_id == stock_id,
-            BrokerTrade.trade_date >= start_date,
-            BrokerTrade.trade_date <= end_date,
-        )
-        .group_by(BrokerTrade.broker_id, BrokerTrade.broker_name)
-        .all()
-    )
+    except OperationalError as error:
+        if _is_sqlite_lock_error(error):
+            raise HTTPException(status_code=503, detail="Broker data is temporarily busy, please retry")
+        raise
 
     # Filter by category
     filtered = []
@@ -206,6 +284,11 @@ def get_broker_trades(
                 net_shares=r.net or 0,
             ))
 
+    for row in live_rows:
+        cats = get_categories(row.broker_name)
+        if category in cats:
+            filtered.append(row)
+
     # Sort by absolute net_shares descending, take top 10
     filtered.sort(key=lambda x: abs(x.net_shares), reverse=True)
 
@@ -214,6 +297,7 @@ def get_broker_trades(
         trade_date=trade_date,
         category=category,
         category_label=CATEGORY_LABELS[category],
+        is_refreshing=is_refreshing,
         brokers=filtered[:10],
     )
 
@@ -227,7 +311,7 @@ def get_broker_status(
 ):
     """Check how many dates are cached for a stock's broker data."""
     all_dates = _trading_dates(start_date, end_date)
-    cached = _get_cached_dates(db, stock_id, start_date, end_date)
+    cached = _run_with_lock_retry(db, lambda: _get_cached_dates(db, stock_id, start_date, end_date))
 
     # Count brokers per category in cached data
     cat_counts = []

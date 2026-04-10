@@ -67,12 +67,22 @@ describe("IndustryDashboard", () => {
     const spy = jest.spyOn(api, "fetchIndustries").mockResolvedValue(MOCK_ROWS)
 
     render(<IndustryDashboard defaultDate="2026-04-01" />)
-    await waitFor(() => expect(spy).toHaveBeenCalledWith("2026-04-01"))
+    await waitFor(() => expect(spy).toHaveBeenCalledWith("2026-04-01", expect.any(Object)))
 
     const input = screen.getByDisplayValue("2026-04-01")
     fireEvent.change(input, { target: { value: "2026-03-31" } })
 
-    await waitFor(() => expect(spy).toHaveBeenCalledWith("2026-03-31"))
+    await waitFor(() => expect(spy).toHaveBeenCalledWith("2026-03-31", expect.any(Object)))
+  })
+
+  it("shows friendly busy message for 503 errors", async () => {
+    jest.spyOn(api, "fetchIndustries").mockRejectedValue(new Error("Failed to fetch industries: 503"))
+
+    render(<IndustryDashboard defaultDate="2026-04-08" />)
+
+    await waitFor(() => {
+      expect(screen.getByText("資料庫忙碌中，請稍後再試")).toBeInTheDocument()
+    })
   })
 
   it("calls onSelectIndustry when a row is clicked", async () => {

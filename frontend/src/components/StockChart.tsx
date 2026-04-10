@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback, useMemo, useRef } from "react"
 import { useRouter } from "next/navigation"
 import ReactECharts from "echarts-for-react"
 import { Skeleton } from "@/components/ui/skeleton"
-import { fetchStockHistory, fmtShares, type StockHistoryResponse } from "@/lib/api"
+import { fetchStockHistory, fmtShares, toDisplayError, type StockHistoryResponse } from "@/lib/api"
 import { useRealtimeQuotes } from "@/lib/useRealtimeQuotes"
 
 const RANGE_OPTIONS = [
@@ -75,21 +75,36 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
   const [customMAPeriod, setCustomMAPeriod] = useState<number | null>(null)
 
   const load = useCallback(async () => {
+    const controller = new AbortController()
     setLoading(true)
     setError(null)
     try {
-      const resp = await fetchStockHistory(stockId, days, defaultDate)
-      setData(resp)
+      const resp = await fetchStockHistory(stockId, days, defaultDate, {
+        signal: controller.signal,
+      })
+      if (!controller.signal.aborted) {
+        setData(resp)
+      }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "載入失敗")
+      if (controller.signal.aborted) return () => controller.abort()
+      setError(toDisplayError(e))
       setData(null)
     } finally {
-      setLoading(false)
+      if (!controller.signal.aborted) {
+        setLoading(false)
+      }
     }
+    return () => controller.abort()
   }, [stockId, days, defaultDate])
 
   useEffect(() => {
-    load()
+    let cleanup: (() => void) | void
+    void load().then((fn) => {
+      cleanup = fn
+    })
+    return () => {
+      cleanup?.()
+    }
   }, [load])
 
   const toggleMA = (period: number) => {
@@ -176,7 +191,9 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
 
     const priceName = hasOHLC ? "股價" : "收盤價"
     const maNames = allActivePeriods.map((p) => (MA_CONFIGS[p]?.label ?? `MA${p}`))
-    const instNames = INST_CONFIGS.filter((c) => activeInst.has(c.key)).map((c) => `${c.label}累積`)
+    const instNames = INST_CONFIGS
+      .filter((c) => activeInst.has(c.key))
+      .map((c) => (c.key === "dealer" ? "自營商累積" : `${c.label}累積`))
     const legendData = [priceName, ...maNames, ...instNames]
 
     return {

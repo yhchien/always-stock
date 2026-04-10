@@ -1,5 +1,7 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"
 const REALTIME_BATCH_SIZE = 50
+const BROKER_FETCH_RETRIES = 1
+const BROKER_FETCH_RETRY_DELAY_MS = 400
 
 export interface IndustryFlowItem {
   industry_name: string
@@ -62,23 +64,46 @@ export interface StockHistoryResponse {
   history: StockHistoryItem[]
 }
 
-export async function fetchIndustries(date: string): Promise<IndustryFlowItem[]> {
-  const res = await fetch(`${API_BASE}/api/industries?date=${date}`)
+export interface FetchOptions {
+  signal?: AbortSignal
+}
+
+export function toDisplayError(error: unknown, fallback = "載入失敗"): string {
+  if (error instanceof Error) {
+    if (error.message.includes("503")) return "資料庫忙碌中，請稍後再試"
+    if (error.message.includes("404")) return "此日期無資料，請選擇其他交易日"
+    return error.message
+  }
+  return fallback
+}
+
+export async function fetchIndustries(date: string, options?: FetchOptions): Promise<IndustryFlowItem[]> {
+  const res = await fetch(`${API_BASE}/api/industries?date=${date}`, { signal: options?.signal })
   if (!res.ok) throw new Error(`Failed to fetch industries: ${res.status}`)
   return res.json()
 }
 
-export async function fetchIndustryStocks(industryName: string, date: string): Promise<StockFlowItem[]> {
+export async function fetchIndustryStocks(
+  industryName: string,
+  date: string,
+  options?: FetchOptions,
+): Promise<StockFlowItem[]> {
   const res = await fetch(
-    `${API_BASE}/api/industries/${encodeURIComponent(industryName)}/stocks?date=${date}`
+    `${API_BASE}/api/industries/${encodeURIComponent(industryName)}/stocks?date=${date}`,
+    { signal: options?.signal },
   )
   if (!res.ok) throw new Error(`Failed to fetch stocks: ${res.status}`)
   return res.json()
 }
 
-export async function fetchSubIndustrySummary(industryName: string, date: string): Promise<SubIndustrySummaryItem[]> {
+export async function fetchSubIndustrySummary(
+  industryName: string,
+  date: string,
+  options?: FetchOptions,
+): Promise<SubIndustrySummaryItem[]> {
   const res = await fetch(
-    `${API_BASE}/api/industries/${encodeURIComponent(industryName)}/summary?date=${date}`
+    `${API_BASE}/api/industries/${encodeURIComponent(industryName)}/summary?date=${date}`,
+    { signal: options?.signal },
   )
   if (!res.ok) throw new Error(`Failed to fetch summary: ${res.status}`)
   return res.json()
@@ -87,11 +112,14 @@ export async function fetchSubIndustrySummary(industryName: string, date: string
 export async function fetchStockHistory(
   stockId: string,
   days = 60,
-  endDate?: string
+  endDate?: string,
+  options?: FetchOptions,
 ): Promise<StockHistoryResponse> {
   const params = new URLSearchParams({ days: String(days) })
   if (endDate) params.set("end_date", endDate)
-  const res = await fetch(`${API_BASE}/api/stocks/${stockId}/history?${params}`)
+  const res = await fetch(`${API_BASE}/api/stocks/${stockId}/history?${params}`, {
+    signal: options?.signal,
+  })
   if (!res.ok) throw new Error(`Failed to fetch history: ${res.status}`)
   return res.json()
 }
@@ -147,7 +175,24 @@ export interface BrokerTradeResponse {
   trade_date: string
   category: string
   category_label: string
+  is_refreshing?: boolean
   brokers: BrokerTradeItem[]
+}
+
+export interface BrokerTradeFetchOptions {
+  signal?: AbortSignal
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError"
+}
+
+function isRetryableNetworkError(error: unknown): boolean {
+  return error instanceof TypeError && !isAbortError(error)
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 export async function fetchBrokerTrades(
@@ -155,12 +200,30 @@ export async function fetchBrokerTrades(
   category: BrokerCategory = "day_trade",
   date?: string,
   days = 1,
+  options?: BrokerTradeFetchOptions,
 ): Promise<BrokerTradeResponse> {
   const params = new URLSearchParams({ category, days: String(days) })
   if (date) params.set("date", date)
-  const res = await fetch(`${API_BASE}/api/stocks/${stockId}/brokers?${params}`)
-  if (!res.ok) throw new Error(`Failed to fetch broker trades: ${res.status}`)
-  return res.json()
+  let lastError: unknown
+
+  for (let attempt = 0; attempt <= BROKER_FETCH_RETRIES; attempt += 1) {
+    try {
+      const res = await fetch(`${API_BASE}/api/stocks/${stockId}/brokers?${params}`, {
+        signal: options?.signal,
+      })
+      if (!res.ok) throw new Error(`Failed to fetch broker trades: ${res.status}`)
+      return res.json()
+    } catch (error) {
+      if (isAbortError(error)) throw error
+      lastError = error
+      if (!isRetryableNetworkError(error) || attempt === BROKER_FETCH_RETRIES) {
+        throw error
+      }
+      await sleep(BROKER_FETCH_RETRY_DELAY_MS)
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error("Failed to fetch broker trades")
 }
 
 /** Format shares in 張 (lots of 1000 shares) */

@@ -169,6 +169,31 @@ def _parse_brokers(html: str) -> list[dict]:
     ]
 
 
+def fetch_broker_trade_rows(stock_id: str, trade_date: date) -> list[dict]:
+    """
+    Fetch broker trading rows from TWSE BSR without writing to the database.
+
+    Returns parsed broker rows, or an empty list if the remote page is empty,
+    malformed, or unavailable for the requested stock/date.
+    """
+    if trade_date.weekday() >= 5:
+        logger.info("Skipping weekend preview fetch: %s", trade_date)
+        return []
+
+    logger.info("Fetching broker trade preview: %s on %s", stock_id, trade_date)
+
+    cookie = _establish_session(stock_id)
+    if not cookie:
+        logger.error("Failed to establish BSR session for preview %s", stock_id)
+        return []
+
+    html = _fetch_page(cookie, stock_id, trade_date)
+    brokers = _parse_brokers(html)
+    if not brokers:
+        logger.warning("No broker data parsed for %s on %s", stock_id, trade_date)
+    return brokers
+
+
 def fetch_and_upsert_broker_trade(
     db: Session, stock_id: str, trade_date: date
 ) -> int:
@@ -178,22 +203,8 @@ def fetch_and_upsert_broker_trade(
 
     Returns number of broker records upserted, or 0 on failure/skip.
     """
-    if trade_date.weekday() >= 5:
-        logger.info("Skipping weekend: %s", trade_date)
-        return 0
-
-    logger.info("Fetching broker trades: %s on %s", stock_id, trade_date)
-
-    cookie = _establish_session(stock_id)
-    if not cookie:
-        logger.error("Failed to establish BSR session for %s", stock_id)
-        return 0
-
-    html = _fetch_page(cookie, stock_id, trade_date)
-    brokers = _parse_brokers(html)
-
+    brokers = fetch_broker_trade_rows(stock_id, trade_date)
     if not brokers:
-        logger.warning("No broker data parsed for %s on %s", stock_id, trade_date)
         return 0
 
     count = 0

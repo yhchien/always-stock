@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useState, useCallback, useMemo } from "react"
-import { useRouter, useSearchParams } from "next/navigation"
+import { useRouter } from "next/navigation"
 import {
   Table,
   TableBody,
@@ -18,6 +18,7 @@ import {
   fmtAmount,
   fmtShares,
   fmtStreak,
+  toDisplayError,
   type StockFlowItem,
   type SubIndustrySummaryItem,
 } from "@/lib/api"
@@ -173,7 +174,6 @@ interface Props {
 
 export default function StockList({ industryName, defaultDate, defaultSubFilter = null }: Props) {
   const router = useRouter()
-  const searchParams = useSearchParams()
   const [date, setDate] = useState(defaultDate)
   const [rows, setRows] = useState<StockFlowItem[]>([])
   const [summary, setSummary] = useState<SubIndustrySummaryItem[]>([])
@@ -191,26 +191,39 @@ export default function StockList({ industryName, defaultDate, defaultSubFilter 
   }, [router, industryName])
 
   const load = useCallback(async (d: string) => {
+    const controller = new AbortController()
     setLoading(true)
     setError(null)
     try {
       const [stockData, summaryData] = await Promise.all([
-        fetchIndustryStocks(industryName, d),
-        fetchSubIndustrySummary(industryName, d),
+        fetchIndustryStocks(industryName, d, { signal: controller.signal }),
+        fetchSubIndustrySummary(industryName, d, { signal: controller.signal }),
       ])
-      setRows(stockData)
-      setSummary(summaryData)
+      if (!controller.signal.aborted) {
+        setRows(stockData)
+        setSummary(summaryData)
+      }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "載入失敗")
+      if (controller.signal.aborted) return () => controller.abort()
+      setError(toDisplayError(e))
       setRows([])
       setSummary([])
     } finally {
-      setLoading(false)
+      if (!controller.signal.aborted) {
+        setLoading(false)
+      }
     }
+    return () => controller.abort()
   }, [industryName])
 
   useEffect(() => {
-    load(date)
+    let cleanup: (() => void) | void
+    void load(date).then((fn) => {
+      cleanup = fn
+    })
+    return () => {
+      cleanup?.()
+    }
   }, [date, load])
 
   // Real-time quotes (poll every 15s)

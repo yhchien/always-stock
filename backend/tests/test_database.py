@@ -1,6 +1,8 @@
 """
 tests for backend/app/database.py
 """
+from pathlib import Path
+
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -26,6 +28,14 @@ def test_build_database_url_normalizes_plain_postgres_url(monkeypatch):
     assert database.build_database_url() == "postgresql+psycopg://user:pass@localhost/db"
 
 
+def test_build_database_url_normalizes_relative_sqlite_url(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///backend/db/tw_stock.db")
+    monkeypatch.delenv("DB_PATH", raising=False)
+
+    expected = Path(database.PROJECT_ROOT / "backend" / "db" / "tw_stock.db").resolve()
+    assert database.build_database_url() == f"sqlite:///{expected}"
+
+
 def test_build_database_url_falls_back_to_sqlite(monkeypatch):
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.setenv("DB_PATH", "/tmp/test-stock.db")
@@ -35,7 +45,10 @@ def test_build_database_url_falls_back_to_sqlite(monkeypatch):
 
 def test_get_engine_kwargs_for_sqlite():
     assert database.get_engine_kwargs("sqlite:////tmp/test.db") == {
-        "connect_args": {"check_same_thread": False}
+        "connect_args": {
+            "check_same_thread": False,
+            "timeout": database.SQLITE_LOCK_TIMEOUT_SECONDS,
+        }
     }
 
 
