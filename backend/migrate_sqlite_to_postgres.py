@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Sequence
 
+from dotenv import load_dotenv
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -22,6 +23,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeMeta
 
 sys.path.insert(0, os.path.dirname(__file__))
+load_dotenv(Path(__file__).resolve().with_name(".env"))
 
 from app.models import (  # noqa: E402
     Base,
@@ -67,6 +69,12 @@ TABLE_SPECS: Sequence[TableSpec] = (
 TABLE_NAME_TO_SPEC = {spec.name: spec for spec in TABLE_SPECS}
 
 
+def normalize_database_url(database_url: str) -> str:
+    if database_url.startswith("postgresql://"):
+        return database_url.replace("postgresql://", "postgresql+psycopg://", 1)
+    return database_url
+
+
 def default_sqlite_path() -> Path:
     return Path(os.getenv("DB_PATH", Path(__file__).parent / "db" / "tw_stock.db")).resolve()
 
@@ -76,6 +84,7 @@ def sqlite_url_from_path(path: Path) -> str:
 
 
 def build_engine(database_url: str) -> Engine:
+    database_url = normalize_database_url(database_url)
     kwargs = {}
     if database_url.startswith("sqlite:///"):
         kwargs["connect_args"] = {"check_same_thread": False}
@@ -194,17 +203,23 @@ def import_table(
     spec: TableSpec,
     batch_size: int,
     dry_run: bool = False,
+    progress_every: int = 100,
 ) -> int:
     imported_rows = 0
+    batch_num = 0
 
     for rows in iter_source_rows(source_engine, spec, batch_size):
         imported_rows += len(rows)
+        batch_num += 1
         if dry_run:
             continue
 
         statement = build_upsert_statement(spec, rows, target_engine.dialect.name)
         with target_engine.begin() as conn:
             conn.execute(statement)
+
+        if batch_num % progress_every == 0:
+            print(f"[import] {spec.name}: {imported_rows:,} rows imported...", flush=True)
 
     return imported_rows
 

@@ -19,6 +19,13 @@ def test_build_database_url_prefers_database_url(monkeypatch):
     assert database.build_database_url() == "postgresql+psycopg://user:pass@localhost/db"
 
 
+def test_build_database_url_normalizes_plain_postgres_url(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost/db")
+    monkeypatch.setenv("DB_PATH", "/tmp/should-not-be-used.db")
+
+    assert database.build_database_url() == "postgresql+psycopg://user:pass@localhost/db"
+
+
 def test_build_database_url_falls_back_to_sqlite(monkeypatch):
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.setenv("DB_PATH", "/tmp/test-stock.db")

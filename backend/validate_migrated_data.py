@@ -9,9 +9,11 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Dict, Optional, Sequence
 
+from dotenv import load_dotenv
 from sqlalchemy import func, select
 
 sys.path.insert(0, os.path.dirname(__file__))
+load_dotenv(Path(__file__).resolve().with_name(".env"))
 
 from app.models import DailyPrice, IndustryDailyFlow, InstStockFlow  # noqa: E402
 from migrate_sqlite_to_postgres import (  # noqa: E402

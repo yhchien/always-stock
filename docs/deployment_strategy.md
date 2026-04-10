@@ -57,6 +57,35 @@
 - `backend/.env.example`
 - `frontend/.env.local.example`
 
+本地若要做 SQLite -> Postgres 匯入，建議建立：
+
+- `backend/.env`
+
+至少放：
+
+```env
+DATABASE_URL=sqlite:///backend/db/tw_stock.db
+TARGET_DATABASE_URL=postgresql://USER:PASSWORD@HOST/DATABASE
+TZ=Asia/Taipei
+```
+
+之後可直接在 `backend/` 執行：
+
+```bash
+python migrate_sqlite_to_postgres.py --verify-counts
+python validate_migrated_data.py
+```
+
+前端本地則放：
+
+- `frontend/.env.local`
+
+內容：
+
+```env
+NEXT_PUBLIC_API_URL=http://localhost:8000
+```
+
 ## 服務與 repo 對應
 
 ### Vercel

@@ -9,6 +9,7 @@ from migrate_sqlite_to_postgres import (
     get_import_columns,
     import_table,
     load_checkpoint,
+    normalize_database_url,
     resolve_table_specs,
     save_checkpoint,
     sqlite_url_from_path,
@@ -27,6 +28,12 @@ def test_get_import_columns_excludes_surrogate_id():
     daily_price_spec = TABLE_NAME_TO_SPEC["daily_price"]
     assert "id" not in get_import_columns(daily_price_spec)
     assert "trade_date" in get_import_columns(daily_price_spec)
+
+
+def test_normalize_database_url_for_render_style_postgres_url():
+    assert normalize_database_url("postgresql://user:pass@host/db") == (
+        "postgresql+psycopg://user:pass@host/db"
+    )
 
 
 def test_import_table_copies_rows_between_sqlite_databases(tmp_path):

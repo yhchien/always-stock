@@ -1,5 +1,14 @@
 # always-stock 專案記憶
 
+## 部署 / 上雲前必讀
+
+處理部署、資料搬移、Fly.io、Render、Postgres、雲端 DB 切換相關任務前，先閱讀：
+
+- `docs/deployment_strategy.md`
+- `docs/flyio_sqlite_upload.md`
+- `README.md` 中的部署章節
+- `infra/render/render.yaml.template`
+
 ## 專案概述
 
 **always-stock**：台股產業別三大法人資金流向分析儀表板（原名 tw-stock-dashboard，2026-04 更名）。
