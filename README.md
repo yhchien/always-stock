@@ -346,6 +346,49 @@ npm run dev
 
 ---
 
+## 長期規劃
+
+目前正式環境的主要風險來自：
+
+- production 仍依賴 `Fly.io + SQLite volume`
+- API / Bot / ETL 與單一檔案型 DB 綁定
+- 大型 `.db` 檔搬移與備份成本高
+
+因此長期方向已定為：
+
+- Frontend：Vercel
+- Backend API：Render Web Service
+- Telegram Bot：Render Background Worker
+- ETL / 排程：Render Cron Job
+- Database：Postgres（Render Postgres 或 Neon）
+
+規劃文件：
+
+- [Target Architecture](/Users/brian.yh.chien/.gstack/projects/always-stock/docs/architecture_target.md)
+- [SQLite to Postgres Migration Plan](/Users/brian.yh.chien/.gstack/projects/always-stock/docs/migration_plan_sqlite_to_postgres.md)
+- [Deployment Strategy](/Users/brian.yh.chien/.gstack/projects/always-stock/docs/deployment_strategy.md)
+- [Operations Runbook](/Users/brian.yh.chien/.gstack/projects/always-stock/docs/runbook_operations.md)
+- [Data Migration Checklist](/Users/brian.yh.chien/.gstack/projects/always-stock/docs/data_migration_checklist.md)
+- [Security and Secrets](/Users/brian.yh.chien/.gstack/projects/always-stock/docs/security_and_secrets.md)
+- [Observability](/Users/brian.yh.chien/.gstack/projects/always-stock/docs/observability.md)
+- [Repo Restructure Plan](/Users/brian.yh.chien/.gstack/projects/always-stock/docs/repo_restructure_plan.md)
+
+建議閱讀順序：
+
+1. 先看架構方向：
+   [architecture_target.md](/Users/brian.yh.chien/.gstack/projects/always-stock/docs/architecture_target.md)
+2. 再看資料與部署遷移：
+   [migration_plan_sqlite_to_postgres.md](/Users/brian.yh.chien/.gstack/projects/always-stock/docs/migration_plan_sqlite_to_postgres.md)、
+   [deployment_strategy.md](/Users/brian.yh.chien/.gstack/projects/always-stock/docs/deployment_strategy.md)
+3. 進入執行前 checklist：
+   [data_migration_checklist.md](/Users/brian.yh.chien/.gstack/projects/always-stock/docs/data_migration_checklist.md)
+4. 補齊維運治理：
+   [runbook_operations.md](/Users/brian.yh.chien/.gstack/projects/always-stock/docs/runbook_operations.md)、
+   [security_and_secrets.md](/Users/brian.yh.chien/.gstack/projects/always-stock/docs/security_and_secrets.md)、
+   [observability.md](/Users/brian.yh.chien/.gstack/projects/always-stock/docs/observability.md)
+5. 最後再整理 repo 與 infra：
+   [repo_restructure_plan.md](/Users/brian.yh.chien/.gstack/projects/always-stock/docs/repo_restructure_plan.md)
+
 ## Milestones
 
 | # | 目標 | 狀態 |
@@ -475,6 +518,30 @@ fly ssh console --app always-stock-api
 | SSL 憑證 | Fly.io 自動管理 |
 | 閒置省錢 | `auto_stop_machines = "suspend"`，無流量時自動暫停 |
 | DB 備份 | Fly volume 每日自動 snapshot（保留 5 份） |
+
+### 每月費用估算（不含 AI API）
+
+以 Fly.io 2026 年定價，目前設定（閒置自動暫停）的情況：
+
+| 項目 | 規格 | 月費（USD） |
+|------|------|------------|
+| API machine | shared-cpu-1x, 512MB, 閒置暫停 | ~$1–2（依使用時數） |
+| Web machine | shared-cpu-1x, 512MB, 閒置暫停 | ~$1–2（依使用時數） |
+| Persistent volume | 12 GB SSD | ~$1.80 |
+| Outbound bandwidth | 含 100 GB 免費 | $0 |
+| **合計（暫停模式）** | | **~$3–6/月** |
+
+若改為 24/7 不停機（`min_machines_running = 1`）：
+
+| 項目 | 規格 | 月費（USD） |
+|------|------|------------|
+| API machine | shared-cpu-1x, 512MB, 24/7 | ~$3.19 |
+| Web machine | shared-cpu-1x, 512MB, 24/7 | ~$3.19 |
+| Persistent volume | 12 GB SSD | ~$1.80 |
+| Outbound bandwidth | 含 100 GB 免費 | $0 |
+| **合計（不停機模式）** | | **~$8.18/月** |
+
+> Fly.io Hobby plan 含免費額度（3 shared VMs + 1 GB volume），實際帳單可能更低。
 
 ---
 
