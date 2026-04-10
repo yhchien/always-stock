@@ -1,6 +1,0 @@
-# ETL schedule (Asia/Taipei timezone, set via TZ env var)
-# Run at 19:00 and 21:30 Mon-Fri
-# Source environment from /app/scripts/env.sh to inherit Fly secrets
-0 19 * * 1-5 . /app/scripts/env.sh && cd /app && python run_daily_etl.py --skip-master >> /data/logs/etl_cron.log 2>&1
-30 21 * * 1-5 . /app/scripts/env.sh && cd /app && python run_daily_etl.py --skip-master >> /data/logs/etl_cron.log 2>&1
-# Empty line required by cron

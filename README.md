@@ -184,14 +184,14 @@ broker_trade
 
 ### 技術堆疊
 
-- **DB**: SQLite
+- **DB**: PostgreSQL（Render Managed）；本地開發可用 SQLite
 - **Backend**: FastAPI + SQLAlchemy（Python 3.9+）
 - **ETL 資料來源**: FinMind API + TWSE 公開資料
 - **Frontend**: Next.js + Tailwind CSS + shadcn/ui + ECharts
 - **產業分類**: Fugle 自定義供應鏈子產業（三層：大類 → chain → sub_industry）
 - **AI 分析**: OpenAI GPT（gpt-4o-mini，Telegram `/ai` 指令觸發籌碼分析）
 - **Bot**: Telegram Bot（long-polling）
-- **部署**: Fly.io（API + Bot + 前端 + cron ETL + persistent volume 12GB）
+- **部署**: Render（後端 API + Bot + ETL + Postgres）+ Vercel（前端）
 
 ---
 
@@ -313,9 +313,9 @@ cd frontend
 npm test
 ```
 
-### 本地完整啟動（不需雲端）
+### 本地完整啟動
 
-除了 Fly.io 雲端版本，你也可以完全在本機跑，使用本地 SQLite 資料庫：
+可以完全在本機跑，使用本地 SQLite 資料庫：
 
 ```bash
 # 終端機 1：啟動後端 API
@@ -329,65 +329,30 @@ npm run dev
 # 前端: http://localhost:3000
 ```
 
-本地模式直接讀取 `backend/db/tw_stock.db`，不需要任何雲端服務。適合開發、除錯、以及在 backfill 完成前搶先查看資料。
+本地模式直接讀取 `backend/db/tw_stock.db`，不需要任何雲端服務。
 
 ---
 
 ## 已完成項目
 
-- [x] **資料層**：SQLite schema、股票主檔、收盤價、三大法人、產業彙總、券商分點快取
-- [x] **ETL 層**：`run_daily_etl.py`、`run_backfill.py`、統一 logging、週末跳過、斷點續傳、macOS/Fly.io 排程
+- [x] **資料層**：PostgreSQL schema、股票主檔、收盤價、三大法人、產業彙總、券商分點快取
+- [x] **ETL 層**：`run_daily_etl.py`、`run_backfill.py`、統一 logging、週末跳過、斷點續傳、macOS launchd / Render Cron 排程
 - [x] **API 層**：L0/L1/L2 查詢、即時報價、券商分點、健康檢查
 - [x] **前端主流程**：L0 產業排行榜、L1 子產業/個股列表、L2 K 線與法人累積走勢
 - [x] **互動體驗**：日期狀態傳遞、搜尋/排序/filter、loading skeleton、RWD、dataZoom、lazy load
 - [x] **即時與擴充功能**：TWSE 即時報價、Telegram Bot、OpenAI `/ai` 分析、BrokerPanel、MA 疊加、BacktestPanel skeleton
-- [x] **部署與維運**：Fly.io API + Web + Bot、persistent volume、cron ETL
+- [x] **部署與維運**：Render（API + Bot + ETL + Postgres）+ Vercel（前端）
 - [x] **測試**：backend / frontend 單元測試已建立並可本地執行
 
 ---
 
-## 長期規劃
+## 相關文件
 
-目前正式環境的主要風險來自：
-
-- production 仍依賴 `Fly.io + SQLite volume`
-- API / Bot / ETL 與單一檔案型 DB 綁定
-- 大型 `.db` 檔搬移與備份成本高
-
-因此長期方向已定為：
-
-- Frontend：Vercel
-- Backend API：Render Web Service
-- Telegram Bot：Render Background Worker
-- ETL / 排程：Render Cron Job
-- Database：Postgres（Render Postgres 或 Neon）
-
-規劃文件：
-
-- [Target Architecture](/Users/brian.yh.chien/.gstack/projects/always-stock/docs/architecture_target.md)
-- [SQLite to Postgres Migration Plan](/Users/brian.yh.chien/.gstack/projects/always-stock/docs/migration_plan_sqlite_to_postgres.md)
-- [Deployment Strategy](/Users/brian.yh.chien/.gstack/projects/always-stock/docs/deployment_strategy.md)
-- [Operations Runbook](/Users/brian.yh.chien/.gstack/projects/always-stock/docs/runbook_operations.md)
-- [Data Migration Checklist](/Users/brian.yh.chien/.gstack/projects/always-stock/docs/data_migration_checklist.md)
-- [Security and Secrets](/Users/brian.yh.chien/.gstack/projects/always-stock/docs/security_and_secrets.md)
-- [Observability](/Users/brian.yh.chien/.gstack/projects/always-stock/docs/observability.md)
-- [Repo Restructure Plan](/Users/brian.yh.chien/.gstack/projects/always-stock/docs/repo_restructure_plan.md)
-
-建議閱讀順序：
-
-1. 先看架構方向：
-   [architecture_target.md](/Users/brian.yh.chien/.gstack/projects/always-stock/docs/architecture_target.md)
-2. 再看資料與部署遷移：
-   [migration_plan_sqlite_to_postgres.md](/Users/brian.yh.chien/.gstack/projects/always-stock/docs/migration_plan_sqlite_to_postgres.md)、
-   [deployment_strategy.md](/Users/brian.yh.chien/.gstack/projects/always-stock/docs/deployment_strategy.md)
-3. 進入執行前 checklist：
-   [data_migration_checklist.md](/Users/brian.yh.chien/.gstack/projects/always-stock/docs/data_migration_checklist.md)
-4. 補齊維運治理：
-   [runbook_operations.md](/Users/brian.yh.chien/.gstack/projects/always-stock/docs/runbook_operations.md)、
-   [security_and_secrets.md](/Users/brian.yh.chien/.gstack/projects/always-stock/docs/security_and_secrets.md)、
-   [observability.md](/Users/brian.yh.chien/.gstack/projects/always-stock/docs/observability.md)
-5. 最後再整理 repo 與 infra：
-   [repo_restructure_plan.md](/Users/brian.yh.chien/.gstack/projects/always-stock/docs/repo_restructure_plan.md)
+- [Architecture Overview](docs/architecture_overview.md) — 技術選擇、通訊方式、部署架構總覽
+- [Deployment Strategy](docs/deployment_strategy.md) — 環境分層與部署流程
+- [SQLite to Postgres Migration Plan](docs/migration_plan_sqlite_to_postgres.md)
+- [Operations Runbook](docs/runbook_operations.md)
+- [Security and Secrets](docs/security_and_secrets.md)
 
 ## Milestones
 
@@ -402,7 +367,7 @@ npm run dev
 | M7 | K 線圖（OHLC candlestick） | ✅ 完成 |
 | M8 | 財報資料庫（含 PE / 基本面指標） | ⬜ 待開始 |
 | M9 | AI Sub-agent（接 LLM，投資策略初版） | ✅ 完成 |
-| M10 | 部署上線（Cloud） | ✅ 完成（Fly.io） |
+| M10 | 部署上線（Cloud） | ✅ 完成（Render + Vercel） |
 | M11 | 回測程式（策略績效驗證） | ⬜ 待開始 |
 | M12 | 文字化投資策略輸入 | ⬜ 待開始 |
 | M13 | 關鍵券商分點爬蟲 | ✅ 完成 |
@@ -439,11 +404,12 @@ npm run dev
 
 ### Phase 4 — 部署 & 推播
 
-- [x] **M10 部署上線**：Fly.io 雲端部署
-  - 後端 API + Telegram Bot → `always-stock-api.fly.dev`
-  - 前端 → `always-stock-web.fly.dev`
-  - SQLite → Fly persistent volume（12 GB）
-  - ETL 排程 → container 內 cron（19:00 + 21:30 台灣時間）
+- [x] **M10 部署上線**：Render + Vercel 雲端部署
+  - 後端 API → Render Web Service
+  - Telegram Bot → Render Background Worker
+  - ETL 排程 → Render Cron Job（週一至五）
+  - DB → Render Postgres
+  - 前端 → Vercel
 - [ ] **M15 Telegram 電子報**：定期推播投資推薦到 Telegram
   - 結合法人籌碼 + 財報 + AI 策略 + 輿情分析
   - 每日 / 每週摘要報告
@@ -459,104 +425,55 @@ npm run dev
 | 三大法人買賣超 | TWSE `T86` | 公開免費 |
 | 子產業分類 | Fugle（自定義爬取） | 本地 CSV |
 
-## 部署架構（Fly.io）
+## 部署架構（Render + Vercel）
 
-| 服務 | App 名稱 | URL |
-|------|---------|-----|
-| 後端 API + Telegram Bot | `always-stock-api` | https://always-stock-api.fly.dev |
-| 前端 | `always-stock-web` | https://always-stock-web.fly.dev |
-
-### 部署指令
-
-```bash
-# 後端（含 API + Telegram Bot + cron ETL）
-cd backend && fly deploy
-
-# 前端
-cd frontend && fly deploy
+```
+┌──── Vercel ────────────────┐     ┌──── Render (Singapore) ──────────┐
+│                             │     │                                   │
+│  Frontend (Next.js)         │────→│  Web Service — FastAPI API        │
+│  自動從 GitHub 部署         │ HTTP│  Background Worker — Telegram Bot │
+│                             │     │  Cron Job — 每日 ETL              │
+└─────────────────────────────┘     │  PostgreSQL — 資料庫              │
+                                    └───────────────────────────────────┘
 ```
 
-### DB 上傳 / 下載
+| 服務 | 平台 | 說明 |
+|------|------|------|
+| 前端 | Vercel | Next.js，推 code 自動部署 |
+| 後端 API | Render Web Service | FastAPI，`uvicorn` 啟動 |
+| Telegram Bot | Render Background Worker | long-polling 模式 |
+| ETL 排程 | Render Cron Job | 週一至五自動抓 TWSE 資料 |
+| 資料庫 | Render PostgreSQL | 託管 Postgres |
 
-```bash
-# 上傳本地 DB 到雲端
-fly proxy 10022:22 --app always-stock-api &
-scp -P 10022 backend/db/tw_stock.db root@localhost:/data/tw_stock.db
+### 環境變數
 
-# 下載雲端 DB（備份）
-scp -P 10022 root@localhost:/data/tw_stock.db ./backup.db
-```
+**後端（Render Web Service）**
 
-### 日常維護
-
-```bash
-# 查看 app 狀態
-fly status --app always-stock-api
-
-# 即時 logs
-fly logs --app always-stock-api
-
-# 檢查 ETL 排程執行紀錄
-fly ssh console --app always-stock-api -C "tail -20 /data/logs/etl_cron.log"
-
-# 手動觸發 ETL（不等排程）
-fly ssh console --app always-stock-api -C "cd /app && python run_daily_etl.py --skip-master"
-
-# 管理 secrets
-fly secrets list --app always-stock-api
-fly secrets set OPENAI_API_KEY="new-key" --app always-stock-api
-
-# SSH 進 container 除錯
-fly ssh console --app always-stock-api
-```
-
-### 自動化機制
-
-| 項目 | 說明 |
+| 變數 | 用途 |
 |------|------|
-| ETL 排程 | cron：週一至週五 19:00 + 21:30（台灣時間） |
-| SSL 憑證 | Fly.io 自動管理 |
-| 閒置省錢 | `auto_stop_machines = "suspend"`，無流量時自動暫停 |
-| DB 備份 | Fly volume 每日自動 snapshot（保留 5 份） |
+| `DATABASE_URL` | PostgreSQL 連線字串 |
+| `CORS_ORIGINS` | 允許的前端 origin（逗號分隔） |
+| `TZ` | `Asia/Taipei` |
 
-### 每月費用估算（不含 AI API）
+**前端（Vercel）**
 
-以 Fly.io 2026 年定價，目前設定（閒置自動暫停）的情況：
+| 變數 | 用途 |
+|------|------|
+| `NEXT_PUBLIC_API_URL` | 後端 API 的完整 URL |
 
-| 項目 | 規格 | 月費（USD） |
-|------|------|------------|
-| API machine | shared-cpu-1x, 512MB, 閒置暫停 | ~$1–2（依使用時數） |
-| Web machine | shared-cpu-1x, 512MB, 閒置暫停 | ~$1–2（依使用時數） |
-| Persistent volume | 12 GB SSD | ~$1.80 |
-| Outbound bandwidth | 含 100 GB 免費 | $0 |
-| **合計（暫停模式）** | | **~$3–6/月** |
+### 部署方式
 
-若改為 24/7 不停機（`min_machines_running = 1`）：
+後端與前端皆從 GitHub `yhchien/always-stock` 自動部署，推 code 即上線。
 
-| 項目 | 規格 | 月費（USD） |
-|------|------|------------|
-| API machine | shared-cpu-1x, 512MB, 24/7 | ~$3.19 |
-| Web machine | shared-cpu-1x, 512MB, 24/7 | ~$3.19 |
-| Persistent volume | 12 GB SSD | ~$1.80 |
-| Outbound bandwidth | 含 100 GB 免費 | $0 |
-| **合計（不停機模式）** | | **~$8.18/月** |
+### 費用
 
-> Fly.io Hobby plan 含免費額度（3 shared VMs + 1 GB volume），實際帳單可能更低。
+Render Free Plan + Vercel Hobby Plan，個人專案使用量內免費。
 
 ---
 
 ## Claude Code 協作
 
-本專案使用 Claude Code 協助開發與維護。Claude 的 memory 系統已記錄完整的部署架構、URL、secrets、排程、維護指令等資訊。
-
-你可以直接用自然語言請 Claude 幫忙，例如：
-- 「幫我檢查 ETL 有沒有正常跑」
-- 「重新部署後端」
-- 「更新 OpenAI key」
-- 「下載雲端 DB 備份」
-- 「幫我看 Fly.io logs」
-
-Claude 會自動從 memory 取得正確的 app 名稱、指令和上下文來執行。
+本專案使用 Claude Code 協助開發與維護。詳細的技術選擇與架構說明見 [Architecture Overview](docs/architecture_overview.md)。
 
 ---
 

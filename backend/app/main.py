@@ -17,9 +17,9 @@ import os
 
 _allowed_origins = [
     "http://localhost:3000",
-    "https://always-stock-web.fly.dev",
 ]
 # Allow custom origins via env var (comma-separated)
+# Production: set CORS_ORIGINS to your Vercel/Render frontend URL
 _extra = os.getenv("CORS_ORIGINS", "")
 if _extra:
     _allowed_origins.extend(o.strip() for o in _extra.split(",") if o.strip())

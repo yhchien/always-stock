@@ -1,13 +1,10 @@
 # always-stock 專案記憶
 
-## 部署 / 上雲前必讀
+## 部署相關文件
 
-處理部署、資料搬移、Fly.io、Render、Postgres、雲端 DB 切換相關任務前，先閱讀：
-
-- `docs/deployment_strategy.md`
-- `docs/flyio_sqlite_upload.md`
-- `README.md` 中的部署章節
-- `infra/render/render.yaml.template`
+- `docs/architecture_overview.md` — 技術選擇、通訊方式、部署架構總覽
+- `docs/deployment_strategy.md` — 環境分層與部署流程
+- `infra/render/render.yaml.template` — Render blueprint 範本
 
 ## 專案概述
 
@@ -16,11 +13,11 @@
 ## 技術堆疊
 - **Backend**: FastAPI + SQLAlchemy, Python 3.9+
 - **Frontend**: Next.js + Tailwind CSS + shadcn/ui + ECharts
-- **DB**: SQLite (`backend/db/tw_stock.db`)
+- **DB**: PostgreSQL（Render Managed）；本地開發可用 SQLite（`backend/db/tw_stock.db`）
 - **ETL 資料來源**: TWSE 公開資料（T86、STOCK_DAY_ALL）、FinMind API、Fugle 子產業分類
 - **Bot**: Telegram Bot（long-polling）+ OpenAI GPT 籌碼分析
-- **排程**: macOS launchd（本地）/ cron（Fly.io，19:00 + 21:30 台灣時間）
-- **部署**: Fly.io（API: always-stock-api.fly.dev / 前端: always-stock-web.fly.dev）
+- **排程**: macOS launchd（本地）/ Render Cron Job（雲端，週一至五）
+- **部署**: Render（後端 API + Bot + ETL + Postgres）+ Vercel（前端）
 
 ## Milestones 進度
 
@@ -29,7 +26,7 @@
 - M5: Telegram Bot 個股籌碼查詢
 - M7: K 線圖（L2 candlestick + 法人累積買超，舊資料自動 fallback 折線圖）
 - M9: AI 籌碼分析（`/ai` 指令，接 OpenAI GPT）
-- M10: Fly.io 雲端部署（API + Bot + 前端 + cron ETL + persistent volume 12GB）
+- M10: 雲端部署（Render + Vercel）
 
 ### 進行中
 - M6: 8 年歷史資料 backfill（2019~2026），OHLC 欄位已加入 daily_price
@@ -70,7 +67,5 @@
 - 上述 3 天重抓時，TWSE `MI_INDEX` 回傳「沒有符合條件的資料」，暫列為資料源特殊日
 - `daily_price` 仍有 5 天 `OHLC` 缺漏：`2023-05-05`、`2023-09-19`、`2024-01-17`、`2024-02-29`、`2024-07-11`
 - 這 5 天已重抓一次，`close_price` 與後續 flow 可更新，但 `open/high/low` 仍為空，推測是資料源回傳本身缺欄位
-- Fly.io 狀態檢查：
-  - `always-stock-api` 為 `stopped`
-  - `always-stock-web` 為 `suspended`
-  - 線上目前沒有持續執行中的 app machine
+- 已從 Fly.io 遷移至 Render（Postgres）+ Vercel（前端）
+- Fly.io 資源已停用，可待驗證完成後刪除
