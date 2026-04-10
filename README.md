@@ -67,40 +67,45 @@ always-stock/
 ### 資料流
 
 ```text
-資料來源
-  TWSE MI_INDEX            -> fetch_daily_price.py
-  TWSE T86                 -> fetch_inst_flow.py
-  TWSE BSR                 -> fetch_broker_trade.py
-  FinMind TaiwanStockInfo  -> fetch_stock_master.py
-  Fugle mapping CSV / JSON -> fetch_stock_master.py
++--------------------------+      +--------------------------+
+| FinMind TaiwanStockInfo  | ---> | fetch_stock_master.py    |
++--------------------------+      +--------------------------+
+                                      |
++--------------------------+          v
+| Fugle mapping CSV / JSON | ------> +--------------------------+
+                                      | stocks_master            |
+                                      +--------------------------+
 
-寫入資料表
-  fetch_stock_master.py       -> stocks_master
-  fetch_daily_price.py        -> daily_price
-  fetch_inst_flow.py          -> inst_stock_flow
-  fetch_broker_trade.py       -> broker_trade
-  aggregate_industry_flow.py  -> industry_daily_flow
++--------------------------+      +--------------------------+      +--------------------------+
+| TWSE MI_INDEX            | ---> | fetch_daily_price.py     | ---> | daily_price              |
+| 每日收盤 / OHLC / 成交量 |      +--------------------------+      +--------------------------+
++--------------------------+
 
-依賴關係
-  daily_price + inst_stock_flow + stocks_master
-    -> aggregate_industry_flow.py
-    -> industry_daily_flow
++--------------------------+      +--------------------------+      +--------------------------+
+| TWSE T86                 | ---> | fetch_inst_flow.py       | ---> | inst_stock_flow          |
+| 三大法人買賣超           |      +--------------------------+      +--------------------------+
++--------------------------+
 
-對外服務
-  industry_daily_flow + stocks_master + inst_stock_flow + daily_price
-    -> FastAPI /api/industries
++--------------------------+      +--------------------------+      +--------------------------+
+| TWSE BSR                 | ---> | fetch_broker_trade.py    | ---> | broker_trade             |
+| 券商分點明細             |      +--------------------------+      +--------------------------+
++--------------------------+
 
-  stocks_master + daily_price + inst_stock_flow
-    -> FastAPI /api/stocks
+                  +--------------------------+
+stocks_master --->|                          |
+daily_price   --->| aggregate_industry_flow  | ---> industry_daily_flow
+inst_stock_flow ->|                          |
+                  +--------------------------+
 
-  broker_trade
-    -> FastAPI /api/stocks/{stock_id}/brokers
-    -> cache miss 時 on-demand 抓 TWSE BSR
+industry_daily_flow + stocks_master + inst_stock_flow + daily_price
+  ---> FastAPI /api/industries ---> Next.js L0 / L1
 
-前端 / Bot
-  /api/industries -> Next.js L0 / L1
-  /api/stocks     -> Next.js L2 / Telegram Bot
-  /api/brokers    -> Next.js L2 BrokerPanel
+stocks_master + daily_price + inst_stock_flow
+  ---> FastAPI /api/stocks ---> Next.js L2 / Telegram Bot
+
+broker_trade
+  ---> FastAPI /api/stocks/{stock_id}/brokers ---> Next.js L2 BrokerPanel
+  ---> cache miss 時 on-demand 抓 TWSE BSR
 ```
 
 **重點說明：**
@@ -112,27 +117,38 @@ always-stock/
 ### 頁面 Flow
 
 ```text
-L0 首頁 /
-  - IndustryDashboard
-  - 日期切換
-  - 產業排行 / 搜尋 / streak
-  - 點擊產業 -> 進入 L1
-
-L1 產業頁 /industries/{industryName}?date=...
-  - StockList
-  - 子產業 summary table
-  - 依 chain 分組個股
-  - 盤中即時報價補充
-  - 點擊子產業 -> 套用子產業篩選
-  - 點擊個股 -> 進入 L2
-
-L2 個股頁 /stocks/{stockId}?date=...
-  - StockChart
-  - K 線 / 收盤價
-  - 法人累積買超
-  - MA 與區間切換
-  - BrokerPanel
-  - BacktestPanel skeleton
++----------------------------------+
+| L0 首頁 /                        |
+| IndustryDashboard                |
+| - 日期切換                       |
+| - 產業排行 / 搜尋 / streak       |
++----------------------------------+
+                |
+                | 點擊產業
+                v
++----------------------------------+
+| L1 產業頁 /industries/{name}     |
+| StockList                        |
+| - 子產業 summary table           |
+| - chain 分組個股                 |
+| - 盤中即時報價補充               |
++----------------------------------+
+                |
+                | 點擊子產業
+                v
+       套用子產業 filter
+                |
+                | 點擊個股
+                v
++----------------------------------+
+| L2 個股頁 /stocks/{stockId}      |
+| StockChart                       |
+| - K 線 / 收盤價                  |
+| - 法人累積買超                   |
+| - MA 與區間切換                  |
+| BrokerPanel                      |
+| BacktestPanel skeleton           |
++----------------------------------+
 ```
 
 **使用者視角：**
@@ -319,62 +335,14 @@ npm run dev
 
 ## 已完成項目
 
-- [x] DB schema（4 張資料表）
-- [x] ETL：股票基本資料（FinMind + Fugle 子產業 mapping）
-- [x] ETL：每日收盤價（TWSE STOCK_DAY_ALL）
-- [x] ETL：三大法人買賣超（TWSE T86）
-- [x] ETL：產業流向彙整
-- [x] ETL 主程式（CLI，支援 backfill）
-- [x] 統一 logging（console + file，所有模組皆輸出至 `logs/etl.log`）
-- [x] 單元測試（70+ tests）
-- [x] FastAPI routers（L0 產業排行榜、L1 個股明細、L2 個股走勢）
-- [x] 程式碼與 comment 統一使用英文
-- [x] Next.js L0 產業排行榜頁面（以 Fugle 大類彙總 + 外資/投信/自營商/合計 tab）
-- [x] Next.js L1 個股卡片頁面（依 chain 上中下游分組，卡片顯示股價漲跌 + 三大法人買賣）
-- [x] Next.js L2 個股 K 線圖（ECharts candlestick OHLC + 三大法人累積淨買超，紅漲綠跌）
-- [x] 三層 drill-down 日期正確傳遞（L0 → L1 → L2）
-- [x] L0 欄位排序（外資/投信/自營商/合計）+ 趨勢欄（連續買賣超天數）
-- [x] L1 子產業彙總表格（排序 + 趨勢 + 子產業 filter）
-- [x] 前端單元測試（51 tests：api helpers + IndustryDashboard + StockList + StockChart）
-- [x] 漲跌幅計算改用 per-stock prev close（停牌股也能正確顯示漲跌）
-- [x] 深色主題調亮：提升底色亮度、filter/input/tab/badge 對比度改善可見性
-- [x] ETL 加入週末偵測：跳過 Saturday/Sunday，防止 TWSE API 回傳重複前日資料
-- [x] 可斷點續傳的歷史 backfill 腳本（`run_backfill.py`，支援 2019-01-01 ~ 2026-04-07）
-- [x] 每晚自動更新：launchd plist（週一至週五 20:00 觸發 `run_daily_etl.py`）
-- [x] 即時盤中報價 API（`/api/realtime/quotes`，串接 TWSE mis API）
-- [x] L1 卡片 + L2 走勢圖整合即時報價（15 秒自動刷新，盤中顯示「即時」標記）
-- [x] L2 走勢圖支援時間軸拖拉縮放（ECharts dataZoom）
-- [x] L2 tooltip 顯示單位（收盤價 元、累積張數 萬股）
-- [x] 返回上一頁保留日期 / 子產業篩選（URL search params 狀態同步）
-- [x] Telegram Bot：輸入股票代號查詢三大法人買賣超（long-polling 模式）
-- [x] AI 籌碼分析：`/ai` 指令接 OpenAI GPT，根據近期法人動向提供投資觀點
-- [x] daily_price 擴充 OHLC 欄位（open_price / high_price / low_price）
-- [x] L2 K 線圖（candlestick）：紅漲綠跌、hover 顯示開高低收、舊資料自動 fallback 折線圖
-- [x] 歷史 backfill 區間擴充至 2019-01-01 ~ 2026-04-07（8 年）
-- [x] Fly.io 雲端部署（後端 API + Telegram Bot + 前端）
-- [x] ETL 排程（cron，每天 19:00 + 21:30 台灣時間自動更新）
-- [x] SQLite 持久化（Fly.io persistent volume 12 GB）
-
-### UI 優化
-
-- [x] Loading skeleton（載入時顯示灰色閃爍骨架，避免畫面跳動）
-- [x] 手機 RWD 優化（L0 表格小螢幕隱藏外資/投信/自營商欄位，只顯示合計+趨勢）
-- [x] L2 K 線圖天數切換按鈕（1M / 3M / 6M / 1Y / All）
-- [x] L0 產業搜尋框（即時篩選產業名稱）
-- [x] 頂部 Navbar（全站導航列：Logo + 回首頁）
-- [x] L1 卡片漲跌色背景（微弱紅/綠 tint，一眼掃過更直覺）
-- [x] L0 金額 inline bar chart（表格內視覺化金額大小）
-- [x] 即時報價只在盤中輪詢（09:00~13:30 週一至五才啟動，省流量）
-- [x] L2 ECharts lazy load（`next/dynamic`，首頁不載入）
-- [x] M13 關鍵券商分點爬蟲：TWSE BSR on-demand 抓取 + SQLite 快取，`broker_trade` 資料表
-- [x] L2 BrokerPanel：當沖/隔日沖/短線/波段 分類 tab，顯示 Top 10 分點淨買超
-
-### L2 頁面進階功能
-
-- [x] 均線疊加（MA10 / MA20 / MA60 + 自定義期數，可個別切換，各自不同顏色）
-- [x] K 線圖響應式放大（高度隨視窗縮放，不固定 px）
-- [x] 回測策略框架（L2 下半部左：策略條件輸入 + 績效結果佔位）
-- [x] 關注券商買賣長條圖（L2 下半部右：輸入券商代號，對齊 K 線日期顯示買賣量）
+- [x] **資料層**：SQLite schema、股票主檔、收盤價、三大法人、產業彙總、券商分點快取
+- [x] **ETL 層**：`run_daily_etl.py`、`run_backfill.py`、統一 logging、週末跳過、斷點續傳、macOS/Fly.io 排程
+- [x] **API 層**：L0/L1/L2 查詢、即時報價、券商分點、健康檢查
+- [x] **前端主流程**：L0 產業排行榜、L1 子產業/個股列表、L2 K 線與法人累積走勢
+- [x] **互動體驗**：日期狀態傳遞、搜尋/排序/filter、loading skeleton、RWD、dataZoom、lazy load
+- [x] **即時與擴充功能**：TWSE 即時報價、Telegram Bot、OpenAI `/ai` 分析、BrokerPanel、MA 疊加、BacktestPanel skeleton
+- [x] **部署與維運**：Fly.io API + Web + Bot、persistent volume、cron ETL
+- [x] **測試**：backend / frontend 單元測試已建立並可本地執行
 
 ---
 
