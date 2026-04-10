@@ -66,6 +66,20 @@
 - 批次 insert / upsert 到 Postgres
 - 每表都做 row count 驗證
 
+目前 repo 已有第一版匯入腳本骨架：
+
+- `backend/migrate_sqlite_to_postgres.py`
+
+定位：
+
+- 先作為 staging migration tool
+- 支援依表分批搬移
+- 支援 `--verify-counts`
+- 已支援 table-level checkpoint / resume
+- 已支援 JSON report 輸出
+- 已支援 PostgreSQL sequence reset
+- 後續再補更細的 row-level resume 與正式切流前驗證腳本
+
 ### 階段 4：資料驗證
 
 每張表至少做：
