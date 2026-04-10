@@ -53,3 +53,15 @@
 - `SKILL.md` 的產業分類規則已同步為實作現況：以 Fugle mapping 為主，FinMind / TWSE 類別僅作 fallback
 - backend `get_db()` 測試已改為驗證 `close()` 被呼叫，不再依賴 SQLAlchemy `Session.is_active` 判斷關閉狀態
 - `backend/app/routers/industries.py` 的 streak 查詢已改成 `select(subquery.c.trade_date)`，避免 SQLAlchemy `SAWarning`
+
+## 資料狀態（2026-04-10）
+
+- 本地 backfill 已重新補跑大部分歷史缺口
+- `inst_stock_flow` / `industry_daily_flow` 仍缺 3 天：`2019-04-04`、`2023-04-03`、`2026-02-18`
+- 上述 3 天重抓時，TWSE `MI_INDEX` 回傳「沒有符合條件的資料」，暫列為資料源特殊日
+- `daily_price` 仍有 5 天 `OHLC` 缺漏：`2023-05-05`、`2023-09-19`、`2024-01-17`、`2024-02-29`、`2024-07-11`
+- 這 5 天已重抓一次，`close_price` 與後續 flow 可更新，但 `open/high/low` 仍為空，推測是資料源回傳本身缺欄位
+- Fly.io 狀態檢查：
+  - `always-stock-api` 為 `stopped`
+  - `always-stock-web` 為 `suspended`
+  - 線上目前沒有持續執行中的 app machine

@@ -66,46 +66,41 @@ always-stock/
 
 ### 資料流
 
-```mermaid
-flowchart LR
-    A[TWSE MI_INDEX<br/>每日收盤 / OHLC / 成交量]
-    B[TWSE T86<br/>三大法人買賣超]
-    C[TWSE BSR<br/>券商分點明細]
-    D[FinMind TaiwanStockInfo<br/>股票基本資料]
-    E[Fugle mapping CSV / JSON<br/>industry / chain / sub_industry]
+```text
+資料來源
+  TWSE MI_INDEX            -> fetch_daily_price.py
+  TWSE T86                 -> fetch_inst_flow.py
+  TWSE BSR                 -> fetch_broker_trade.py
+  FinMind TaiwanStockInfo  -> fetch_stock_master.py
+  Fugle mapping CSV / JSON -> fetch_stock_master.py
 
-    D --> F[fetch_stock_master.py]
-    E --> F
-    A --> G[fetch_daily_price.py]
-    B --> H[fetch_inst_flow.py]
-    C --> I[fetch_broker_trade.py]
+寫入資料表
+  fetch_stock_master.py       -> stocks_master
+  fetch_daily_price.py        -> daily_price
+  fetch_inst_flow.py          -> inst_stock_flow
+  fetch_broker_trade.py       -> broker_trade
+  aggregate_industry_flow.py  -> industry_daily_flow
 
-    F --> J[(stocks_master)]
-    G --> K[(daily_price)]
-    H --> L[(inst_stock_flow)]
-    I --> M[(broker_trade)]
+依賴關係
+  daily_price + inst_stock_flow + stocks_master
+    -> aggregate_industry_flow.py
+    -> industry_daily_flow
 
-    K --> H
-    J --> N[aggregate_industry_flow.py]
-    L --> N
-    N --> O[(industry_daily_flow)]
+對外服務
+  industry_daily_flow + stocks_master + inst_stock_flow + daily_price
+    -> FastAPI /api/industries
 
-    O --> P[FastAPI /api/industries]
-    J --> P
-    L --> P
-    K --> P
+  stocks_master + daily_price + inst_stock_flow
+    -> FastAPI /api/stocks
 
-    J --> Q[FastAPI /api/stocks]
-    K --> Q
-    L --> Q
+  broker_trade
+    -> FastAPI /api/stocks/{stock_id}/brokers
+    -> cache miss 時 on-demand 抓 TWSE BSR
 
-    M --> R[FastAPI /api/stocks/{stock_id}/brokers]
-    C -. cache miss 時 on-demand 抓取 .-> R
-
-    P --> S[Next.js L0 / L1]
-    Q --> T[Next.js L2]
-    R --> T
-    Q --> U[Telegram Bot]
+前端 / Bot
+  /api/industries -> Next.js L0 / L1
+  /api/stocks     -> Next.js L2 / Telegram Bot
+  /api/brokers    -> Next.js L2 BrokerPanel
 ```
 
 **重點說明：**
@@ -116,49 +111,50 @@ flowchart LR
 
 ### 頁面 Flow
 
-```mermaid
-flowchart TD
-    A[L0 首頁<br/>/]
-    A1[IndustryDashboard]
-    A2[日期切換]
-    A3[排行 / 搜尋 / streak]
+```text
+L0 首頁 /
+  - IndustryDashboard
+  - 日期切換
+  - 產業排行 / 搜尋 / streak
+  - 點擊產業 -> 進入 L1
 
-    B[L1 產業頁<br/>/industries/{industryName}?date=...]
-    B1[StockList]
-    B2[子產業 summary table]
-    B3[依 chain 分組個股]
-    B4[盤中即時報價補充]
+L1 產業頁 /industries/{industryName}?date=...
+  - StockList
+  - 子產業 summary table
+  - 依 chain 分組個股
+  - 盤中即時報價補充
+  - 點擊子產業 -> 套用子產業篩選
+  - 點擊個股 -> 進入 L2
 
-    C[L2 個股頁<br/>/stocks/{stockId}?date=...]
-    C1[StockChart]
-    C2[K 線 / 收盤價]
-    C3[法人累積買超]
-    C4[MA 與區間切換]
-    C5[BrokerPanel]
-    C6[BacktestPanel skeleton]
-
-    A --> A1
-    A1 --> A2
-    A1 --> A3
-    A1 -->|點擊產業| B
-    B --> B1
-    B1 --> B2
-    B1 --> B3
-    B1 --> B4
-    B2 -->|點擊子產業篩選| B3
-    B3 -->|點擊個股| C
-    C --> C1
-    C1 --> C2
-    C1 --> C3
-    C1 --> C4
-    C --> C5
-    C --> C6
+L2 個股頁 /stocks/{stockId}?date=...
+  - StockChart
+  - K 線 / 收盤價
+  - 法人累積買超
+  - MA 與區間切換
+  - BrokerPanel
+  - BacktestPanel skeleton
 ```
 
 **使用者視角：**
 - L0 看「今天哪些產業被買、被賣，且是否連買 / 連賣」
 - L1 看「某個產業裡，資金集中在哪些子產業、供應鏈哪一段、哪些股票」
 - L2 看「單一股票的價格走勢、法人累積部位、關鍵券商分點，以及後續回測擴充入口」
+
+### 目前資料狀態（2026-04-10）
+
+- 已重新補跑本地 backfill 缺口與 `2026-04-09` 前的歷史缺日
+- `inst_stock_flow` / `industry_daily_flow` 目前仍缺 3 天：
+  - `2019-04-04`
+  - `2023-04-03`
+  - `2026-02-18`
+- 這 3 天重抓時，TWSE `MI_INDEX` 目前回傳「沒有符合條件的資料」，因此暫時視為資料源特殊日
+- `daily_price` 仍有 5 天的 `OHLC` 缺漏：
+  - `2023-05-05`
+  - `2023-09-19`
+  - `2024-01-17`
+  - `2024-02-29`
+  - `2024-07-11`
+- 上述 5 天已重抓一次，但 `open_price / high_price / low_price` 仍為空，推測是現行 `MI_INDEX` 回傳本身即缺少這些欄位
 
 ### 資料表
 
