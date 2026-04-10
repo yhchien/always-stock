@@ -1,0 +1,45 @@
+services:
+  - type: web
+    name: always-stock-api-staging
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: CORS_ORIGINS
+        value: https://always-stock-staging.vercel.app,http://localhost:3000
+      - key: TZ
+        value: Asia/Taipei
+
+  - type: worker
+    name: always-stock-bot-staging
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: python run_telegram_bot.py
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: TZ
+        value: Asia/Taipei
+
+  - type: cron
+    name: always-stock-etl-staging
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    schedule: "0 20 * * 1-5"
+    startCommand: python run_daily_etl.py --skip-master
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: FINMIND_API_TOKEN
+        sync: false
+      - key: TZ
+        value: Asia/Taipei

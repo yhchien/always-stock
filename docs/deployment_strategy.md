@@ -33,6 +33,30 @@
 - ETL：Render Cron Job
 - DB：Render Postgres / Neon Postgres
 
+## 最小可用 staging 流程
+
+1. 建立 staging Postgres
+2. 在 backend 設定 `DATABASE_URL`
+3. 先執行：
+   - `python init_db.py`
+4. 再執行資料匯入：
+   - `python migrate_sqlite_to_postgres.py --target-database-url ... --verify-counts`
+5. 再執行資料驗證：
+   - `python validate_migrated_data.py --target-database-url ...`
+6. 啟動 backend：
+   - `uvicorn app.main:app --host 0.0.0.0 --port 8000`
+7. 啟動 frontend：
+   - `NEXT_PUBLIC_API_URL=http://localhost:8000 npm run dev`
+
+若要直接準備 Render blueprint，可參考：
+
+- `infra/render/render.yaml.template`
+
+本地環境變數範本：
+
+- `backend/.env.example`
+- `frontend/.env.local.example`
+
 ## 服務與 repo 對應
 
 ### Vercel
