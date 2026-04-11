@@ -351,7 +351,10 @@ npm run dev
 ## 相關文件
 
 - [Architecture Overview](docs/architecture_overview.md) — 技術選擇、通訊方式、部署架構總覽
+- [Data Source Feasibility Assessment](docs/data_source_feasibility_assessment.md) — FinMind / FinLab / TPEX 資料源可行性、付費限制與專案改動規模評估
 - [Deployment Strategy](docs/deployment_strategy.md) — 環境分層與部署流程
+- [FinMind Migration Plan](docs/finmind_migration_plan.md) — 全面切換 FinMind 時的 DB 遷移方向、schema 調整與收費權限摘要
+- [Natural Language Backtest Design](docs/natural_language_backtest_design.md) — 自然語言策略 mapping、JSON DSL、回測 API 與 MVP 邊界
 - [SQLite to Postgres Migration Plan](docs/migration_plan_sqlite_to_postgres.md)
 - [Operations Runbook](docs/runbook_operations.md)
 - [Security and Secrets](docs/security_and_secrets.md)
@@ -371,7 +374,7 @@ npm run dev
 | M9 | AI Sub-agent（接 LLM，投資策略初版） | ✅ 完成 |
 | M10 | 部署上線（Cloud） | ✅ 完成（Render + Vercel） |
 | M11 | 回測程式（策略績效驗證） | ⬜ 待開始 |
-| M12 | 文字化投資策略輸入 | ⬜ 待開始 |
+| M12 | 文字化投資策略輸入（自然語言 mapping -> JSON DSL） | ⬜ 待開始 |
 | M13 | 關鍵券商分點爬蟲 | ✅ 完成 |
 | M14 | LLM 輿情爬文分析 | ⬜ 待開始 |
 | M15 | Telegram 電子報（定期投資推薦推播） | ⬜ 待開始 |
@@ -397,7 +400,24 @@ npm run dev
   - 接收：股號 → 查 DB 取近 5 日法人動向 + 股價
   - 輸出：GPT 生成的籌碼面觀察、法人解讀、短期多空看法
 - [ ] **M11 回測程式**：指定策略 + 時間區間，計算績效指標（勝率、最大回撤、夏普比率等）
-- [ ] **M12 文字化投資策略輸入**：用自然語言描述策略，LLM 解析為可執行的回測條件
+- [ ] **M12 文字化投資策略輸入**：使用者自由輸入策略文字，系統透過 mapping + LLM 判讀為受控 JSON DSL；不支援條件明確提示
+
+### Phase 2.5 — FinMind 全面重構
+
+- [ ] **FM1 FinMind 主資料源切換規劃**：確認正式採用 FinMind 作為價格、籌碼、分點、估值、基本面的主來源，TWSE/TPEX 僅保留為備援或校驗
+- [ ] **FM2 環境設定整理**：統一 `FINMIND_API_TOKEN`、未來如有需要再擴充 FinMind 相關 config
+- [ ] **FM3 stocks_master schema 調整**：加入 `market`、`source`、`source_version`、`updated_at`
+- [ ] **FM4 daily_price ETL 改寫**：將每日價格主流程改為 FinMind `TaiwanStockPrice`
+- [ ] **FM5 inst_stock_flow ETL 改寫**：將三大法人主流程改為 FinMind 籌碼資料
+- [ ] **FM6 broker_trade ETL 改寫**：以 FinMind 分點資料取代 TWSE BSR HTML parser
+- [ ] **FM7 daily_valuation 新增**：建立 `PER / PBR / dividend_yield` 每日估值表
+- [ ] **FM8 monthly_revenue 新增**：建立月營收表與回補流程
+- [ ] **FM9 financial statements 新增**：建立損益表 / 資產負債表 / 現金流量表資料表
+- [ ] **FM10 產業細分類整合**：評估 TPEX 產業價值鏈平台與既有 Fugle mapping 的整合方式
+- [ ] **FM11 全量 backfill 與驗證**：重新回補 FinMind 歷史資料並產出差異報告
+- [ ] **FM12 API 相容性調整**：確認 `/api/stocks`、`/api/brokers`、未來 `/api/backtest` 可直接讀新資料表
+- [ ] **FM13 回測條件擴充**：讓 DSL 與自然語言策略可讀取 PE、營收、EPS 等基本面欄位
+- [ ] **FM14 舊資料源淘汰**：FinMind 驗證完成後，逐步移除不再使用的 TWSE/TPEX 舊 ETL
 
 ### Phase 3 — 資訊聚合
 
@@ -456,6 +476,9 @@ npm run dev
 | `DATABASE_URL` | PostgreSQL 連線字串 |
 | `CORS_ORIGINS` | 允許的前端 origin（逗號分隔） |
 | `TZ` | `Asia/Taipei` |
+| `FINMIND_API_TOKEN` | FinMind API Token（全面切換 FinMind 後的主資料源認證） |
+| `OPENAI_API_KEY` | OpenAI API Key（AI 分析 / 自然語言策略判讀） |
+| `TELEGRAM_BOT_TOKEN` | Telegram Bot token |
 
 **前端（Vercel）**
 

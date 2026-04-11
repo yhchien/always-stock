@@ -14,10 +14,59 @@
 - **Backend**: FastAPI + SQLAlchemy, Python 3.9+
 - **Frontend**: Next.js + Tailwind CSS + shadcn/ui + ECharts
 - **DB**: PostgreSQL（Render Managed）；本地開發可用 SQLite（`backend/db/tw_stock.db`）
-- **ETL 資料來源**: TWSE 公開資料（T86、STOCK_DAY_ALL）、FinMind API、Fugle 子產業分類
+- **ETL 資料來源**: 目前為 TWSE 公開資料 + FinMind + Fugle；目標方向已確定為「全面切 FinMind 為主資料源」，TWSE/TPEX 僅保留備援或校驗
 - **Bot**: Telegram Bot（long-polling）+ OpenAI GPT 籌碼分析
 - **排程**: macOS launchd（本地）/ Render Cron Job（雲端，週一至五）
 - **部署**: Render（後端 API + Bot + ETL + Postgres）+ Vercel（前端）
+
+## FinMind 決策記憶
+
+- 2026-04-11 起，專案方向已確認為「全面改用 FinMind 提供的資料重做」
+- FinMind API 以 `https://api.finmindtrade.com/api/v4` 為主，使用 `Authorization: Bearer {token}`
+- 依使用者提供的最新規格，token rate limit 為 `600 req/hour`，未帶 token 為 `300 req/hour`
+- 若要維持目前這種「每日全市場 ETL」模式，實務上應規劃 `Backer` 或 `Sponsor`
+- 若要取代目前 `broker_trade` 的 TWSE BSR parser，應優先使用：
+  - `TaiwanStockTradingDailyReportSecIdAgg`：適合現有 BrokerPanel 聚合場景
+  - `TaiwanStockTradingDailyReport`：適合未來逐價分點分析
+- `TaiwanStockTradingDailyReport` / `TaiwanStockTradingDailyReportSecIdAgg` 為 `Sponsor` 資料，且歷史起點為 `2021-06-30`
+- 切換 FinMind 後，資料庫主幹表大多可保留，但需要 migration：
+  - `stocks_master` 保留並加 `market/source`
+  - `daily_price` 保留並加 `spread/trading_turnover/source`
+  - `inst_stock_flow` 保留，改以 FinMind `name` 映射 `foreign/trust/dealer`
+  - `industry_daily_flow` 可沿用
+  - `broker_trade` 可沿用，但建議未來拆 raw / agg
+- 切換 FinMind 後應新增：
+  - `daily_valuation` <- `TaiwanStockPER`
+  - `monthly_revenue` <- `TaiwanStockMonthRevenue`
+  - `financial_statement_*` <- FinMind 基本面資料集
+- 工程策略是「先 migration + backfill + 驗證，再淘汰 TWSE parser / ETL」，不要一開始就直接刪舊程式
+- `broker_trade` 是用來存「某檔股票、某一天、各券商分點買賣超」的表，主要支撐 L2 個股頁的關鍵券商 / 分點面板
+- 現行 `broker_trade` schema 為聚合後結果：`trade_date / stock_id / broker_id / broker_name / buy_shares / sell_shares / net_shares`
+- 切到 FinMind 後，`broker_trade` 的資料來源應優先改為：
+  - `TaiwanStockTradingDailyReportSecIdAgg`：最符合現有 BrokerPanel 聚合需求
+  - `TaiwanStockTradingDailyReport`：若未來要做逐價分點分析再補
+- `broker_trade` 這個表的概念可以保留，不一定要砍掉重建；但長期建議拆成：
+  - `broker_trade_raw`
+  - `broker_trade_daily_agg`
+- schema 命名不應混用 TWSE / FinMind 原始欄位名；應採「內部 canonical naming」
+- 原則：
+  - ETL 層負責把 FinMind / TWSE 原始欄位映射成內部命名
+  - DB schema、API schema、前端、回測引擎只使用專案自己的欄位名
+- 例如：
+  - FinMind `Trading_Volume` -> DB `volume`
+  - FinMind `Trading_money` -> DB `turnover`
+  - FinMind `max` -> DB `high_price`
+  - FinMind `min` -> DB `low_price`
+- 不要把外部資料源 naming 直接散落到全系統，避免未來 ETL 切換時 schema 混亂
+- FinMind 已提供細產業分類資料集：
+  - `TaiwanStockIndustryChain`
+  - 欄位：`stock_id / industry / sub_industry / date`
+  - 權限：`Backer/Sponsor`
+- 但 FinMind 的細產業分類目前不應直接無條件取代既有 Fugle mapping
+- 正確做法：
+  - 先把 `TaiwanStockIndustryChain` 拉下來
+  - 和現有 Fugle mapping 對照
+  - 再決定最終採用 FinMind、Fugle，或保留 `industry_source` 雙軌策略
 
 ## Milestones 進度
 
