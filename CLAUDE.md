@@ -154,12 +154,15 @@
 - 前端 `BacktestPanel` 已從假資料改成真 API 串接，並支援：
   - 策略模板載入
   - 策略文字手動編輯
+  - `interpret -> preview -> run -> advice` 流程
   - 顯示 quick metrics
   - 顯示正式 equity curve chart
   - 顯示最近交易紀錄
   - 顯示最新交易日建議
   - 顯示策略建議卡片
   - 顯示 warnings / validation error
+  - 顯示 `unsupported_conditions`
+  - 顯示更細的 422 中文錯誤訊息
   - 從交易紀錄 / 最新訊號跳回 L2 研究頁
 - 邊界處理已補上：
   - 空白策略文字
@@ -168,7 +171,11 @@
   - `run` 對不支援條件的拒絕執行
   - lookback 不足 warnings
   - 開盤價缺失 fallback warnings
+- UX 已補上：
+  - strategy preview loading state
+  - advice loading skeleton
+  - partial-support preview
 - 目前尚未完成：
-  - 前端 `interpret` 預覽流程
-  - 前端 `unsupported_conditions` 顯示
   - 更多 DSL 條件（停損停利、突破高低點、均線交叉等）
+  - 完整 summary / period analysis
+  - 動態資料 / runtime fetch / AI mapping 流程

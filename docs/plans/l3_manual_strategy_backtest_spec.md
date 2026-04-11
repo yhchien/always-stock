@@ -810,8 +810,8 @@ Response 範例：
 
 ### 21.3 尚未完成
 
-- [ ] 前端先呼叫 `interpret` 做策略預覽 / 驗證，再決定是否允許執行回測
-- [ ] 前端顯示 `unsupported_conditions`
+- [x] 前端先呼叫 `interpret` 做策略預覽 / 驗證，再決定是否允許執行回測
+- [x] 前端顯示 `unsupported_conditions`
 - [ ] 前端顯示完整 summary 區塊
 - [ ] 前端顯示 monthly / quarterly / yearly performance analysis
 - [ ] 前端顯示最大連續獲利 / 連續虧損等分析
@@ -820,7 +820,7 @@ Response 範例：
 - [ ] 交易紀錄點擊後同步顯示當時觸發的 entry / exit rule 細節
 - [ ] equity curve 點擊區段後同步回研究頁指定時間範圍
 - [ ] advice 卡片加入手動重新產生按鈕
-- [ ] advice 卡片加入 loading skeleton / 更完整錯誤提示文案
+- [x] advice 卡片加入 loading skeleton / 更完整錯誤提示文案
 
 ### 21.4 尚未支援的策略條件
 
@@ -846,7 +846,7 @@ Response 範例：
 - [x] 開盤價缺失 fallback warnings 測試
 - [x] `BacktestPanel` 的空白策略 validation test
 - [ ] advice API 的 OpenAI 失敗 fallback 整合測試
-- [ ] `BacktestPanel` 的 loading / error state component tests
+- [x] `BacktestPanel` 的 loading / error state component tests（目前已涵蓋空白策略、partial support、細緻錯誤訊息）
 - [ ] strategy template 下拉互動測試
 - [ ] equity curve chart option 測試
 
@@ -856,8 +856,108 @@ Response 範例：
 - [ ] 在 UI 上明確標示「訊號用收盤判斷、次日開盤成交」
 - [ ] 提供最少資料長度限制提示，例如 MA20 策略至少需要 20 個交易日以上
 - [ ] 明確處理 stock 無資料、區間太短、條件無法解析時的 UX
-- [ ] 前端把 422 error detail 轉成更細的中文提示，不只顯示通用錯誤
+- [x] 前端把 422 error detail 轉成更細的中文提示，不只顯示通用錯誤
 - [ ] 規劃回測結果快取，避免同條件重跑浪費時間
 - [ ] 規劃後端 metrics schema 的 typed model，避免目前 `Dict[str, Any]` 長期擴散
 - [ ] 規劃把 `exit_reason` 從 indicator code 轉成更可讀的中文
 - [ ] 規劃 strategy templates 後台化或可配置化，避免永久硬編在程式裡
+
+### 21.7 自然語句策略與動態資料 TODO
+
+這一段是之後一定要面對的核心問題：
+使用者輸入的策略文字，很多條件不一定已經在目前 DB 裡有對應欄位或預先算好的指標。
+因此不能只做「字串對照 DB 欄位」，還要補一層「判讀後決定要去哪裡找資料」的流程。
+
+- [ ] 定義 `strategy interpretation outcome` 分類：
+  - `直接可用現有 DB`
+  - `可由現有 DB 現場計算`
+  - `需即時向外部資料源抓取`
+  - `需由 AI 幫忙判斷應查什麼資料`
+  - `目前完全不支援`
+- [ ] 定義每種 outcome 對應的 backend pipeline：
+  - DB 直接查
+  - DB 原始資料現場算 indicator
+  - 現場補抓外部資料後再算
+  - 先讓 AI 做欄位 / 指標 / 資料源 mapping，再進入受控 DSL
+- [ ] 建立「資料需求規劃層」，不要讓 LLM 直接生成執行碼，而是只產生：
+  - 想查的指標
+  - 需要的資料集
+  - 需要的 lookback
+  - 是否可由本地 DB 解決
+- [ ] 建立 `data capability catalog`
+  - 哪些條件可由 `daily_price` 直接算
+  - 哪些條件可由 `inst_stock_flow` 直接算
+  - 哪些條件需要額外 ETL / runtime fetch
+  - 哪些條件目前明確不支援
+- [ ] 規劃 runtime fetch 的快取策略
+  - 避免每次 user 改一句策略就重抓外部資料
+  - 區分「短期 session cache」與「可落 DB 的持久化 cache」
+- [ ] 明確定義外部資料抓取的 timeout / retry / fallback 規則
+- [ ] 定義如果外部資料抓不到時，回測要怎麼降級：
+  - 中止執行
+  - 忽略該條件
+  - 改成 partial support
+  - 只回 strategy preview，不回測
+- [ ] 定義 AI 在策略判讀中的角色：
+  - 只做「資料需求理解」與「欄位映射建議」
+  - 不直接產生可執行回測程式碼
+  - 最終仍必須落到受控 DSL / catalog
+- [ ] 為「需要動態抓資料」的策略建立等待 UX
+- [ ] 為「AI 正在判斷這句策略需要查什麼」建立等待 UX
+- [ ] 為「部分資料找得到、部分找不到」建立 partial support UX
+
+### 21.8 等待文案 / 狀態文案 TODO
+
+這些文案之後前端實作時應直接可用或微調，不要等到最後才補：
+
+- [x] `正在解析策略文字，判斷這句話對應哪些指標...`
+- [ ] `正在檢查目前資料庫是否已經有這些條件需要的資料...`
+- [ ] `部分條件需要現場計算，正在整理可回測的版本...`
+- [ ] `這個策略提到的資料目前不在本地資料庫，正在嘗試補抓...`
+- [ ] `正在請 AI 協助判讀這句策略該對應哪些資料來源...`
+- [ ] `已找到部分條件，但仍有幾個條件目前無法支援。`
+- [ ] `目前只能先回測其中可支援的條件，是否要先查看預覽結果？`
+- [ ] `這句策略需要的資料目前無法取得，暫時不能執行回測。`
+- [ ] `這句策略可以判讀，但還需要額外資料處理，請稍候...`
+- [ ] `若等待過久，請簡化策略條件後再試一次。`
+
+### 21.10 Session Handoff
+
+如果下一個 session 要直接接著做，建議優先順序如下：
+
+1. 擴充 DSL 條件：
+   - 均線交叉
+   - 突破 N 日高低點
+   - 固定停損 / 固定停利
+2. 補前端完整 summary / period analysis 區塊
+3. 規劃動態資料能力：
+   - capability catalog
+   - runtime fetch / AI mapping
+   - partial support UX
+
+目前已知狀態：
+
+- 前端已是 `interpret -> preview -> run -> advice` 流程
+- 若 `interpret.supported = false`，前端會停在 preview，不會直接跑回測
+- 前端已能顯示：
+  - normalized strategy
+  - unsupported conditions
+  - parser warnings
+  - backtest warnings
+  - translated 422 detail
+- 最新一批前端測試：
+  - `npm test -- --runInBand src/__tests__/lib/api.test.ts src/__tests__/components/BacktestPanel.test.tsx`
+  - `34 passed`
+
+### 21.9 需要明講的產品限制 TODO
+
+- [ ] 在 spec 與 UI 上清楚區分：
+  - `策略判讀成功`
+  - `策略可完整回測`
+  - `策略僅可部分回測`
+  - `策略目前不可回測`
+- [ ] 在 UI 上明確告知：
+  - 哪些條件是用現有 DB 算的
+  - 哪些條件是 runtime 補抓的
+  - 哪些條件是 AI 協助映射後才支援
+- [ ] 如果未來加入 runtime fetch，需在結果頁保留資料來源註記與抓取時間

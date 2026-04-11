@@ -1,5 +1,6 @@
 import {
   fetchBacktestAdvice,
+  interpretBacktest,
   fetchBacktestTemplates,
   fmtAmount,
   fmtShares,
@@ -241,6 +242,52 @@ describe("runBacktest", () => {
         body: JSON.stringify(payload),
       })
     )
+  })
+})
+
+describe("interpretBacktest", () => {
+  afterEach(() => jest.restoreAllMocks())
+
+  it("posts request payload to the interpret endpoint", async () => {
+    const payload = {
+      stock_id: "2330",
+      start_date: "2024-01-01",
+      end_date: "2024-12-31",
+      initial_capital: 1000000,
+      strategy_text: "demo strategy",
+    }
+    const mockFetch = jest.spyOn(global, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({ supported: true, normalized_text: "demo", strategy: {}, unsupported_conditions: [], warnings: [] }),
+    } as Response)
+
+    await interpretBacktest(payload)
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining("/api/backtest/interpret"),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify(payload),
+      })
+    )
+  })
+
+  it("surfaces backend detail in thrown error", async () => {
+    jest.spyOn(global, "fetch").mockResolvedValue({
+      ok: false,
+      json: async () => ({ detail: "Unsupported strategy conditions: 突破60日高點" }),
+      status: 422,
+    } as Response)
+
+    await expect(
+      interpretBacktest({
+        stock_id: "2330",
+        start_date: "2024-01-01",
+        end_date: "2024-12-31",
+        initial_capital: 1000000,
+        strategy_text: "demo strategy",
+      })
+    ).rejects.toThrow("Unsupported strategy conditions: 突破60日高點")
   })
 })
 

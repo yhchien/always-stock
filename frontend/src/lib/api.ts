@@ -83,6 +83,14 @@ export interface BacktestRunRequest {
   strategy_text: string
 }
 
+export interface BacktestInterpretResponse {
+  supported: boolean
+  normalized_text: string
+  strategy: Record<string, unknown>
+  unsupported_conditions: string[]
+  warnings: string[]
+}
+
 export interface BacktestMetricSummary {
   total_return_pct: number
   annual_return_pct: number
@@ -165,10 +173,32 @@ export interface BacktestAdviceResponse {
   source: "openai" | "heuristic"
 }
 
+async function buildErrorMessage(res: Response, fallbackPrefix: string): Promise<string> {
+  let detail = ""
+
+  try {
+    const data = await res.json()
+    if (typeof data?.detail === "string") {
+      detail = data.detail
+    }
+  } catch {
+    detail = ""
+  }
+
+  return detail ? `${fallbackPrefix}: ${detail}` : `${fallbackPrefix}: ${res.status}`
+}
+
 export function toDisplayError(error: unknown, fallback = "載入失敗"): string {
   if (error instanceof Error) {
     if (error.message.includes("503")) return "資料庫忙碌中，請稍後再試"
     if (error.message.includes("404")) return "此日期無資料，請選擇其他交易日"
+    if (error.message.includes("start_date cannot be later than end_date")) return "開始日期不能晚於結束日期"
+    if (error.message.includes("Strategy text cannot be blank")) return "策略文字不能空白"
+    if (error.message.includes("Strategy text must contain one buy clause")) return "策略格式不完整，請確認買進與賣出條件之間有用分號分開"
+    if (error.message.includes("Unsupported strategy conditions:")) {
+      const detail = error.message.split("Unsupported strategy conditions:").at(-1)?.trim()
+      return detail ? `目前不支援這些條件：${detail}` : "策略中包含目前不支援的條件"
+    }
     if (error.message.includes("422")) return "策略格式或回測條件有問題，請調整後重試"
     return error.message
   }
@@ -218,7 +248,7 @@ export async function fetchStockHistory(
   const res = await fetch(`${API_BASE}/api/stocks/${stockId}/history?${params}`, {
     signal: options?.signal,
   })
-  if (!res.ok) throw new Error(`Failed to fetch history: ${res.status}`)
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "Failed to fetch history"))
   return res.json()
 }
 
@@ -226,7 +256,23 @@ export async function fetchBacktestTemplates(options?: FetchOptions): Promise<Ba
   const res = await fetch(`${API_BASE}/api/backtest/templates`, {
     signal: options?.signal,
   })
-  if (!res.ok) throw new Error(`Failed to fetch backtest templates: ${res.status}`)
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "Failed to fetch backtest templates"))
+  return res.json()
+}
+
+export async function interpretBacktest(
+  payload: BacktestRunRequest,
+  options?: FetchOptions,
+): Promise<BacktestInterpretResponse> {
+  const res = await fetch(`${API_BASE}/api/backtest/interpret`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+    signal: options?.signal,
+  })
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "Failed to interpret backtest"))
   return res.json()
 }
 
@@ -242,7 +288,7 @@ export async function runBacktest(
     body: JSON.stringify(payload),
     signal: options?.signal,
   })
-  if (!res.ok) throw new Error(`Failed to run backtest: ${res.status}`)
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "Failed to run backtest"))
   return res.json()
 }
 
@@ -258,7 +304,7 @@ export async function fetchBacktestAdvice(
     body: JSON.stringify(payload),
     signal: options?.signal,
   })
-  if (!res.ok) throw new Error(`Failed to fetch backtest advice: ${res.status}`)
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "Failed to fetch backtest advice"))
   return res.json()
 }
 

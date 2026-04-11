@@ -74,6 +74,13 @@ describe("BacktestPanel", () => {
         strategy_text: "demo strategy",
       },
     ])
+    const interpretSpy = jest.spyOn(api, "interpretBacktest").mockResolvedValue({
+      supported: true,
+      normalized_text: "買進：demo；賣出：demo",
+      strategy: {},
+      unsupported_conditions: [],
+      warnings: [],
+    })
     const runSpy = jest.spyOn(api, "runBacktest").mockResolvedValue(mockRunResult)
     const adviceSpy = jest.spyOn(api, "fetchBacktestAdvice").mockResolvedValue({
       summary: "這是測試摘要",
@@ -93,11 +100,14 @@ describe("BacktestPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "執行回測" }))
 
     await waitFor(() => {
+      expect(interpretSpy).toHaveBeenCalled()
       expect(runSpy).toHaveBeenCalled()
       expect(adviceSpy).toHaveBeenCalled()
     })
 
     expect(screen.getByText("這是測試摘要")).toBeInTheDocument()
+    expect(screen.getByText("策略判讀預覽")).toBeInTheDocument()
+    expect(screen.getByText("可執行回測")).toBeInTheDocument()
 
     await waitFor(() => {
       expect(screen.getByText(/加入停損/)).toBeInTheDocument()
@@ -109,6 +119,13 @@ describe("BacktestPanel", () => {
 
   it("shows validation error before calling API when strategy is blank", async () => {
     jest.spyOn(api, "fetchBacktestTemplates").mockResolvedValue([])
+    const interpretSpy = jest.spyOn(api, "interpretBacktest").mockResolvedValue({
+      supported: true,
+      normalized_text: "demo",
+      strategy: {},
+      unsupported_conditions: [],
+      warnings: [],
+    })
     const runSpy = jest.spyOn(api, "runBacktest").mockResolvedValue(mockRunResult)
 
     render(<BacktestPanel stockId="2330" />)
@@ -120,6 +137,69 @@ describe("BacktestPanel", () => {
     await waitFor(() => {
       expect(screen.getByText("策略文字不能空白")).toBeInTheDocument()
     })
+    expect(interpretSpy).not.toHaveBeenCalled()
     expect(runSpy).not.toHaveBeenCalled()
+  })
+
+  it("shows partial-support preview and does not run backtest when strategy is unsupported", async () => {
+    jest.spyOn(api, "fetchBacktestTemplates").mockResolvedValue([
+      {
+        id: "demo",
+        name: "Demo",
+        description: "測試模板",
+        strategy_text: "demo strategy",
+      },
+    ])
+    const interpretSpy = jest.spyOn(api, "interpretBacktest").mockResolvedValue({
+      supported: false,
+      normalized_text: "買進：demo；賣出：demo",
+      strategy: {},
+      unsupported_conditions: ["突破60日高點"],
+      warnings: ["部分條件目前不支援，因此無法直接執行這組策略。"],
+    })
+    const runSpy = jest.spyOn(api, "runBacktest").mockResolvedValue(mockRunResult)
+
+    render(<BacktestPanel stockId="2330" />)
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("demo strategy")).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole("button", { name: "執行回測" }))
+
+    await waitFor(() => {
+      expect(interpretSpy).toHaveBeenCalled()
+      expect(screen.getByText("部分支援")).toBeInTheDocument()
+      expect(screen.getByText(/突破60日高點/)).toBeInTheDocument()
+    })
+
+    expect(screen.getByText("這句策略目前只能部分判讀，請先調整不支援的條件。")).toBeInTheDocument()
+    expect(runSpy).not.toHaveBeenCalled()
+  })
+
+  it("shows detailed translated error when interpret rejects with backend detail", async () => {
+    jest.spyOn(api, "fetchBacktestTemplates").mockResolvedValue([
+      {
+        id: "demo",
+        name: "Demo",
+        description: "測試模板",
+        strategy_text: "demo strategy",
+      },
+    ])
+    jest.spyOn(api, "interpretBacktest").mockRejectedValue(
+      new Error("Failed to interpret backtest: Unsupported strategy conditions: 突破60日高點")
+    )
+
+    render(<BacktestPanel stockId="2330" />)
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("demo strategy")).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole("button", { name: "執行回測" }))
+
+    await waitFor(() => {
+      expect(screen.getByText("目前不支援這些條件：突破60日高點")).toBeInTheDocument()
+    })
   })
 })

@@ -5,9 +5,11 @@ import { useEffect, useMemo, useState } from "react"
 import {
   fetchBacktestAdvice,
   fetchBacktestTemplates,
+  interpretBacktest,
   runBacktest,
   toDisplayError,
   type BacktestAdviceResponse,
+  type BacktestInterpretResponse,
   type BacktestRunResponse,
   type BacktestTemplate,
 } from "@/lib/api"
@@ -40,9 +42,11 @@ export default function BacktestPanel({ stockId }: Props) {
   const [strategyText, setStrategyText] = useState(DEFAULT_STRATEGY)
   const [templates, setTemplates] = useState<BacktestTemplate[]>([])
   const [selectedTemplateId, setSelectedTemplateId] = useState("")
+  const [interpretation, setInterpretation] = useState<BacktestInterpretResponse | null>(null)
   const [result, setResult] = useState<BacktestRunResponse | null>(null)
   const [advice, setAdvice] = useState<BacktestAdviceResponse | null>(null)
   const [running, setRunning] = useState(false)
+  const [interpreting, setInterpreting] = useState(false)
   const [loadingAdvice, setLoadingAdvice] = useState(false)
   const [loadingTemplates, setLoadingTemplates] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -77,6 +81,7 @@ export default function BacktestPanel({ stockId }: Props) {
     setAdviceError(null)
     setAdvice(null)
     setResult(null)
+    setInterpretation(null)
 
     if (!strategyText.trim()) {
       setError("策略文字不能空白")
@@ -87,8 +92,24 @@ export default function BacktestPanel({ stockId }: Props) {
       return
     }
 
-    setRunning(true)
     try {
+      setInterpreting(true)
+      const interpreted = await interpretBacktest({
+        stock_id: stockId,
+        start_date: startDate,
+        end_date: endDate,
+        initial_capital: Number(initialCapital),
+        strategy_text: strategyText,
+      })
+      setInterpretation(interpreted)
+      setInterpreting(false)
+
+      if (!interpreted.supported) {
+        setError("這句策略目前只能部分判讀，請先調整不支援的條件。")
+        return
+      }
+
+      setRunning(true)
       const backtestResult = await runBacktest({
         stock_id: stockId,
         start_date: startDate,
@@ -118,6 +139,7 @@ export default function BacktestPanel({ stockId }: Props) {
       setResult(null)
       setError(toDisplayError(runError, "執行回測失敗"))
     } finally {
+      setInterpreting(false)
       setRunning(false)
     }
   }
@@ -205,16 +227,60 @@ export default function BacktestPanel({ stockId }: Props) {
 
         <button
           onClick={handleRun}
-          disabled={running}
+          disabled={running || interpreting}
           className="rounded-md bg-zinc-700 px-4 py-1.5 text-sm text-zinc-100 transition-colors hover:bg-zinc-600 disabled:opacity-50"
         >
-          {running ? "計算中..." : "執行回測"}
+          {interpreting ? "解析策略中..." : running ? "計算中..." : "執行回測"}
         </button>
       </div>
 
       {error && (
         <div className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">
           {error}
+        </div>
+      )}
+
+      {interpreting && (
+        <div className="flex flex-col gap-3 rounded-md border border-zinc-700 bg-zinc-800/50 px-3 py-3">
+          <div className="text-sm font-medium text-zinc-100">策略判讀預覽</div>
+          <div className="rounded bg-zinc-900/60 px-3 py-3 text-sm text-zinc-400">
+            正在解析策略文字，判斷這句話對應哪些指標...
+          </div>
+        </div>
+      )}
+
+      {interpretation && (
+        <div className="flex flex-col gap-3 rounded-md border border-zinc-700 bg-zinc-800/50 px-3 py-3">
+          <div className="flex items-center justify-between">
+            <div className="text-sm font-medium text-zinc-100">策略判讀預覽</div>
+            <div className={`text-xs ${interpretation.supported ? "text-emerald-300" : "text-amber-300"}`}>
+              {interpretation.supported ? "可執行回測" : "部分支援"}
+            </div>
+          </div>
+          <div className="rounded bg-zinc-900/60 px-3 py-2">
+            <div className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">Normalized</div>
+            <p className="mt-1 text-sm text-zinc-200">{interpretation.normalized_text}</p>
+          </div>
+          {interpretation.unsupported_conditions.length > 0 && (
+            <div className="rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2">
+              <div className="text-xs font-medium text-amber-200">目前不支援的條件</div>
+              <div className="mt-2 space-y-1 text-sm text-amber-100">
+                {interpretation.unsupported_conditions.map((condition) => (
+                  <p key={condition}>- {condition}</p>
+                ))}
+              </div>
+            </div>
+          )}
+          {interpretation.warnings.length > 0 && (
+            <div className="rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2">
+              <div className="text-xs font-medium text-amber-200">解析提醒</div>
+              <div className="mt-2 space-y-1 text-sm text-amber-100">
+                {interpretation.warnings.map((warning) => (
+                  <p key={warning}>- {warning}</p>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -312,8 +378,17 @@ export default function BacktestPanel({ stockId }: Props) {
             </div>
 
             {loadingAdvice && (
-              <div className="mt-3 rounded bg-zinc-900/60 px-3 py-3 text-sm text-zinc-400">
-                正在整理策略建議...
+              <div className="mt-3 grid gap-3 lg:grid-cols-2">
+                <div className="rounded bg-zinc-900/60 px-3 py-3">
+                  <div className="h-3 w-20 animate-pulse rounded bg-zinc-700" />
+                  <div className="mt-3 h-4 w-full animate-pulse rounded bg-zinc-800" />
+                  <div className="mt-2 h-4 w-4/5 animate-pulse rounded bg-zinc-800" />
+                </div>
+                <div className="rounded bg-zinc-900/60 px-3 py-3">
+                  <div className="h-3 w-20 animate-pulse rounded bg-zinc-700" />
+                  <div className="mt-3 h-4 w-full animate-pulse rounded bg-zinc-800" />
+                  <div className="mt-2 h-4 w-5/6 animate-pulse rounded bg-zinc-800" />
+                </div>
               </div>
             )}
 
