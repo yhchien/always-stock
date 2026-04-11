@@ -2,6 +2,14 @@
 
 日常開發與部署操作手冊。
 
+## 環境分層
+
+| 環境 | Frontend | Backend | DB | 用途 |
+|------|----------|---------|-----|------|
+| **Local** | `npm run dev` | `uvicorn` | SQLite | 日常開發、UI 調整、ETL 除錯 |
+| **Staging** | Vercel preview | Render staging | Staging Postgres | 驗證 migration / schema |
+| **Production** | Vercel | Render Web Service | Render Postgres | 正式上線 |
+
 ## 架構總覽
 
 ```

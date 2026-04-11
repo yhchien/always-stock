@@ -2,8 +2,8 @@
 
 ## 部署相關文件
 
-- `docs/architecture_overview.md` — 技術選擇、通訊方式、部署架構總覽
-- `docs/deployment_strategy.md` — 環境分層與部署流程
+- `docs/architecture/architecture_overview.md` — 技術選擇、通訊方式、部署架構總覽
+- `docs/operations/deployment_guide.md` — 日常部署操作手冊
 - `infra/render/render.yaml.template` — Render blueprint 範本
 
 ## 專案概述
@@ -100,14 +100,10 @@
 
 ## 最近重要修正（2026-04-09）
 
-- README 已補上完整資料流與頁面 flow，位置在專案架構後，方便快速 onboarding
 - L2 頁面 `StockChart` 與 `BrokerPanel` 必須共用同一個 `date` query param，避免同頁不同日期資料混用
 - L0 / L1 前端預設日期必須用 `Asia/Taipei`，不可用 `toISOString().slice(0, 10)`，否則台灣凌晨會落到前一天
 - 即時報價 API `/api/realtime/quotes` 單次上限 50 檔；前端若要查整個產業，必須自動分 batch，不能假設所有股票可一次取回
 - `industry_daily_flow` 仍是 L0 主查詢來源；不要把產業聚合搬回 API 臨時計算或前端計算
-- `SKILL.md` 的產業分類規則已同步為實作現況：以 Fugle mapping 為主，FinMind / TWSE 類別僅作 fallback
-- backend `get_db()` 測試已改為驗證 `close()` 被呼叫，不再依賴 SQLAlchemy `Session.is_active` 判斷關閉狀態
-- `backend/app/routers/industries.py` 的 streak 查詢已改成 `select(subquery.c.trade_date)`，避免 SQLAlchemy `SAWarning`
 - L2 個股頁的「回測程式」與「關鍵券商」已拆成兩個獨立 toggle，且會記住使用者上次的顯示偏好；被隱藏的 panel 不應 render，也不應觸發後續 API
 
 ## 資料狀態（2026-04-10）
