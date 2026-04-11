@@ -3,13 +3,16 @@
 import { useEffect, useMemo, useState } from "react"
 
 import {
+  fetchBacktestAdvice,
   fetchBacktestTemplates,
   runBacktest,
   toDisplayError,
+  type BacktestAdviceResponse,
   type BacktestRunResponse,
   type BacktestTemplate,
 } from "@/lib/api"
 import { todayInTaipei } from "@/lib/utils"
+import BacktestEquityChart from "@/components/BacktestEquityChart"
 
 interface Props {
   stockId: string
@@ -38,9 +41,12 @@ export default function BacktestPanel({ stockId }: Props) {
   const [templates, setTemplates] = useState<BacktestTemplate[]>([])
   const [selectedTemplateId, setSelectedTemplateId] = useState("")
   const [result, setResult] = useState<BacktestRunResponse | null>(null)
+  const [advice, setAdvice] = useState<BacktestAdviceResponse | null>(null)
   const [running, setRunning] = useState(false)
+  const [loadingAdvice, setLoadingAdvice] = useState(false)
   const [loadingTemplates, setLoadingTemplates] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [adviceError, setAdviceError] = useState<string | null>(null)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -68,6 +74,19 @@ export default function BacktestPanel({ stockId }: Props) {
 
   const handleRun = async () => {
     setError(null)
+    setAdviceError(null)
+    setAdvice(null)
+    setResult(null)
+
+    if (!strategyText.trim()) {
+      setError("策略文字不能空白")
+      return
+    }
+    if (startDate > endDate) {
+      setError("開始日期不能晚於結束日期")
+      return
+    }
+
     setRunning(true)
     try {
       const backtestResult = await runBacktest({
@@ -78,6 +97,23 @@ export default function BacktestPanel({ stockId }: Props) {
         strategy_text: strategyText,
       })
       setResult(backtestResult)
+
+      setLoadingAdvice(true)
+      try {
+        const nextAdvice = await fetchBacktestAdvice({
+          stock_id: stockId,
+          strategy_text: strategyText,
+          normalized_text: backtestResult.normalized_text,
+          metrics: backtestResult.metrics,
+          trades: backtestResult.trades,
+          latest_recommendation: backtestResult.latest_recommendation,
+        })
+        setAdvice(nextAdvice)
+      } catch (nextAdviceError) {
+        setAdviceError(toDisplayError(nextAdviceError, "讀取策略建議失敗"))
+      } finally {
+        setLoadingAdvice(false)
+      }
     } catch (runError) {
       setResult(null)
       setError(toDisplayError(runError, "執行回測失敗"))
@@ -124,8 +160,9 @@ export default function BacktestPanel({ stockId }: Props) {
 
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
           <div className="flex flex-col gap-1">
-            <label className="text-xs text-zinc-500">開始日期</label>
+            <label htmlFor="backtest-start-date" className="text-xs text-zinc-500">開始日期</label>
             <input
+              id="backtest-start-date"
               type="date"
               value={startDate}
               onChange={(e) => setStartDate(e.target.value)}
@@ -133,8 +170,9 @@ export default function BacktestPanel({ stockId }: Props) {
             />
           </div>
           <div className="flex flex-col gap-1">
-            <label className="text-xs text-zinc-500">結束日期</label>
+            <label htmlFor="backtest-end-date" className="text-xs text-zinc-500">結束日期</label>
             <input
+              id="backtest-end-date"
               type="date"
               value={endDate}
               onChange={(e) => setEndDate(e.target.value)}
@@ -142,8 +180,9 @@ export default function BacktestPanel({ stockId }: Props) {
             />
           </div>
           <div className="flex flex-col gap-1">
-            <label className="text-xs text-zinc-500">初始本金</label>
+            <label htmlFor="backtest-initial-capital" className="text-xs text-zinc-500">初始本金</label>
             <input
+              id="backtest-initial-capital"
               type="number"
               min={1}
               value={initialCapital}
@@ -154,8 +193,9 @@ export default function BacktestPanel({ stockId }: Props) {
         </div>
 
         <div className="flex flex-col gap-1">
-          <label className="text-xs text-zinc-500">策略文字</label>
+          <label htmlFor="backtest-strategy-text" className="text-xs text-zinc-500">策略文字</label>
           <textarea
+            id="backtest-strategy-text"
             value={strategyText}
             onChange={(e) => setStrategyText(e.target.value)}
             rows={4}
@@ -165,7 +205,7 @@ export default function BacktestPanel({ stockId }: Props) {
 
         <button
           onClick={handleRun}
-          disabled={running || !strategyText.trim()}
+          disabled={running}
           className="rounded-md bg-zinc-700 px-4 py-1.5 text-sm text-zinc-100 transition-colors hover:bg-zinc-600 disabled:opacity-50"
         >
           {running ? "計算中..." : "執行回測"}
@@ -180,6 +220,17 @@ export default function BacktestPanel({ stockId }: Props) {
 
       {result && (
         <div className="flex flex-col gap-4 border-t border-zinc-700 pt-3">
+          {result.warnings.length > 0 && (
+            <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-3">
+              <div className="text-xs font-medium text-amber-200">回測提醒</div>
+              <div className="mt-2 space-y-1 text-sm text-amber-100">
+                {result.warnings.map((warning) => (
+                  <p key={warning}>- {warning}</p>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div className="rounded-md border border-zinc-700 bg-zinc-800/60 px-3 py-2">
             <div className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">Strategy</div>
             <p className="mt-1 text-sm text-zinc-200">{result.normalized_text}</p>
@@ -215,6 +266,9 @@ export default function BacktestPanel({ stockId }: Props) {
                   回到研究頁
                 </a>
               </div>
+              <div className="mt-3">
+                <BacktestEquityChart points={result.equity_curve} />
+              </div>
               <div className="mt-3 grid gap-1">
                 {equityPreview.map((point) => (
                   <div
@@ -245,6 +299,62 @@ export default function BacktestPanel({ stockId }: Props) {
                 </div>
               </div>
             </div>
+          </div>
+
+          <div className="rounded-md border border-zinc-700 bg-zinc-800/60 px-3 py-3">
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-medium text-zinc-100">策略建議</div>
+              {advice && (
+                <div className="text-xs text-zinc-500">
+                  {advice.source === "openai" ? "OpenAI" : "Heuristic fallback"}
+                </div>
+              )}
+            </div>
+
+            {loadingAdvice && (
+              <div className="mt-3 rounded bg-zinc-900/60 px-3 py-3 text-sm text-zinc-400">
+                正在整理策略建議...
+              </div>
+            )}
+
+            {adviceError && !loadingAdvice && (
+              <div className="mt-3 rounded border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">
+                {adviceError}
+              </div>
+            )}
+
+            {advice && !loadingAdvice && (
+              <div className="mt-3 grid gap-3 lg:grid-cols-2">
+                <div className="rounded bg-zinc-900/60 px-3 py-3">
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">Summary</div>
+                  <p className="mt-2 text-sm text-zinc-200">{advice.summary}</p>
+                </div>
+                <div className="rounded bg-zinc-900/60 px-3 py-3">
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">Rewrite</div>
+                  <div className="mt-2 space-y-1 text-sm text-zinc-200">
+                    {advice.rewrite_suggestions.map((item) => (
+                      <p key={item}>- {item}</p>
+                    ))}
+                  </div>
+                </div>
+                <div className="rounded bg-zinc-900/60 px-3 py-3">
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">Strengths</div>
+                  <div className="mt-2 space-y-1 text-sm text-zinc-200">
+                    {advice.strengths.map((item) => (
+                      <p key={item}>- {item}</p>
+                    ))}
+                  </div>
+                </div>
+                <div className="rounded bg-zinc-900/60 px-3 py-3">
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">Weaknesses & Risks</div>
+                  <div className="mt-2 space-y-1 text-sm text-zinc-200">
+                    {[...advice.weaknesses, ...advice.risk_notes].map((item) => (
+                      <p key={item}>- {item}</p>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="rounded-md border border-zinc-700 bg-zinc-800/60 px-3 py-3">

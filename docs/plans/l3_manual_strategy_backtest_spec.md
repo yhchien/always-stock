@@ -767,3 +767,97 @@ Response 範例：
 - 回測引擎
 - API
 - 前端 L3 面板
+
+## 21. TODO Checklist
+
+以下 checklist 用來追蹤目前 L3 Manual Strategy Backtest 的實作進度。
+
+### 21.1 已完成
+
+- [x] 新增 backtest router 並掛入 FastAPI app
+- [x] 提供 `GET /api/backtest/templates`
+- [x] 提供 `POST /api/backtest/interpret`
+- [x] 提供 `POST /api/backtest/run`
+- [x] 提供 `POST /api/backtest/advice`
+- [x] 建立第一版策略 catalog
+- [x] 建立第一版中文策略 parser
+- [x] 建立第一版回測引擎
+- [x] 支援單檔、日線、long-only、收盤判斷訊號、次日開盤成交
+- [x] 回傳 quick metrics
+- [x] 回傳 summary metrics 的第一版欄位
+- [x] 回傳 equity curve 與 Buy & Hold 對照資料
+- [x] 回傳 trade list
+- [x] 回傳 latest recommendation
+- [x] 前端 `BacktestPanel` 改為真 API 串接
+- [x] 前端支援策略模板帶入
+- [x] 前端顯示 quick result
+- [x] 前端顯示正式 equity curve chart
+- [x] 前端顯示交易紀錄
+- [x] 前端顯示策略建議卡片
+- [x] 前端顯示回測 warnings
+- [x] 交易紀錄 / 最新訊號可跳回研究頁日期
+- [x] 補 backend router tests
+- [x] 補 backend advisor tests
+- [x] 補 frontend API tests
+- [x] 補 frontend `BacktestPanel` component test
+
+### 21.2 已做但仍屬第一版簡化
+
+- [x] `advice` API 在有 `OPENAI_API_KEY` 時走 OpenAI，沒有 key 時 fallback 本地 heuristic 規則
+- [x] parser 目前只支援固定句型與少數條件，不是完整自然語言理解
+- [x] 成本模型目前固定為 `0`
+- [x] 目前只支援單一部位，不支援分批進出
+
+### 21.3 尚未完成
+
+- [ ] 前端先呼叫 `interpret` 做策略預覽 / 驗證，再決定是否允許執行回測
+- [ ] 前端顯示 `unsupported_conditions`
+- [ ] 前端顯示完整 summary 區塊
+- [ ] 前端顯示 monthly / quarterly / yearly performance analysis
+- [ ] 前端顯示最大連續獲利 / 連續虧損等分析
+- [ ] 前端顯示平均獲利 / 平均虧損 / profit factor 的完整說明
+- [ ] 交易紀錄點擊後同步高亮對應 K 線位置
+- [ ] 交易紀錄點擊後同步顯示當時觸發的 entry / exit rule 細節
+- [ ] equity curve 點擊區段後同步回研究頁指定時間範圍
+- [ ] advice 卡片加入手動重新產生按鈕
+- [ ] advice 卡片加入 loading skeleton / 更完整錯誤提示文案
+
+### 21.4 尚未支援的策略條件
+
+- [ ] 短均線上穿 / 下穿長均線
+- [ ] 收盤價突破 N 日高點
+- [ ] 收盤價跌破 N 日低點
+- [ ] 成交量暴增至 N 日均量 X 倍以上
+- [ ] 外資連賣 N 天
+- [ ] 投信連買 N 天以外的更多投信條件
+- [ ] 三大法人合計買超 / 賣超
+- [ ] 固定停損 %
+- [ ] 固定停利 %
+- [ ] 單次投入比例 %
+- [ ] `entry_logic = any` 的前端操作流程
+- [ ] 更完整的中文同義詞與容錯解析
+
+### 21.5 尚未補齊的驗證 / 邊界條件
+
+- [x] `interpret` 的部分支援案例測試
+- [x] `strategy_text` 空白 / 格式錯誤的 API 測試
+- [x] `unsupported_conditions` 的測試
+- [x] lookback 不足時的 warnings 測試
+- [x] 開盤價缺失 fallback warnings 測試
+- [x] `BacktestPanel` 的空白策略 validation test
+- [ ] advice API 的 OpenAI 失敗 fallback 整合測試
+- [ ] `BacktestPanel` 的 loading / error state component tests
+- [ ] strategy template 下拉互動測試
+- [ ] equity curve chart option 測試
+
+### 21.6 可能漏掉、之後應補的產品細節
+
+- [ ] 在 UI 上明確標示「回測不含手續費 / 交易稅 / 滑價」
+- [ ] 在 UI 上明確標示「訊號用收盤判斷、次日開盤成交」
+- [ ] 提供最少資料長度限制提示，例如 MA20 策略至少需要 20 個交易日以上
+- [ ] 明確處理 stock 無資料、區間太短、條件無法解析時的 UX
+- [ ] 前端把 422 error detail 轉成更細的中文提示，不只顯示通用錯誤
+- [ ] 規劃回測結果快取，避免同條件重跑浪費時間
+- [ ] 規劃後端 metrics schema 的 typed model，避免目前 `Dict[str, Any]` 長期擴散
+- [ ] 規劃把 `exit_reason` 從 indicator code 轉成更可讀的中文
+- [ ] 規劃 strategy templates 後台化或可配置化，避免永久硬編在程式裡

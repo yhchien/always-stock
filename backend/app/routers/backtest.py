@@ -6,8 +6,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.backtest_catalog import BACKTEST_TEMPLATES, DEFAULT_INITIAL_CAPITAL
-from app.backtest_engine import BacktestDay, run_backtest
-from app.backtest_parser import interpret_strategy_text
+from app.backtest_advisor import generate_backtest_advice
+from app.backtest_engine import BacktestDay, run_backtest, summarize_dataset_warnings
+from app.backtest_parser import estimate_strategy_lookback_days, interpret_strategy_text
 from app.database import get_db
 from app.models import DailyPrice, InstStockFlow, StockMaster
 
@@ -54,12 +55,31 @@ class BacktestRunResponse(BaseModel):
     supported: bool
     normalized_text: str
     strategy: Dict[str, Any]
+    unsupported_conditions: List[str]
     metrics: Dict[str, Any]
     equity_curve: List[EquityCurveItem]
     period_returns: Dict[str, List[PeriodReturnItem]]
     trades: List[TradeItem]
     latest_recommendation: LatestRecommendation
     warnings: List[str]
+
+
+class BacktestAdviceRequest(BaseModel):
+    stock_id: str
+    strategy_text: str
+    normalized_text: str
+    metrics: Dict[str, Any]
+    trades: List[Dict[str, Any]]
+    latest_recommendation: Dict[str, Any]
+
+
+class BacktestAdviceResponse(BaseModel):
+    summary: str
+    strengths: List[str]
+    weaknesses: List[str]
+    rewrite_suggestions: List[str]
+    risk_notes: List[str]
+    source: str
 
 
 @router.get("/backtest/templates")
@@ -69,6 +89,8 @@ def get_backtest_templates():
 
 @router.post("/backtest/interpret")
 def post_backtest_interpret(payload: BacktestInterpretRequest):
+    if payload.start_date > payload.end_date:
+        raise HTTPException(status_code=422, detail="start_date cannot be later than end_date")
     try:
         return interpret_strategy_text(
             stock_id=payload.stock_id,
@@ -83,6 +105,9 @@ def post_backtest_interpret(payload: BacktestInterpretRequest):
 
 @router.post("/backtest/run", response_model=BacktestRunResponse)
 def post_backtest_run(payload: BacktestInterpretRequest, db: Session = Depends(get_db)):
+    if payload.start_date > payload.end_date:
+        raise HTTPException(status_code=422, detail="start_date cannot be later than end_date")
+
     stock = db.get(StockMaster, payload.stock_id)
     if not stock:
         raise HTTPException(status_code=404, detail=f"Stock not found: {payload.stock_id}")
@@ -98,6 +123,10 @@ def post_backtest_run(payload: BacktestInterpretRequest, db: Session = Depends(g
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
 
+    if not interpreted["supported"]:
+        unsupported = "、".join(interpreted["unsupported_conditions"]) or "unknown conditions"
+        raise HTTPException(status_code=422, detail=f"Unsupported strategy conditions: {unsupported}")
+
     prices = (
         db.query(DailyPrice)
         .filter(
@@ -110,6 +139,10 @@ def post_backtest_run(payload: BacktestInterpretRequest, db: Session = Depends(g
     )
     if not prices:
         raise HTTPException(status_code=404, detail=f"No price data for {payload.stock_id}")
+
+    max_lookback = estimate_strategy_lookback_days(interpreted["strategy"])
+    if len(prices) < 2:
+        raise HTTPException(status_code=422, detail="At least 2 trading days are required for backtesting")
 
     flows = (
         db.query(InstStockFlow)
@@ -145,14 +178,27 @@ def post_backtest_run(payload: BacktestInterpretRequest, db: Session = Depends(g
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
 
+    warnings = list(interpreted["warnings"])
+    warnings.extend(summarize_dataset_warnings(dataset, interpreted["strategy"]))
+    if len(prices) < max_lookback:
+        warnings.append(
+            f"回測區間少於策略所需的 {max_lookback} 日 lookback，前段資料只會累積指標，不會立即觸發訊號。"
+        )
+
     return {
         "supported": True,
         "normalized_text": interpreted["normalized_text"],
         "strategy": interpreted["strategy"],
+        "unsupported_conditions": interpreted["unsupported_conditions"],
         "metrics": result["metrics"],
         "equity_curve": result["equity_curve"],
         "period_returns": result["period_returns"],
         "trades": result["trades"],
         "latest_recommendation": result["latest_recommendation"],
-        "warnings": interpreted["warnings"],
+        "warnings": warnings,
     }
+
+
+@router.post("/backtest/advice", response_model=BacktestAdviceResponse)
+def post_backtest_advice(payload: BacktestAdviceRequest):
+    return generate_backtest_advice(payload.model_dump())

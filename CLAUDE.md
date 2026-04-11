@@ -122,6 +122,7 @@
   - 後端新增 `/api/backtest/templates`
   - 後端新增 `/api/backtest/interpret`
   - 後端新增 `/api/backtest/run`
+  - 後端新增 `/api/backtest/advice`
 - 回測引擎目前範圍固定為：
   - 單一股票 / ETF
   - 日線資料
@@ -154,10 +155,20 @@
   - 策略模板載入
   - 策略文字手動編輯
   - 顯示 quick metrics
+  - 顯示正式 equity curve chart
   - 顯示最近交易紀錄
   - 顯示最新交易日建議
+  - 顯示策略建議卡片
+  - 顯示 warnings / validation error
   - 從交易紀錄 / 最新訊號跳回 L2 研究頁
+- 邊界處理已補上：
+  - 空白策略文字
+  - 開始日大於結束日
+  - 部分不支援條件的 `interpret` 回應
+  - `run` 對不支援條件的拒絕執行
+  - lookback 不足 warnings
+  - 開盤價缺失 fallback warnings
 - 目前尚未完成：
-  - OpenAI `advice` API
-  - 真正的 equity curve 圖表
+  - 前端 `interpret` 預覽流程
+  - 前端 `unsupported_conditions` 顯示
   - 更多 DSL 條件（停損停利、突破高低點、均線交叉等）

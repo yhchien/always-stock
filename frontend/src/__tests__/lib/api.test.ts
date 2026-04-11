@@ -1,4 +1,5 @@
 import {
+  fetchBacktestAdvice,
   fetchBacktestTemplates,
   fmtAmount,
   fmtShares,
@@ -235,6 +236,54 @@ describe("runBacktest", () => {
 
     expect(mockFetch).toHaveBeenCalledWith(
       expect.stringContaining("/api/backtest/run"),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify(payload),
+      })
+    )
+  })
+})
+
+describe("fetchBacktestAdvice", () => {
+  afterEach(() => jest.restoreAllMocks())
+
+  it("posts advice payload to the advice endpoint", async () => {
+    const payload = {
+      stock_id: "2330",
+      strategy_text: "demo strategy",
+      normalized_text: "demo normalized",
+      metrics: {
+        total_return_pct: 1,
+        annual_return_pct: 1,
+        win_rate_pct: 50,
+        max_drawdown_pct: -2,
+        sharpe_ratio: 1,
+        trade_count: 3,
+        ending_equity: 1010000,
+        benchmark_return_pct: 0.5,
+        excess_return_pct: 0.5,
+        avg_trade_return_pct: 1,
+        avg_holding_days: 10,
+        profit_factor: 1.2,
+        avg_gain_pct: 2,
+        avg_loss_pct: -1,
+      },
+      trades: [],
+      latest_recommendation: {
+        latest_signal_date: "2024-01-30",
+        action: "hold" as const,
+        reason: "demo",
+      },
+    }
+    const mockFetch = jest.spyOn(global, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({ summary: "ok", strengths: [], weaknesses: [], rewrite_suggestions: [], risk_notes: [], source: "heuristic" }),
+    } as Response)
+
+    await fetchBacktestAdvice(payload)
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining("/api/backtest/advice"),
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify(payload),

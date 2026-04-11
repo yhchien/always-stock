@@ -126,6 +126,7 @@ export interface BacktestRunResponse {
   supported: boolean
   normalized_text: string
   strategy: Record<string, unknown>
+  unsupported_conditions: string[]
   metrics: BacktestMetricSummary
   equity_curve: BacktestEquityPoint[]
   period_returns: {
@@ -142,10 +143,33 @@ export interface BacktestRunResponse {
   warnings: string[]
 }
 
+export interface BacktestAdviceRequest {
+  stock_id: string
+  strategy_text: string
+  normalized_text: string
+  metrics: BacktestMetricSummary
+  trades: BacktestTrade[]
+  latest_recommendation: {
+    latest_signal_date: string
+    action: string
+    reason: string
+  }
+}
+
+export interface BacktestAdviceResponse {
+  summary: string
+  strengths: string[]
+  weaknesses: string[]
+  rewrite_suggestions: string[]
+  risk_notes: string[]
+  source: "openai" | "heuristic"
+}
+
 export function toDisplayError(error: unknown, fallback = "載入失敗"): string {
   if (error instanceof Error) {
     if (error.message.includes("503")) return "資料庫忙碌中，請稍後再試"
     if (error.message.includes("404")) return "此日期無資料，請選擇其他交易日"
+    if (error.message.includes("422")) return "策略格式或回測條件有問題，請調整後重試"
     return error.message
   }
   return fallback
@@ -219,6 +243,22 @@ export async function runBacktest(
     signal: options?.signal,
   })
   if (!res.ok) throw new Error(`Failed to run backtest: ${res.status}`)
+  return res.json()
+}
+
+export async function fetchBacktestAdvice(
+  payload: BacktestAdviceRequest,
+  options?: FetchOptions,
+): Promise<BacktestAdviceResponse> {
+  const res = await fetch(`${API_BASE}/api/backtest/advice`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+    signal: options?.signal,
+  })
+  if (!res.ok) throw new Error(`Failed to fetch backtest advice: ${res.status}`)
   return res.json()
 }
 

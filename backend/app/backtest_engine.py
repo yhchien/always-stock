@@ -81,6 +81,29 @@ def _format_reason(triggered_rules: List[str]) -> str:
     return "、".join(triggered_rules)
 
 
+def summarize_dataset_warnings(days: List[BacktestDay], strategy: Dict) -> List[str]:
+    warnings = []
+    missing_open_days = sum(1 for day in days if day.open_price is None)
+    if missing_open_days:
+        warnings.append(f"有 {missing_open_days} 個交易日缺少開盤價，回測已以收盤價代替次日成交價。")
+
+    max_lookback = 1
+    for rule in strategy.get("entry_rules", []) + strategy.get("exit_rules", []):
+        indicator = rule.get("indicator")
+        params = rule.get("params", {})
+        if indicator in {"close_above_ma", "close_below_ma", "volume_above_ma"}:
+            max_lookback = max(max_lookback, int(params.get("window", 1)))
+        if indicator in {"foreign_consecutive_buy", "trust_consecutive_buy", "dealer_consecutive_buy"}:
+            max_lookback = max(max_lookback, int(params.get("days", 1)))
+
+    if len(days) < max_lookback:
+        warnings.append(
+            f"資料區間僅有 {len(days)} 個交易日，小於策略所需的 {max_lookback} 日 lookback，前段期間不會產生完整訊號。"
+        )
+
+    return warnings
+
+
 def run_backtest(days: List[BacktestDay], strategy: Dict) -> Dict:
     if len(days) < 2:
         raise ValueError("At least 2 trading days are required for backtesting")

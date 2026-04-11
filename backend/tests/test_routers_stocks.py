@@ -50,9 +50,9 @@ def seed_stock(db, stock_id="2344", name="華邦電", industry="半導體業", s
 def seed_price(db, stock_id, trade_date, close, open_p=None, high=None, low=None):
     db.add(DailyPrice(
         trade_date=trade_date, stock_id=stock_id,
-        open_price=open_p or close - 1,
-        high_price=high or close + 1,
-        low_price=low or close - 2,
+        open_price=(close - 1) if open_p is None else open_p,
+        high_price=(close + 1) if high is None else high,
+        low_price=(close - 2) if low is None else low,
         close_price=close, volume=1000000,
         turnover=close * 1000000, avg_price=close,
     ))
