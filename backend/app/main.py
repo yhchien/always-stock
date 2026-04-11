@@ -3,7 +3,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import brokers, industries, realtime, stocks
+from app.routers import backtest, brokers, industries, realtime, stocks
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ if _extra:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins,
-    allow_methods=["GET"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
@@ -35,6 +35,7 @@ app.include_router(industries.router, prefix="/api")
 app.include_router(stocks.router, prefix="/api")
 app.include_router(realtime.router, prefix="/api")
 app.include_router(brokers.router, prefix="/api")
+app.include_router(backtest.router, prefix="/api")
 
 logger.info("always-stock API initialized")
 

@@ -1,72 +1,129 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useMemo, useState } from "react"
+
+import {
+  fetchBacktestTemplates,
+  runBacktest,
+  toDisplayError,
+  type BacktestRunResponse,
+  type BacktestTemplate,
+} from "@/lib/api"
+import { todayInTaipei } from "@/lib/utils"
 
 interface Props {
   stockId: string
 }
 
-// Placeholder result type — will be filled in when M11 backend is ready
-interface BacktestResult {
-  winRate: number
-  totalReturn: number
-  maxDrawdown: number
-  sharpe: number
-  trades: number
+const DEFAULT_STRATEGY =
+  "收盤價站上20日均線且外資連買3天就買進；收盤價跌破20日均線或外資轉賣就賣出。"
+
+function formatPct(value: number): string {
+  return `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`
+}
+
+function formatCurrency(value: number): string {
+  return new Intl.NumberFormat("zh-TW", {
+    style: "currency",
+    currency: "TWD",
+    maximumFractionDigits: 0,
+  }).format(value)
 }
 
 export default function BacktestPanel({ stockId }: Props) {
-  const [buyCondition, setBuyCondition] = useState("")
-  const [sellCondition, setSellCondition] = useState("")
-  const [startDate, setStartDate] = useState("2023-01-01")
-  const [endDate, setEndDate] = useState("2024-12-31")
-  const [result, setResult] = useState<BacktestResult | null>(null)
+  const [startDate, setStartDate] = useState("2024-01-01")
+  const [endDate, setEndDate] = useState(todayInTaipei())
+  const [initialCapital, setInitialCapital] = useState("1000000")
+  const [strategyText, setStrategyText] = useState(DEFAULT_STRATEGY)
+  const [templates, setTemplates] = useState<BacktestTemplate[]>([])
+  const [selectedTemplateId, setSelectedTemplateId] = useState("")
+  const [result, setResult] = useState<BacktestRunResponse | null>(null)
   const [running, setRunning] = useState(false)
+  const [loadingTemplates, setLoadingTemplates] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
-  const handleRun = () => {
-    // TODO (M11): call POST /api/backtest with stockId + conditions + dates
+  useEffect(() => {
+    const controller = new AbortController()
+
+    void (async () => {
+      try {
+        const nextTemplates = await fetchBacktestTemplates({ signal: controller.signal })
+        setTemplates(nextTemplates)
+        if (nextTemplates[0]) {
+          setSelectedTemplateId(nextTemplates[0].id)
+          setStrategyText(nextTemplates[0].strategy_text)
+        }
+      } catch (fetchError) {
+        setError(toDisplayError(fetchError, "讀取策略模板失敗"))
+      } finally {
+        setLoadingTemplates(false)
+      }
+    })()
+
+    return () => controller.abort()
+  }, [])
+
+  const latestEquity = result?.equity_curve.at(-1)?.equity ?? null
+  const equityPreview = useMemo(() => result?.equity_curve.slice(-8) ?? [], [result])
+
+  const handleRun = async () => {
+    setError(null)
     setRunning(true)
-    setTimeout(() => {
-      setResult({
-        winRate: 58.3,
-        totalReturn: 24.7,
-        maxDrawdown: -12.1,
-        sharpe: 1.42,
-        trades: 24,
+    try {
+      const backtestResult = await runBacktest({
+        stock_id: stockId,
+        start_date: startDate,
+        end_date: endDate,
+        initial_capital: Number(initialCapital),
+        strategy_text: strategyText,
       })
+      setResult(backtestResult)
+    } catch (runError) {
+      setResult(null)
+      setError(toDisplayError(runError, "執行回測失敗"))
+    } finally {
       setRunning(false)
-    }, 800)
+    }
   }
 
   return (
-    <div className="flex flex-col gap-4 rounded-lg border border-zinc-700 bg-zinc-900 p-4 h-full">
+    <div className="flex h-full flex-col gap-4 rounded-lg border border-zinc-700 bg-zinc-900 p-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-zinc-200">回測策略</h2>
-        <span className="text-xs text-zinc-600 border border-zinc-700 rounded px-1.5 py-0.5">M11 — 開發中</span>
+        <div>
+          <h2 className="text-sm font-semibold text-zinc-200">L3 回測工作區</h2>
+          <p className="text-xs text-zinc-500">先支援日線單檔 long-only 與標準績效指標。</p>
+        </div>
+        <span className="rounded border border-zinc-700 px-1.5 py-0.5 text-xs text-zinc-500">MVP</span>
       </div>
 
-      {/* Strategy inputs */}
       <div className="flex flex-col gap-3">
         <div className="flex flex-col gap-1">
-          <label className="text-xs text-zinc-500">買進條件</label>
-          <input
-            value={buyCondition}
-            onChange={(e) => setBuyCondition(e.target.value)}
-            placeholder="例：MA10 上穿 MA20"
-            className="rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-200 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-zinc-500"
-          />
+          <label className="text-xs text-zinc-500">策略模板</label>
+          <select
+            value={selectedTemplateId}
+            onChange={(e) => {
+              const template = templates.find((item) => item.id === e.target.value)
+              setSelectedTemplateId(e.target.value)
+              if (template) setStrategyText(template.strategy_text)
+            }}
+            disabled={loadingTemplates}
+            className="rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-zinc-500"
+          >
+            {templates.map((template) => (
+              <option key={template.id} value={template.id}>
+                {template.name}
+              </option>
+            ))}
+          </select>
+          {selectedTemplateId && (
+            <p className="text-[11px] text-zinc-500">
+              {templates.find((item) => item.id === selectedTemplateId)?.description}
+            </p>
+          )}
         </div>
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-zinc-500">賣出條件</label>
-          <input
-            value={sellCondition}
-            onChange={(e) => setSellCondition(e.target.value)}
-            placeholder="例：MA10 下穿 MA20"
-            className="rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-200 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-zinc-500"
-          />
-        </div>
-        <div className="flex gap-2">
-          <div className="flex flex-col gap-1 flex-1">
+
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+          <div className="flex flex-col gap-1">
             <label className="text-xs text-zinc-500">開始日期</label>
             <input
               type="date"
@@ -75,7 +132,7 @@ export default function BacktestPanel({ stockId }: Props) {
               className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-zinc-500"
             />
           </div>
-          <div className="flex flex-col gap-1 flex-1">
+          <div className="flex flex-col gap-1">
             <label className="text-xs text-zinc-500">結束日期</label>
             <input
               type="date"
@@ -84,26 +141,58 @@ export default function BacktestPanel({ stockId }: Props) {
               className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-zinc-500"
             />
           </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-zinc-500">初始本金</label>
+            <input
+              type="number"
+              min={1}
+              value={initialCapital}
+              onChange={(e) => setInitialCapital(e.target.value)}
+              className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-zinc-500"
+            />
+          </div>
         </div>
+
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-zinc-500">策略文字</label>
+          <textarea
+            value={strategyText}
+            onChange={(e) => setStrategyText(e.target.value)}
+            rows={4}
+            className="rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-zinc-500"
+          />
+        </div>
+
         <button
           onClick={handleRun}
-          disabled={running}
-          className="rounded-md bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 px-4 py-1.5 text-sm text-zinc-100 transition-colors"
+          disabled={running || !strategyText.trim()}
+          className="rounded-md bg-zinc-700 px-4 py-1.5 text-sm text-zinc-100 transition-colors hover:bg-zinc-600 disabled:opacity-50"
         >
           {running ? "計算中..." : "執行回測"}
         </button>
       </div>
 
-      {/* Results */}
+      {error && (
+        <div className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">
+          {error}
+        </div>
+      )}
+
       {result && (
-        <div className="flex flex-col gap-3 border-t border-zinc-700 pt-3">
-          <div className="grid grid-cols-2 gap-2">
+        <div className="flex flex-col gap-4 border-t border-zinc-700 pt-3">
+          <div className="rounded-md border border-zinc-700 bg-zinc-800/60 px-3 py-2">
+            <div className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">Strategy</div>
+            <p className="mt-1 text-sm text-zinc-200">{result.normalized_text}</p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2 xl:grid-cols-3">
             {[
-              { label: "勝率", value: `${result.winRate.toFixed(1)}%`, color: result.winRate >= 50 ? "text-red-400" : "text-green-400" },
-              { label: "總報酬", value: `${result.totalReturn >= 0 ? "+" : ""}${result.totalReturn.toFixed(1)}%`, color: result.totalReturn >= 0 ? "text-red-400" : "text-green-400" },
-              { label: "最大回撤", value: `${result.maxDrawdown.toFixed(1)}%`, color: "text-green-400" },
-              { label: "夏普比率", value: result.sharpe.toFixed(2), color: result.sharpe >= 1 ? "text-red-400" : "text-zinc-400" },
-              { label: "交易次數", value: `${result.trades} 次`, color: "text-zinc-300" },
+              { label: "總報酬", value: formatPct(result.metrics.total_return_pct), color: result.metrics.total_return_pct >= 0 ? "text-red-400" : "text-green-400" },
+              { label: "年化報酬", value: formatPct(result.metrics.annual_return_pct), color: result.metrics.annual_return_pct >= 0 ? "text-red-400" : "text-green-400" },
+              { label: "勝率", value: formatPct(result.metrics.win_rate_pct), color: result.metrics.win_rate_pct >= 50 ? "text-red-400" : "text-zinc-300" },
+              { label: "最大回撤", value: formatPct(result.metrics.max_drawdown_pct), color: "text-green-400" },
+              { label: "夏普比率", value: result.metrics.sharpe_ratio.toFixed(2), color: result.metrics.sharpe_ratio >= 1 ? "text-red-400" : "text-zinc-300" },
+              { label: "交易次數", value: `${result.metrics.trade_count} 次`, color: "text-zinc-300" },
             ].map(({ label, value, color }) => (
               <div key={label} className="rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2">
                 <div className="text-[10px] text-zinc-500">{label}</div>
@@ -111,16 +200,91 @@ export default function BacktestPanel({ stockId }: Props) {
               </div>
             ))}
           </div>
-          {/* Equity curve placeholder */}
-          <div className="rounded-md border border-dashed border-zinc-700 h-24 flex items-center justify-center text-xs text-zinc-600">
-            資金曲線圖（M11 接後端後顯示）
+
+          <div className="grid gap-3 lg:grid-cols-[1.2fr_0.8fr]">
+            <div className="rounded-md border border-zinc-700 bg-zinc-800/60 px-3 py-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">Equity</div>
+                  <p className="text-sm text-zinc-200">期末資產 {latestEquity ? formatCurrency(latestEquity) : "-"}</p>
+                </div>
+                <a
+                  href={`/stocks/${stockId}?date=${result.latest_recommendation.latest_signal_date}`}
+                  className="text-xs text-emerald-300 underline-offset-2 hover:underline"
+                >
+                  回到研究頁
+                </a>
+              </div>
+              <div className="mt-3 grid gap-1">
+                {equityPreview.map((point) => (
+                  <div
+                    key={point.trade_date}
+                    className="flex items-center justify-between rounded bg-zinc-900/60 px-2 py-1 text-xs text-zinc-300"
+                  >
+                    <span>{point.trade_date}</span>
+                    <span className="font-mono">{formatCurrency(point.equity)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="rounded-md border border-zinc-700 bg-zinc-800/60 px-3 py-3">
+              <div className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">Latest Signal</div>
+              <p className="mt-1 text-sm font-medium text-zinc-100">{result.latest_recommendation.reason}</p>
+              <p className="mt-2 text-xs text-zinc-400">
+                {result.latest_recommendation.latest_signal_date} / {result.latest_recommendation.action}
+              </p>
+              <div className="mt-4 grid grid-cols-2 gap-2 text-xs">
+                <div className="rounded bg-zinc-900/60 px-2 py-2">
+                  <div className="text-zinc-500">Buy & Hold</div>
+                  <div className="mt-1 font-mono text-zinc-200">{formatPct(result.metrics.benchmark_return_pct)}</div>
+                </div>
+                <div className="rounded bg-zinc-900/60 px-2 py-2">
+                  <div className="text-zinc-500">Alpha</div>
+                  <div className="mt-1 font-mono text-zinc-200">{formatPct(result.metrics.excess_return_pct)}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-md border border-zinc-700 bg-zinc-800/60 px-3 py-3">
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-medium text-zinc-100">交易紀錄</div>
+              <div className="text-xs text-zinc-500">最近 {Math.min(result.trades.length, 5)} 筆</div>
+            </div>
+            <div className="mt-3 flex flex-col gap-2">
+              {result.trades.length === 0 ? (
+                <div className="rounded bg-zinc-900/60 px-3 py-2 text-xs text-zinc-500">這段期間沒有完成交易。</div>
+              ) : (
+                result.trades.slice(-5).reverse().map((trade) => (
+                  <a
+                    key={`${trade.entry_date}-${trade.exit_date}`}
+                    href={`/stocks/${stockId}?date=${trade.exit_date}`}
+                    className="rounded border border-zinc-700 bg-zinc-900/60 px-3 py-2 text-sm transition-colors hover:border-zinc-500"
+                  >
+                    <div className="flex items-center justify-between gap-4">
+                      <div className="text-zinc-200">
+                        {trade.entry_date} -&gt; {trade.exit_date}
+                      </div>
+                      <div className={`font-mono ${trade.return_pct >= 0 ? "text-red-400" : "text-green-400"}`}>
+                        {formatPct(trade.return_pct)}
+                      </div>
+                    </div>
+                    <div className="mt-1 flex items-center justify-between gap-4 text-xs text-zinc-500">
+                      <span>{trade.holding_days} 天 / {trade.exit_reason}</span>
+                      <span>{formatCurrency(trade.pnl_amount)}</span>
+                    </div>
+                  </a>
+                ))
+              )}
+            </div>
           </div>
         </div>
       )}
 
       {!result && (
-        <div className="flex-1 flex items-center justify-center rounded-md border border-dashed border-zinc-700">
-          <p className="text-xs text-zinc-600">輸入策略條件後執行回測</p>
+        <div className="flex flex-1 items-center justify-center rounded-md border border-dashed border-zinc-700">
+          <p className="text-xs text-zinc-600">選模板或輸入策略後執行回測，先看夏普、勝率、回撤與交易清單。</p>
         </div>
       )}
     </div>

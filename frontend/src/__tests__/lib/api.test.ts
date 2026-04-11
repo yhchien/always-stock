@@ -1,4 +1,5 @@
 import {
+  fetchBacktestTemplates,
   fmtAmount,
   fmtShares,
   fmtStreak,
@@ -8,6 +9,7 @@ import {
   fetchRealtimeQuotes,
   fetchStockHistory,
   fetchSubIndustrySummary,
+  runBacktest,
 } from "@/lib/api"
 
 // ── fmtAmount ────────────────────────────────────────────────────────────────
@@ -195,6 +197,49 @@ describe("fetchStockHistory", () => {
     } as Response)
 
     await expect(fetchStockHistory("9999")).rejects.toThrow("404")
+  })
+})
+
+describe("fetchBacktestTemplates", () => {
+  afterEach(() => jest.restoreAllMocks())
+
+  it("returns parsed template list", async () => {
+    const mockData = [{ id: "demo", name: "Demo", description: "desc", strategy_text: "text" }]
+    jest.spyOn(global, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => mockData,
+    } as Response)
+
+    const result = await fetchBacktestTemplates()
+    expect(result).toEqual(mockData)
+  })
+})
+
+describe("runBacktest", () => {
+  afterEach(() => jest.restoreAllMocks())
+
+  it("posts request payload to the backtest endpoint", async () => {
+    const payload = {
+      stock_id: "2330",
+      start_date: "2024-01-01",
+      end_date: "2024-12-31",
+      initial_capital: 1000000,
+      strategy_text: "demo strategy",
+    }
+    const mockFetch = jest.spyOn(global, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({ supported: true }),
+    } as Response)
+
+    await runBacktest(payload)
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining("/api/backtest/run"),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify(payload),
+      })
+    )
   })
 })
 

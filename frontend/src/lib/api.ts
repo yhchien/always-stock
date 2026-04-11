@@ -68,6 +68,80 @@ export interface FetchOptions {
   signal?: AbortSignal
 }
 
+export interface BacktestTemplate {
+  id: string
+  name: string
+  description: string
+  strategy_text: string
+}
+
+export interface BacktestRunRequest {
+  stock_id: string
+  start_date: string
+  end_date: string
+  initial_capital: number
+  strategy_text: string
+}
+
+export interface BacktestMetricSummary {
+  total_return_pct: number
+  annual_return_pct: number
+  win_rate_pct: number
+  max_drawdown_pct: number
+  sharpe_ratio: number
+  trade_count: number
+  ending_equity: number
+  benchmark_return_pct: number
+  excess_return_pct: number
+  avg_trade_return_pct: number
+  avg_holding_days: number
+  profit_factor: number
+  avg_gain_pct: number
+  avg_loss_pct: number
+}
+
+export interface BacktestEquityPoint {
+  trade_date: string
+  equity: number
+  benchmark_equity: number
+}
+
+export interface BacktestTrade {
+  entry_date: string
+  exit_date: string
+  entry_price: number
+  exit_price: number
+  holding_days: number
+  return_pct: number
+  pnl_amount: number
+  exit_reason: string
+}
+
+export interface BacktestPeriodReturnItem {
+  period: string
+  return_pct: number
+}
+
+export interface BacktestRunResponse {
+  supported: boolean
+  normalized_text: string
+  strategy: Record<string, unknown>
+  metrics: BacktestMetricSummary
+  equity_curve: BacktestEquityPoint[]
+  period_returns: {
+    monthly: BacktestPeriodReturnItem[]
+    quarterly: BacktestPeriodReturnItem[]
+    yearly: BacktestPeriodReturnItem[]
+  }
+  trades: BacktestTrade[]
+  latest_recommendation: {
+    latest_signal_date: string
+    action: string
+    reason: string
+  }
+  warnings: string[]
+}
+
 export function toDisplayError(error: unknown, fallback = "載入失敗"): string {
   if (error instanceof Error) {
     if (error.message.includes("503")) return "資料庫忙碌中，請稍後再試"
@@ -121,6 +195,30 @@ export async function fetchStockHistory(
     signal: options?.signal,
   })
   if (!res.ok) throw new Error(`Failed to fetch history: ${res.status}`)
+  return res.json()
+}
+
+export async function fetchBacktestTemplates(options?: FetchOptions): Promise<BacktestTemplate[]> {
+  const res = await fetch(`${API_BASE}/api/backtest/templates`, {
+    signal: options?.signal,
+  })
+  if (!res.ok) throw new Error(`Failed to fetch backtest templates: ${res.status}`)
+  return res.json()
+}
+
+export async function runBacktest(
+  payload: BacktestRunRequest,
+  options?: FetchOptions,
+): Promise<BacktestRunResponse> {
+  const res = await fetch(`${API_BASE}/api/backtest/run`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+    signal: options?.signal,
+  })
+  if (!res.ok) throw new Error(`Failed to run backtest: ${res.status}`)
   return res.json()
 }
 

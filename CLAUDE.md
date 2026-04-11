@@ -115,3 +115,49 @@
 - 這 5 天已重抓一次，`close_price` 與後續 flow 可更新，但 `open/high/low` 仍為空，推測是資料源回傳本身缺欄位
 - 已從 Fly.io 遷移至 Render（Postgres）+ Vercel（前端）
 - Fly.io 資源已停用，可待驗證完成後刪除
+
+## 最近重要修正（2026-04-12）
+
+- L3 回測 MVP 第一批已落地：
+  - 後端新增 `/api/backtest/templates`
+  - 後端新增 `/api/backtest/interpret`
+  - 後端新增 `/api/backtest/run`
+- 回測引擎目前範圍固定為：
+  - 單一股票 / ETF
+  - 日線資料
+  - long-only
+  - 訊號以當日收盤判斷、次日開盤成交
+  - 同時間單一部位
+  - 成本模型固定為 `0`
+- 第一批 parser / DSL 僅保證支援：
+  - `收盤價站上 N 日均線`
+  - `收盤價跌破 N 日均線`
+  - `成交量高於 N 日均量`
+  - `外資 / 投信 / 自營商 連買 N 天`
+  - `外資 / 投信 / 自營商 轉賣 / 賣超`
+- 回測標準輸出目前已包含：
+  - `total_return_pct`
+  - `annual_return_pct`
+  - `win_rate_pct`
+  - `max_drawdown_pct`
+  - `sharpe_ratio`
+  - `trade_count`
+  - `ending_equity`
+  - `benchmark_return_pct`
+  - `excess_return_pct`
+  - `avg_trade_return_pct`
+  - `avg_holding_days`
+  - `profit_factor`
+  - `avg_gain_pct`
+  - `avg_loss_pct`
+- 前端 `BacktestPanel` 已從假資料改成真 API 串接，並支援：
+  - 策略模板載入
+  - 策略文字手動編輯
+  - 顯示 quick metrics
+  - 顯示最近交易紀錄
+  - 顯示最新交易日建議
+  - 從交易紀錄 / 最新訊號跳回 L2 研究頁
+- 目前尚未完成：
+  - OpenAI `advice` API
+  - 真正的 equity curve 圖表
+  - 更多 DSL 條件（停損停利、突破高低點、均線交叉等）
