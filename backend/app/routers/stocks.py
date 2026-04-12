@@ -8,6 +8,8 @@ from pydantic import BaseModel
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
+from sqlalchemy import func
+
 from app.database import get_db
 from app.models import DailyPrice, InstStockFlow, StockMaster
 
@@ -70,6 +72,8 @@ class StockHistoryResponse(BaseModel):
     industry_name: str
     sub_industry: Optional[str]
     history: List[StockHistoryItem]
+    earliest_date: Optional[str] = None  # 此股票在 DB 中最早的交易日
+    latest_date: Optional[str] = None    # 此股票在 DB 中最新的交易日
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -77,15 +81,17 @@ class StockHistoryResponse(BaseModel):
 @router.get("/stocks/{stock_id}/history", response_model=StockHistoryResponse)
 def get_stock_history(
     stock_id: str,
-    days: int = Query(default=60, ge=1, le=365, description="number of days to look back, default 60"),
-    end_date: date = Query(default=None, description="end date, defaults to today"),
+    days: int = Query(default=60, ge=1, le=3650, description="往前幾天，預設 60；有 start_date 時忽略此參數"),
+    start_date: Optional[date] = Query(default=None, description="自訂起始日（提供時忽略 days）"),
+    end_date: date = Query(default=None, description="結束日，預設為今日"),
     db: Session = Depends(get_db),
 ):
     """
-    L2: Return daily closing price and institutional net buy/sell for the past N days,
-    including running cumulative totals per institution type.
+    L2: Return daily closing price and institutional net buy/sell.
+    Supports both relative (days) and absolute (start_date + end_date) range queries.
+    Also returns the earliest/latest available date for this stock in the DB.
     """
-    logger.info("GET /stocks/%s/history days=%d end_date=%s", stock_id, days, end_date)
+    logger.info("GET /stocks/%s/history days=%d start_date=%s end_date=%s", stock_id, days, start_date, end_date)
 
     try:
         stock = _run_with_lock_retry(db, lambda: db.get(StockMaster, stock_id))
@@ -97,7 +103,8 @@ def get_stock_history(
 
     if end_date is None:
         end_date = date.today()
-    start_date = end_date - timedelta(days=days)
+    if start_date is None:
+        start_date = end_date - timedelta(days=days)
 
     try:
         prices = _run_with_lock_retry(
@@ -171,6 +178,20 @@ def get_stock_history(
             dealer_cumulative=dealer_cum,
         ))
 
+    # 查詢此股票在 DB 中的完整可用日期範圍
+    try:
+        date_range = _run_with_lock_retry(
+            db,
+            lambda: db.query(
+                func.min(DailyPrice.trade_date),
+                func.max(DailyPrice.trade_date),
+            ).filter(DailyPrice.stock_id == stock_id).one(),
+        )
+    except OperationalError as error:
+        _raise_busy_if_locked(error)
+    earliest = str(date_range[0]) if date_range[0] else None
+    latest = str(date_range[1]) if date_range[1] else None
+
     logger.debug("Returning %d days of history for %s", len(history), stock_id)
     return StockHistoryResponse(
         stock_id=stock_id,
@@ -178,4 +199,6 @@ def get_stock_history(
         industry_name=stock.industry_name,
         sub_industry=stock.sub_industry,
         history=history,
+        earliest_date=earliest,
+        latest_date=latest,
     )

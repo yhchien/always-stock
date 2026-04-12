@@ -62,6 +62,8 @@ export interface StockHistoryResponse {
   industry_name: string
   sub_industry: string | null
   history: StockHistoryItem[]
+  earliest_date: string | null
+  latest_date: string | null
 }
 
 export interface FetchOptions {
@@ -258,10 +260,11 @@ export async function fetchStockHistory(
   stockId: string,
   days = 60,
   endDate?: string,
-  options?: FetchOptions,
+  options?: FetchOptions & { startDate?: string },
 ): Promise<StockHistoryResponse> {
   const params = new URLSearchParams({ days: String(days) })
   if (endDate) params.set("end_date", endDate)
+  if (options?.startDate) params.set("start_date", options.startDate)
   const res = await fetch(`${API_BASE}/api/stocks/${stockId}/history?${params}`, {
     signal: options?.signal,
   })

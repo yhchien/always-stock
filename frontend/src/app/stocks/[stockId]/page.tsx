@@ -2,11 +2,10 @@
 
 import { Suspense, use, useEffect, useState } from "react"
 import dynamic from "next/dynamic"
+import Link from "next/link"
 import { useSearchParams } from "next/navigation"
 import { Skeleton } from "@/components/ui/skeleton"
-import BacktestPanel from "@/components/BacktestPanel"
 
-const BACKTEST_TOGGLE_STORAGE_KEY = "always-stock:show-backtest-panel"
 const BROKER_TOGGLE_STORAGE_KEY = "always-stock:show-broker-panel"
 
 // Lazy load ECharts-heavy components — excluded from initial bundle
@@ -35,16 +34,12 @@ function readStoredToggle(key: string, defaultValue: boolean): boolean {
 function StockContent({ stockId }: { stockId: string }) {
   const searchParams = useSearchParams()
   const date = searchParams.get("date") ?? undefined
-  const [showBacktestPanel, setShowBacktestPanel] = useState(() =>
-    readStoredToggle(BACKTEST_TOGGLE_STORAGE_KEY, true)
-  )
-  const [showBrokerPanel, setShowBrokerPanel] = useState(() =>
-    readStoredToggle(BROKER_TOGGLE_STORAGE_KEY, true)
-  )
+  const [showBrokerPanel, setShowBrokerPanel] = useState(true)
 
+  // 讀取 localStorage 必須在 useEffect（mount 後），否則 SSR 與 client 初始值不一致造成 hydration mismatch
   useEffect(() => {
-    window.localStorage.setItem(BACKTEST_TOGGLE_STORAGE_KEY, String(showBacktestPanel))
-  }, [showBacktestPanel])
+    setShowBrokerPanel(readStoredToggle(BROKER_TOGGLE_STORAGE_KEY, true))
+  }, [])
 
   useEffect(() => {
     window.localStorage.setItem(BROKER_TOGGLE_STORAGE_KEY, String(showBrokerPanel))
@@ -61,26 +56,13 @@ function StockContent({ stockId }: { stockId: string }) {
             <p className="text-xs text-zinc-500">隱藏後就不會載入對應功能。</p>
           </div>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-6">
-            <div className="flex items-center justify-between gap-4 rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-2 sm:min-w-[220px]">
+            <Link
+              href={`/stocks/${stockId}/backtest${date ? `?date=${date}` : ""}`}
+              className="flex items-center justify-between gap-4 rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-2 hover:border-zinc-600 hover:bg-zinc-900/80 transition-colors sm:min-w-[220px]"
+            >
               <span className="text-sm text-zinc-200">回測程式</span>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={showBacktestPanel}
-                onClick={() => setShowBacktestPanel((value) => !value)}
-                className={`relative inline-flex h-7 w-14 items-center rounded-full border transition-colors ${
-                  showBacktestPanel
-                    ? "border-emerald-500/50 bg-emerald-500/20"
-                    : "border-zinc-700 bg-zinc-800"
-                }`}
-              >
-                <span
-                  className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${
-                    showBacktestPanel ? "translate-x-8" : "translate-x-1"
-                  }`}
-                />
-              </button>
-            </div>
+              <span className="text-xs text-zinc-500">開啟 →</span>
+            </Link>
 
             <div className="flex items-center justify-between gap-4 rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-2 sm:min-w-[220px]">
               <span className="text-sm text-zinc-200">關鍵券商</span>
@@ -106,10 +88,9 @@ function StockContent({ stockId }: { stockId: string }) {
         </div>
       </section>
 
-      {(showBacktestPanel || showBrokerPanel) && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 min-h-[360px]">
-          {showBacktestPanel && <BacktestPanel stockId={stockId} />}
-          {showBrokerPanel && <BrokerPanel stockId={stockId} date={date} />}
+      {showBrokerPanel && (
+        <div className="min-h-[360px]">
+          <BrokerPanel stockId={stockId} date={date} />
         </div>
       )}
     </main>

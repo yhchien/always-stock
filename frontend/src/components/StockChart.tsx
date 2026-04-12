@@ -46,9 +46,10 @@ interface Props {
   stockId: string
   defaultDate?: string
   days?: number
+  chartHeight?: string
 }
 
-export default function StockChart({ stockId, defaultDate, days: initialDays = 90 }: Props) {
+export default function StockChart({ stockId, defaultDate, days: initialDays = 90, chartHeight }: Props) {
   const router = useRouter()
   const chartRef = useRef<HTMLDivElement>(null)
   const [days, setDays] = useState(initialDays)
@@ -56,6 +57,11 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const realtimeQuotes = useRealtimeQuotes([stockId])
+
+  // Custom date range state
+  const [customStart, setCustomStart] = useState("")
+  const [customEnd, setCustomEnd] = useState("")
+  const [appliedCustom, setAppliedCustom] = useState<{ start: string; end: string } | null>(null)
 
   // Institutional line toggle state
   const [activeInst, setActiveInst] = useState<Set<InstKey>>(new Set(["foreign", "trust", "dealer"]))
@@ -74,14 +80,30 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
   const [customMA, setCustomMA] = useState<string>("")
   const [customMAPeriod, setCustomMAPeriod] = useState<number | null>(null)
 
+  const applyCustomRange = () => {
+    if (!customStart || !customEnd) return
+    if (customStart > customEnd) return
+    setAppliedCustom({ start: customStart, end: customEnd })
+  }
+
+  const clearCustomRange = (newDays: number) => {
+    setAppliedCustom(null)
+    setDays(newDays)
+  }
+
   const load = useCallback(async () => {
     const controller = new AbortController()
     setLoading(true)
     setError(null)
     try {
-      const resp = await fetchStockHistory(stockId, days, defaultDate, {
-        signal: controller.signal,
-      })
+      const resp = appliedCustom
+        ? await fetchStockHistory(stockId, 1, appliedCustom.end, {
+            signal: controller.signal,
+            startDate: appliedCustom.start,
+          })
+        : await fetchStockHistory(stockId, days, defaultDate, {
+            signal: controller.signal,
+          })
       if (!controller.signal.aborted) {
         setData(resp)
       }
@@ -95,7 +117,7 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
       }
     }
     return () => controller.abort()
-  }, [stockId, days, defaultDate])
+  }, [stockId, days, defaultDate, appliedCustom])
 
   useEffect(() => {
     let cleanup: (() => void) | void
@@ -366,15 +388,16 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
       </div>
 
       {/* Range + MA controls */}
-      <div className="flex items-center gap-4 flex-wrap">
+      <div className="flex flex-col gap-2">
+      <div className="flex items-center gap-2 flex-wrap">
         {/* Range selector */}
         <div className="flex gap-1">
           {RANGE_OPTIONS.map((opt) => (
             <button
               key={opt.label}
-              onClick={() => setDays(opt.days)}
+              onClick={() => clearCustomRange(opt.days)}
               className={`px-3 py-1 text-xs rounded-md border transition-colors ${
-                days === opt.days
+                !appliedCustom && days === opt.days
                   ? "bg-zinc-700 border-zinc-500 text-zinc-100"
                   : "bg-zinc-900 border-zinc-700 text-zinc-400 hover:text-zinc-200 hover:border-zinc-500"
               }`}
@@ -383,6 +406,51 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
             </button>
           ))}
         </div>
+
+        {/* Custom date range */}
+        <div className="flex items-center gap-1">
+          <span className="text-xs text-zinc-500">自訂</span>
+          <input
+            type="date"
+            value={customStart}
+            max={customEnd || undefined}
+            onChange={(e) => setCustomStart(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && applyCustomRange()}
+            className="rounded border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-xs text-zinc-300 focus:outline-none focus:ring-1 focus:ring-zinc-500 [color-scheme:dark]"
+          />
+          <span className="text-xs text-zinc-600">～</span>
+          <input
+            type="date"
+            value={customEnd}
+            min={customStart || undefined}
+            onChange={(e) => setCustomEnd(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && applyCustomRange()}
+            className="rounded border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-xs text-zinc-300 focus:outline-none focus:ring-1 focus:ring-zinc-500 [color-scheme:dark]"
+          />
+          <button
+            onClick={applyCustomRange}
+            disabled={!customStart || !customEnd || customStart > customEnd}
+            className="px-2 py-0.5 text-xs rounded border border-zinc-700 bg-zinc-900 text-zinc-400 hover:text-zinc-200 hover:border-zinc-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            套用
+          </button>
+          {appliedCustom && (
+            <button
+              onClick={() => { setAppliedCustom(null); setCustomStart(""); setCustomEnd("") }}
+              className="px-2 py-0.5 text-xs rounded border border-zinc-700 bg-zinc-900 text-zinc-500 hover:text-zinc-200 transition-colors"
+            >
+              ×
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Available data range hint */}
+      {data?.earliest_date && data?.latest_date && (
+        <p className="text-[11px] text-zinc-600">
+          資料範圍：{data.earliest_date} ～ {data.latest_date}
+        </p>
+      )}
 
         {/* Institutional line toggles */}
         <div className="flex items-center gap-1">
@@ -488,7 +556,7 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
           <ReactECharts
             option={chartOption}
             notMerge
-            style={{ height: "60vh", minHeight: 400, width: "100%" }}
+            style={{ height: chartHeight ?? "60vh", minHeight: chartHeight ? 280 : 400, width: "100%" }}
             opts={{ renderer: "svg" }}
           />
         </div>
