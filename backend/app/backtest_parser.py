@@ -53,14 +53,19 @@ def _parse_percent(token: str, keyword: str) -> Optional[float]:
     return None
 
 
+def _normalize_ma_notation(token: str) -> str:
+    """把 MA5 / 5MA / ma5 / 5ma 等寫法統一轉為「5日均線」。
+    不能用 \\b 因為 Python 3 把中文視為 word character，導致「MA」後接中文時邊界判斷失效。
+    """
+    token = re.sub(r"(?<!\d)(\d+)\s*[Mm][Aa](?!\d)", r"\1日均線", token)
+    token = re.sub(r"(?<![a-zA-Z])[Mm][Aa]\s*(\d+)(?!\d)", r"\1日均線", token)
+    return token
+
+
 def _parse_rule(token: str) -> Dict:
-    token = token.strip()
+    token = _normalize_ma_notation(token.strip())
 
-    ma_match = re.search(r"收盤價(站上|跌破)(\d+)日均線", token)
-    if ma_match:
-        indicator = "close_above_ma" if ma_match.group(1) == "站上" else "close_below_ma"
-        return {"indicator": indicator, "params": {"window": int(ma_match.group(2))}}
-
+    # Cross 要先判斷，避免「5日均線跌破20日均線」被誤判為 close_below_ma
     ma_cross_match = re.search(r"(\d+)日均線(黃金交叉|上穿|突破)(\d+)日均線", token)
     if ma_cross_match:
         return {
@@ -74,6 +79,12 @@ def _parse_rule(token: str) -> Dict:
             "indicator": "ma_dead_cross",
             "params": {"short_window": int(ma_dead_cross_match.group(1)), "long_window": int(ma_dead_cross_match.group(3))},
         }
+
+    # 收盤價 prefix 可選，允許「跌破MA20」「站上20日均線」等省略前綴的寫法
+    ma_match = re.search(r"(?:收盤價)?(站上|跌破)(\d+)日均線", token)
+    if ma_match:
+        indicator = "close_above_ma" if ma_match.group(1) == "站上" else "close_below_ma"
+        return {"indicator": indicator, "params": {"window": int(ma_match.group(2))}}
 
     breakout_high_match = re.search(r"(?:收盤價)?(?:突破|站上)(\d+)日高點", token)
     if breakout_high_match:
