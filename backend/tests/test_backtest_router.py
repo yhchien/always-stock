@@ -98,6 +98,8 @@ def test_run_backtest_returns_metrics_and_trades(api):
     assert payload["supported"] is True
     assert payload["metrics"]["trade_count"] >= 1
     assert payload["metrics"]["sharpe_ratio"] >= 0
+    assert "max_consecutive_wins" in payload["metrics"]
+    assert "max_consecutive_losses" in payload["metrics"]
     assert len(payload["equity_curve"]) == 30
     assert payload["trades"][0]["entry_date"] < payload["trades"][0]["exit_date"]
     assert payload["latest_recommendation"]["action"] in {"wait", "observe_buy", "observe_sell", "hold"}
@@ -111,6 +113,16 @@ def test_backtest_templates(api):
     payload = response.json()
     assert payload
     assert payload[0]["strategy_text"]
+
+
+def test_backtest_capabilities(api):
+    client, _ = api
+    response = client.get("/api/backtest/capabilities")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["indicators"]
+    assert payload["risk_controls"]
+    assert any(item["id"] == "ma_golden_cross" for item in payload["indicators"])
 
 
 def test_backtest_advice_returns_structured_response(api):
@@ -146,7 +158,7 @@ def test_backtest_advice_returns_structured_response(api):
     assert payload["rewrite_suggestions"]
 
 
-def test_interpret_returns_unsupported_conditions(api):
+def test_interpret_supports_breakout_and_risk_controls(api):
     client, db = api
     seed_stock(db, stock_id="2330", name="台積電", industry="半導體業")
     db.commit()
@@ -158,18 +170,43 @@ def test_interpret_returns_unsupported_conditions(api):
             "start_date": "2024-01-01",
             "end_date": "2024-01-31",
             "initial_capital": 1000000,
-            "strategy_text": "收盤價站上20日均線且突破60日高點就買進；收盤價跌破20日均線就賣出",
+            "strategy_text": "收盤價站上20日均線且突破20日高點就買進；收盤價跌破20日均線或停損8%或停利20%就賣出",
         },
     )
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["supported"] is False
-    assert "突破60日高點" in payload["unsupported_conditions"]
-    assert payload["warnings"]
+    assert payload["supported"] is True
+    assert payload["unsupported_conditions"] == []
+    assert payload["strategy"]["entry_rules"][1]["indicator"] == "close_breakout_high"
+    assert payload["strategy"]["stop_loss_pct"] == 8.0
+    assert payload["strategy"]["take_profit_pct"] == 20.0
 
 
-def test_run_backtest_rejects_unsupported_conditions(api):
+def test_interpret_supports_ma_cross(api):
+    client, db = api
+    seed_stock(db, stock_id="2330", name="台積電", industry="半導體業")
+    db.commit()
+
+    response = client.post(
+        "/api/backtest/interpret",
+        json={
+            "stock_id": "2330",
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-31",
+            "initial_capital": 1000000,
+            "strategy_text": "5日均線黃金交叉20日均線就買進；5日均線死亡交叉20日均線就賣出",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["supported"] is True
+    assert payload["strategy"]["entry_rules"][0]["indicator"] == "ma_golden_cross"
+    assert payload["strategy"]["exit_rules"][0]["indicator"] == "ma_dead_cross"
+
+
+def test_run_backtest_rejects_unknown_conditions(api):
     client, db = api
     seed_backtest_dataset(db)
 
@@ -180,12 +217,79 @@ def test_run_backtest_rejects_unsupported_conditions(api):
             "start_date": "2024-01-01",
             "end_date": "2024-01-30",
             "initial_capital": 1000000,
-            "strategy_text": "收盤價站上20日均線且突破60日高點就買進；收盤價跌破20日均線就賣出",
+            "strategy_text": "收盤價站上20日均線且營收創高就買進；收盤價跌破20日均線就賣出",
         },
     )
 
     assert response.status_code == 422
     assert "Unsupported strategy conditions" in response.json()["detail"]
+
+
+def test_run_backtest_supports_breakout_rule(api):
+    client, db = api
+    seed_stock(db, stock_id="2330", name="台積電", industry="半導體業")
+    for offset in range(25):
+        trade_date = BASE_DATE + timedelta(days=offset)
+        close = 100.0 + offset if offset < 20 else 140.0 + offset
+        seed_price(
+            db,
+            "2330",
+            trade_date,
+            close,
+            open_p=close,
+            high=close + 1,
+            low=close - 2,
+        )
+        seed_flow(db, "2330", trade_date, "foreign", 0)
+        seed_flow(db, "2330", trade_date, "trust", 0)
+        seed_flow(db, "2330", trade_date, "dealer", 0)
+    db.commit()
+
+    response = client.post(
+        "/api/backtest/run",
+        json={
+            "stock_id": "2330",
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-25",
+            "initial_capital": 1000000,
+            "strategy_text": "突破20日高點就買進；收盤價跌破5日均線就賣出",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["supported"] is True
+    assert payload["metrics"]["trade_count"] >= 0
+    assert payload["unsupported_conditions"] == []
+
+
+def test_run_backtest_exits_with_stop_loss(api):
+    client, db = api
+    seed_stock(db, stock_id="2330", name="台積電", industry="半導體業")
+    closes = [100, 100, 100, 100, 110, 100, 90, 89]
+    for offset, close in enumerate(closes):
+        trade_date = BASE_DATE + timedelta(days=offset)
+        seed_price(db, "2330", trade_date, float(close), open_p=float(close), high=float(close) + 1, low=float(close) - 2)
+        seed_flow(db, "2330", trade_date, "foreign", 0)
+        seed_flow(db, "2330", trade_date, "trust", 0)
+        seed_flow(db, "2330", trade_date, "dealer", 0)
+    db.commit()
+
+    response = client.post(
+        "/api/backtest/run",
+        json={
+            "stock_id": "2330",
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-08",
+            "initial_capital": 1000000,
+            "strategy_text": "突破3日高點就買進；收盤價跌破20日均線或停損8%就賣出",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["metrics"]["trade_count"] == 1
+    assert "stop_loss_8pct" in payload["trades"][0]["exit_reason"]
 
 
 def test_run_backtest_returns_lookback_and_missing_open_warnings(api):
@@ -264,3 +368,168 @@ def test_interpret_rejects_blank_strategy(api):
 
     assert response.status_code == 422
     assert "blank" in response.json()["detail"]
+
+
+def test_interpret_returns_ai_mapped_conditions_field(api):
+    """即使沒有 AI，interpret 回傳值也要有 ai_mapped_conditions 欄位。"""
+    client, db = api
+    seed_stock(db, stock_id="2330", name="台積電", industry="半導體業")
+    db.commit()
+
+    response = client.post(
+        "/api/backtest/interpret",
+        json={
+            "stock_id": "2330",
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-31",
+            "initial_capital": 1000000,
+            "strategy_text": DEFAULT_STRATEGY_TEXT,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "ai_mapped_conditions" in payload
+    assert isinstance(payload["ai_mapped_conditions"], list)
+
+
+def test_run_backtest_returns_ai_mapped_conditions_field(api):
+    """run 結果也要有 ai_mapped_conditions 欄位。"""
+    client, db = api
+    seed_backtest_dataset(db)
+
+    response = client.post(
+        "/api/backtest/run",
+        json={
+            "stock_id": "2330",
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-30",
+            "initial_capital": 1000000,
+            "strategy_text": DEFAULT_STRATEGY_TEXT,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "ai_mapped_conditions" in payload
+    assert isinstance(payload["ai_mapped_conditions"], list)
+
+
+def test_backtest_templates_include_new_types(api):
+    """模板清單應包含均線交叉與突破型。"""
+    client, _ = api
+    response = client.get("/api/backtest/templates")
+    assert response.status_code == 200
+    payload = response.json()
+    ids = [t["id"] for t in payload]
+    assert "ma_golden_cross" in ids
+    assert "price_breakout_high" in ids
+    assert "triple_ma_trend" in ids
+    assert len(payload) >= 7
+
+
+def test_interpret_supports_volume_ratio(api):
+    """成交量暴增至 N 日均量的 X 倍以上解析正確。"""
+    client, db = api
+    seed_stock(db, stock_id="2330", name="台積電", industry="半導體業")
+    db.commit()
+
+    response = client.post(
+        "/api/backtest/interpret",
+        json={
+            "stock_id": "2330",
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-31",
+            "initial_capital": 1000000,
+            "strategy_text": "突破20日高點且成交量暴增至20日均量的1.5倍以上就買進；收盤價跌破20日均線就賣出",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["supported"] is True
+    entry_ids = [r["indicator"] for r in payload["strategy"]["entry_rules"]]
+    assert "volume_ratio_above_ma" in entry_ids
+    vol_rule = next(r for r in payload["strategy"]["entry_rules"] if r["indicator"] == "volume_ratio_above_ma")
+    assert vol_rule["params"]["ratio"] == 1.5
+
+
+def test_interpret_supports_all_inst_and_net_positive(api):
+    """三大法人合計轉賣 / 外資買超 / 投信買超 解析正確。"""
+    client, db = api
+    seed_stock(db, stock_id="2330", name="台積電", industry="半導體業")
+    db.commit()
+
+    response = client.post(
+        "/api/backtest/interpret",
+        json={
+            "stock_id": "2330",
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-31",
+            "initial_capital": 1000000,
+            "strategy_text": "收盤價站上20日均線且外資買超且投信買超就買進；收盤價跌破20日均線或三大法人合計轉賣就賣出",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["supported"] is True
+    entry_ids = [r["indicator"] for r in payload["strategy"]["entry_rules"]]
+    assert "foreign_net_positive" in entry_ids
+    assert "trust_net_positive" in entry_ids
+    exit_ids = [r["indicator"] for r in payload["strategy"]["exit_rules"]]
+    assert "all_inst_net_negative" in exit_ids
+
+
+def test_interpret_supports_consecutive_sell(api):
+    """外資連賣 N 天解析正確。"""
+    client, db = api
+    seed_stock(db, stock_id="2330", name="台積電", industry="半導體業")
+    db.commit()
+
+    response = client.post(
+        "/api/backtest/interpret",
+        json={
+            "stock_id": "2330",
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-31",
+            "initial_capital": 1000000,
+            "strategy_text": "收盤價站上20日均線就買進；外資連賣3天或收盤價跌破20日均線就賣出",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["supported"] is True
+    exit_ids = [r["indicator"] for r in payload["strategy"]["exit_rules"]]
+    assert "foreign_consecutive_sell" in exit_ids
+
+
+def test_run_backtest_chip_ma_resonance_template(api):
+    """均線 + 籌碼共振型模板（外資買超 + 投信買超）可正常執行。"""
+    client, db = api
+    seed_stock(db, stock_id="2330", name="台積電", industry="半導體業")
+    for offset in range(30):
+        trade_date = BASE_DATE + timedelta(days=offset)
+        close = 100.0 + offset
+        seed_price(db, "2330", trade_date, close, open_p=close)
+        seed_flow(db, "2330", trade_date, "foreign", 500 if offset >= 20 else 0)
+        seed_flow(db, "2330", trade_date, "trust", 200 if offset >= 20 else 0)
+        seed_flow(db, "2330", trade_date, "dealer", 0)
+    db.commit()
+
+    response = client.post(
+        "/api/backtest/run",
+        json={
+            "stock_id": "2330",
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-30",
+            "initial_capital": 1000000,
+            "strategy_text": "收盤價站上20日均線且外資買超且投信買超就買進；收盤價跌破20日均線或三大法人合計轉賣就賣出",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["supported"] is True
+    assert payload["unsupported_conditions"] == []

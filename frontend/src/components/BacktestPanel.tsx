@@ -4,11 +4,13 @@ import { useEffect, useMemo, useState } from "react"
 
 import {
   fetchBacktestAdvice,
+  fetchBacktestCapabilities,
   fetchBacktestTemplates,
   interpretBacktest,
   runBacktest,
   toDisplayError,
   type BacktestAdviceResponse,
+  type BacktestCapabilityCatalog,
   type BacktestInterpretResponse,
   type BacktestRunResponse,
   type BacktestTemplate,
@@ -20,8 +22,10 @@ interface Props {
   stockId: string
 }
 
-const DEFAULT_STRATEGY =
-  "收盤價站上20日均線且外資連買3天就買進；收盤價跌破20日均線或外資轉賣就賣出。"
+function oneYearAgoInTaipei(): string {
+  const d = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000)
+  return new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei" }).format(d)
+}
 
 function formatPct(value: number): string {
   return `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`
@@ -35,12 +39,21 @@ function formatCurrency(value: number): string {
   }).format(value)
 }
 
+function formatRatio(value: number): string {
+  return value.toFixed(2)
+}
+
+function formatTimes(value: number): string {
+  return `${value} 次`
+}
+
 export default function BacktestPanel({ stockId }: Props) {
-  const [startDate, setStartDate] = useState("2024-01-01")
-  const [endDate, setEndDate] = useState(todayInTaipei())
+  const [startDate, setStartDate] = useState(oneYearAgoInTaipei)
+  const [endDate, setEndDate] = useState(todayInTaipei)
   const [initialCapital, setInitialCapital] = useState("1000000")
-  const [strategyText, setStrategyText] = useState(DEFAULT_STRATEGY)
+  const [strategyText, setStrategyText] = useState("")
   const [templates, setTemplates] = useState<BacktestTemplate[]>([])
+  const [capabilities, setCapabilities] = useState<BacktestCapabilityCatalog | null>(null)
   const [selectedTemplateId, setSelectedTemplateId] = useState("")
   const [interpretation, setInterpretation] = useState<BacktestInterpretResponse | null>(null)
   const [result, setResult] = useState<BacktestRunResponse | null>(null)
@@ -58,7 +71,9 @@ export default function BacktestPanel({ stockId }: Props) {
     void (async () => {
       try {
         const nextTemplates = await fetchBacktestTemplates({ signal: controller.signal })
+        const nextCapabilities = await fetchBacktestCapabilities({ signal: controller.signal })
         setTemplates(nextTemplates)
+        setCapabilities(nextCapabilities)
         if (nextTemplates[0]) {
           setSelectedTemplateId(nextTemplates[0].id)
           setStrategyText(nextTemplates[0].strategy_text)
@@ -75,6 +90,29 @@ export default function BacktestPanel({ stockId }: Props) {
 
   const latestEquity = result?.equity_curve.at(-1)?.equity ?? null
   const equityPreview = useMemo(() => result?.equity_curve.slice(-8) ?? [], [result])
+  const monthlyPreview = useMemo(() => result?.period_returns.monthly.slice(-6).reverse() ?? [], [result])
+  const quarterlyPreview = useMemo(() => result?.period_returns.quarterly.slice(-4).reverse() ?? [], [result])
+  const yearlyPreview = useMemo(() => result?.period_returns.yearly.slice(-4).reverse() ?? [], [result])
+  const interpretedStrategy = interpretation?.strategy as {
+    entry_rules?: Array<{ indicator?: string; params?: Record<string, unknown> }>
+    exit_rules?: Array<{ indicator?: string; params?: Record<string, unknown> }>
+    stop_loss_pct?: number | null
+    take_profit_pct?: number | null
+  } | null
+
+  const capabilityMap = useMemo(() => {
+    const items = [...(capabilities?.indicators ?? []), ...(capabilities?.risk_controls ?? [])]
+    return new Map(items.map((item) => [item.id, item]))
+  }, [capabilities])
+
+  const describeRule = (rule: { indicator?: string; params?: Record<string, unknown> }) => {
+    const item = rule.indicator ? capabilityMap.get(rule.indicator) : null
+    const params = rule.params ?? {}
+    const paramText = Object.entries(params)
+      .map(([key, value]) => `${key}=${value}`)
+      .join(", ")
+    return item ? `${item.label}${paramText ? ` (${paramText})` : ""}` : `${rule.indicator ?? "unknown"}${paramText ? ` (${paramText})` : ""}`
+  }
 
   const handleRun = async () => {
     setError(null)
@@ -261,6 +299,55 @@ export default function BacktestPanel({ stockId }: Props) {
             <div className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">Normalized</div>
             <p className="mt-1 text-sm text-zinc-200">{interpretation.normalized_text}</p>
           </div>
+          {interpretedStrategy && (
+            <div className="grid gap-3 lg:grid-cols-3">
+              <div className="rounded bg-zinc-900/60 px-3 py-3">
+                <div className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">Entry DSL</div>
+                <div className="mt-2 space-y-1 text-sm text-zinc-200">
+                  {(interpretedStrategy.entry_rules ?? []).length === 0 ? (
+                    <p className="text-zinc-500">尚無可用進場條件</p>
+                  ) : (
+                    (interpretedStrategy.entry_rules ?? []).map((rule, index) => (
+                      <p key={`entry-${index}`}>- {describeRule(rule)}</p>
+                    ))
+                  )}
+                </div>
+              </div>
+              <div className="rounded bg-zinc-900/60 px-3 py-3">
+                <div className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">Exit DSL</div>
+                <div className="mt-2 space-y-1 text-sm text-zinc-200">
+                  {(interpretedStrategy.exit_rules ?? []).length === 0 ? (
+                    <p className="text-zinc-500">尚無可用出場條件</p>
+                  ) : (
+                    (interpretedStrategy.exit_rules ?? []).map((rule, index) => (
+                      <p key={`exit-${index}`}>- {describeRule(rule)}</p>
+                    ))
+                  )}
+                </div>
+              </div>
+              <div className="rounded bg-zinc-900/60 px-3 py-3">
+                <div className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">Risk Controls</div>
+                <div className="mt-2 space-y-1 text-sm text-zinc-200">
+                  {interpretedStrategy.stop_loss_pct ? <p>- 固定停損 ({interpretedStrategy.stop_loss_pct}%)</p> : null}
+                  {interpretedStrategy.take_profit_pct ? <p>- 固定停利 ({interpretedStrategy.take_profit_pct}%)</p> : null}
+                  {!interpretedStrategy.stop_loss_pct && !interpretedStrategy.take_profit_pct ? (
+                    <p className="text-zinc-500">未設定固定停損/停利</p>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          )}
+          {interpretation.ai_mapped_conditions?.length > 0 && (
+            <div className="rounded border border-sky-500/30 bg-sky-500/10 px-3 py-2">
+              <div className="text-xs font-medium text-sky-200">AI 補充解析的條件</div>
+              <div className="mt-2 space-y-1 text-sm text-sky-100">
+                {interpretation.ai_mapped_conditions.map((condition) => {
+                  const item = capabilityMap.get(condition)
+                  return <p key={condition}>- {item ? item.label : condition}</p>
+                })}
+              </div>
+            </div>
+          )}
           {interpretation.unsupported_conditions.length > 0 && (
             <div className="rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2">
               <div className="text-xs font-medium text-amber-200">目前不支援的條件</div>
@@ -278,6 +365,32 @@ export default function BacktestPanel({ stockId }: Props) {
                 {interpretation.warnings.map((warning) => (
                   <p key={warning}>- {warning}</p>
                 ))}
+              </div>
+            </div>
+          )}
+          {capabilities && (
+            <div className="rounded border border-zinc-700 bg-zinc-900/40 px-3 py-3">
+              <div className="text-xs font-medium text-zinc-200">目前可判讀的條件 catalog</div>
+              <div className="mt-2 grid gap-3 lg:grid-cols-2">
+                <div>
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">Indicators</div>
+                  <div className="mt-2 space-y-1 text-xs text-zinc-300">
+                    {capabilities.indicators.slice(0, 8).map((item) => (
+                      <p key={item.id}>- {item.label}</p>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">Risk Controls</div>
+                  <div className="mt-2 space-y-1 text-xs text-zinc-300">
+                    {capabilities.risk_controls.map((item) => (
+                      <p key={item.id}>- {item.label}</p>
+                    ))}
+                    {capabilities.notes.slice(0, 2).map((note) => (
+                      <p key={note} className="text-zinc-500">- {note}</p>
+                    ))}
+                  </div>
+                </div>
               </div>
             </div>
           )}
@@ -363,6 +476,69 @@ export default function BacktestPanel({ stockId }: Props) {
                   <div className="text-zinc-500">Alpha</div>
                   <div className="mt-1 font-mono text-zinc-200">{formatPct(result.metrics.excess_return_pct)}</div>
                 </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid gap-3 lg:grid-cols-2">
+            <div className="rounded-md border border-zinc-700 bg-zinc-800/60 px-3 py-3">
+              <div className="text-sm font-medium text-zinc-100">Summary</div>
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                {[
+                  { label: "期末資產", value: formatCurrency(result.metrics.ending_equity) },
+                  { label: "Buy & Hold", value: formatPct(result.metrics.benchmark_return_pct) },
+                  { label: "Alpha", value: formatPct(result.metrics.excess_return_pct) },
+                  { label: "平均每筆報酬", value: formatPct(result.metrics.avg_trade_return_pct) },
+                  { label: "平均持有天數", value: `${result.metrics.avg_holding_days.toFixed(1)} 天` },
+                  { label: "獲利因子", value: result.metrics.profit_factor != null ? formatRatio(result.metrics.profit_factor) : "—" },
+                  { label: "平均獲利", value: result.metrics.avg_gain_pct != null ? formatPct(result.metrics.avg_gain_pct) : "—" },
+                  { label: "平均虧損", value: result.metrics.avg_loss_pct != null ? formatPct(result.metrics.avg_loss_pct) : "—" },
+                ].map((item) => (
+                  <div key={item.label} className="rounded bg-zinc-900/60 px-3 py-2">
+                    <div className="text-[10px] text-zinc-500">{item.label}</div>
+                    <div className="mt-1 font-mono text-sm text-zinc-200">{item.value}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="rounded-md border border-zinc-700 bg-zinc-800/60 px-3 py-3">
+              <div className="text-sm font-medium text-zinc-100">Performance Analysis</div>
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <div className="rounded bg-zinc-900/60 px-3 py-2">
+                  <div className="text-[10px] text-zinc-500">最大連續獲利</div>
+                  <div className="mt-1 font-mono text-sm text-zinc-200">{formatTimes(result.metrics.max_consecutive_wins)}</div>
+                </div>
+                <div className="rounded bg-zinc-900/60 px-3 py-2">
+                  <div className="text-[10px] text-zinc-500">最大連續虧損</div>
+                  <div className="mt-1 font-mono text-sm text-zinc-200">{formatTimes(result.metrics.max_consecutive_losses)}</div>
+                </div>
+              </div>
+
+              <div className="mt-3 grid gap-2 xl:grid-cols-3">
+                {[
+                  { title: "月度報酬", items: monthlyPreview },
+                  { title: "季度報酬", items: quarterlyPreview },
+                  { title: "年度報酬", items: yearlyPreview },
+                ].map((section) => (
+                  <div key={section.title} className="rounded bg-zinc-900/60 px-3 py-3">
+                    <div className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">{section.title}</div>
+                    <div className="mt-2 flex flex-col gap-1">
+                      {section.items.length === 0 ? (
+                        <p className="text-xs text-zinc-500">目前沒有可顯示資料</p>
+                      ) : (
+                        section.items.map((item) => (
+                          <div key={item.period} className="flex items-center justify-between text-xs">
+                            <span className="text-zinc-400">{item.period}</span>
+                            <span className={`font-mono ${item.return_pct >= 0 ? "text-red-400" : "text-green-400"}`}>
+                              {formatPct(item.return_pct)}
+                            </span>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
           </div>

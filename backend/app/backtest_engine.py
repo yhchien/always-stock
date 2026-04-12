@@ -12,11 +12,17 @@ from typing import Dict, List, Optional
 class BacktestDay:
     trade_date: date
     open_price: Optional[float]
+    high_price: Optional[float]
+    low_price: Optional[float]
     close_price: float
     volume: float
     foreign_net_shares: float
     trust_net_shares: float
     dealer_net_shares: float
+
+
+# 使用美股慣例 252，與主流回測框架（Zipline、Backtrader）對齊；台股實際約 245 天。
+_TRADING_DAYS_PER_YEAR = 252
 
 
 def _rolling_mean(values: List[float], window: int, index: int) -> Optional[float]:
@@ -32,6 +38,36 @@ def _consecutive_positive(values: List[float], index: int, days: int) -> bool:
     return all(value > 0 for value in values[index - days + 1 : index + 1])
 
 
+def _consecutive_negative(values: List[float], index: int, days: int) -> bool:
+    if index + 1 < days:
+        return False
+    return all(value < 0 for value in values[index - days + 1 : index + 1])
+
+
+def _crosses_above(short_values: List[float], long_values: List[float], short_window: int, long_window: int, index: int) -> bool:
+    if index < 1:
+        return False
+    prev_short = _rolling_mean(short_values, short_window, index - 1)
+    prev_long = _rolling_mean(long_values, long_window, index - 1)
+    curr_short = _rolling_mean(short_values, short_window, index)
+    curr_long = _rolling_mean(long_values, long_window, index)
+    if None in {prev_short, prev_long, curr_short, curr_long}:
+        return False
+    return prev_short <= prev_long and curr_short > curr_long
+
+
+def _crosses_below(short_values: List[float], long_values: List[float], short_window: int, long_window: int, index: int) -> bool:
+    if index < 1:
+        return False
+    prev_short = _rolling_mean(short_values, short_window, index - 1)
+    prev_long = _rolling_mean(long_values, long_window, index - 1)
+    curr_short = _rolling_mean(short_values, short_window, index)
+    curr_long = _rolling_mean(long_values, long_window, index)
+    if None in {prev_short, prev_long, curr_short, curr_long}:
+        return False
+    return prev_short >= prev_long and curr_short < curr_long
+
+
 def _evaluate_rule(rule: Dict, series: Dict[str, List[float]], index: int) -> bool:
     indicator = rule["indicator"]
     params = rule["params"]
@@ -44,9 +80,43 @@ def _evaluate_rule(rule: Dict, series: Dict[str, List[float]], index: int) -> bo
         moving_average = _rolling_mean(series["close"], params["window"], index)
         return moving_average is not None and series["close"][index] < moving_average
 
+    if indicator == "ma_golden_cross":
+        return _crosses_above(
+            series["close"],
+            series["close"],
+            params["short_window"],
+            params["long_window"],
+            index,
+        )
+
+    if indicator == "ma_dead_cross":
+        return _crosses_below(
+            series["close"],
+            series["close"],
+            params["short_window"],
+            params["long_window"],
+            index,
+        )
+
+    if indicator == "close_breakout_high":
+        window = params["window"]
+        if index < window:
+            return False
+        return series["close"][index] > max(series["high"][index - window : index])
+
+    if indicator == "close_breakdown_low":
+        window = params["window"]
+        if index < window:
+            return False
+        return series["close"][index] < min(series["low"][index - window : index])
+
     if indicator == "volume_above_ma":
         moving_average = _rolling_mean(series["volume"], params["window"], index)
         return moving_average is not None and series["volume"][index] > moving_average
+
+    if indicator == "volume_ratio_above_ma":
+        moving_average = _rolling_mean(series["volume"], params["window"], index)
+        return moving_average is not None and moving_average > 0 and series["volume"][index] > moving_average * float(params["ratio"])
 
     if indicator == "foreign_consecutive_buy":
         return _consecutive_positive(series["foreign"], index, params["days"])
@@ -57,6 +127,24 @@ def _evaluate_rule(rule: Dict, series: Dict[str, List[float]], index: int) -> bo
     if indicator == "dealer_consecutive_buy":
         return _consecutive_positive(series["dealer"], index, params["days"])
 
+    if indicator == "foreign_consecutive_sell":
+        return _consecutive_negative(series["foreign"], index, params["days"])
+
+    if indicator == "trust_consecutive_sell":
+        return _consecutive_negative(series["trust"], index, params["days"])
+
+    if indicator == "dealer_consecutive_sell":
+        return _consecutive_negative(series["dealer"], index, params["days"])
+
+    if indicator == "foreign_net_positive":
+        return series["foreign"][index] > 0
+
+    if indicator == "trust_net_positive":
+        return series["trust"][index] > 0
+
+    if indicator == "dealer_net_positive":
+        return series["dealer"][index] > 0
+
     if indicator == "foreign_net_negative":
         return series["foreign"][index] < 0
 
@@ -65,6 +153,12 @@ def _evaluate_rule(rule: Dict, series: Dict[str, List[float]], index: int) -> bo
 
     if indicator == "dealer_net_negative":
         return series["dealer"][index] < 0
+
+    if indicator == "all_inst_net_positive":
+        return (series["foreign"][index] + series["trust"][index] + series["dealer"][index]) > 0
+
+    if indicator == "all_inst_net_negative":
+        return (series["foreign"][index] + series["trust"][index] + series["dealer"][index]) < 0
 
     raise ValueError(f"Unsupported indicator: {indicator}")
 
@@ -81,6 +175,18 @@ def _format_reason(triggered_rules: List[str]) -> str:
     return "、".join(triggered_rules)
 
 
+def _max_trade_streak(trades: List[Dict], predicate) -> int:
+    best = 0
+    current = 0
+    for trade in trades:
+        if predicate(trade):
+            current += 1
+            best = max(best, current)
+        else:
+            current = 0
+    return best
+
+
 def summarize_dataset_warnings(days: List[BacktestDay], strategy: Dict) -> List[str]:
     warnings = []
     missing_open_days = sum(1 for day in days if day.open_price is None)
@@ -91,9 +197,16 @@ def summarize_dataset_warnings(days: List[BacktestDay], strategy: Dict) -> List[
     for rule in strategy.get("entry_rules", []) + strategy.get("exit_rules", []):
         indicator = rule.get("indicator")
         params = rule.get("params", {})
-        if indicator in {"close_above_ma", "close_below_ma", "volume_above_ma"}:
+        if indicator in {"close_above_ma", "close_below_ma", "volume_above_ma", "volume_ratio_above_ma"}:
             max_lookback = max(max_lookback, int(params.get("window", 1)))
-        if indicator in {"foreign_consecutive_buy", "trust_consecutive_buy", "dealer_consecutive_buy"}:
+        if indicator in {"close_breakout_high", "close_breakdown_low"}:
+            max_lookback = max(max_lookback, int(params.get("window", 1)) + 1)
+        if indicator in {"ma_golden_cross", "ma_dead_cross"}:
+            max_lookback = max(max_lookback, int(params.get("long_window", 1)) + 1)
+        if indicator in {
+            "foreign_consecutive_buy", "trust_consecutive_buy", "dealer_consecutive_buy",
+            "foreign_consecutive_sell", "trust_consecutive_sell", "dealer_consecutive_sell",
+        }:
             max_lookback = max(max_lookback, int(params.get("days", 1)))
 
     if len(days) < max_lookback:
@@ -110,6 +223,8 @@ def run_backtest(days: List[BacktestDay], strategy: Dict) -> Dict:
 
     series = {
         "close": [day.close_price for day in days],
+        "high": [day.high_price if day.high_price is not None else day.close_price for day in days],
+        "low": [day.low_price if day.low_price is not None else day.close_price for day in days],
         "volume": [day.volume or 0.0 for day in days],
         "foreign": [day.foreign_net_shares for day in days],
         "trust": [day.trust_net_shares for day in days],
@@ -134,6 +249,8 @@ def run_backtest(days: List[BacktestDay], strategy: Dict) -> Dict:
         "action": "wait",
         "reason": "最新交易日沒有新的進出場訊號。",
     }
+    stop_loss_pct = strategy.get("stop_loss_pct")
+    take_profit_pct = strategy.get("take_profit_pct")
 
     for index, day in enumerate(days):
         if pending_action == "buy" and shares == 0:
@@ -191,9 +308,16 @@ def run_backtest(days: List[BacktestDay], strategy: Dict) -> Dict:
 
         entry_results = [_evaluate_rule(rule, series, index) for rule in strategy["entry_rules"]]
         exit_results = [_evaluate_rule(rule, series, index) for rule in strategy["exit_rules"]]
+        risk_exit_reasons = []
+        if shares > 0 and position_entry_price:
+            pnl_pct = ((day.close_price / position_entry_price) - 1) * 100
+            if stop_loss_pct is not None and pnl_pct <= -float(stop_loss_pct):
+                risk_exit_reasons.append(f"stop_loss_{float(stop_loss_pct):g}pct")
+            if take_profit_pct is not None and pnl_pct >= float(take_profit_pct):
+                risk_exit_reasons.append(f"take_profit_{float(take_profit_pct):g}pct")
 
         entry_triggered = _evaluate_logic(entry_results, strategy["entry_logic"])
-        exit_triggered = _evaluate_logic(exit_results, strategy["exit_logic"])
+        exit_triggered = _evaluate_logic(exit_results, strategy["exit_logic"]) or bool(risk_exit_reasons)
 
         if index < len(days) - 1:
             if shares == 0 and pending_action is None and entry_triggered:
@@ -204,7 +328,7 @@ def run_backtest(days: List[BacktestDay], strategy: Dict) -> Dict:
             elif shares > 0 and pending_action is None and exit_triggered:
                 pending_action = "sell"
                 pending_reason = _format_reason(
-                    [rule["indicator"] for rule, ok in zip(strategy["exit_rules"], exit_results) if ok]
+                    [rule["indicator"] for rule, ok in zip(strategy["exit_rules"], exit_results) if ok] + risk_exit_reasons
                 )
 
         if index == len(days) - 1:
@@ -218,7 +342,7 @@ def run_backtest(days: List[BacktestDay], strategy: Dict) -> Dict:
                 latest_recommendation = {
                     "latest_signal_date": day.trade_date.isoformat(),
                     "action": "observe_sell",
-                    "reason": "最新交易日觸發出場條件，下一交易日可觀察賣出。",
+                    "reason": "最新交易日觸發出場條件或風控條件，下一交易日可觀察賣出。",
                 }
             elif shares > 0:
                 latest_recommendation = {
@@ -245,7 +369,7 @@ def run_backtest(days: List[BacktestDay], strategy: Dict) -> Dict:
     if daily_returns:
         volatility = pstdev(daily_returns)
         if volatility > 0:
-            sharpe_ratio = (mean(daily_returns) / volatility) * math.sqrt(252)
+            sharpe_ratio = (mean(daily_returns) / volatility) * math.sqrt(_TRADING_DAYS_PER_YEAR)
 
     winning_trades = [trade for trade in trades if trade["return_pct"] > 0]
     losing_trades = [trade for trade in trades if trade["return_pct"] <= 0]
@@ -255,8 +379,10 @@ def run_backtest(days: List[BacktestDay], strategy: Dict) -> Dict:
     benchmark_return_pct = ((days[-1].close_price / days[0].close_price) - 1) * 100
     avg_trade_return_pct = mean([trade["return_pct"] for trade in trades]) if trades else 0.0
     avg_holding_days = mean([trade["holding_days"] for trade in trades]) if trades else 0.0
-    avg_gain_pct = mean([trade["return_pct"] for trade in winning_trades]) if winning_trades else 0.0
-    avg_loss_pct = mean([trade["return_pct"] for trade in losing_trades]) if losing_trades else 0.0
+    avg_gain_pct = mean([trade["return_pct"] for trade in winning_trades]) if winning_trades else None
+    avg_loss_pct = mean([trade["return_pct"] for trade in losing_trades]) if losing_trades else None
+    max_consecutive_wins = _max_trade_streak(trades, lambda trade: trade["return_pct"] > 0)
+    max_consecutive_losses = _max_trade_streak(trades, lambda trade: trade["return_pct"] <= 0)
 
     def _compress_period_returns(bucket: Dict[str, List[float]]) -> List[Dict]:
         return [
@@ -280,9 +406,11 @@ def run_backtest(days: List[BacktestDay], strategy: Dict) -> Dict:
             "excess_return_pct": round(total_return_pct - benchmark_return_pct, 4),
             "avg_trade_return_pct": round(avg_trade_return_pct, 4),
             "avg_holding_days": round(avg_holding_days, 2),
-            "profit_factor": round(gross_profit / gross_loss, 4) if gross_loss > 0 else 0.0,
-            "avg_gain_pct": round(avg_gain_pct, 4),
-            "avg_loss_pct": round(avg_loss_pct, 4),
+            "profit_factor": round(gross_profit / gross_loss, 4) if gross_loss > 0 else None,
+            "avg_gain_pct": round(avg_gain_pct, 4) if avg_gain_pct is not None else None,
+            "avg_loss_pct": round(avg_loss_pct, 4) if avg_loss_pct is not None else None,
+            "max_consecutive_wins": max_consecutive_wins,
+            "max_consecutive_losses": max_consecutive_losses,
         },
         "equity_curve": equity_curve,
         "period_returns": {

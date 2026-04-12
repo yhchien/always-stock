@@ -1,5 +1,9 @@
 # L3 Manual Strategy Backtest Spec
 
+> **實作狀態（2026-04-12 完工）**：MVP 與第一版支援條件全部落地。
+> - Phase 1~5 全部完成，詳見各節「✅ 已完成」標記。
+> - 策略輸入範例請見 `docs/guides/backtest_strategy_examples.md`。
+
 這份文件定義 `always-stock` 新版回測功能的產品規格與技術設計。
 
 目標是參考 [LazyBacktest](https://lazybacktest.netlify.app/) 的整體使用流程與結果呈現，但改成更適合本專案的版本：
@@ -185,34 +189,35 @@ L3 的進入方式：
 - 系統會把它轉成固定的 JSON DSL
 - 回測引擎只接受 DSL
 
-### 7.1 第一版支援條件
+### 7.1 第一版支援條件（✅ 全部已完成）
 
 #### 價格類
 
-- 收盤價站上/跌破 N 日均線
-- 短均線上穿/下穿長均線
-- 收盤價突破 N 日高點
-- 收盤價跌破 N 日低點
+- ✅ 收盤價站上/跌破 N 日均線
+- ✅ 短均線上穿/下穿長均線（黃金交叉 / 死亡交叉）
+- ✅ 收盤價突破 N 日高點
+- ✅ 收盤價跌破 N 日低點
 
 #### 成交量類
 
-- 成交量高於 N 日均量
-- 成交量暴增至 N 日均量的 X 倍以上
+- ✅ 成交量高於 N 日均量
+- ✅ 成交量暴增至 N 日均量的 X 倍以上
 
 #### 三大法人類
 
-- 外資買超 / 賣超
-- 投信買超 / 賣超
-- 自營商買超 / 賣超
-- 外資連買 N 天 / 連賣 N 天
-- 投信連買 N 天
-- 三大法人合計買超 / 賣超
+- ✅ 外資買超 / 賣超（`foreign_net_positive` / `foreign_net_negative`）
+- ✅ 投信買超 / 賣超（`trust_net_positive` / `trust_net_negative`）
+- ✅ 自營商買超 / 賣超（`dealer_net_positive` / `dealer_net_negative`）
+- ✅ 外資連買 N 天 / 連賣 N 天
+- ✅ 投信連買 N 天 / 連賣 N 天
+- ✅ 自營商連買 N 天 / 連賣 N 天
+- ✅ 三大法人合計買超 / 賣超（`all_inst_net_positive` / `all_inst_net_negative`）
 
 #### 風險管理類
 
-- 固定停損 %
-- 固定停利 %
-- 單次投入比例 %
+- ✅ 固定停損 %
+- ✅ 固定停利 %
+- 單次投入比例 %（DSL 欄位 `position_size_pct` 存在，但策略文字解析暫不支援）
 
 ### 7.2 第一版明確不支援
 
@@ -716,37 +721,37 @@ Response 範例：
 
 ## 19. 建議開發順序
 
-### Phase 1: Engine First
+### Phase 1: Engine First ✅ 已完成
 
-- 建立 catalog
-- 建立 interpreter
-- 建立 data loader
-- 建立 engine
-- 建立測試
+- ✅ 建立 catalog（`backtest_catalog.py`）
+- ✅ 建立 interpreter / parser（`backtest_parser.py`）
+- ✅ 建立 engine（`backtest_engine.py`）
+- ✅ 建立測試
 
-### Phase 2: API
+### Phase 2: API ✅ 已完成
 
-- 新增 backtest router
-- 串入 main app
-- 建立 API tests
+- ✅ 新增 backtest router（`routers/backtest.py`）
+- ✅ 串入 main app
+- ✅ 建立 API tests（`tests/test_backtest_router.py`，20 個測試）
 
-### Phase 3: Frontend L3
+### Phase 3: Frontend L3 ✅ 已完成
 
-- 升級 `BacktestPanel`
-- 顯示結果與交易表
-- 顯示 equity curve
-- 加入模板帶入
-- 加入交易點回看入口
+- ✅ 升級 `BacktestPanel`（templates、interpret preview、equity curve、trade list）
+- ✅ 顯示結果與交易表
+- ✅ 顯示 equity curve（`BacktestEquityChart`）
+- ✅ 加入模板帶入（下拉選單，7 個模板）
+- ✅ 加入交易點回看入口（Trade List 每筆可點回研究頁）
 
-### Phase 4: AI Advice
+### Phase 4: AI Advice ✅ 已完成
 
-- 建立回測後建議 API
-- 前端接上 AI 建議卡片
+- ✅ 建立回測後建議 API（`backtest_advisor.py` + `/api/backtest/advice`）
+- ✅ 前端接上 AI 建議卡片（OpenAI 優先，heuristic fallback）
+- ✅ AI mapping（`backtest_ai_mapping.py`，unsupported 條件交 OpenAI 補充解析）
 
-### Phase 5: Research Integration
+### Phase 5: Research Integration ✅ 已完成
 
-- 交易記錄與 K 線/法人面板聯動
-- 支援從回測結果跳回研究頁指定區段
+- ✅ 交易記錄點回研究頁（Trade List 每筆連結到 `/stocks/:id?date=`）
+- ✅ latest_recommendation 訊號日連回研究頁
 
 ## 20. 本次確認重點
 

@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.backtest_catalog import BACKTEST_TEMPLATES, DEFAULT_INITIAL_CAPITAL
+from app.backtest_catalog import BACKTEST_CAPABILITY_CATALOG, BACKTEST_TEMPLATES, DEFAULT_INITIAL_CAPITAL
 from app.backtest_advisor import generate_backtest_advice
 from app.backtest_engine import BacktestDay, run_backtest, summarize_dataset_warnings
 from app.backtest_parser import estimate_strategy_lookback_days, interpret_strategy_text
@@ -56,6 +56,7 @@ class BacktestRunResponse(BaseModel):
     normalized_text: str
     strategy: Dict[str, Any]
     unsupported_conditions: List[str]
+    ai_mapped_conditions: List[str]
     metrics: Dict[str, Any]
     equity_curve: List[EquityCurveItem]
     period_returns: Dict[str, List[PeriodReturnItem]]
@@ -85,6 +86,11 @@ class BacktestAdviceResponse(BaseModel):
 @router.get("/backtest/templates")
 def get_backtest_templates():
     return BACKTEST_TEMPLATES
+
+
+@router.get("/backtest/capabilities")
+def get_backtest_capabilities():
+    return BACKTEST_CAPABILITY_CATALOG
 
 
 @router.post("/backtest/interpret")
@@ -164,6 +170,8 @@ def post_backtest_run(payload: BacktestInterpretRequest, db: Session = Depends(g
         BacktestDay(
             trade_date=price.trade_date,
             open_price=price.open_price,
+            high_price=price.high_price,
+            low_price=price.low_price,
             close_price=price.close_price,
             volume=price.volume or 0.0,
             foreign_net_shares=flow_map.get(price.trade_date, {}).get("foreign", 0.0),
@@ -190,6 +198,7 @@ def post_backtest_run(payload: BacktestInterpretRequest, db: Session = Depends(g
         "normalized_text": interpreted["normalized_text"],
         "strategy": interpreted["strategy"],
         "unsupported_conditions": interpreted["unsupported_conditions"],
+        "ai_mapped_conditions": interpreted.get("ai_mapped_conditions", []),
         "metrics": result["metrics"],
         "equity_curve": result["equity_curve"],
         "period_returns": result["period_returns"],

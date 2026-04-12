@@ -175,7 +175,33 @@
   - strategy preview loading state
   - advice loading skeleton
   - partial-support preview
-- 目前尚未完成：
-  - 更多 DSL 條件（停損停利、突破高低點、均線交叉等）
-  - 完整 summary / period analysis
-  - 動態資料 / runtime fetch / AI mapping 流程
+- 已完成（2026-04-12 全部完工，對齊 docs/plans/l3_manual_strategy_backtest_spec.md）：
+  - DSL 條件：停損停利、均線交叉、突破高低點、volume_ratio（倍數量能）
+  - 三大法人完整支援：net_positive / net_negative、consecutive_buy / consecutive_sell、all_inst_net
+  - 完整 summary / period analysis（月/季/年度報酬）
+  - AI mapping 流程（backtest_ai_mapping.py 接入 interpret，回傳 ai_mapped_conditions）
+  - 前端顯示 AI 補充解析來源標記（天藍色提示區塊）
+  - strategy templates 7 個，對齊 spec 15.1.1：4 個核心 + 3 個延伸
+  - 使用範例文件：docs/guides/backtest_strategy_examples.md
+
+## 回測引擎設計規範（2026-04-12 整理）
+
+### normalized_text 生成方式
+- 必須從解析後的 `entry_rules`/`exit_rules` AST 重建，不可用 naive `str.replace()` 修改原文
+- 由 `backtest_parser._rule_to_text(rule)` 負責 rule → 可讀文字的映射
+- 停損/停利附加在 exit 段尾端（不可混入 entry 段）
+
+### 語義正確性
+- `profit_factor`：無虧損交易時應回傳 `None`（不是 `0.0`）
+- `avg_gain_pct`：無獲利交易時應回傳 `None`
+- `avg_loss_pct`：無虧損交易時應回傳 `None`
+- 前端顯示 `null` 時用 `—` 代替，不可直接 `toFixed()`
+
+### Sharpe Ratio 年化係數
+- 使用 `_TRADING_DAYS_PER_YEAR = 252`（美股慣例，與 Zipline/Backtrader 對齊）
+- 台股實際約 245 天，但改動會影響可比性，暫不修改
+
+### 前端預設值
+- `startDate` 預設為台北時區一年前，使用 `Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei" })`
+- 不可用 `new Date().toISOString()` 或寫死日期字串
+- 策略文字預設值由後端 `/api/backtest/templates` 第一筆決定，前端不另存常數

@@ -75,6 +75,19 @@ export interface BacktestTemplate {
   strategy_text: string
 }
 
+export interface BacktestCapabilityItem {
+  id: string
+  category?: string
+  label: string
+  examples: string[]
+}
+
+export interface BacktestCapabilityCatalog {
+  indicators: BacktestCapabilityItem[]
+  risk_controls: BacktestCapabilityItem[]
+  notes: string[]
+}
+
 export interface BacktestRunRequest {
   stock_id: string
   start_date: string
@@ -88,6 +101,7 @@ export interface BacktestInterpretResponse {
   normalized_text: string
   strategy: Record<string, unknown>
   unsupported_conditions: string[]
+  ai_mapped_conditions: string[]
   warnings: string[]
 }
 
@@ -103,9 +117,11 @@ export interface BacktestMetricSummary {
   excess_return_pct: number
   avg_trade_return_pct: number
   avg_holding_days: number
-  profit_factor: number
-  avg_gain_pct: number
-  avg_loss_pct: number
+  profit_factor: number | null
+  avg_gain_pct: number | null
+  avg_loss_pct: number | null
+  max_consecutive_wins: number
+  max_consecutive_losses: number
 }
 
 export interface BacktestEquityPoint {
@@ -135,6 +151,7 @@ export interface BacktestRunResponse {
   normalized_text: string
   strategy: Record<string, unknown>
   unsupported_conditions: string[]
+  ai_mapped_conditions: string[]
   metrics: BacktestMetricSummary
   equity_curve: BacktestEquityPoint[]
   period_returns: {
@@ -257,6 +274,14 @@ export async function fetchBacktestTemplates(options?: FetchOptions): Promise<Ba
     signal: options?.signal,
   })
   if (!res.ok) throw new Error(await buildErrorMessage(res, "Failed to fetch backtest templates"))
+  return res.json()
+}
+
+export async function fetchBacktestCapabilities(options?: FetchOptions): Promise<BacktestCapabilityCatalog> {
+  const res = await fetch(`${API_BASE}/api/backtest/capabilities`, {
+    signal: options?.signal,
+  })
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "Failed to fetch backtest capabilities"))
   return res.json()
 }
 

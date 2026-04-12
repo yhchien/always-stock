@@ -1,5 +1,6 @@
 import {
   fetchBacktestAdvice,
+  fetchBacktestCapabilities,
   interpretBacktest,
   fetchBacktestTemplates,
   fmtAmount,
@@ -217,6 +218,25 @@ describe("fetchBacktestTemplates", () => {
   })
 })
 
+describe("fetchBacktestCapabilities", () => {
+  afterEach(() => jest.restoreAllMocks())
+
+  it("returns parsed capability catalog", async () => {
+    const mockData = {
+      indicators: [{ id: "close_above_ma", category: "price", label: "收盤價站上 N 日均線", examples: ["收盤價站上20日均線"] }],
+      risk_controls: [{ id: "stop_loss_pct", label: "固定停損", examples: ["停損8%"] }],
+      notes: ["note"],
+    }
+    jest.spyOn(global, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => mockData,
+    } as Response)
+
+    const result = await fetchBacktestCapabilities()
+    expect(result).toEqual(mockData)
+  })
+})
+
 describe("runBacktest", () => {
   afterEach(() => jest.restoreAllMocks())
 
@@ -258,7 +278,7 @@ describe("interpretBacktest", () => {
     }
     const mockFetch = jest.spyOn(global, "fetch").mockResolvedValue({
       ok: true,
-      json: async () => ({ supported: true, normalized_text: "demo", strategy: {}, unsupported_conditions: [], warnings: [] }),
+      json: async () => ({ supported: true, normalized_text: "demo", strategy: {}, unsupported_conditions: [], ai_mapped_conditions: [], warnings: [] }),
     } as Response)
 
     await interpretBacktest(payload)
@@ -314,6 +334,8 @@ describe("fetchBacktestAdvice", () => {
         profit_factor: 1.2,
         avg_gain_pct: 2,
         avg_loss_pct: -1,
+        max_consecutive_wins: 2,
+        max_consecutive_losses: 1,
       },
       trades: [],
       latest_recommendation: {
