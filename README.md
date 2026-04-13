@@ -61,6 +61,62 @@ npm run dev
 
 本地模式直接讀取 `backend/db/tw_stock.db`，不需要任何雲端服務。
 
+## Claude Code 帳號切換
+
+專案支援用 `direnv` 在本地自動切換 Claude Code 帳號。無需手動管理環境變數，指令一下自動切換。
+
+### 前置設定（只需做一次）
+
+1. **安裝 direnv**（已包含在開發環境中）
+
+2. **將 direnv hook 加入 shell 配置**
+
+   在 `~/.zshrc` 或 `~/.bashrc` 最後加入：
+   ```bash
+   eval "$(direnv hook bash)"    # if using bash
+   eval "$(direnv hook zsh)"     # if using zsh
+   ```
+
+   重開 terminal 或 `source ~/.zshrc` 使設定生效。
+
+3. **第一次進入專案時，允許 direnv**
+
+   ```bash
+   cd /Users/brian.yh.chien/.gstack/projects/always-stock
+   direnv allow
+   ```
+
+### 使用方式
+
+切換到帳號 **a** (brian780223@gmail.com，預設帳號，不加載環境變數)：
+```bash
+./scripts/switch-claude-account.sh a
+```
+
+切換到帳號 **b** (hsuan4store@gmail.com，自動加载環境變數)：
+```bash
+./scripts/switch-claude-account.sh b
+```
+
+也支援別名：
+```bash
+./scripts/switch-claude-account.sh brian         # 切換 a
+./scripts/switch-claude-account.sh hsuan         # 切換 b
+./scripts/switch-claude-account.sh brian780223@gmail.com
+./scripts/switch-claude-account.sh hsuan4store@gmail.com
+```
+
+#### 切換後會發生什麼
+
+- 指定帳號 **a** → direnv 卸載所有 Claude 環境變數 → Claude Code 自動使用預設帳號
+- 指定帳號 **b** → direnv 加載 hsuan 的環境變數 → Claude Code 自動切換到 hsuan4store@gmail.com
+
+### 設定檔說明
+
+- `.envrc` — direnv 主配置檔，根據 `.direnv_account` 加載 / 卸載環境變數
+- `.direnv_account` — 狀態檔（記錄當前帳號），不被版本控制
+- `.envdir/` — 帳號環境變數目錄（不被版本控制）
+
 ---
 
 ## 資料表
@@ -98,9 +154,9 @@ npm run dev
 | M8 | 財報資料庫 | ⬜ |
 | M9 | AI 籌碼分析（OpenAI GPT） | ✅ |
 | M10 | 雲端部署（Render + Vercel） | ✅ |
-| M11 | 回測程式 | ⬜ |
-| M12 | 自然語言策略輸入 | ⬜ |
-| M13 | 關鍵券商分點 | ✅ |
+| M11 | 回測程式（含 DSL + AI mapping） | ✅ |
+| M12 | 自然語言策略優化 | ⬜ |
+| M13 | 關鍵券商分點（FinMind 資料切換） | 🔄 進行中 |
 | M14 | LLM 輿情分析 | ⬜ |
 | M15 | Telegram 電子報 | ⬜ |
 

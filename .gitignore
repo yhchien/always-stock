@@ -1,7 +1,12 @@
 # Environment & secrets
 .env
 backend/.env
+backend/.env.finmind
 frontend/.env.local
+.envdir/
+.direnv/
+.direnv_account
+.envrc
 
 # Python
 __pycache__/

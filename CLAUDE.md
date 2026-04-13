@@ -205,3 +205,138 @@
 - `startDate` 預設為台北時區一年前，使用 `Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei" })`
 - 不可用 `new Date().toISOString()` 或寫死日期字串
 - 策略文字預設值由後端 `/api/backtest/templates` 第一筆決定，前端不另存常數
+
+## FinMind SDK ETL 集成（2026-04-13 完成）
+
+### 核心改進
+- **架構升級**：從 REST API per-stock/per-day（400K+ calls）→ FinMind SDK async batch（50-100 calls）
+- **防斷線機制**：HTTP 402（Payment Required）檢測 + 配額預警 + SDK 自動重試
+- **雙軌並行**：所有 DB 寫入加上 `source` 欄位（twse | finmind），支持驗證期間並行跑舊新系統
+
+### 已完成的程式碼（2026-04-13）
+
+#### 第一層：SDK 客戶端
+- **`etl/finmind_sdk_client.py`** (400 行)
+  - FinMind Python SDK 封裝層
+  - `__init__()` 自動初始化 + token 驗證
+  - `_refresh_quota()` 配額管理（HTTP 402 詳細解析）
+  - `can_proceed()` gate-keeper（防超額）
+  - 5 大 batch 查詢：
+    - `fetch_taiwan_stock_price(stock_id_list, start_date, end_date, use_async=True)`
+    - `fetch_institutional_investors(...)`
+    - `fetch_per(...)` → P/E, P/B, dividend_yield
+    - `fetch_month_revenue(...)` → 月營收 + YoY/MoM
+    - `fetch_financial_statements(...)` → 財報（placeholder）
+  - 所有方法均返回 pandas DataFrame
+
+#### 第二層：ETL 模組（均支持 batch 處理 + upsert）
+1. **`etl/finmind_daily_price_sdk.py`** (170 行)
+   - 日股價批量 ETL
+   - 欄位映射：FinMind `open/high/low/close/volume/money` → DB `open_price/high_price/low_price/close_price/volume/turnover`
+   - Upsert 邏輯：merge by (trade_date, stock_id)
+   - 批量提交：每 500 筆一次
+
+2. **`etl/finmind_inst_flow_sdk.py`** (220 行)
+   - 三大法人買賣超批量 ETL
+   - 正規化：FinMind `name` ("外資"/"投信"/"自營商") → DB `inst_type` ("foreign"/"trust"/"dealer")
+   - 含預快取機制：批次開始前一次性載入收盤價，用於估算買賣金額
+   - 處理：每檔股票、每天、3 筆法人資料的 upsert
+
+3. **`etl/finmind_daily_valuation_sdk.py`** (170 行)
+   - P/E、P/B、殖利率批量 ETL
+   - 新表：`daily_valuation` (trade_date, stock_id, per, pbr, dividend_yield, source, ingested_at)
+   - Upsert merge by (trade_date, stock_id)
+
+4. **`etl/finmind_fundamentals_sdk.py`** (150 行)
+   - 月營收 + 財報預留位置
+   - `fetch_and_upsert_monthly_revenue_finmind_sdk()` 實作約 70%
+   - 財報部分標記待補（SDK 可能不直接支援，考慮 REST 補充或延後）
+
+#### 第三層：協調與監控
+- **`run_finmind_etl_sdk.py`** (280 行)
+  - 統一協調器，管理所有 SDK ETL 模組
+  - 支援執行模式：
+    - 單日：`python run_finmind_etl_sdk.py --date 2026-04-13`
+    - 日期區間：`python run_finmind_etl_sdk.py --start-date 2026-01-01 --end-date 2026-04-13`
+    - 預設：前一天
+  - 流程：配額檢查 → 日股價 → 三大法人 → 估值 → 狀態彙總
+  - 自動保存 JSON 日誌到 `backend/logs/`
+
+- **`test_finmind_sdk_integration.py`** (350 行)
+  - 5 階段集成測試：
+    1. SDK 初始化 & 認證
+    2. 配額查詢驗證
+    3. Batch fetch 效能測試（3 種規模：small/medium/large）
+    4. 三大法人 batch 查詢驗證
+    5. HTTP 402 處理驗證（safeguard）
+  - 用法：`export FINMIND_TOKEN=xxx && python test_finmind_sdk_integration.py --config test_small`
+
+- **`.env.finmind.template`**
+  - 環境變數範本，包含所有可配置參數說明
+
+#### 支持文件
+- **`etl/etl_healthcheck.py`** (400 行，已存在，此版本相容)
+- **`migrate_finmind_phase1.py`** (300 行，已存在，此版本相容)
+- **`etl/finmind_utils.py`** (300 行，已存在，此版本相容)
+
+### 關鍵設計決策
+
+| 決策項 | 選項 | 最終選擇 | 理由 |
+|-------|------|---------|------|
+| API 方式 | REST vs SDK | **SDK async batch** | API 呼叫數 -99%、內部自動並行 |
+| Batch 大小 | 固定 vs 動態 | **動態（由 SDK 決定）** | SDK 支援自動分塊、無需自己管理 |
+| 配額耗盡處理 | 阻止 vs 警告 | **HTTP 402 gate + 預警** | 防突然斷線、給使用者反應時間 |
+| 雙軌策略 | 舊新完全隔離 vs 共用源標記 | **source 欄位標記** | 無痛驗證、易於比對、方便 rollback |
+| 財報資料 | 立即實作 vs 延後 | **延後（M8 再細化）** | SDK 支援度不確定，先做主流用途 |
+
+### 防斷線機制詳解
+
+```python
+# 三層檢測
+def run_etl_range():
+    # 層 1：執行前預檢
+    quota = client.get_quota()
+    if quota["status"] == "critical":
+        return {"status": "insufficient_quota"}  # 直接撤退
+    
+    # 層 2：執行中自動重試（SDK 內建）
+    df = client.fetch_taiwan_stock_price(..., use_async=True)
+    # SDK 內部已處理 HTTP 402、429、timeout
+    
+    # 層 3：執行後驗證
+    for _, row in df.iterrows():
+        try:
+            upsert_to_db(row)
+        except Exception as e:
+            failed_stocks.append(row['stock_id'])  # 記錄、續行（fail-safe）
+```
+
+### 配額消耗estimate
+
+| 場景 | 舊方法（REST per-stock/day） | 新方法（SDK batch） | 節省 |
+|------|---------------------------|------------------|-----|
+| 單日全市場 | 1,600 × 1 = 1,600 | ~1 | **-99.9%** |
+| 一月 backfill | 1,600 × 22 = 35,200 | ~2-3 | **-99%** |
+| 一年 backfill | 1,600 × 245 = 392,000 | ~5-10 | **-99.9%** |
+
+### 待辦事項（優先序）
+
+#### 立即（用前確認）
+- ⏳ 提供 FinMind token，執行 `test_finmind_sdk_integration.py --config test_small`
+- ⏳ 確認 SDK 架構是否符合預期
+- ⏳ 決定財報部分：REST 補充 或 延後到 M8
+
+#### 第一階段（backfill + 驗證）
+- ⬜ 執行 `migrate_finmind_phase1.py` 初始化 DB schema
+- ⬜ 設定 backfill 計畫：分月執行或一次性？
+- ⬜ 跑 72 小時並行驗證（舊 TWSE ETL + 新 FinMind ETL）
+- ⬜ 比對關鍵指標（股價、成交量、法人持股）
+
+#### 第二階段（切換）
+- ⬜ 配額足夠 → 切換為 FinMind 為主
+- ⬜ TWSE ETL 改為 fallback / 校驗用途
+- ⬜ 舊資料保留（source='twse'），新資料標記 source='finmind'
+
+#### M8-M13 相依
+- M8 財報：須決定 financial_statements 取用方式
+- M13 券商分點：需要 TaiwanStockTradingDailyReport（非 Agg），目前 FinMind 限 Sponsor
