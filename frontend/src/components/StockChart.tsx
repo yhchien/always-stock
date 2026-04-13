@@ -49,6 +49,9 @@ interface Props {
   chartHeight?: string
 }
 
+// 永遠載入全量資料，用 dataZoom 控制初始視窗
+const FULL_LOAD_DAYS = 3650
+
 export default function StockChart({ stockId, defaultDate, days: initialDays = 90, chartHeight }: Props) {
   const router = useRouter()
   const chartRef = useRef<HTMLDivElement>(null)
@@ -101,7 +104,7 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
             signal: controller.signal,
             startDate: appliedCustom.start,
           })
-        : await fetchStockHistory(stockId, days, defaultDate, {
+        : await fetchStockHistory(stockId, FULL_LOAD_DAYS, defaultDate, {
             signal: controller.signal,
           })
       if (!controller.signal.aborted) {
@@ -117,7 +120,7 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
       }
     }
     return () => controller.abort()
-  }, [stockId, days, defaultDate, appliedCustom])
+  }, [stockId, defaultDate, appliedCustom])
 
   useEffect(() => {
     let cleanup: (() => void) | void
@@ -260,7 +263,7 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
         {
           type: "slider",
           xAxisIndex: 0,
-          start: 0,
+          start: appliedCustom ? 0 : Math.max(0, Math.round((1 - days / dates.length) * 100)),
           end: 100,
           height: 20,
           bottom: 10,
@@ -274,7 +277,12 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
             areaStyle: { color: "#3f3f46" },
           },
         },
-        { type: "inside", xAxisIndex: 0, start: 0, end: 100 },
+        {
+          type: "inside",
+          xAxisIndex: 0,
+          start: appliedCustom ? 0 : Math.max(0, Math.round((1 - days / dates.length) * 100)),
+          end: 100,
+        },
       ],
       xAxis: {
         type: "category" as const,
@@ -345,7 +353,7 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
         }] : []),
       ],
     }
-  }, [data, activeMAs, activeInst])
+  }, [data, activeMAs, activeInst, days, appliedCustom])
 
   return (
     <div className="flex flex-col gap-4">
