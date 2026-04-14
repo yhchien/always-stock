@@ -348,12 +348,15 @@ def main():
         orchestrator.save_etl_log(result)
 
     # 回傳狀態碼
+    # 0 = ok, 1 = partial, 2 = insufficient_quota, 3 = error
     if result["status"] == "ok":
         return 0
     elif result["status"] == "partial":
         return 1
-    else:
+    elif result["status"] == "insufficient_quota":
         return 2
+    else:
+        return 3
 
 
 if __name__ == "__main__":
