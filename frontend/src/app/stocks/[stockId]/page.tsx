@@ -155,17 +155,3 @@ export default function StockDetailPage({
     </Suspense>
   )
 }
-
-export default function StockDetailPage({
-  params,
-}: {
-  params: Promise<{ stockId: string }>
-}) {
-  const { stockId } = use(params)
-
-  return (
-    <Suspense>
-      <StockContent stockId={stockId} />
-    </Suspense>
-  )
-}
