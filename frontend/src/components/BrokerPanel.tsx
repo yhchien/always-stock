@@ -130,6 +130,10 @@ export default function BrokerPanel({ stockId, date, days = 1, onSelectBroker, s
 
   const brokers = tab === "buy" ? buyTop : sellTop
   const isEmpty = brokers.length === 0
+  // Only show full loading skeleton on first load (no data yet)
+  const isInitialLoad = loading && buyTop.length === 0 && sellTop.length === 0
+  // Show subtle badge when refreshing in background while data is already shown
+  const isFetching = loading || isRefreshing
 
   const handleRowClick = (broker: BrokerTradeItem) => {
     if (!onSelectBroker) return
@@ -146,8 +150,11 @@ export default function BrokerPanel({ stockId, date, days = 1, onSelectBroker, s
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold text-zinc-100">關鍵券商買賣</h2>
         <div className="flex items-center gap-2">
-          {isRefreshing && !loading && (
-            <span className="text-[10px] text-yellow-400">背景更新中</span>
+          {isFetching && !isInitialLoad && (
+            <span className="flex items-center gap-1 text-[10px] text-yellow-400">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-yellow-400" />
+              更新中
+            </span>
           )}
           {tradeDate && (
             <span className="text-[10px] text-zinc-400">{tradeDate}</span>
@@ -183,7 +190,7 @@ export default function BrokerPanel({ stockId, date, days = 1, onSelectBroker, s
 
       {/* Content */}
       <div className="flex-1 overflow-auto min-h-[200px]">
-        {loading ? (
+        {isInitialLoad ? (
           <div className="flex items-center justify-center h-full">
             <div className="flex flex-col items-center gap-2">
               <div className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-500 border-t-zinc-200" />
@@ -203,11 +210,16 @@ export default function BrokerPanel({ stockId, date, days = 1, onSelectBroker, s
               </button>
             </div>
           </div>
+        ) : isEmpty && !isFetching ? (
+          <div className="flex items-center justify-center h-full">
+            <p className="text-xs text-zinc-500">此日期無券商交易紀錄</p>
+          </div>
         ) : isEmpty ? (
           <div className="flex items-center justify-center h-full">
-            <p className="text-xs text-zinc-500">
-              {isRefreshing ? "正在背景抓取券商資料，稍後可重新載入" : "此日期無券商交易紀錄"}
-            </p>
+            <div className="flex flex-col items-center gap-2">
+              <div className="h-4 w-4 animate-spin rounded-full border-2 border-zinc-500 border-t-zinc-200" />
+              <p className="text-xs text-zinc-400">正在背景抓取券商資料...</p>
+            </div>
           </div>
         ) : (
           <table className="w-full text-xs">
