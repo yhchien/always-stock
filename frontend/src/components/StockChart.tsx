@@ -47,12 +47,13 @@ interface Props {
   defaultDate?: string
   days?: number
   chartHeight?: string
+  onDaysChange?: (days: number) => void
 }
 
 // 永遠載入全量資料，用 dataZoom 控制初始視窗
 const FULL_LOAD_DAYS = 3650
 
-export default function StockChart({ stockId, defaultDate, days: initialDays = 90, chartHeight }: Props) {
+export default function StockChart({ stockId, defaultDate, days: initialDays = 90, chartHeight, onDaysChange }: Props) {
   const router = useRouter()
   const chartRef = useRef<HTMLDivElement>(null)
   const [days, setDays] = useState(initialDays)
@@ -92,6 +93,7 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
   const clearCustomRange = (newDays: number) => {
     setAppliedCustom(null)
     setDays(newDays)
+    onDaysChange?.(newDays)
   }
 
   const load = useCallback(async () => {
@@ -406,8 +408,8 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
               onClick={() => clearCustomRange(opt.days)}
               className={`px-3 py-1 text-xs rounded-md border transition-colors ${
                 !appliedCustom && days === opt.days
-                  ? "bg-zinc-700 border-zinc-500 text-zinc-100"
-                  : "bg-zinc-900 border-zinc-700 text-zinc-400 hover:text-zinc-200 hover:border-zinc-500"
+                  ? "bg-zinc-500 border-zinc-400 text-zinc-50"
+                  : "bg-zinc-700 border-zinc-600 text-zinc-300 hover:text-zinc-100 hover:border-zinc-400"
               }`}
             >
               {opt.label}
@@ -424,7 +426,7 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
             max={customEnd || undefined}
             onChange={(e) => setCustomStart(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && applyCustomRange()}
-            className="rounded border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-xs text-zinc-300 focus:outline-none focus:ring-1 focus:ring-zinc-500 [color-scheme:dark]"
+            className="rounded border border-zinc-600 bg-zinc-700 px-2 py-0.5 text-xs text-zinc-200 focus:outline-none focus:ring-1 focus:ring-zinc-400 [color-scheme:dark]"
           />
           <span className="text-xs text-zinc-600">～</span>
           <input
@@ -433,19 +435,19 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
             min={customStart || undefined}
             onChange={(e) => setCustomEnd(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && applyCustomRange()}
-            className="rounded border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-xs text-zinc-300 focus:outline-none focus:ring-1 focus:ring-zinc-500 [color-scheme:dark]"
+            className="rounded border border-zinc-600 bg-zinc-700 px-2 py-0.5 text-xs text-zinc-200 focus:outline-none focus:ring-1 focus:ring-zinc-400 [color-scheme:dark]"
           />
           <button
             onClick={applyCustomRange}
             disabled={!customStart || !customEnd || customStart > customEnd}
-            className="px-2 py-0.5 text-xs rounded border border-zinc-700 bg-zinc-900 text-zinc-400 hover:text-zinc-200 hover:border-zinc-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            className="px-2 py-0.5 text-xs rounded border border-zinc-600 bg-zinc-700 text-zinc-300 hover:text-zinc-100 hover:border-zinc-400 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
             套用
           </button>
           {appliedCustom && (
             <button
               onClick={() => { setAppliedCustom(null); setCustomStart(""); setCustomEnd("") }}
-              className="px-2 py-0.5 text-xs rounded border border-zinc-700 bg-zinc-900 text-zinc-500 hover:text-zinc-200 transition-colors"
+              className="px-2 py-0.5 text-xs rounded border border-zinc-600 bg-zinc-700 text-zinc-400 hover:text-zinc-100 transition-colors"
             >
               ×
             </button>
@@ -470,8 +472,8 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
                 onClick={() => toggleInst(key)}
                 className={`flex items-center gap-1 px-2 py-1 text-xs rounded-md border transition-colors ${
                   active
-                    ? "border-zinc-500 bg-zinc-700 text-zinc-100"
-                    : "border-zinc-700 bg-zinc-900 text-zinc-500 hover:text-zinc-300"
+                    ? "border-zinc-400 bg-zinc-500 text-zinc-50"
+                    : "border-zinc-600 bg-zinc-700 text-zinc-400 hover:text-zinc-200"
                 }`}
               >
                 <span
@@ -495,8 +497,8 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
                 onClick={() => toggleMA(period)}
                 className={`flex items-center gap-1 px-2 py-1 text-xs rounded-md border transition-colors ${
                   active
-                    ? "border-zinc-500 bg-zinc-700 text-zinc-100"
-                    : "border-zinc-700 bg-zinc-900 text-zinc-500 hover:text-zinc-300"
+                    ? "border-zinc-400 bg-zinc-500 text-zinc-50"
+                    : "border-zinc-600 bg-zinc-700 text-zinc-400 hover:text-zinc-200"
                 }`}
               >
                 <span
@@ -520,7 +522,7 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
               }}
               className={`flex items-center gap-1 px-2 py-1 text-xs rounded-md border transition-colors ${
                 activeMAs.has(customMAPeriod)
-                  ? "border-zinc-500 bg-zinc-700 text-zinc-100"
+                  ? "border-zinc-400 bg-zinc-500 text-zinc-50"
                   : "border-zinc-700 bg-zinc-900 text-zinc-500"
               }`}
             >
@@ -537,11 +539,11 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
               placeholder="自訂"
               min={2}
               max={200}
-              className="w-16 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-300 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-zinc-500"
+              className="w-16 rounded-md border border-zinc-600 bg-zinc-700 px-2 py-1 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-zinc-400"
             />
             <button
               onClick={addCustomMA}
-              className="px-2 py-1 text-xs rounded-md border border-zinc-700 bg-zinc-900 text-zinc-400 hover:text-zinc-200 hover:border-zinc-500 transition-colors"
+              className="px-2 py-1 text-xs rounded-md border border-zinc-600 bg-zinc-700 text-zinc-300 hover:text-zinc-100 hover:border-zinc-400 transition-colors"
             >
               +
             </button>
@@ -553,18 +555,18 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
       {loading && (
         <div className="flex flex-col gap-4">
           <Skeleton className="h-8 w-48" />
-          <Skeleton className="h-[60vh] min-h-[400px] w-full rounded-lg" />
+          <Skeleton className="h-[70vh] min-h-[500px] w-full rounded-lg" />
         </div>
       )}
       {error && <p className="text-sm text-red-400">{error}</p>}
 
       {/* Chart — responsive height via CSS */}
       {!loading && !error && chartOption && (
-        <div ref={chartRef} className="rounded-lg border border-zinc-800 p-4">
+        <div ref={chartRef} className="rounded-lg border border-zinc-600 p-4">
           <ReactECharts
             option={chartOption}
             notMerge
-            style={{ height: chartHeight ?? "60vh", minHeight: chartHeight ? 280 : 400, width: "100%" }}
+            style={{ height: chartHeight ?? "70vh", minHeight: chartHeight ? 320 : 500, width: "100%" }}
             opts={{ renderer: "svg" }}
           />
         </div>

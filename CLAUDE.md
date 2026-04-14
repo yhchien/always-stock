@@ -321,3 +321,29 @@
 #### M8-M13 相依
 - M8 財報：ETL 模組已完成（`finmind_financial_statement_sdk.py`），需等 backfill 完成後驗證
 - M13 券商分點：ETL 模組已完成（`finmind_broker_trade_sdk.py`，Agg 版），`broker_trade_agg` 表已支援
+
+## 前端功能更新（2026-04-14）
+
+### 新增功能
+1. **首頁今日觀察重點**（AI 盤前摘要）
+   - 後端：`backend/app/routers/market.py`，endpoint `GET /api/market/daily-brief`
+   - 收集 DB 法人流向資料 + Yahoo Finance（VIX、WTI、USD/TWD）→ OpenAI 生成盤前摘要
+   - `_resolve_trade_date()` 確保一定落在有資料的交易日（非假日/非休市日）
+   - `_top_industries_3d()` 使用 DB 實際有資料的 3 個交易日，不依曆法推算
+   - 前端：`frontend/src/components/DailyBrief.tsx`（手動觸發，不自動載入）
+   - 掛在首頁 `page.tsx` IndustryDashboard 上方
+
+2. **BrokerPanel 改版**（買進 / 賣出排行 + 標籤）
+   - 後端新增 `GET /api/stocks/{stock_id}/brokers/ranked`：返回 `buy_top` / `sell_top` 各 10 筆
+   - `BrokerTradeItem` 新增 `categories: List[str]` 欄位（舊分類以標籤顯示）
+   - 前端 `BrokerPanel.tsx` 改為兩 tab：「買進 Top10 / 賣出 Top10」，附舊分類標籤（顏色標示）
+
+3. **點擊券商 → 買賣超走勢圖**
+   - 後端新增 `GET /api/stocks/{stock_id}/brokers/{broker_id}/history?start=&end=`
+   - 前端新增 `frontend/src/components/BrokerBarChart.tsx`（ECharts 長條圖）
+   - L2 個股頁點擊 BrokerPanel 中的券商 → StockChart 下方顯示該券商逐日淨買超長條圖
+   - StockChart 新增 `onDaysChange` prop，讓 L2 頁追蹤當前 K 線時間範圍
+
+### UI 調整
+4. **背景/卡片調淺**：body `bg-zinc-800` → `bg-zinc-600`，卡片 `bg-zinc-900` → `bg-zinc-700`，border `zinc-700` → `zinc-600`
+5. **K 線圖放大**：StockChart `60vh / min 400px` → `70vh / min 500px`；BacktestEquityChart `240px` → `380px`

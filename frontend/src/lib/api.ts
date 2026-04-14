@@ -380,6 +380,15 @@ export interface BrokerTradeItem {
   buy_shares: number
   sell_shares: number
   net_shares: number
+  categories: string[]
+}
+
+export interface BrokerRankedResponse {
+  stock_id: string
+  trade_date: string
+  is_refreshing?: boolean
+  buy_top: BrokerTradeItem[]
+  sell_top: BrokerTradeItem[]
 }
 
 export interface BrokerTradeResponse {
@@ -405,6 +414,52 @@ function isRetryableNetworkError(error: unknown): boolean {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+export interface BrokerDailyItem {
+  trade_date: string
+  buy_shares: number
+  sell_shares: number
+  net_shares: number
+}
+
+export interface BrokerHistoryResponse {
+  stock_id: string
+  broker_id: string
+  broker_name: string
+  display_name: string
+  history: BrokerDailyItem[]
+}
+
+export async function fetchBrokerHistory(
+  stockId: string,
+  brokerId: string,
+  startDate: string,
+  endDate: string,
+  options?: FetchOptions,
+): Promise<BrokerHistoryResponse> {
+  const params = new URLSearchParams({ start: startDate, end: endDate })
+  const res = await fetch(
+    `${API_BASE}/api/stocks/${stockId}/brokers/${encodeURIComponent(brokerId)}/history?${params}`,
+    { signal: options?.signal },
+  )
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "Failed to fetch broker history"))
+  return res.json()
+}
+
+export async function fetchBrokerRanked(
+  stockId: string,
+  date?: string,
+  days = 1,
+  options?: BrokerTradeFetchOptions,
+): Promise<BrokerRankedResponse> {
+  const params = new URLSearchParams({ days: String(days) })
+  if (date) params.set("date", date)
+  const res = await fetch(`${API_BASE}/api/stocks/${stockId}/brokers/ranked?${params}`, {
+    signal: options?.signal,
+  })
+  if (!res.ok) throw new Error(`Failed to fetch broker ranked: ${res.status}`)
+  return res.json()
 }
 
 export async function fetchBrokerTrades(
@@ -465,4 +520,20 @@ export function fmtStreak(streak: number): string {
   const abs = Math.abs(streak)
   const days = abs >= 31 ? "30+" : `${abs}`
   return streak > 0 ? `連買${days}天` : `連賣${days}天`
+}
+
+// ── Daily brief (market LLM analysis) ──────────────────────────────────────
+
+export interface DailyBriefResponse {
+  trade_date: string
+  content: string
+  source: "openai" | "unavailable"
+}
+
+export async function fetchDailyBrief(date: string, options?: FetchOptions): Promise<DailyBriefResponse> {
+  const res = await fetch(`${API_BASE}/api/market/daily-brief?date=${date}`, {
+    signal: options?.signal,
+  })
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "盤前摘要載入失敗"))
+  return res.json()
 }

@@ -64,5 +64,5 @@ export default function BacktestEquityChart({ points }: Props) {
     }
   }, [points])
 
-  return <ReactECharts option={option} style={{ height: 240, width: "100%" }} notMerge />
+  return <ReactECharts option={option} style={{ height: 380, width: "100%" }} notMerge />
 }

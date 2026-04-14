@@ -8,7 +8,7 @@ export default function Navbar() {
   const isHome = pathname === "/"
 
   return (
-    <header className="sticky top-0 z-50 border-b border-zinc-800 bg-zinc-950/90 backdrop-blur-sm">
+    <header className="sticky top-0 z-50 border-b border-zinc-600 bg-zinc-700/95 backdrop-blur-sm">
       <div className="mx-auto flex h-12 max-w-6xl items-center justify-between px-4">
         {/* Logo */}
         <Link

@@ -2,9 +2,8 @@
 
 import { useEffect, useState } from "react"
 import {
-  BrokerCategory,
   BrokerTradeItem,
-  fetchBrokerTrades,
+  fetchBrokerRanked,
   fmtLots,
   toDisplayError,
 } from "@/lib/api"
@@ -12,35 +11,98 @@ import {
 interface Props {
   stockId: string
   date?: string
+  onSelectBroker?: (broker: BrokerTradeItem | null) => void
+  selectedBrokerId?: string | null
 }
 
-const CATEGORIES: { key: BrokerCategory; label: string }[] = [
-  { key: "day_trade", label: "當沖" },
-  { key: "next_day", label: "隔日沖" },
-  { key: "short_term", label: "短線" },
-  { key: "swing", label: "波段" },
-]
+const CATEGORY_LABELS: Record<string, string> = {
+  day_trade: "當沖",
+  next_day: "隔日沖",
+  short_term: "短線",
+  swing: "波段",
+}
+
+const CATEGORY_COLORS: Record<string, string> = {
+  day_trade: "bg-orange-500/20 text-orange-300",
+  next_day: "bg-yellow-500/20 text-yellow-300",
+  short_term: "bg-sky-500/20 text-sky-300",
+  swing: "bg-violet-500/20 text-violet-300",
+}
+
 const AUTO_REFRESH_MS = 4000
 
-export default function BrokerPanel({ stockId, date }: Props) {
-  const [category, setCategory] = useState<BrokerCategory>("day_trade")
-  const [brokers, setBrokers] = useState<BrokerTradeItem[]>([])
+type TabKey = "buy" | "sell"
+
+function BrokerRow({
+  broker,
+  isSelected,
+  onClick,
+}: {
+  broker: BrokerTradeItem
+  isSelected: boolean
+  onClick: () => void
+}) {
+  return (
+    <tr
+      onClick={onClick}
+      className={`border-b border-zinc-700/50 cursor-pointer transition-colors ${
+        isSelected ? "bg-zinc-600/40" : "hover:bg-zinc-700/30"
+      }`}
+    >
+      <td className="py-1.5 pr-1">
+        <div className="flex flex-col gap-0.5">
+          <span className={`text-xs ${isSelected ? "text-zinc-50 font-medium" : "text-zinc-200"}`}>
+            {broker.display_name}
+          </span>
+          {broker.categories.length > 0 && (
+            <div className="flex flex-wrap gap-0.5">
+              {broker.categories.map((cat) => (
+                <span
+                  key={cat}
+                  className={`text-[9px] px-1 py-px rounded ${CATEGORY_COLORS[cat] ?? "bg-zinc-600/30 text-zinc-400"}`}
+                >
+                  {CATEGORY_LABELS[cat] ?? cat}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      </td>
+      <td className="py-1.5 text-right text-red-400 text-xs font-mono">{fmtLots(broker.buy_shares)}</td>
+      <td className="py-1.5 text-right text-green-400 text-xs font-mono">{fmtLots(broker.sell_shares)}</td>
+      <td
+        className={`py-1.5 text-right text-xs font-mono font-medium ${
+          broker.net_shares > 0 ? "text-red-400" : broker.net_shares < 0 ? "text-green-400" : "text-zinc-500"
+        }`}
+      >
+        {fmtLots(broker.net_shares)}
+      </td>
+    </tr>
+  )
+}
+
+export default function BrokerPanel({ stockId, date, onSelectBroker, selectedBrokerId }: Props) {
+  const [tab, setTab] = useState<TabKey>("buy")
+  const [buyTop, setBuyTop] = useState<BrokerTradeItem[]>([])
+  const [sellTop, setSellTop] = useState<BrokerTradeItem[]>([])
   const [tradeDate, setTradeDate] = useState<string>("")
   const [resolvedRequestKey, setResolvedRequestKey] = useState("")
   const [errorState, setErrorState] = useState<{ requestKey: string; message: string } | null>(null)
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
-  const requestKey = `${stockId}:${category}:${date ?? ""}:${reloadKey}`
+
+  const requestKey = `${stockId}:${date ?? ""}:${reloadKey}`
   const error = errorState?.requestKey === requestKey ? errorState.message : null
   const loading = !error && resolvedRequestKey !== requestKey
 
   useEffect(() => {
     const controller = new AbortController()
 
-    fetchBrokerTrades(stockId, category, date, 1, { signal: controller.signal })
+    fetchBrokerRanked(stockId, date, 1, { signal: controller.signal })
       .then((data) => {
-        setBrokers(data.brokers)
-        setTradeDate(data.trade_date)
+        setBuyTop(data.buy_top)
+        setSellTop(data.sell_top)
+        setTradeDate(String(data.trade_date))
         setIsRefreshing(Boolean(data.is_refreshing))
         setErrorState(null)
         setResolvedRequestKey(requestKey)
@@ -55,59 +117,76 @@ export default function BrokerPanel({ stockId, date }: Props) {
       })
 
     return () => { controller.abort() }
-  }, [stockId, category, date, reloadKey, requestKey])
+  }, [stockId, date, reloadKey, requestKey])
 
   useEffect(() => {
     if (!isRefreshing || loading || error) return
-
     const timer = window.setTimeout(() => {
-      setReloadKey((value) => value + 1)
+      setReloadKey((v) => v + 1)
     }, AUTO_REFRESH_MS)
-
-    return () => {
-      window.clearTimeout(timer)
-    }
+    return () => { window.clearTimeout(timer) }
   }, [isRefreshing, loading, error])
 
+  const brokers = tab === "buy" ? buyTop : sellTop
+  const isEmpty = brokers.length === 0
+
+  const handleRowClick = (broker: BrokerTradeItem) => {
+    if (!onSelectBroker) return
+    if (selectedBrokerId === broker.broker_id) {
+      onSelectBroker(null)
+    } else {
+      onSelectBroker(broker)
+    }
+  }
+
   return (
-    <div className="flex flex-col gap-3 rounded-lg border border-zinc-700 bg-zinc-900 p-4 h-full">
+    <div className="flex flex-col gap-3 rounded-lg border border-zinc-600 bg-zinc-700 p-4 h-full">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-zinc-200">關鍵券商買賣</h2>
-        {tradeDate && (
-          <div className="flex items-center gap-2">
-            {isRefreshing && (
-              <span className="text-[10px] text-yellow-500">背景更新中</span>
-            )}
-            <span className="text-[10px] text-zinc-500">{tradeDate}</span>
-          </div>
-        )}
+        <h2 className="text-sm font-semibold text-zinc-100">關鍵券商買賣</h2>
+        <div className="flex items-center gap-2">
+          {isRefreshing && !loading && (
+            <span className="text-[10px] text-yellow-400">背景更新中</span>
+          )}
+          {tradeDate && (
+            <span className="text-[10px] text-zinc-400">{tradeDate}</span>
+          )}
+        </div>
       </div>
 
-      {/* Category tabs */}
+      {/* Tabs */}
       <div className="flex gap-1">
-        {CATEGORIES.map(({ key, label }) => (
+        {(["buy", "sell"] as TabKey[]).map((t) => (
           <button
-            key={key}
-            onClick={() => setCategory(key)}
+            key={t}
+            onClick={() => setTab(t)}
             className={`flex-1 rounded-md px-2 py-1.5 text-xs font-medium transition-colors ${
-              category === key
-                ? "bg-zinc-700 text-zinc-100"
-                : "bg-zinc-800/50 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
+              tab === t
+                ? t === "buy"
+                  ? "bg-red-500/20 text-red-300 border border-red-500/30"
+                  : "bg-green-500/20 text-green-300 border border-green-500/30"
+                : "bg-zinc-700/50 text-zinc-400 border border-transparent hover:bg-zinc-600 hover:text-zinc-200"
             }`}
           >
-            {label}
+            {t === "buy" ? "買進 Top10" : "賣出 Top10"}
           </button>
         ))}
       </div>
+
+      {/* Help text */}
+      {onSelectBroker && !isEmpty && (
+        <p className="text-[10px] text-zinc-500">
+          {selectedBrokerId ? "點擊同一券商取消選擇" : "點擊券商查看買賣超走勢"}
+        </p>
+      )}
 
       {/* Content */}
       <div className="flex-1 overflow-auto min-h-[200px]">
         {loading ? (
           <div className="flex items-center justify-center h-full">
             <div className="flex flex-col items-center gap-2">
-              <div className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-600 border-t-zinc-300" />
-              <p className="text-xs text-zinc-500">正在從證交所取得資料...</p>
+              <div className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-500 border-t-zinc-200" />
+              <p className="text-xs text-zinc-400">正在從證交所取得資料...</p>
             </div>
           </div>
         ) : error ? (
@@ -116,54 +195,37 @@ export default function BrokerPanel({ stockId, date }: Props) {
               <p className="text-xs text-red-400">{error}</p>
               <button
                 type="button"
-                onClick={() => setReloadKey((value) => value + 1)}
-                className="rounded-md border border-zinc-700 px-2 py-1 text-[11px] text-zinc-300 transition-colors hover:bg-zinc-800"
+                onClick={() => setReloadKey((v) => v + 1)}
+                className="rounded-md border border-zinc-600 px-2 py-1 text-[11px] text-zinc-300 transition-colors hover:bg-zinc-600"
               >
                 重新載入
               </button>
             </div>
           </div>
-        ) : brokers.length === 0 ? (
+        ) : isEmpty ? (
           <div className="flex items-center justify-center h-full">
-            <p className="text-xs text-zinc-600">
-              {isRefreshing ? "正在背景抓取券商資料，稍後可重新載入" : "此類別無券商交易紀錄"}
+            <p className="text-xs text-zinc-500">
+              {isRefreshing ? "正在背景抓取券商資料，稍後可重新載入" : "此日期無券商交易紀錄"}
             </p>
           </div>
         ) : (
           <table className="w-full text-xs">
             <thead>
-              <tr className="border-b border-zinc-700/50 text-zinc-500">
+              <tr className="border-b border-zinc-600/50 text-zinc-400">
                 <th className="text-left py-1.5 font-medium">券商</th>
                 <th className="text-right py-1.5 font-medium">買進</th>
                 <th className="text-right py-1.5 font-medium">賣出</th>
-                <th className="text-right py-1.5 font-medium">淨買超</th>
+                <th className="text-right py-1.5 font-medium">淨</th>
               </tr>
             </thead>
             <tbody>
               {brokers.map((b) => (
-                <tr
+                <BrokerRow
                   key={b.broker_id}
-                  className="border-b border-zinc-800/50 hover:bg-zinc-800/30 transition-colors"
-                >
-                  <td className="py-1.5 text-zinc-300">{b.display_name}</td>
-                  <td className="py-1.5 text-right text-red-400">
-                    {fmtLots(b.buy_shares)}
-                  </td>
-                  <td className="py-1.5 text-right text-green-400">
-                    {fmtLots(b.sell_shares)}
-                  </td>
-                  <td
-                    className={`py-1.5 text-right font-medium ${
-                      b.net_shares > 0
-                        ? "text-red-400"
-                        : b.net_shares < 0
-                          ? "text-green-400"
-                          : "text-zinc-500"
-                    }`}
-                  >
-                    {fmtLots(b.net_shares)}
-                  </td>
-                </tr>
+                  broker={b}
+                  isSelected={selectedBrokerId === b.broker_id}
+                  onClick={() => handleRowClick(b)}
+                />
               ))}
             </tbody>
           </table>
