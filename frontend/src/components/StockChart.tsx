@@ -62,6 +62,8 @@ interface Props {
 
 // 永遠載入全量資料，用 dataZoom 控制初始視窗
 const FULL_LOAD_DAYS = 3650
+// Broker history polling interval (ms) — stops when count stabilises
+const BROKER_POLL_MS = 7000
 
 export default function StockChart({ stockId, defaultDate, days: initialDays = 90, chartHeight, onDaysChange, selectedBroker }: Props) {
   const router = useRouter()
@@ -75,6 +77,8 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
   // Broker sub-panel state
   const [brokerHistory, setBrokerHistory] = useState<BrokerDailyItem[]>([])
   const [brokerLoading, setBrokerLoading] = useState(false)
+  const brokerPollRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const lastBrokerCountRef = useRef<number>(-1)
 
   // Custom date range state
   const [customStart, setCustomStart] = useState("")
@@ -148,29 +152,48 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
     }
   }, [load])
 
-  // Fetch broker history for the full loaded date range when broker is selected
+  // Fetch broker history for the full loaded date range when broker is selected.
+  // Polls every BROKER_POLL_MS until the count stabilises (backfill is filling in gradually).
   useEffect(() => {
     if (!selectedBroker || !data || data.history.length === 0) {
       setBrokerHistory([])
+      lastBrokerCountRef.current = -1
       return
     }
-    const controller = new AbortController()
-    setBrokerLoading(true)
-    const start = data.history[0].trade_date
-    const end = data.history[data.history.length - 1].trade_date
-    fetchBrokerHistory(stockId, selectedBroker.broker_id, String(start), String(end), {
-      signal: controller.signal,
-    })
-      .then((r) => {
-        if (!controller.signal.aborted) {
+
+    const start = String(data.history[0].trade_date)
+    const end = String(data.history[data.history.length - 1].trade_date)
+    let cancelled = false
+
+    const fetchOnce = (isFirst: boolean) => {
+      if (isFirst) setBrokerLoading(true)
+      fetchBrokerHistory(stockId, selectedBroker.broker_id, start, end)
+        .then((r) => {
+          if (cancelled) return
           setBrokerHistory(r.history)
           setBrokerLoading(false)
-        }
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) setBrokerLoading(false)
-      })
-    return () => controller.abort()
+
+          const count = r.history.length
+          if (count > 0 && count === lastBrokerCountRef.current) {
+            // Count stabilised — backfill done (or no new data coming), stop polling
+            return
+          }
+          lastBrokerCountRef.current = count
+          // Schedule next poll
+          brokerPollRef.current = setTimeout(() => fetchOnce(false), BROKER_POLL_MS)
+        })
+        .catch(() => {
+          if (!cancelled) setBrokerLoading(false)
+        })
+    }
+
+    fetchOnce(true)
+
+    return () => {
+      cancelled = true
+      if (brokerPollRef.current) clearTimeout(brokerPollRef.current)
+      lastBrokerCountRef.current = -1
+    }
   }, [selectedBroker?.broker_id, data, stockId])
 
   const toggleMA = (period: number) => {
