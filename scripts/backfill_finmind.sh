@@ -26,7 +26,7 @@ LOG_DIR="$BACKEND_DIR/logs"
 CHECKPOINT_FILE="$LOG_DIR/backfill_checkpoint.txt"
 
 MAX_RETRIES=3
-QUOTA_WAIT_SECONDS=3600  # 1 小時
+QUOTA_WAIT_SECONDS=4500  # 75 分鐘
 
 mkdir -p "$LOG_DIR"
 
