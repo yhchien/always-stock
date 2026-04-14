@@ -82,12 +82,12 @@ def fetch_and_upsert_financial_statement_sdk(
                      value, period_type, source, ingested_at)
                 VALUES
                     (:report_date, :stock_id, :item_name_val, :item_code_val,
-                     :value_val, 'quarterly', 'finmind', NOW())
-                ON CONFLICT ON CONSTRAINT uq_finstatement_date_stock_item DO UPDATE SET
+                     :value_val, 'quarterly', 'finmind', CURRENT_TIMESTAMP)
+                ON CONFLICT (report_date, stock_id, item_name) DO UPDATE SET
                     item_code   = EXCLUDED.item_code,
                     value       = EXCLUDED.value,
                     source      = 'finmind',
-                    ingested_at = NOW()
+                    ingested_at = CURRENT_TIMESTAMP
             """), batch)
             db.commit()
             result["upserted"] += len(batch)

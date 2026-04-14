@@ -120,7 +120,7 @@ def migrate_daily_price(db):
         add_column_if_not_exists(
             db,
             "daily_price",
-            "ALTER TABLE daily_price ADD COLUMN ingested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+            "ALTER TABLE daily_price ADD COLUMN ingested_at TIMESTAMP DEFAULT NULL"
         )
 
 
@@ -141,7 +141,7 @@ def migrate_inst_stock_flow(db):
         add_column_if_not_exists(
             db,
             "inst_stock_flow",
-            "ALTER TABLE inst_stock_flow ADD COLUMN ingested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+            "ALTER TABLE inst_stock_flow ADD COLUMN ingested_at TIMESTAMP DEFAULT NULL"
         )
 
 
@@ -162,7 +162,7 @@ def migrate_broker_trade(db):
         add_column_if_not_exists(
             db,
             "broker_trade",
-            "ALTER TABLE broker_trade ADD COLUMN ingested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+            "ALTER TABLE broker_trade ADD COLUMN ingested_at TIMESTAMP DEFAULT NULL"
         )
 
 

@@ -89,13 +89,13 @@ def fetch_and_upsert_inst_flow_finmind_sdk(
                      buy_shares, sell_shares, net_shares, source, ingested_at)
                 VALUES
                     (:trade_date, :stock_id, :inst_type,
-                     :buy_shares, :sell_shares, :net_shares, 'finmind', NOW())
-                ON CONFLICT ON CONSTRAINT uq_flow_date_stock_inst DO UPDATE SET
+                     :buy_shares, :sell_shares, :net_shares, 'finmind', CURRENT_TIMESTAMP)
+                ON CONFLICT (trade_date, stock_id, inst_type) DO UPDATE SET
                     buy_shares  = EXCLUDED.buy_shares,
                     sell_shares = EXCLUDED.sell_shares,
                     net_shares  = EXCLUDED.net_shares,
                     source      = 'finmind',
-                    ingested_at = NOW()
+                    ingested_at = CURRENT_TIMESTAMP
             """), batch)
             db.commit()
             result["upserted"] += len(batch)

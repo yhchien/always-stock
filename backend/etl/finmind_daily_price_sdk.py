@@ -87,7 +87,7 @@ def fetch_and_upsert_daily_price_finmind_sdk(
                      close_price, volume, turnover, spread, source, ingested_at)
                 VALUES
                     (:trade_date, :stock_id, :open_price, :high_price, :low_price,
-                     :close_price, :volume, :turnover, :spread_val, 'finmind', NOW())
+                     :close_price, :volume, :turnover, :spread_val, 'finmind', CURRENT_TIMESTAMP)
                 ON CONFLICT (trade_date, stock_id) DO UPDATE SET
                     open_price   = EXCLUDED.open_price,
                     high_price   = EXCLUDED.high_price,
@@ -97,7 +97,7 @@ def fetch_and_upsert_daily_price_finmind_sdk(
                     turnover     = EXCLUDED.turnover,
                     spread       = EXCLUDED.spread,
                     source       = 'finmind',
-                    ingested_at  = NOW()
+                    ingested_at  = CURRENT_TIMESTAMP
             """), batch)
             db.commit()
             result["upserted"] += len(batch)

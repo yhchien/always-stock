@@ -96,13 +96,13 @@ def fetch_and_upsert_monthly_revenue_sdk(
                 INSERT INTO monthly_revenue
                     (revenue_month, stock_id, revenue, yoy_pct, mom_pct, source, ingested_at)
                 VALUES
-                    (:rev_month_date, :stock_id, :revenue_val, :yoy_pct_val, :mom_pct_val, 'finmind', NOW())
-                ON CONFLICT ON CONSTRAINT uq_revenue_month_stock DO UPDATE SET
+                    (:rev_month_date, :stock_id, :revenue_val, :yoy_pct_val, :mom_pct_val, 'finmind', CURRENT_TIMESTAMP)
+                ON CONFLICT (revenue_month, stock_id) DO UPDATE SET
                     revenue     = EXCLUDED.revenue,
                     yoy_pct     = EXCLUDED.yoy_pct,
                     mom_pct     = EXCLUDED.mom_pct,
                     source      = 'finmind',
-                    ingested_at = NOW()
+                    ingested_at = CURRENT_TIMESTAMP
             """), batch)
             db.commit()
             result["upserted"] += len(batch)

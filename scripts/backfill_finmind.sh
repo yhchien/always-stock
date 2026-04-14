@@ -1,24 +1,22 @@
 #!/bin/bash
-# FinMind 全量 Backfill 腳本（月粒度）
-# 每月一個批次，配額耗盡後自動等待 60 分鐘再重試同一個月
+# FinMind 全量 Backfill 腳本（日粒度）
+# 每日一個批次；配額耗盡後自動等待重試；非配額錯誤記錄後繼續下一天
 #
-# 每次跑包含：
-#   1. 股價（daily_price）
-#   2. 三大法人（inst_stock_flow）
-#   3. 估值 P/E P/B（daily_valuation）
-#   4. 月營收（monthly_revenue）
-#   5. 財報（financial_statement）
-#   6. 券商分點聚合（broker_trade_agg，2021-06-30 起才有資料）
+# Checkpoint 格式：
+#   DONE YYYY-MM-DD timestamp      — 成功
+#   FAILED YYYY-MM-DD exit=N timestamp — 失敗（非配額），已跳過
 #
 # 使用方式：
 #   bash scripts/backfill_finmind.sh
 #
-# 從特定月份開始（斷線後繼續，或強制覆寫）：
-#   START_MONTH=2022-06 bash scripts/backfill_finmind.sh
+# 從特定日期開始（斷線後或強制覆寫）：
+#   START_DATE=2022-06-01 bash scripts/backfill_finmind.sh
 #
-# 若不指定 START_MONTH，自動從 checkpoint 最後完成的月份續跑
+# 若不指定 START_DATE，自動依 checkpoint 最後事件續跑：
+#   - DONE / FAILED         → 從隔天開始
+#   - QUOTA_EXHAUSTED       → 從同一天開始重跑
 
-set -e
+set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BACKEND_DIR="$(cd "$SCRIPT_DIR/../backend" && pwd)"
@@ -30,163 +28,161 @@ QUOTA_WAIT_SECONDS=4500  # 75 分鐘
 
 mkdir -p "$LOG_DIR"
 
+# 根據 checkpoint 最後事件決定續跑日期
+resolve_resume_from_checkpoint() {
+  local checkpoint_file="$1"
+
+  if [ ! -f "$checkpoint_file" ]; then
+    return 1
+  fi
+
+  local last_entry
+  last_entry=$(grep -E '^(DONE|FAILED|QUOTA_EXHAUSTED) ' "$checkpoint_file" | tail -1)
+
+  if [ -z "$last_entry" ]; then
+    return 1
+  fi
+
+  local status checkpoint_date
+  status=$(echo "$last_entry" | awk '{print $1}')
+  checkpoint_date=$(echo "$last_entry" | awk '{print $2}')
+
+  if [ "$status" = "QUOTA_EXHAUSTED" ]; then
+    echo "$checkpoint_date"
+    return 0
+  fi
+
+  python3 -c "
+from datetime import datetime, timedelta
+print((datetime.strptime('$checkpoint_date', '%Y-%m-%d') + timedelta(days=1)).strftime('%Y-%m-%d'))
+"
+}
+
 # 載入環境變數
 cd "$BACKEND_DIR"
 export $(cat .env.finmind | grep -v '^#' | grep -v '^$' | xargs)
 
-FIRST_MONTH="2019-01"
-LAST_MONTH="2026-04"   # 最後一個月（2026-04-08 止）
+FIRST_DATE="2019-01-02"
+LAST_DATE=$(python3 -c "
+from datetime import date, timedelta
+# 上一個交易日（跳過週末）
+d = date.today() - timedelta(days=1)
+while d.isoweekday() > 5:
+    d -= timedelta(days=1)
+print(d)
+")
 
-# 決定起始月份：
-#   1. 環境變數 START_MONTH 優先
-#   2. 否則從 checkpoint 最後完成的下一個月續跑
-#   3. 否則從頭開始
-if [ -n "$START_MONTH" ]; then
-  RESUME_FROM="$START_MONTH"
+# 決定起始日期
+if [ -n "${START_DATE:-}" ]; then
+  RESUME_FROM="$START_DATE"
 else
-  LAST_DONE=$(grep "^DONE " "$CHECKPOINT_FILE" 2>/dev/null | tail -1 | awk '{print $2}')
-  if [ -n "$LAST_DONE" ]; then
-    # 計算下一個月
-    LAST_YEAR=$(echo "$LAST_DONE" | cut -d'-' -f1)
-    LAST_MON=$(echo "$LAST_DONE" | cut -d'-' -f2 | sed 's/^0//')
-    if [ "$LAST_MON" -eq 12 ]; then
-      NEXT_YEAR=$((LAST_YEAR + 1))
-      NEXT_MON="01"
-    else
-      NEXT_YEAR=$LAST_YEAR
-      NEXT_MON=$(printf "%02d" $((LAST_MON + 1)))
-    fi
-    RESUME_FROM="${NEXT_YEAR}-${NEXT_MON}"
+  if RESUME_FROM=$(resolve_resume_from_checkpoint "$CHECKPOINT_FILE"); then
+    :
   else
-    RESUME_FROM="$FIRST_MONTH"
+    RESUME_FROM="$FIRST_DATE"
   fi
 fi
 
 echo "========================================"
-echo "FinMind Backfill（月粒度）: $RESUME_FROM ~ $LAST_MONTH"
+echo "FinMind Backfill（日粒度）: $RESUME_FROM ~ $LAST_DATE"
 echo "資料項目：股價、三大法人、估值、月營收、財報、券商分點(2021-06-30起)"
-echo "配額耗盡時自動等待 60 分鐘重試同一個月（最多 $MAX_RETRIES 次）"
+echo "配額耗盡時自動等待 $((QUOTA_WAIT_SECONDS/60)) 分鐘重試；其他錯誤記錄後繼續"
 echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
 echo "========================================"
 
-# 產生所有月份清單（YYYY-MM），從 RESUME_FROM 到 LAST_MONTH
-MONTHS=()
-CUR_YEAR=$(echo "$FIRST_MONTH" | cut -d'-' -f1)
-CUR_MON=$(echo "$FIRST_MONTH" | cut -d'-' -f2 | sed 's/^0//')
-END_YEAR=$(echo "$LAST_MONTH" | cut -d'-' -f1)
-END_MON=$(echo "$LAST_MONTH" | cut -d'-' -f2 | sed 's/^0//')
+# 產生所有平日清單（週一~五；台灣假日不過濾，ETL 會自動跳過空日）
+DATES=$(python3 -c "
+from datetime import datetime, timedelta
+start = datetime.strptime('$RESUME_FROM', '%Y-%m-%d')
+end   = datetime.strptime('$LAST_DATE',   '%Y-%m-%d')
+d = start
+while d <= end:
+    if d.isoweekday() <= 5:
+        print(d.strftime('%Y-%m-%d'))
+    d += timedelta(days=1)
+")
 
-while true; do
-  YM=$(printf "%d-%02d" $CUR_YEAR $CUR_MON)
-  MONTHS+=("$YM")
-  if [ "$CUR_YEAR" -eq "$END_YEAR" ] && [ "$CUR_MON" -eq "$END_MON" ]; then
-    break
-  fi
-  if [ "$CUR_MON" -eq 12 ]; then
-    CUR_YEAR=$((CUR_YEAR + 1))
-    CUR_MON=1
-  else
-    CUR_MON=$((CUR_MON + 1))
-  fi
-done
+TOTAL=$(echo "$DATES" | wc -l | tr -d ' ')
+CURRENT=0
+FAILED_DAYS=()
 
-# 計算月份最後一天
-last_day_of_month() {
-  local yr=$1
-  local mo=$2
-  # 用 Python 最可靠（跨平台）
-  python3 -c "import calendar; print(calendar.monthrange($yr, $mo)[1])"
-}
+if [ -z "$DATES" ]; then
+  echo "✅ 無需補跑，$RESUME_FROM 之後已無交易日"
+  exit 0
+fi
 
-SKIPPING=true
-RESUME_YEAR=$(echo "$RESUME_FROM" | cut -d'-' -f1)
-RESUME_MON=$(echo "$RESUME_FROM" | cut -d'-' -f2 | sed 's/^0//')
-
-for YM in "${MONTHS[@]}"; do
-  Y=$(echo "$YM" | cut -d'-' -f1)
-  M=$(echo "$YM" | cut -d'-' -f2 | sed 's/^0//')
-
-  # 跳過 RESUME_FROM 之前的月份
-  if [ "$SKIPPING" = true ]; then
-    if [ "$Y" -lt "$RESUME_YEAR" ] || { [ "$Y" -eq "$RESUME_YEAR" ] && [ "$M" -lt "$RESUME_MON" ]; }; then
-      continue
-    fi
-    SKIPPING=false
-  fi
-
-  MM=$(printf "%02d" $M)
-  START_DATE="${Y}-${MM}-01"
-
-  # 最後一個月截止到 2026-04-08
-  if [ "$Y" -eq 2026 ] && [ "$M" -eq 4 ]; then
-    END_DATE="2026-04-08"
-  else
-    LAST_DAY=$(last_day_of_month $Y $M)
-    END_DATE="${Y}-${MM}-${LAST_DAY}"
-  fi
-
-  MONTH_LOG="$LOG_DIR/backfill_${Y}_${MM}.log"
+for DATE in $DATES; do
+  CURRENT=$((CURRENT + 1))
+  YEAR=$(echo "$DATE" | cut -d'-' -f1)
+  DAY_LOG="$LOG_DIR/backfill_${YEAR}.log"
 
   echo ""
-  echo "--- [$YM] $START_DATE → $END_DATE ---"
-  echo "Log: $MONTH_LOG"
+  echo "--- [$CURRENT/$TOTAL] $DATE ---"
 
   RETRY=0
   SUCCESS=false
+  EXIT_CODE=0
 
   while [ $RETRY -le $MAX_RETRIES ]; do
     if [ $RETRY -gt 0 ]; then
       echo ""
       echo "⏳ 配額等待中，$QUOTA_WAIT_SECONDS 秒後重試（第 $RETRY/$MAX_RETRIES 次）..."
-      echo "   預計恢復時間：$(python3 -c "from datetime import datetime, timedelta; print((datetime.now()+timedelta(seconds=$QUOTA_WAIT_SECONDS)).strftime('%Y-%m-%d %H:%M:%S'))")"
+      echo "   預計恢復：$(python3 -c "
+from datetime import datetime, timedelta
+print((datetime.now()+timedelta(seconds=$QUOTA_WAIT_SECONDS)).strftime('%Y-%m-%d %H:%M:%S'))
+")"
       sleep $QUOTA_WAIT_SECONDS
-      echo "⏰ 重試開始 $(date '+%Y-%m-%d %H:%M:%S')"
+      echo "⏰ 重試 $(date '+%Y-%m-%d %H:%M:%S')"
     fi
 
-    python3 run_finmind_etl_sdk.py \
-      --start-date "$START_DATE" \
-      --end-date "$END_DATE" \
-      2>&1 | tee "$MONTH_LOG"
-
+    set +e
+    python3 run_finmind_etl_sdk.py --date "$DATE" --skip-log \
+      2>&1 | tee -a "$DAY_LOG"
     EXIT_CODE=${PIPESTATUS[0]}
+    set -e
 
     # exit code: 0=ok, 1=partial, 2=insufficient_quota, 3=error
-    if [ $EXIT_CODE -eq 0 ]; then
-      SUCCESS=true
-      break
-    elif [ $EXIT_CODE -eq 1 ]; then
-      echo ""
-      echo "⚠️  $YM 部分完成（exit code 1），繼續下一月"
+    if [ $EXIT_CODE -eq 0 ] || [ $EXIT_CODE -eq 1 ]; then
       SUCCESS=true
       break
     elif [ $EXIT_CODE -eq 2 ]; then
-      echo ""
-      echo "⚠️  $YM 配額不足（exit code 2），等待後重試..."
       RETRY=$((RETRY + 1))
     else
-      echo ""
-      echo "❌ $YM 發生錯誤（exit code $EXIT_CODE），中止執行"
-      echo "   重跑指令："
-      echo "   START_MONTH=$YM bash scripts/backfill_finmind.sh"
-      echo "FAILED $YM exit=$EXIT_CODE $(date '+%Y-%m-%d %H:%M:%S')" >> "$CHECKPOINT_FILE"
-      exit 1
+      # 非配額錯誤：記錄後繼續（不中止）
+      echo "⚠️  $DATE 失敗（exit $EXIT_CODE），記錄後繼續"
+      echo "FAILED $DATE exit=$EXIT_CODE $(date '+%Y-%m-%d %H:%M:%S')" >> "$CHECKPOINT_FILE"
+      FAILED_DAYS+=("$DATE")
+      SUCCESS=true  # 設 true 讓外層不再等待，直接下一天
+      break
     fi
   done
 
   if [ "$SUCCESS" = false ]; then
     echo ""
-    echo "❌ $YM 重試 $MAX_RETRIES 次後仍失敗，中止執行"
-    echo "   重跑指令："
-    echo "   START_MONTH=$YM bash scripts/backfill_finmind.sh"
-    echo "FAILED $YM after $MAX_RETRIES retries $(date '+%Y-%m-%d %H:%M:%S')" >> "$CHECKPOINT_FILE"
-    exit 1
+    echo "❌ $DATE 配額重試 $MAX_RETRIES 次後仍不足，中止"
+    echo "   已記錄 checkpoint，下一次會從這一天重新開始"
+    echo "   也可手動執行："
+    echo "   START_DATE=$DATE bash scripts/backfill_finmind.sh"
+    echo "QUOTA_EXHAUSTED $DATE $(date '+%Y-%m-%d %H:%M:%S')" >> "$CHECKPOINT_FILE"
+    exit 2
   fi
 
-  echo "DONE $YM $(date '+%Y-%m-%d %H:%M:%S')" | tee -a "$CHECKPOINT_FILE"
+  # 只有真正成功或 partial 才寫 DONE
+  if [ $EXIT_CODE -eq 0 ] || [ $EXIT_CODE -eq 1 ]; then
+    echo "DONE $DATE $(date '+%Y-%m-%d %H:%M:%S')" >> "$CHECKPOINT_FILE"
+  fi
 done
 
 echo ""
 echo "========================================"
-echo "✅ 全量 Backfill 完成！"
+echo "✅ Backfill 完成！最後日期：$LAST_DATE"
 echo "Finished: $(date '+%Y-%m-%d %H:%M:%S')"
+
+if [ ${#FAILED_DAYS[@]} -gt 0 ]; then
+  echo ""
+  echo "⚠️  以下 ${#FAILED_DAYS[@]} 天失敗（非配額），可單獨重跑："
+  for D in "${FAILED_DAYS[@]}"; do
+    echo "   python3 run_finmind_etl_sdk.py --date $D"
+  done
+fi
 echo "========================================"

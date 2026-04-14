@@ -71,13 +71,13 @@ def fetch_and_upsert_daily_valuation_finmind_sdk(
                 INSERT INTO daily_valuation
                     (trade_date, stock_id, per, pbr, dividend_yield, source, ingested_at)
                 VALUES
-                    (:trade_date, :stock_id, :per_val, :pbr_val, :dy_val, 'finmind', NOW())
+                    (:trade_date, :stock_id, :per_val, :pbr_val, :dy_val, 'finmind', CURRENT_TIMESTAMP)
                 ON CONFLICT (trade_date, stock_id) DO UPDATE SET
                     per          = EXCLUDED.per,
                     pbr          = EXCLUDED.pbr,
                     dividend_yield = EXCLUDED.dividend_yield,
                     source       = 'finmind',
-                    ingested_at  = NOW()
+                    ingested_at  = CURRENT_TIMESTAMP
             """), batch)
             db.commit()
             result["upserted"] += len(batch)

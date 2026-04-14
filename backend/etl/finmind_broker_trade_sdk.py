@@ -93,14 +93,14 @@ def fetch_and_upsert_broker_trade_agg_sdk(
                      buy_shares, sell_shares, net_shares, source, ingested_at)
                 VALUES
                     (:trade_date, :stock_id, :broker_id, :broker_name,
-                     :buy_shares, :sell_shares, :net_shares, 'finmind', NOW())
-                ON CONFLICT ON CONSTRAINT uq_broker_agg_date_stock_broker DO UPDATE SET
+                     :buy_shares, :sell_shares, :net_shares, 'finmind', CURRENT_TIMESTAMP)
+                ON CONFLICT (trade_date, stock_id, broker_id) DO UPDATE SET
                     broker_name  = EXCLUDED.broker_name,
                     buy_shares   = EXCLUDED.buy_shares,
                     sell_shares  = EXCLUDED.sell_shares,
                     net_shares   = EXCLUDED.net_shares,
                     source       = 'finmind',
-                    ingested_at  = NOW()
+                    ingested_at  = CURRENT_TIMESTAMP
             """), batch)
             db.commit()
             result["upserted"] += len(batch)

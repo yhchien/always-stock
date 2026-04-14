@@ -54,10 +54,10 @@ tmux attach -t finmind-backfill
 
 ### 不進 session，直接看 checkpoint
 ```bash
-# 已完成哪些月份
+# 已完成哪些日期
 tail -30 backend/logs/backfill_checkpoint.txt
 
-# 目前跑到第幾月（最新 log）
+# 目前跑到哪一天（最新 log）
 ls -t backend/logs/backfill_*.log | head -1 | xargs tail -40
 ```
 
@@ -65,38 +65,37 @@ ls -t backend/logs/backfill_*.log | head -1 | xargs tail -40
 
 ## 斷線或中途停止後續跑
 
-腳本會自動從 checkpoint 最後完成的下一個月繼續：
+腳本會自動依 checkpoint 最後事件續跑：
+
+- 最後一筆是 `DONE YYYY-MM-DD ...` 或 `FAILED YYYY-MM-DD ...`：從隔天繼續
+- 最後一筆是 `QUOTA_EXHAUSTED YYYY-MM-DD ...`：從該天重新開始
 
 ```bash
 tmux new-session -s finmind-backfill
 bash scripts/backfill_finmind.sh
 ```
 
-若要強制從特定月份開始：
+若要強制從特定日期開始：
 
 ```bash
-START_MONTH=2022-06 bash scripts/backfill_finmind.sh
+START_DATE=2022-06-01 bash scripts/backfill_finmind.sh
 ```
 
 ---
 
 ## 配額不足時的行為
 
-- exit code `2`（insufficient_quota）→ 自動等待 **75 分鐘**後重試同一個月
-- 最多重試 3 次，仍失敗才停止並印出重跑指令
+- exit code `2`（insufficient_quota）→ 自動等待 **75 分鐘**後重試同一天
+- 最多重試 3 次，仍失敗會寫入 `QUOTA_EXHAUSTED YYYY-MM-DD ...` 後停止
+- 下次直接重新執行 `bash scripts/backfill_finmind.sh`，會從該天重新開始
 
 ---
 
 ## 預期完成時間
 
-| 資料期間 | 月份數 | 預估 API 消耗 | 預估時間 |
-|---------|--------|-------------|---------|
-| 2019–2020 | 24 個月 | ~144 req | < 1 hr |
-| 2021–2026 | 64 個月 | ~384 req | < 1 hr |
-| **全量** | **88 個月** | **~528 req** | **< 2 hr**（含偶發配額等待） |
+日粒度後，實際耗時取決於交易日數、空資料日比例與 quota 重試次數。
 
-> 每月約 6 次 batch call，全量約 528 req，遠低於 6,000/hr 上限。
-> 若中途遇到配額不足（通常在前幾個月就會遭遇），等待 75 分鐘後自動繼續。
+> 每天約 6 次 batch call；遇到配額不足時，腳本會先對同一天重試，若仍不足則記下該天並結束，下一次從同一天續跑。
 
 ---
 
@@ -117,9 +116,9 @@ START_MONTH=2022-06 bash scripts/backfill_finmind.sh
 
 ```
 backend/logs/
-├── backfill_checkpoint.txt     # 完成月份紀錄
-├── backfill_2019_01.log        # 每月 ETL 詳細 log
-├── backfill_2019_02.log
+├── backfill_checkpoint.txt     # 日粒度 checkpoint（DONE / FAILED / QUOTA_EXHAUSTED）
+├── backfill_2019.log           # 每年 ETL 詳細 log
+├── backfill_2020.log
 ├── ...
 └── finmind_migration_checkpoint.json
 ```

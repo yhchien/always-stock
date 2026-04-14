@@ -241,12 +241,51 @@ class FinMindSDKClient:
         )
 
         try:
-            df = self.api.taiwan_stock_per_pbr(
-                stock_id_list=stock_id_list,
-                start_date=start_date,
-                end_date=end_date,
-                use_async=use_async,
-            )
+            # 優先嘗試 SDK batch 方法
+            per_method = None
+            for candidate in ('taiwan_stock_per_pbr', 'taiwan_stock_per'):
+                if hasattr(self.api, candidate):
+                    per_method = candidate
+                    break
+
+            if per_method:
+                df = getattr(self.api, per_method)(
+                    stock_id_list=stock_id_list,
+                    start_date=start_date,
+                    end_date=end_date,
+                    use_async=use_async,
+                )
+            else:
+                # SDK 不支援，fallback 至 REST API（逐批抓取，每批 50 支）
+                import requests
+                import pandas as pd
+
+                logger.warning(
+                    "SDK has no taiwan_stock_per_pbr / taiwan_stock_per. "
+                    "Falling back to REST API (batches of 50)."
+                )
+                rows = []
+                batch_size = 50
+                for i in range(0, len(stock_id_list), batch_size):
+                    batch = stock_id_list[i: i + batch_size]
+                    for stock_id in batch:
+                        resp = requests.get(
+                            "https://api.finmindtrade.com/api/v4/data",
+                            params={
+                                "dataset": "TaiwanStockPER",
+                                "data_id": stock_id,
+                                "start_date": start_date,
+                                "end_date": end_date,
+                                "token": self.token,
+                            },
+                            timeout=30,
+                        )
+                        if resp.status_code == 402:
+                            logger.error("402 quota exceeded during PER REST fallback")
+                            break
+                        data = resp.json().get("data", [])
+                        rows.extend(data)
+                df = pd.DataFrame(rows) if rows else pd.DataFrame()
 
             self._refresh_quota()  # 刷新配額
             logger.info(f"✓ Fetched {len(df)} PER records")
