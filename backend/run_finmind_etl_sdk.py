@@ -105,6 +105,9 @@ class FinMindETLOrchestratorSDK:
         from etl.finmind_daily_price_sdk import fetch_and_upsert_daily_price_finmind_sdk
         from etl.finmind_inst_flow_sdk import fetch_and_upsert_inst_flow_finmind_sdk
         from etl.finmind_daily_valuation_sdk import fetch_and_upsert_daily_valuation_finmind_sdk
+        from etl.finmind_monthly_revenue_sdk import fetch_and_upsert_monthly_revenue_sdk
+        from etl.finmind_financial_statement_sdk import fetch_and_upsert_financial_statement_sdk
+        from etl.finmind_broker_trade_sdk import fetch_and_upsert_broker_trade_agg_sdk
 
         if db is None:
             db = SessionLocal()
@@ -143,7 +146,7 @@ class FinMindETLOrchestratorSDK:
                 return result
 
             # 1. 每日股價（一次 batch fetch）
-            logger.info("\n[1/3] Fetching daily prices (SDK batch)...")
+            logger.info("\n[1/6] Fetching daily prices (SDK batch)...")
             try:
                 price_result = fetch_and_upsert_daily_price_finmind_sdk(
                     db, stock_ids, start_date, end_date, self.client
@@ -155,7 +158,7 @@ class FinMindETLOrchestratorSDK:
                 result["results"]["daily_price"] = {"status": "error", "error": str(e)}
 
             # 2. 三大法人買賣超（一次 batch fetch）
-            logger.info("\n[2/3] Fetching institutional flows (SDK batch)...")
+            logger.info("\n[2/6] Fetching institutional flows (SDK batch)...")
             try:
                 inst_result = fetch_and_upsert_inst_flow_finmind_sdk(
                     db, stock_ids, start_date, end_date, self.client
@@ -167,7 +170,7 @@ class FinMindETLOrchestratorSDK:
                 result["results"]["inst_flow"] = {"status": "error", "error": str(e)}
 
             # 3. 日常估值（一次 batch fetch）
-            logger.info("\n[3/3] Fetching daily valuation (SDK batch)...")
+            logger.info("\n[3/6] Fetching daily valuation (SDK batch)...")
             try:
                 valuation_result = fetch_and_upsert_daily_valuation_finmind_sdk(
                     db, stock_ids, start_date, end_date, self.client
@@ -177,6 +180,42 @@ class FinMindETLOrchestratorSDK:
             except Exception as e:
                 logger.error(f"✗ Daily valuation ETL failed: {e}")
                 result["results"]["daily_valuation"] = {"status": "error", "error": str(e)}
+
+            # 4. 月營收
+            logger.info("\n[4/6] Fetching monthly revenue (SDK batch)...")
+            try:
+                rev_result = fetch_and_upsert_monthly_revenue_sdk(
+                    db, stock_ids, start_date, end_date, self.client
+                )
+                result["results"]["monthly_revenue"] = rev_result
+                logger.info(f"✓ Monthly revenue: {rev_result['status']}")
+            except Exception as e:
+                logger.error(f"✗ Monthly revenue ETL failed: {e}")
+                result["results"]["monthly_revenue"] = {"status": "error", "error": str(e)}
+
+            # 5. 財報（季報）
+            logger.info("\n[5/6] Fetching financial statements (SDK batch)...")
+            try:
+                fs_result = fetch_and_upsert_financial_statement_sdk(
+                    db, stock_ids, start_date, end_date, self.client
+                )
+                result["results"]["financial_statement"] = fs_result
+                logger.info(f"✓ Financial statements: {fs_result['status']}")
+            except Exception as e:
+                logger.error(f"✗ Financial statement ETL failed: {e}")
+                result["results"]["financial_statement"] = {"status": "error", "error": str(e)}
+
+            # 6. 券商分點聚合（Sponsor，起點 2021-06-30）
+            logger.info("\n[6/6] Fetching broker trade agg (Sponsor, from 2021-06-30)...")
+            try:
+                broker_result = fetch_and_upsert_broker_trade_agg_sdk(
+                    db, stock_ids, start_date, end_date, self.client
+                )
+                result["results"]["broker_trade_agg"] = broker_result
+                logger.info(f"✓ Broker trade agg: {broker_result['status']}")
+            except Exception as e:
+                logger.error(f"✗ Broker trade agg ETL failed: {e}")
+                result["results"]["broker_trade_agg"] = {"status": "error", "error": str(e)}
 
             # 判定整體狀態
             statuses = [r.get("status") for r in result["results"].values() if r]

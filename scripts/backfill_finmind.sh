@@ -1,6 +1,14 @@
 #!/bin/bash
 # FinMind 全量 Backfill 腳本
-# 按年分段執行，斷線後只需重跑失敗的年份
+# 每年一個批次，斷線後只需重跑失敗的年份
+#
+# 每次跑包含：
+#   1. 股價（daily_price）
+#   2. 三大法人（inst_stock_flow）
+#   3. 估值 P/E P/B（daily_valuation）
+#   4. 月營收（monthly_revenue）
+#   5. 財報（financial_statement）
+#   6. 券商分點聚合（broker_trade_agg，2019-2020 自動跳過，2021-06-30 起才有資料）
 #
 # 使用方式：
 #   bash scripts/backfill_finmind.sh
@@ -26,6 +34,7 @@ END_YEAR=2026
 
 echo "========================================"
 echo "FinMind Backfill: $START_YEAR ~ $END_YEAR"
+echo "資料項目：股價、三大法人、估值、月營收、財報、券商分點(2021-06-30起)"
 echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
 echo "========================================"
 

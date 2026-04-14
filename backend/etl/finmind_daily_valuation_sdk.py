@@ -9,9 +9,12 @@ from datetime import date
 from typing import Dict, Any
 
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+BULK_BATCH_SIZE = 1000
 
 
 def fetch_and_upsert_daily_valuation_finmind_sdk(
@@ -22,36 +25,14 @@ def fetch_and_upsert_daily_valuation_finmind_sdk(
     client: Any,  # FinMindSDKClient
 ) -> Dict[str, Any]:
     """
-    從 FinMind SDK 批量抓取估值資料（P/E、P/B 等）
-
-    Args:
-        db: SQLAlchemy session
-        stock_ids: 股票代碼列表
-        start_date: 開始日期
-        end_date: 結束日期
-        client: FinMind SDK 客戶端
-
-    Returns:
-        {
-            "start_date": date,
-            "end_date": date,
-            "total_records": int,
-            "inserted": int,
-            "updated": int,
-            "failed": int,
-            "status": "ok" | "partial" | "error" | "insufficient_quota" | "sponsor_only",
-        }
+    從 FinMind SDK 批量抓取估值資料（P/E、P/B、殖利率）並以 bulk upsert 寫入 DB。
     """
-    from app.models import DailyValuation
-
     result = {
         "start_date": start_date,
         "end_date": end_date,
         "total_stocks": len(stock_ids),
         "total_records": 0,
-        "inserted": 0,
-        "updated": 0,
-        "failed": 0,
+        "upserted": 0,
         "status": "ok",
     }
 
@@ -61,7 +42,6 @@ def fetch_and_upsert_daily_valuation_finmind_sdk(
     )
 
     try:
-        # 一次 batch fetch
         df = client.fetch_per(
             stock_id_list=stock_ids,
             start_date=start_date.strftime("%Y-%m-%d"),
@@ -75,67 +55,36 @@ def fetch_and_upsert_daily_valuation_finmind_sdk(
             return result
 
         result["total_records"] = len(df)
-        logger.info(f"Received {len(df)} valuation records")
+        logger.info(f"Received {len(df)} valuation records, writing to DB...")
 
-        # 資料映射
-        # FinMind 欄位（需要根據實際調整）：
-        # date, stock_id, per, pbr, dividend_yield (等)
-        
-        for _, row in df.iterrows():
-            try:
-                trade_date = pd.to_datetime(row.get("date")).date()
-                stock_id = str(row.get("stock_id")).strip()
+        df["trade_date"] = pd.to_datetime(df["date"]).dt.date
+        df["stock_id"] = df["stock_id"].astype(str).str.strip()
+        df["per_val"] = pd.to_numeric(df.get("PER"), errors="coerce") if "PER" in df.columns else None
+        df["pbr_val"] = pd.to_numeric(df.get("PBR"), errors="coerce") if "PBR" in df.columns else None
+        df["dy_val"] = pd.to_numeric(df.get("dividend_yield"), errors="coerce") if "dividend_yield" in df.columns else None
 
-                if not stock_id or trade_date is None:
-                    logger.debug(f"Invalid row: {row}")
-                    continue
+        records = df[["trade_date", "stock_id", "per_val", "pbr_val", "dy_val"]].to_dict("records")
 
-                row_data = {
-                    "trade_date": trade_date,
-                    "stock_id": stock_id,
-                    "per": float(row.get("per")) if row.get("per") else None,
-                    "pbr": float(row.get("pbr")) if row.get("pbr") else None,
-                    "dividend_yield": float(row.get("dividend_yield")) if row.get("dividend_yield") else None,
-                    "source": "finmind",
-                }
+        for i in range(0, len(records), BULK_BATCH_SIZE):
+            batch = records[i:i + BULK_BATCH_SIZE]
+            db.execute(text("""
+                INSERT INTO daily_valuation
+                    (trade_date, stock_id, per, pbr, dividend_yield, source, ingested_at)
+                VALUES
+                    (:trade_date, :stock_id, :per_val, :pbr_val, :dy_val, 'finmind', NOW())
+                ON CONFLICT (trade_date, stock_id) DO UPDATE SET
+                    per          = EXCLUDED.per,
+                    pbr          = EXCLUDED.pbr,
+                    dividend_yield = EXCLUDED.dividend_yield,
+                    source       = 'finmind',
+                    ingested_at  = NOW()
+            """), batch)
+            db.commit()
+            result["upserted"] += len(batch)
+            logger.info(f"Progress: {result['upserted']}/{len(records)} upserted")
 
-                # Upsert
-                existing = db.query(DailyValuation).filter(
-                    DailyValuation.trade_date == trade_date,
-                    DailyValuation.stock_id == stock_id,
-                ).first()
-
-                if existing:
-                    for key, value in row_data.items():
-                        if key not in ("trade_date", "stock_id"):
-                            setattr(existing, key, value)
-                    result["updated"] += 1
-                else:
-                    new_row = DailyValuation(**row_data)
-                    db.add(new_row)
-                    result["inserted"] += 1
-
-            except Exception as e:
-                logger.error(f"Error processing row: {e}")
-                result["failed"] += 1
-                continue
-
-            # 定期提交
-            if (result["inserted"] + result["updated"]) % 500 == 0:
-                db.commit()
-
-        db.commit()
-
-        if result["failed"] > 0:
-            result["status"] = "partial"
-        else:
-            result["status"] = "ok"
-
-        logger.info(
-            f"Daily valuation ETL completed: "
-            f"inserted={result['inserted']}, updated={result['updated']}"
-        )
-
+        result["status"] = "ok"
+        logger.info(f"Daily valuation ETL completed: upserted={result['upserted']}")
         return result
 
     except RuntimeError as e:
