@@ -18,6 +18,9 @@ python-telegram-bot>=21.0
 # OpenAI (AI analyst sub-agent)
 openai>=1.0.0
 
+# HTTP client (used by market router for Yahoo Finance)
+requests>=2.31.0
+
 # Environment config
 python-dotenv>=1.0.0
 
