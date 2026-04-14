@@ -419,8 +419,15 @@ def get_broker_ranked(
 
     all_items.extend(live_rows)
 
-    buy_top = sorted(all_items, key=lambda x: x.buy_shares, reverse=True)[:10]
-    sell_top = sorted(all_items, key=lambda x: x.sell_shares, reverse=True)[:10]
+    buy_top = sorted(
+        [i for i in all_items if i.net_shares > 0],
+        key=lambda x: x.net_shares,
+        reverse=True,
+    )[:10]
+    sell_top = sorted(
+        [i for i in all_items if i.net_shares < 0],
+        key=lambda x: x.net_shares,
+    )[:10]
 
     return BrokerRankedResponse(
         stock_id=stock_id,

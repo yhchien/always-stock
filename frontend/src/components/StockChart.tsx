@@ -4,7 +4,16 @@ import { useEffect, useState, useCallback, useMemo, useRef } from "react"
 import { useRouter } from "next/navigation"
 import ReactECharts from "echarts-for-react"
 import { Skeleton } from "@/components/ui/skeleton"
-import { fetchStockHistory, fmtShares, toDisplayError, type StockHistoryResponse } from "@/lib/api"
+import {
+  fetchStockHistory,
+  fetchBrokerHistory,
+  fmtShares,
+  fmtLots,
+  toDisplayError,
+  type StockHistoryResponse,
+  type BrokerDailyItem,
+  type BrokerTradeItem,
+} from "@/lib/api"
 import { useRealtimeQuotes } from "@/lib/useRealtimeQuotes"
 
 const RANGE_OPTIONS = [
@@ -48,12 +57,13 @@ interface Props {
   days?: number
   chartHeight?: string
   onDaysChange?: (days: number) => void
+  selectedBroker?: BrokerTradeItem | null
 }
 
 // 永遠載入全量資料，用 dataZoom 控制初始視窗
 const FULL_LOAD_DAYS = 3650
 
-export default function StockChart({ stockId, defaultDate, days: initialDays = 90, chartHeight, onDaysChange }: Props) {
+export default function StockChart({ stockId, defaultDate, days: initialDays = 90, chartHeight, onDaysChange, selectedBroker }: Props) {
   const router = useRouter()
   const chartRef = useRef<HTMLDivElement>(null)
   const [days, setDays] = useState(initialDays)
@@ -61,6 +71,10 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const realtimeQuotes = useRealtimeQuotes([stockId])
+
+  // Broker sub-panel state
+  const [brokerHistory, setBrokerHistory] = useState<BrokerDailyItem[]>([])
+  const [brokerLoading, setBrokerLoading] = useState(false)
 
   // Custom date range state
   const [customStart, setCustomStart] = useState("")
@@ -134,6 +148,31 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
     }
   }, [load])
 
+  // Fetch broker history for the full loaded date range when broker is selected
+  useEffect(() => {
+    if (!selectedBroker || !data || data.history.length === 0) {
+      setBrokerHistory([])
+      return
+    }
+    const controller = new AbortController()
+    setBrokerLoading(true)
+    const start = data.history[0].trade_date
+    const end = data.history[data.history.length - 1].trade_date
+    fetchBrokerHistory(stockId, selectedBroker.broker_id, String(start), String(end), {
+      signal: controller.signal,
+    })
+      .then((r) => {
+        if (!controller.signal.aborted) {
+          setBrokerHistory(r.history)
+          setBrokerLoading(false)
+        }
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setBrokerLoading(false)
+      })
+    return () => controller.abort()
+  }, [selectedBroker?.broker_id, data, stockId])
+
   const toggleMA = (period: number) => {
     setActiveMAs((prev) => {
       const next = new Set(prev)
@@ -170,11 +209,24 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
         ])
       : null
 
+    // Broker sub-panel: align history to main dates array
+    const hasBroker = !brokerLoading && brokerHistory.length > 0 && !!selectedBroker
+    const brokerNetData = hasBroker
+      ? (() => {
+          const map = new Map(brokerHistory.map((h) => [h.trade_date, h.net_shares]))
+          return dates.map((d) => {
+            const v = map.get(d) ?? 0
+            return { value: v / 1000, itemStyle: { color: v > 0 ? "#f87171" : v < 0 ? "#4ade80" : "#52525b" } }
+          })
+        })()
+      : []
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const priceSeries: any = hasOHLC && candleData
       ? {
           name: "股價",
           type: "candlestick",
+          xAxisIndex: 0,
           yAxisIndex: 0,
           data: candleData,
           itemStyle: {
@@ -187,6 +239,7 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
       : {
           name: "收盤價",
           type: "line",
+          xAxisIndex: 0,
           yAxisIndex: 0,
           data: closePrices,
           smooth: true,
@@ -207,6 +260,7 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
       maSeries.push({
         name: label,
         type: "line",
+        xAxisIndex: 0,
         yAxisIndex: 0,
         data: maData,
         smooth: false,
@@ -222,6 +276,28 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
       .filter((c) => activeInst.has(c.key))
       .map((c) => (c.key === "dealer" ? "自營商累積" : `${c.label}累積`))
     const legendData = [priceName, ...maNames, ...instNames]
+
+    // DataZoom: compute window start/end percentages
+    let zoomStart: number
+    let zoomEnd: number
+    if (appliedCustom) {
+      zoomStart = 0
+      zoomEnd = 100
+    } else if (defaultDate) {
+      const total = dates.length
+      const idx = dates.indexOf(defaultDate)
+      const pivot = idx >= 0 ? idx : total - 1
+      const half = Math.floor(days / 2)
+      const startIdx = Math.max(0, pivot - half)
+      const endIdx = Math.min(total - 1, pivot + half)
+      zoomStart = Math.round((startIdx / total) * 100)
+      zoomEnd = Math.round(((endIdx + 1) / total) * 100)
+    } else {
+      zoomStart = Math.max(0, Math.round((1 - days / dates.length) * 100))
+      zoomEnd = 100
+    }
+
+    const xAxisIndexes = hasBroker ? [0, 1] : [0]
 
     return {
       backgroundColor: "transparent",
@@ -246,6 +322,11 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
               html += `<div>${p.marker} ${p.seriesName}: <b>${(p.value as number).toFixed(2)} 元</b></div>`
             } else if (typeof p.value === "number" && p.seriesName?.startsWith("MA")) {
               html += `<div>${p.marker} ${p.seriesName}: <b>${(p.value as number).toFixed(2)} 元</b></div>`
+            } else if (p.seriesName?.includes("淨買超")) {
+              const v = p.value as { value: number } | number
+              const val = typeof v === "object" ? v.value : v
+              const color2 = val > 0 ? "#f87171" : val < 0 ? "#4ade80" : "#a1a1aa"
+              html += `<div style="color:${color2}">${p.marker} ${p.seriesName}: <b>${val >= 0 ? "+" : ""}${val.toFixed(0)} 張</b></div>`
             } else if (p.value != null) {
               html += `<div>${p.marker} ${p.seriesName}: <b>${fmtShares(p.value as number)}</b></div>`
             }
@@ -260,66 +341,68 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
         itemWidth: 16,
         itemHeight: 10,
       },
-      grid: { left: 60, right: 70, top: 40, bottom: 70 },
-      dataZoom: (() => {
-        // Compute zoom window: center on defaultDate if provided, otherwise right-aligned
-        let zoomStart: number
-        let zoomEnd: number
-        if (appliedCustom) {
-          zoomStart = 0
-          zoomEnd = 100
-        } else if (defaultDate) {
-          const total = dates.length
-          const idx = dates.indexOf(defaultDate)
-          const pivot = idx >= 0 ? idx : total - 1
-          const half = Math.floor(days / 2)
-          const startIdx = Math.max(0, pivot - half)
-          const endIdx = Math.min(total - 1, pivot + half)
-          zoomStart = Math.round((startIdx / total) * 100)
-          zoomEnd = Math.round(((endIdx + 1) / total) * 100)
-        } else {
-          zoomStart = Math.max(0, Math.round((1 - days / dates.length) * 100))
-          zoomEnd = 100
-        }
-        return [
-          {
-            type: "slider",
-            xAxisIndex: 0,
-            start: zoomStart,
-            end: zoomEnd,
-            height: 20,
-            bottom: 10,
-            borderColor: "#3f3f46",
-            backgroundColor: "#27272a",
-            fillerColor: "rgba(113,113,122,0.2)",
-            handleStyle: { color: "#71717a" },
-            textStyle: { color: "#a1a1aa", fontSize: 10 },
-            dataBackground: {
-              lineStyle: { color: "#52525b" },
-              areaStyle: { color: "#3f3f46" },
-            },
+      grid: hasBroker
+        ? [
+            { left: 60, right: 70, top: 40, bottom: "30%" },
+            { left: 60, right: 70, top: "74%", bottom: 60 },
+          ]
+        : { left: 60, right: 70, top: 40, bottom: 70 },
+      dataZoom: [
+        {
+          type: "slider",
+          xAxisIndex: xAxisIndexes,
+          start: zoomStart,
+          end: zoomEnd,
+          height: 20,
+          bottom: 10,
+          borderColor: "#3f3f46",
+          backgroundColor: "#27272a",
+          fillerColor: "rgba(113,113,122,0.2)",
+          handleStyle: { color: "#71717a" },
+          textStyle: { color: "#a1a1aa", fontSize: 10 },
+          dataBackground: {
+            lineStyle: { color: "#52525b" },
+            areaStyle: { color: "#3f3f46" },
           },
-          {
-            type: "inside",
-            xAxisIndex: 0,
-            start: zoomStart,
-            end: zoomEnd,
-          },
-        ]
-      })(),
-      xAxis: {
-        type: "category" as const,
-        data: dates,
-        axisLabel: {
-          color: "#71717a",
-          fontSize: 11,
-          formatter: (v: string) => v.slice(5),
         },
-        axisLine: { lineStyle: { color: "#3f3f46" } },
-        splitLine: { show: false },
-      },
+        {
+          type: "inside",
+          xAxisIndex: xAxisIndexes,
+          start: zoomStart,
+          end: zoomEnd,
+        },
+      ],
+      xAxis: hasBroker
+        ? [
+            {
+              type: "category" as const,
+              data: dates,
+              gridIndex: 0,
+              axisLabel: { color: "#71717a", fontSize: 11, formatter: (v: string) => v.slice(5) },
+              axisLine: { lineStyle: { color: "#3f3f46" } },
+              splitLine: { show: false },
+            },
+            {
+              type: "category" as const,
+              data: dates,
+              gridIndex: 1,
+              show: false,
+            },
+          ]
+        : {
+            type: "category" as const,
+            data: dates,
+            axisLabel: {
+              color: "#71717a",
+              fontSize: 11,
+              formatter: (v: string) => v.slice(5),
+            },
+            axisLine: { lineStyle: { color: "#3f3f46" } },
+            splitLine: { show: false },
+          },
       yAxis: [
         {
+          gridIndex: hasBroker ? 0 : undefined,
           type: "value" as const,
           name: hasOHLC ? "股價" : "收盤價",
           nameTextStyle: { color: "#a1a1aa", fontSize: 11 },
@@ -329,6 +412,7 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
           scale: true,
         },
         {
+          gridIndex: hasBroker ? 0 : undefined,
           type: "value" as const,
           name: "累積張數",
           nameTextStyle: { color: "#a1a1aa", fontSize: 11 },
@@ -340,6 +424,24 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
           axisLine: { lineStyle: { color: "#3f3f46" } },
           splitLine: { show: false },
         },
+        ...(hasBroker
+          ? [
+              {
+                gridIndex: 1,
+                type: "value" as const,
+                name: `${selectedBroker!.display_name}(張)`,
+                nameTextStyle: { color: "#a1a1aa", fontSize: 10 },
+                axisLabel: {
+                  color: "#a1a1aa",
+                  fontSize: 10,
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  formatter: (v: any) => fmtLots(v * 1000),
+                },
+                axisLine: { lineStyle: { color: "#3f3f46" } },
+                splitLine: { lineStyle: { color: "#27272a" } },
+              },
+            ]
+          : []),
       ],
       series: [
         priceSeries,
@@ -347,6 +449,7 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
         ...(activeInst.has("foreign") ? [{
           name: "外資累積",
           type: "line",
+          xAxisIndex: 0,
           yAxisIndex: 1,
           data: foreignCum,
           smooth: true,
@@ -357,6 +460,7 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
         ...(activeInst.has("trust") ? [{
           name: "投信累積",
           type: "line",
+          xAxisIndex: 0,
           yAxisIndex: 1,
           data: trustCum,
           smooth: true,
@@ -367,6 +471,7 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
         ...(activeInst.has("dealer") ? [{
           name: "自營商累積",
           type: "line",
+          xAxisIndex: 0,
           yAxisIndex: 1,
           data: dealerCum,
           smooth: true,
@@ -374,9 +479,21 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
           lineStyle: { color: "#a78bfa", width: 1.5 },
           itemStyle: { color: "#a78bfa" },
         }] : []),
+        ...(hasBroker
+          ? [
+              {
+                name: `${selectedBroker!.display_name} 淨買超`,
+                type: "bar",
+                xAxisIndex: 1,
+                yAxisIndex: 2,
+                data: brokerNetData,
+                barMaxWidth: 12,
+              },
+            ]
+          : []),
       ],
     }
-  }, [data, activeMAs, activeInst, days, appliedCustom, defaultDate])
+  }, [data, activeMAs, activeInst, days, appliedCustom, defaultDate, brokerHistory, brokerLoading, selectedBroker])
 
   return (
     <div className="flex flex-col gap-4">
@@ -580,6 +697,14 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
         </div>
       )}
       {error && <p className="text-sm text-red-400">{error}</p>}
+
+      {/* Broker sub-panel loading indicator */}
+      {brokerLoading && selectedBroker && (
+        <div className="flex items-center gap-2 text-xs text-zinc-400">
+          <div className="h-3 w-3 animate-spin rounded-full border border-zinc-500 border-t-zinc-200" />
+          正在載入 {selectedBroker.display_name} 買賣超資料...
+        </div>
+      )}
 
       {/* Chart — responsive height via CSS */}
       {!loading && !error && chartOption && (

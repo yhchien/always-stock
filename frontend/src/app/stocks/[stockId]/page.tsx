@@ -6,7 +6,6 @@ import Link from "next/link"
 import { useSearchParams } from "next/navigation"
 import { Skeleton } from "@/components/ui/skeleton"
 import type { BrokerTradeItem } from "@/lib/api"
-import { todayInTaipei } from "@/lib/utils"
 
 const BROKER_TOGGLE_STORAGE_KEY = "always-stock:show-broker-panel"
 
@@ -26,10 +25,6 @@ const BrokerPanel = dynamic(() => import("@/components/BrokerPanel"), {
   loading: () => <Skeleton className="h-full min-h-[360px] w-full rounded-lg" />,
 })
 
-const BrokerBarChart = dynamic(() => import("@/components/BrokerBarChart"), {
-  ssr: false,
-  loading: () => <Skeleton className="h-[260px] w-full rounded-lg" />,
-})
 
 function readStoredToggle(key: string, defaultValue: boolean): boolean {
   if (typeof window === "undefined") return defaultValue
@@ -38,22 +33,12 @@ function readStoredToggle(key: string, defaultValue: boolean): boolean {
   return stored === "true"
 }
 
-/** Derive chart start date based on current days range */
-function getChartStartDate(endDate: string, days: number): string {
-  const end = new Date(endDate)
-  end.setDate(end.getDate() - days)
-  return end.toISOString().slice(0, 10)
-}
-
 function StockContent({ stockId }: { stockId: string }) {
   const searchParams = useSearchParams()
   const date = searchParams.get("date") ?? undefined
   const [showBrokerPanel, setShowBrokerPanel] = useState(true)
   const [selectedBroker, setSelectedBroker] = useState<BrokerTradeItem | null>(null)
-  // Track current chart range so broker history matches what K-line shows
   const [chartDays, setChartDays] = useState(90)
-  const chartEndDate = date ?? todayInTaipei()
-  const chartStartDate = getChartStartDate(chartEndDate, chartDays)
 
   // 讀取 localStorage 必須在 useEffect（mount 後）
   useEffect(() => {
@@ -75,19 +60,8 @@ function StockContent({ stockId }: { stockId: string }) {
         stockId={stockId}
         defaultDate={date}
         onDaysChange={setChartDays}
+        selectedBroker={selectedBroker}
       />
-
-      {/* Broker bar chart (shown when a broker is selected) */}
-      {selectedBroker && (
-        <BrokerBarChart
-          stockId={stockId}
-          brokerId={selectedBroker.broker_id}
-          brokerDisplayName={selectedBroker.display_name}
-          startDate={chartStartDate}
-          endDate={chartEndDate}
-          onClose={() => setSelectedBroker(null)}
-        />
-      )}
 
       <section className="rounded-lg border border-zinc-700 bg-zinc-800/60 p-4">
         <div className="flex flex-col gap-4">
@@ -133,6 +107,7 @@ function StockContent({ stockId }: { stockId: string }) {
           <BrokerPanel
             stockId={stockId}
             date={date}
+            days={chartDays}
             onSelectBroker={setSelectedBroker}
             selectedBrokerId={selectedBroker?.broker_id ?? null}
           />

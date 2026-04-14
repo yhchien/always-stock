@@ -11,6 +11,7 @@ import {
 interface Props {
   stockId: string
   date?: string
+  days?: number
   onSelectBroker?: (broker: BrokerTradeItem | null) => void
   selectedBrokerId?: string | null
 }
@@ -81,7 +82,7 @@ function BrokerRow({
   )
 }
 
-export default function BrokerPanel({ stockId, date, onSelectBroker, selectedBrokerId }: Props) {
+export default function BrokerPanel({ stockId, date, days = 1, onSelectBroker, selectedBrokerId }: Props) {
   const [tab, setTab] = useState<TabKey>("buy")
   const [buyTop, setBuyTop] = useState<BrokerTradeItem[]>([])
   const [sellTop, setSellTop] = useState<BrokerTradeItem[]>([])
@@ -91,14 +92,14 @@ export default function BrokerPanel({ stockId, date, onSelectBroker, selectedBro
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
 
-  const requestKey = `${stockId}:${date ?? ""}:${reloadKey}`
+  const requestKey = `${stockId}:${date ?? ""}:${days}:${reloadKey}`
   const error = errorState?.requestKey === requestKey ? errorState.message : null
   const loading = !error && resolvedRequestKey !== requestKey
 
   useEffect(() => {
     const controller = new AbortController()
 
-    fetchBrokerRanked(stockId, date, 1, { signal: controller.signal })
+    fetchBrokerRanked(stockId, date, days, { signal: controller.signal })
       .then((data) => {
         setBuyTop(data.buy_top)
         setSellTop(data.sell_top)
@@ -117,7 +118,7 @@ export default function BrokerPanel({ stockId, date, onSelectBroker, selectedBro
       })
 
     return () => { controller.abort() }
-  }, [stockId, date, reloadKey, requestKey])
+  }, [stockId, date, days, reloadKey, requestKey])
 
   useEffect(() => {
     if (!isRefreshing || loading || error) return
