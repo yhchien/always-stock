@@ -121,13 +121,28 @@ npm run dev
 
 ## 資料表
 
-| 資料表 | 說明 |
-|--------|------|
-| `stocks_master` | 股票基本資料，含 industry / chain / sub_industry |
-| `daily_price` | 每日收盤價、OHLC、成交量、成交金額 |
-| `inst_stock_flow` | 個股三大法人買賣超（每股 3 筆：foreign / trust / dealer） |
-| `industry_daily_flow` | 產業別每日法人資金流向（以 Fugle 大類彙整） |
-| `broker_trade` | 分點買賣明細（on-demand 從 TWSE BSR 抓取快取） |
+### 現有資料（2026-04-15 現況）
+
+| 資料表 | 說明 | 資料狀態 | 日期範圍 | 資料源 |
+|--------|------|----------|----------|--------|
+| `stocks_master` | 股票基本資料（含 industry / market） | ✅ 1,588 檔 | — | Fugle / FinMind |
+| `daily_price` | 每日 OHLC、成交量、成交金額 | ✅ ~195 萬筆 | 2019-01-02 ~ 2026-04-08 | TWSE（待切 FinMind） |
+| `inst_stock_flow` | 個股三大法人買賣超（foreign / trust / dealer） | ✅ ~6,194 萬筆 | 2019-01-02 ~ 2026-04-08 | TWSE（待切 FinMind） |
+| `industry_daily_flow` | 產業別每日法人資金流向彙整 | ✅ ~8.5 萬筆 | 2019-01-02 ~ 2026-04-08 | 從 inst_stock_flow 聚合 |
+| `broker_trade` | 分點買賣明細（TWSE BSR 舊版快取） | ⚠️ 679 筆 | 2026-04-09 only | TWSE BSR |
+
+### 新增資料（FinMind 全面切換中）
+
+| 資料表 | 說明 | 資料狀態 | 說明 |
+|--------|------|----------|------|
+| `daily_valuation` | 每日 P/E、P/B、殖利率 | 🔄 backfill 進行中 | FinMind `TaiwanStockPER`，2019 起 |
+| `monthly_revenue` | 每月營收 + YoY/MoM | 🔄 backfill 進行中 | FinMind `TaiwanStockMonthRevenue`，2019 起 |
+| `financial_statement` | 季財報各科目（EPS、營益率等） | 🔄 backfill 進行中 | FinMind 財報資料集，2019 起 |
+| `broker_trade_agg` | 分點買賣超聚合（取代舊 broker_trade） | ⬜ 待實作 | FinMind `TaiwanStockTradingDailyReport`，2021-06-30 起 |
+| `broker_trade_raw` | 分點逐筆原始資料（未來用） | ⬜ 待實作 | — |
+| `industry_mapping` | 產業分類對照（Fugle ↔ FinMind） | ⬜ 待實作 | — |
+
+> **注意**：`daily_valuation`、`monthly_revenue`、`financial_statement` 目前 backfill 寫入 Render PostgreSQL，本地 SQLite 尚無資料。
 
 ## API Endpoints
 
@@ -186,9 +201,13 @@ npm run dev
 
 ## 資料來源
 
-| 資料 | 來源 | 限制 |
-|------|------|------|
-| 股票基本資料 + 產業別 | FinMind `TaiwanStockInfo` | 免費 300 req/hr |
-| 每日收盤價 | TWSE `STOCK_DAY_ALL` | 公開免費 |
-| 三大法人買賣超 | TWSE `T86` | 公開免費 |
-| 子產業分類 | Fugle（自定義爬取） | 本地 CSV |
+| 資料 | 來源 | 所需權限 |
+|------|------|----------|
+| 股票基本資料 + 產業別 | FinMind `TaiwanStockInfo` / `TaiwanStockIndustryChain` | Free / Sponsor |
+| 每日收盤價 OHLC | FinMind `TaiwanStockPrice`（目標）/ TWSE（現行） | Backer+ / 公開 |
+| 三大法人買賣超 | FinMind `TaiwanStockInstitutionalInvestors`（目標）/ TWSE（現行） | Backer+ / 公開 |
+| 每日 P/E、P/B、殖利率 | FinMind `TaiwanStockPER` | Backer+ |
+| 月營收 | FinMind `TaiwanStockMonthRevenue` | Backer+ |
+| 季財報 | FinMind 財報資料集 | Backer+ |
+| 分點買賣超 | FinMind `TaiwanStockTradingDailyReport` | **Sponsor** |
+| 子產業分類（舊） | Fugle（自定義爬取） | 本地 CSV |
