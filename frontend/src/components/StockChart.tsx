@@ -106,7 +106,7 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
             signal: controller.signal,
             startDate: appliedCustom.start,
           })
-        : await fetchStockHistory(stockId, FULL_LOAD_DAYS, defaultDate, {
+        : await fetchStockHistory(stockId, FULL_LOAD_DAYS, undefined, {
             signal: controller.signal,
           })
       if (!controller.signal.aborted) {
@@ -261,31 +261,52 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
         itemHeight: 10,
       },
       grid: { left: 60, right: 70, top: 40, bottom: 70 },
-      dataZoom: [
-        {
-          type: "slider",
-          xAxisIndex: 0,
-          start: appliedCustom ? 0 : Math.max(0, Math.round((1 - days / dates.length) * 100)),
-          end: 100,
-          height: 20,
-          bottom: 10,
-          borderColor: "#3f3f46",
-          backgroundColor: "#27272a",
-          fillerColor: "rgba(113,113,122,0.2)",
-          handleStyle: { color: "#71717a" },
-          textStyle: { color: "#a1a1aa", fontSize: 10 },
-          dataBackground: {
-            lineStyle: { color: "#52525b" },
-            areaStyle: { color: "#3f3f46" },
+      dataZoom: (() => {
+        // Compute zoom window: center on defaultDate if provided, otherwise right-aligned
+        let zoomStart: number
+        let zoomEnd: number
+        if (appliedCustom) {
+          zoomStart = 0
+          zoomEnd = 100
+        } else if (defaultDate) {
+          const total = dates.length
+          const idx = dates.indexOf(defaultDate)
+          const pivot = idx >= 0 ? idx : total - 1
+          const half = Math.floor(days / 2)
+          const startIdx = Math.max(0, pivot - half)
+          const endIdx = Math.min(total - 1, pivot + half)
+          zoomStart = Math.round((startIdx / total) * 100)
+          zoomEnd = Math.round(((endIdx + 1) / total) * 100)
+        } else {
+          zoomStart = Math.max(0, Math.round((1 - days / dates.length) * 100))
+          zoomEnd = 100
+        }
+        return [
+          {
+            type: "slider",
+            xAxisIndex: 0,
+            start: zoomStart,
+            end: zoomEnd,
+            height: 20,
+            bottom: 10,
+            borderColor: "#3f3f46",
+            backgroundColor: "#27272a",
+            fillerColor: "rgba(113,113,122,0.2)",
+            handleStyle: { color: "#71717a" },
+            textStyle: { color: "#a1a1aa", fontSize: 10 },
+            dataBackground: {
+              lineStyle: { color: "#52525b" },
+              areaStyle: { color: "#3f3f46" },
+            },
           },
-        },
-        {
-          type: "inside",
-          xAxisIndex: 0,
-          start: appliedCustom ? 0 : Math.max(0, Math.round((1 - days / dates.length) * 100)),
-          end: 100,
-        },
-      ],
+          {
+            type: "inside",
+            xAxisIndex: 0,
+            start: zoomStart,
+            end: zoomEnd,
+          },
+        ]
+      })(),
       xAxis: {
         type: "category" as const,
         data: dates,
@@ -355,7 +376,7 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
         }] : []),
       ],
     }
-  }, [data, activeMAs, activeInst, days, appliedCustom])
+  }, [data, activeMAs, activeInst, days, appliedCustom, defaultDate])
 
   return (
     <div className="flex flex-col gap-4">
