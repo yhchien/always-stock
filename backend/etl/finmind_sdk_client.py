@@ -241,7 +241,7 @@ class FinMindSDKClient:
         )
 
         try:
-            df = self.api.taiwan_stock_per(
+            df = self.api.taiwan_stock_per_pbr(
                 stock_id_list=stock_id_list,
                 start_date=start_date,
                 end_date=end_date,
@@ -437,8 +437,8 @@ class FinMindSDKClient:
         )
 
         try:
-            if hasattr(self.api, 'taiwan_stock_financial_statements'):
-                df = self.api.taiwan_stock_financial_statements(
+            if hasattr(self.api, 'taiwan_stock_financial_statement'):
+                df = self.api.taiwan_stock_financial_statement(
                     stock_id_list=stock_id_list,
                     start_date=start_date,
                     end_date=end_date,

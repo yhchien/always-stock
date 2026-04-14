@@ -50,8 +50,8 @@ def fetch_and_upsert_daily_valuation_finmind_sdk(
         )
 
         if df is None or df.empty:
-            logger.warning("No valuation data returned from FinMind")
-            result["status"] = "error"
+            logger.warning("No valuation data returned from FinMind (may be expected for non-trading periods)")
+            result["status"] = "ok"
             return result
 
         result["total_records"] = len(df)

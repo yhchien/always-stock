@@ -58,8 +58,8 @@ def fetch_and_upsert_financial_statement_sdk(
         )
 
         if df is None or df.empty:
-            logger.warning("No financial statement data returned from FinMind")
-            result["status"] = "error"
+            logger.warning("No financial statement data returned from FinMind (expected for months without quarterly reports)")
+            result["status"] = "ok"
             return result
 
         result["total_records"] = len(df)
