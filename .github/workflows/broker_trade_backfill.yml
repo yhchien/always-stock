@@ -33,6 +33,8 @@ jobs:
         id: dates
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          END_DATE_INPUT: ${{ github.event.inputs.end_date }}
+          BATCH_DAYS: ${{ github.event.inputs.batch_days || '3' }}
         run: |
           python3 - <<'EOF'
           import os, sys
@@ -73,9 +75,6 @@ jobs:
               f.write(f"end_date={end}\n")
               f.write("skip=false\n")
           EOF
-        env:
-          END_DATE_INPUT: ${{ github.event.inputs.end_date }}
-          BATCH_DAYS: ${{ github.event.inputs.batch_days || '3' }}
 
       - name: Run broker trade ETL
         if: steps.dates.outputs.skip != 'true'
