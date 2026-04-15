@@ -172,8 +172,9 @@ def main():
 
         processed = 0
         skipped_checkpoint = 0
+        RECONNECT_EVERY = 50  # 每 50 天換一次 session，避免 Render idle timeout 斷線
 
-        for d in trade_dates:
+        for i, d in enumerate(trade_dates):
             # checkpoint 恢復：跳過已完成的日期
             if resume_after and d <= resume_after:
                 skipped_checkpoint += 1
@@ -183,6 +184,12 @@ def main():
                 logger.info("[dry-run] Would aggregate %s", d)
                 processed += 1
                 continue
+
+            # 每 RECONNECT_EVERY 天換一個新 session，防止長時間連線被 Render 切斷
+            if processed > 0 and processed % RECONNECT_EVERY == 0:
+                db.close()
+                db = SessionLocal()
+                logger.debug("Reconnected DB session at date %s", d)
 
             count = aggregate_industry_flow(db, d)
             processed += 1

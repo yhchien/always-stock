@@ -1,0 +1,97 @@
+name: Broker Trade Backfill
+
+on:
+  schedule:
+    - cron: '5 * * * *'   # 每小時第 5 分鐘執行，避免整點擁塞
+  workflow_dispatch:
+    inputs:
+      end_date:
+        description: '目標結束日期 (YYYY-MM-DD)，預設為昨天'
+        required: false
+      batch_days:
+        description: '每批天數 (預設 3)'
+        required: false
+        default: '3'
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --quiet -r backend/requirements.txt
+
+      - name: Determine next batch date range
+        id: dates
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          python3 - <<'EOF'
+          import os, sys
+          from datetime import date, timedelta
+          from sqlalchemy import create_engine, text
+
+          engine = create_engine(os.environ["DATABASE_URL"])
+          with engine.connect() as conn:
+              row = conn.execute(text("SELECT MAX(trade_date) FROM broker_trade_agg")).fetchone()
+              max_date = row[0]
+
+          # 從 DB 最新日期的隔天開始，或從 2021-06-30 開始
+          if max_date:
+              start = max_date + timedelta(days=1)
+          else:
+              start = date(2021, 6, 30)
+
+          # 目標結束日（預設昨天）
+          target_end_str = os.environ.get("END_DATE_INPUT", "").strip()
+          if target_end_str:
+              target_end = date.fromisoformat(target_end_str)
+          else:
+              target_end = date.today() - timedelta(days=1)
+
+          batch_days = int(os.environ.get("BATCH_DAYS", "3"))
+
+          if start > target_end:
+              print(f"Already up to date (max={max_date}, target={target_end})")
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write("skip=true\n")
+              sys.exit(0)
+
+          end = min(start + timedelta(days=batch_days - 1), target_end)
+
+          print(f"Batch: {start} ~ {end} (target end: {target_end})")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"start_date={start}\n")
+              f.write(f"end_date={end}\n")
+              f.write("skip=false\n")
+          EOF
+        env:
+          END_DATE_INPUT: ${{ github.event.inputs.end_date }}
+          BATCH_DAYS: ${{ github.event.inputs.batch_days || '3' }}
+
+      - name: Run broker trade ETL
+        if: steps.dates.outputs.skip != 'true'
+        working-directory: backend
+        run: |
+          python3 run_finmind_etl_sdk.py \
+            --start-date ${{ steps.dates.outputs.start_date }} \
+            --end-date ${{ steps.dates.outputs.end_date }} \
+            --steps broker_trade_agg \
+            --skip-log
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
+
+      - name: Report result
+        if: always()
+        run: |
+          echo "Batch: ${{ steps.dates.outputs.start_date }} ~ ${{ steps.dates.outputs.end_date }}"
+          echo "Skip: ${{ steps.dates.outputs.skip }}"

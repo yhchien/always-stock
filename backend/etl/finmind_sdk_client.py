@@ -399,60 +399,63 @@ class FinMindSDKClient:
             logger.warning(f"Failed to fetch monthly revenue: {e}")
             return None
 
-    def fetch_broker_trade_agg(
+    def fetch_broker_trade_by_date(
         self,
         stock_id_list: List[str],
-        start_date: str,
-        end_date: str,
+        trade_date: str,
         use_async: bool = True,
     ) -> Any:
         """
-        批量抓取券商分點聚合買賣資料
-        資料集：TaiwanStockTradingDailyReportSecIdAgg
-        需要 Sponsor 權限；歷史起點 2021-06-30
+        抓取單一交易日所有股票的分點買賣資料，並在本地 group by 分點做聚合。
+        資料集：TaiwanStockTradingDailyReport（每支股票 1 request）
+        回傳已聚合的 DataFrame：date, stock_id, broker_id, broker_name, buy_shares, sell_shares
+
+        注意：TaiwanStockTradingDailyReportSecIdAgg 在 API/SDK 中不存在，
+              改用 TaiwanStockTradingDailyReport 自行聚合。
         """
+        import pandas as pd
+
         if not self.can_proceed():
             raise RuntimeError("Insufficient quota or critical state")
 
         logger.info(
-            f"Fetching {len(stock_id_list)} stocks broker trade agg "
-            f"from {start_date} to {end_date} (async={use_async})"
+            f"Fetching broker trade for {len(stock_id_list)} stocks on {trade_date} (async={use_async})"
         )
 
         try:
-            if hasattr(self.api, 'taiwan_stock_trading_daily_report_sec_id_agg'):
-                df = self.api.taiwan_stock_trading_daily_report_sec_id_agg(
-                    stock_id_list=stock_id_list,
-                    start_date=start_date,
-                    end_date=end_date,
-                    use_async=use_async,
-                )
-            else:
-                # fallback: 使用 REST API 直接呼叫
-                import requests, pandas as pd
-                rows = []
-                for stock_id in stock_id_list:
-                    resp = requests.get(
-                        "https://api.finmindtrade.com/api/v4/data",
-                        params={
-                            "dataset": "TaiwanStockTradingDailyReportSecIdAgg",
-                            "data_id": stock_id,
-                            "start_date": start_date,
-                            "end_date": end_date,
-                            "token": self.token,
-                        },
-                        timeout=30,
-                    )
-                    data = resp.json().get("data", [])
-                    rows.extend(data)
-                df = pd.DataFrame(rows) if rows else pd.DataFrame()
+            df_raw = self.api.taiwan_stock_trading_daily_report(
+                stock_id_list=stock_id_list,
+                date=trade_date,
+                use_async=use_async,
+            )
 
             self._refresh_quota()
-            logger.info(f"✓ Fetched {len(df)} broker trade agg records")
-            return df
+
+            if df_raw is None or df_raw.empty:
+                logger.info(f"No broker trade data for {trade_date}")
+                return pd.DataFrame()
+
+            # group by (date, stock_id, broker) 加總 buy/sell（原始資料為逐價位明細）
+            df_agg = (
+                df_raw.groupby(
+                    ["date", "stock_id", "securities_trader_id", "securities_trader"],
+                    as_index=False,
+                )
+                .agg(buy_shares=("buy", "sum"), sell_shares=("sell", "sum"))
+            )
+            df_agg["net_shares"] = df_agg["buy_shares"] - df_agg["sell_shares"]
+            df_agg = df_agg.rename(columns={
+                "securities_trader_id": "broker_id",
+                "securities_trader": "broker_name",
+            })
+
+            logger.info(
+                f"✓ {trade_date}: {len(df_raw)} raw rows → {len(df_agg)} broker-level records"
+            )
+            return df_agg
 
         except Exception as e:
-            logger.warning(f"Failed to fetch broker trade agg: {e}")
+            logger.warning(f"Failed to fetch broker trade for {trade_date}: {e}")
             raise
 
     def fetch_financial_statements(
