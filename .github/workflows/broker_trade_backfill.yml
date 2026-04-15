@@ -41,7 +41,8 @@ jobs:
           from datetime import date, timedelta
           from sqlalchemy import create_engine, text
 
-          engine = create_engine(os.environ["DATABASE_URL"])
+          db_url = os.environ["DATABASE_URL"].replace("postgresql://", "postgresql+psycopg://", 1)
+          engine = create_engine(db_url)
           with engine.connect() as conn:
               row = conn.execute(text("SELECT MAX(trade_date) FROM broker_trade_agg")).fetchone()
               max_date = row[0]
