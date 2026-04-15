@@ -9,7 +9,7 @@ on:
         description: '目標結束日期 (YYYY-MM-DD)，預設為昨天'
         required: false
       batch_days:
-        description: '每批天數 (預設 3)'
+        description: '每批交易日數 (預設 3)'
         required: false
         default: '3'
 
@@ -68,7 +68,18 @@ jobs:
                   f.write("skip=true\n")
               sys.exit(0)
 
-          end = min(start + timedelta(days=batch_days - 1), target_end)
+          # 往前數 batch_days 個交易日（跳過週末）
+          trading_days_found = 0
+          end = start
+          d = start
+          while d <= target_end:
+              if d.isoweekday() <= 5:  # 週一到週五
+                  trading_days_found += 1
+                  end = d
+                  if trading_days_found >= batch_days:
+                      break
+              d += timedelta(days=1)
+          end = min(end, target_end)
 
           print(f"Batch: {start} ~ {end} (target end: {target_end})")
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
