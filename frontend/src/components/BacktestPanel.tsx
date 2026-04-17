@@ -182,18 +182,18 @@ export default function BacktestPanel({ stockId }: Props) {
   }
 
   return (
-    <div className="flex h-full flex-col gap-4 rounded-lg border border-zinc-700 bg-zinc-900 p-4">
+    <div className="flex min-h-full flex-col gap-4 rounded-lg border border-slate-700 bg-slate-900/60 p-4">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-sm font-semibold text-zinc-200">L3 回測工作區</h2>
-          <p className="text-xs text-zinc-500">先支援日線單檔 long-only 與標準績效指標。</p>
+          <h2 className="text-sm font-semibold text-slate-200">L3 回測工作區</h2>
+          <p className="text-xs text-slate-500">先支援日線單檔 long-only 與標準績效指標。</p>
         </div>
-        <span className="rounded border border-zinc-700 px-1.5 py-0.5 text-xs text-zinc-500">MVP</span>
+        <span className="rounded border border-slate-700 px-1.5 py-0.5 text-xs text-slate-500">MVP</span>
       </div>
 
       <div className="flex flex-col gap-3">
         <div className="flex flex-col gap-1">
-          <label className="text-xs text-zinc-500">策略模板</label>
+          <label className="text-xs text-slate-500">策略模板</label>
           <select
             value={selectedTemplateId}
             onChange={(e) => {
@@ -202,7 +202,7 @@ export default function BacktestPanel({ stockId }: Props) {
               if (template) setStrategyText(template.strategy_text)
             }}
             disabled={loadingTemplates}
-            className="rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-zinc-500"
+            className="rounded-md border border-slate-700 bg-slate-800/50 px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-1 focus:ring-slate-500"
           >
             {templates.map((template) => (
               <option key={template.id} value={template.id}>
@@ -211,7 +211,7 @@ export default function BacktestPanel({ stockId }: Props) {
             ))}
           </select>
           {selectedTemplateId && (
-            <p className="text-[11px] text-zinc-500">
+            <p className="text-[11px] text-slate-500">
               {templates.find((item) => item.id === selectedTemplateId)?.description}
             </p>
           )}
@@ -219,53 +219,53 @@ export default function BacktestPanel({ stockId }: Props) {
 
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
           <div className="flex flex-col gap-1">
-            <label htmlFor="backtest-start-date" className="text-xs text-zinc-500">開始日期</label>
+            <label htmlFor="backtest-start-date" className="text-xs text-slate-500">開始日期</label>
             <input
               id="backtest-start-date"
               type="date"
               value={startDate}
               onChange={(e) => setStartDate(e.target.value)}
-              className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-zinc-500"
+              className="rounded-md border border-slate-700 bg-slate-800/50 px-2 py-1.5 text-sm text-slate-200 focus:outline-none focus:ring-1 focus:ring-slate-500"
             />
           </div>
           <div className="flex flex-col gap-1">
-            <label htmlFor="backtest-end-date" className="text-xs text-zinc-500">結束日期</label>
+            <label htmlFor="backtest-end-date" className="text-xs text-slate-500">結束日期</label>
             <input
               id="backtest-end-date"
               type="date"
               value={endDate}
               onChange={(e) => setEndDate(e.target.value)}
-              className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-zinc-500"
+              className="rounded-md border border-slate-700 bg-slate-800/50 px-2 py-1.5 text-sm text-slate-200 focus:outline-none focus:ring-1 focus:ring-slate-500"
             />
           </div>
           <div className="flex flex-col gap-1">
-            <label htmlFor="backtest-initial-capital" className="text-xs text-zinc-500">初始本金</label>
+            <label htmlFor="backtest-initial-capital" className="text-xs text-slate-500">初始本金</label>
             <input
               id="backtest-initial-capital"
               type="number"
               min={1}
               value={initialCapital}
               onChange={(e) => setInitialCapital(e.target.value)}
-              className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-zinc-500"
+              className="rounded-md border border-slate-700 bg-slate-800/50 px-2 py-1.5 text-sm text-slate-200 focus:outline-none focus:ring-1 focus:ring-slate-500"
             />
           </div>
         </div>
 
         <div className="flex flex-col gap-1">
-          <label htmlFor="backtest-strategy-text" className="text-xs text-zinc-500">策略文字</label>
+          <label htmlFor="backtest-strategy-text" className="text-xs text-slate-500">策略文字</label>
           <textarea
             id="backtest-strategy-text"
             value={strategyText}
             onChange={(e) => setStrategyText(e.target.value)}
             rows={4}
-            className="rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-zinc-500"
+            className="rounded-md border border-slate-700 bg-slate-800/50 px-3 py-2 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-slate-500"
           />
         </div>
 
         <button
           onClick={handleRun}
           disabled={running || interpreting}
-          className="rounded-md bg-zinc-700 px-4 py-1.5 text-sm text-zinc-100 transition-colors hover:bg-zinc-600 disabled:opacity-50"
+          className="rounded-md bg-slate-700 px-4 py-1.5 text-sm text-slate-100 transition-colors hover:bg-slate-600 disabled:opacity-50"
         >
           {interpreting ? "解析策略中..." : running ? "計算中..." : "執行回測"}
         </button>
@@ -278,33 +278,33 @@ export default function BacktestPanel({ stockId }: Props) {
       )}
 
       {interpreting && (
-        <div className="flex flex-col gap-3 rounded-md border border-zinc-700 bg-zinc-800/50 px-3 py-3">
-          <div className="text-sm font-medium text-zinc-100">策略判讀預覽</div>
-          <div className="rounded bg-zinc-900/60 px-3 py-3 text-sm text-zinc-400">
+        <div className="flex flex-col gap-3 rounded-md border border-slate-700 bg-slate-800/50 px-3 py-3">
+          <div className="text-sm font-medium text-slate-100">策略判讀預覽</div>
+          <div className="rounded bg-slate-900/60 px-3 py-3 text-sm text-slate-400">
             正在解析策略文字，判斷這句話對應哪些指標...
           </div>
         </div>
       )}
 
       {interpretation && (
-        <div className="flex flex-col gap-3 rounded-md border border-zinc-700 bg-zinc-800/50 px-3 py-3">
+        <div className="flex flex-col gap-3 rounded-md border border-slate-700 bg-slate-800/50 px-3 py-3">
           <div className="flex items-center justify-between">
-            <div className="text-sm font-medium text-zinc-100">策略判讀預覽</div>
+            <div className="text-sm font-medium text-slate-100">策略判讀預覽</div>
             <div className={`text-xs ${interpretation.supported ? "text-emerald-300" : "text-amber-300"}`}>
               {interpretation.supported ? "可執行回測" : "部分支援"}
             </div>
           </div>
-          <div className="rounded bg-zinc-900/60 px-3 py-2">
-            <div className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">Normalized</div>
-            <p className="mt-1 text-sm text-zinc-200">{interpretation.normalized_text}</p>
+          <div className="rounded bg-slate-900/60 px-3 py-2">
+            <div className="text-[10px] uppercase tracking-[0.18em] text-slate-500">Normalized</div>
+            <p className="mt-1 text-sm text-slate-200">{interpretation.normalized_text}</p>
           </div>
           {interpretedStrategy && (
             <div className="grid gap-3 lg:grid-cols-3">
-              <div className="rounded bg-zinc-900/60 px-3 py-3">
-                <div className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">Entry DSL</div>
-                <div className="mt-2 space-y-1 text-sm text-zinc-200">
+              <div className="rounded bg-slate-900/60 px-3 py-3">
+                <div className="text-[10px] uppercase tracking-[0.18em] text-slate-500">Entry DSL</div>
+                <div className="mt-2 space-y-1 text-sm text-slate-200">
                   {(interpretedStrategy.entry_rules ?? []).length === 0 ? (
-                    <p className="text-zinc-500">尚無可用進場條件</p>
+                    <p className="text-slate-500">尚無可用進場條件</p>
                   ) : (
                     (interpretedStrategy.entry_rules ?? []).map((rule, index) => (
                       <p key={`entry-${index}`}>- {describeRule(rule)}</p>
@@ -312,11 +312,11 @@ export default function BacktestPanel({ stockId }: Props) {
                   )}
                 </div>
               </div>
-              <div className="rounded bg-zinc-900/60 px-3 py-3">
-                <div className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">Exit DSL</div>
-                <div className="mt-2 space-y-1 text-sm text-zinc-200">
+              <div className="rounded bg-slate-900/60 px-3 py-3">
+                <div className="text-[10px] uppercase tracking-[0.18em] text-slate-500">Exit DSL</div>
+                <div className="mt-2 space-y-1 text-sm text-slate-200">
                   {(interpretedStrategy.exit_rules ?? []).length === 0 ? (
-                    <p className="text-zinc-500">尚無可用出場條件</p>
+                    <p className="text-slate-500">尚無可用出場條件</p>
                   ) : (
                     (interpretedStrategy.exit_rules ?? []).map((rule, index) => (
                       <p key={`exit-${index}`}>- {describeRule(rule)}</p>
@@ -324,13 +324,13 @@ export default function BacktestPanel({ stockId }: Props) {
                   )}
                 </div>
               </div>
-              <div className="rounded bg-zinc-900/60 px-3 py-3">
-                <div className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">Risk Controls</div>
-                <div className="mt-2 space-y-1 text-sm text-zinc-200">
+              <div className="rounded bg-slate-900/60 px-3 py-3">
+                <div className="text-[10px] uppercase tracking-[0.18em] text-slate-500">Risk Controls</div>
+                <div className="mt-2 space-y-1 text-sm text-slate-200">
                   {interpretedStrategy.stop_loss_pct ? <p>- 固定停損 ({interpretedStrategy.stop_loss_pct}%)</p> : null}
                   {interpretedStrategy.take_profit_pct ? <p>- 固定停利 ({interpretedStrategy.take_profit_pct}%)</p> : null}
                   {!interpretedStrategy.stop_loss_pct && !interpretedStrategy.take_profit_pct ? (
-                    <p className="text-zinc-500">未設定固定停損/停利</p>
+                    <p className="text-slate-500">未設定固定停損/停利</p>
                   ) : null}
                 </div>
               </div>
@@ -368,25 +368,25 @@ export default function BacktestPanel({ stockId }: Props) {
             </div>
           )}
           {capabilities && (
-            <div className="rounded border border-zinc-700 bg-zinc-900/40 px-3 py-3">
-              <div className="text-xs font-medium text-zinc-200">目前可判讀的條件 catalog</div>
+            <div className="rounded border border-slate-700 bg-slate-900/40 px-3 py-3">
+              <div className="text-xs font-medium text-slate-200">目前可判讀的條件 catalog</div>
               <div className="mt-2 grid gap-3 lg:grid-cols-2">
                 <div>
-                  <div className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">Indicators</div>
-                  <div className="mt-2 space-y-1 text-xs text-zinc-300">
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-slate-500">Indicators</div>
+                  <div className="mt-2 space-y-1 text-xs text-slate-300">
                     {capabilities.indicators.slice(0, 8).map((item) => (
                       <p key={item.id}>- {item.label}</p>
                     ))}
                   </div>
                 </div>
                 <div>
-                  <div className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">Risk Controls</div>
-                  <div className="mt-2 space-y-1 text-xs text-zinc-300">
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-slate-500">Risk Controls</div>
+                  <div className="mt-2 space-y-1 text-xs text-slate-300">
                     {capabilities.risk_controls.map((item) => (
                       <p key={item.id}>- {item.label}</p>
                     ))}
                     {capabilities.notes.slice(0, 2).map((note) => (
-                      <p key={note} className="text-zinc-500">- {note}</p>
+                      <p key={note} className="text-slate-500">- {note}</p>
                     ))}
                   </div>
                 </div>
@@ -397,7 +397,7 @@ export default function BacktestPanel({ stockId }: Props) {
       )}
 
       {result && (
-        <div className="flex flex-col gap-4 border-t border-zinc-700 pt-3">
+        <div className="flex flex-col gap-4 border-t border-slate-700 pt-3">
           {result.warnings.length > 0 && (
             <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-3">
               <div className="text-xs font-medium text-amber-200">回測提醒</div>
@@ -409,33 +409,33 @@ export default function BacktestPanel({ stockId }: Props) {
             </div>
           )}
 
-          <div className="rounded-md border border-zinc-700 bg-zinc-800/60 px-3 py-2">
-            <div className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">Strategy</div>
-            <p className="mt-1 text-sm text-zinc-200">{result.normalized_text}</p>
+          <div className="rounded-md border border-slate-700 bg-slate-800/60 px-3 py-2">
+            <div className="text-[10px] uppercase tracking-[0.18em] text-slate-500">Strategy</div>
+            <p className="mt-1 text-sm text-slate-200">{result.normalized_text}</p>
           </div>
 
           <div className="grid grid-cols-2 gap-2 xl:grid-cols-3">
             {[
               { label: "總報酬", value: formatPct(result.metrics.total_return_pct), color: result.metrics.total_return_pct >= 0 ? "text-red-400" : "text-green-400" },
               { label: "年化報酬", value: formatPct(result.metrics.annual_return_pct), color: result.metrics.annual_return_pct >= 0 ? "text-red-400" : "text-green-400" },
-              { label: "勝率", value: formatPct(result.metrics.win_rate_pct), color: result.metrics.win_rate_pct >= 50 ? "text-red-400" : "text-zinc-300" },
+              { label: "勝率", value: formatPct(result.metrics.win_rate_pct), color: result.metrics.win_rate_pct >= 50 ? "text-red-400" : "text-slate-300" },
               { label: "最大回撤", value: formatPct(result.metrics.max_drawdown_pct), color: "text-green-400" },
-              { label: "夏普比率", value: result.metrics.sharpe_ratio.toFixed(2), color: result.metrics.sharpe_ratio >= 1 ? "text-red-400" : "text-zinc-300" },
-              { label: "交易次數", value: `${result.metrics.trade_count} 次`, color: "text-zinc-300" },
+              { label: "夏普比率", value: result.metrics.sharpe_ratio.toFixed(2), color: result.metrics.sharpe_ratio >= 1 ? "text-red-400" : "text-slate-300" },
+              { label: "交易次數", value: `${result.metrics.trade_count} 次`, color: "text-slate-300" },
             ].map(({ label, value, color }) => (
-              <div key={label} className="rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2">
-                <div className="text-[10px] text-zinc-500">{label}</div>
+              <div key={label} className="rounded-md border border-slate-700 bg-slate-800/50 px-3 py-2">
+                <div className="text-[10px] text-slate-500">{label}</div>
                 <div className={`font-mono text-sm font-medium ${color}`}>{value}</div>
               </div>
             ))}
           </div>
 
           <div className="grid gap-3 lg:grid-cols-[1.2fr_0.8fr]">
-            <div className="rounded-md border border-zinc-700 bg-zinc-800/60 px-3 py-3">
+            <div className="rounded-md border border-slate-700 bg-slate-800/60 px-3 py-3">
               <div className="flex items-center justify-between">
                 <div>
-                  <div className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">Equity</div>
-                  <p className="text-sm text-zinc-200">期末資產 {latestEquity ? formatCurrency(latestEquity) : "-"}</p>
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-slate-500">Equity</div>
+                  <p className="text-sm text-slate-200">期末資產 {latestEquity ? formatCurrency(latestEquity) : "-"}</p>
                 </div>
                 <a
                   href={`/stocks/${stockId}?date=${result.latest_recommendation.latest_signal_date}`}
@@ -449,28 +449,28 @@ export default function BacktestPanel({ stockId }: Props) {
               </div>
             </div>
 
-            <div className="rounded-md border border-zinc-700 bg-zinc-800/60 px-3 py-3">
-              <div className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">Latest Signal</div>
-              <p className="mt-1 text-sm font-medium text-zinc-100">{result.latest_recommendation.reason}</p>
-              <p className="mt-2 text-xs text-zinc-400">
+            <div className="rounded-md border border-slate-700 bg-slate-800/60 px-3 py-3">
+              <div className="text-[10px] uppercase tracking-[0.18em] text-slate-500">Latest Signal</div>
+              <p className="mt-1 text-sm font-medium text-slate-100">{result.latest_recommendation.reason}</p>
+              <p className="mt-2 text-xs text-slate-400">
                 {result.latest_recommendation.latest_signal_date} / {result.latest_recommendation.action}
               </p>
               <div className="mt-4 grid grid-cols-2 gap-2 text-xs">
-                <div className="rounded bg-zinc-900/60 px-2 py-2">
-                  <div className="text-zinc-500">Buy & Hold</div>
-                  <div className="mt-1 font-mono text-zinc-200">{formatPct(result.metrics.benchmark_return_pct)}</div>
+                <div className="rounded bg-slate-900/60 px-2 py-2">
+                  <div className="text-slate-500">Buy & Hold</div>
+                  <div className="mt-1 font-mono text-slate-200">{formatPct(result.metrics.benchmark_return_pct)}</div>
                 </div>
-                <div className="rounded bg-zinc-900/60 px-2 py-2">
-                  <div className="text-zinc-500">Alpha</div>
-                  <div className="mt-1 font-mono text-zinc-200">{formatPct(result.metrics.excess_return_pct)}</div>
+                <div className="rounded bg-slate-900/60 px-2 py-2">
+                  <div className="text-slate-500">Alpha</div>
+                  <div className="mt-1 font-mono text-slate-200">{formatPct(result.metrics.excess_return_pct)}</div>
                 </div>
               </div>
             </div>
           </div>
 
           <div className="grid gap-3 lg:grid-cols-2">
-            <div className="rounded-md border border-zinc-700 bg-zinc-800/60 px-3 py-3">
-              <div className="text-sm font-medium text-zinc-100">Summary</div>
+            <div className="rounded-md border border-slate-700 bg-slate-800/60 px-3 py-3">
+              <div className="text-sm font-medium text-slate-100">Summary</div>
               <div className="mt-3 grid grid-cols-2 gap-2">
                 {[
                   { label: "期末資產", value: formatCurrency(result.metrics.ending_equity) },
@@ -482,24 +482,24 @@ export default function BacktestPanel({ stockId }: Props) {
                   { label: "平均獲利", value: result.metrics.avg_gain_pct != null ? formatPct(result.metrics.avg_gain_pct) : "—" },
                   { label: "平均虧損", value: result.metrics.avg_loss_pct != null ? formatPct(result.metrics.avg_loss_pct) : "—" },
                 ].map((item) => (
-                  <div key={item.label} className="rounded bg-zinc-900/60 px-3 py-2">
-                    <div className="text-[10px] text-zinc-500">{item.label}</div>
-                    <div className="mt-1 font-mono text-sm text-zinc-200">{item.value}</div>
+                  <div key={item.label} className="rounded bg-slate-900/60 px-3 py-2">
+                    <div className="text-[10px] text-slate-500">{item.label}</div>
+                    <div className="mt-1 font-mono text-sm text-slate-200">{item.value}</div>
                   </div>
                 ))}
               </div>
             </div>
 
-            <div className="rounded-md border border-zinc-700 bg-zinc-800/60 px-3 py-3">
-              <div className="text-sm font-medium text-zinc-100">Performance Analysis</div>
+            <div className="rounded-md border border-slate-700 bg-slate-800/60 px-3 py-3">
+              <div className="text-sm font-medium text-slate-100">Performance Analysis</div>
               <div className="mt-3 grid grid-cols-2 gap-2">
-                <div className="rounded bg-zinc-900/60 px-3 py-2">
-                  <div className="text-[10px] text-zinc-500">最大連續獲利</div>
-                  <div className="mt-1 font-mono text-sm text-zinc-200">{formatTimes(result.metrics.max_consecutive_wins)}</div>
+                <div className="rounded bg-slate-900/60 px-3 py-2">
+                  <div className="text-[10px] text-slate-500">最大連續獲利</div>
+                  <div className="mt-1 font-mono text-sm text-slate-200">{formatTimes(result.metrics.max_consecutive_wins)}</div>
                 </div>
-                <div className="rounded bg-zinc-900/60 px-3 py-2">
-                  <div className="text-[10px] text-zinc-500">最大連續虧損</div>
-                  <div className="mt-1 font-mono text-sm text-zinc-200">{formatTimes(result.metrics.max_consecutive_losses)}</div>
+                <div className="rounded bg-slate-900/60 px-3 py-2">
+                  <div className="text-[10px] text-slate-500">最大連續虧損</div>
+                  <div className="mt-1 font-mono text-sm text-slate-200">{formatTimes(result.metrics.max_consecutive_losses)}</div>
                 </div>
               </div>
 
@@ -509,15 +509,15 @@ export default function BacktestPanel({ stockId }: Props) {
                   { title: "季度報酬", items: quarterlyPreview },
                   { title: "年度報酬", items: yearlyPreview },
                 ].map((section) => (
-                  <div key={section.title} className="rounded bg-zinc-900/60 px-3 py-3">
-                    <div className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">{section.title}</div>
+                  <div key={section.title} className="rounded bg-slate-900/60 px-3 py-3">
+                    <div className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{section.title}</div>
                     <div className="mt-2 flex flex-col gap-1">
                       {section.items.length === 0 ? (
-                        <p className="text-xs text-zinc-500">目前沒有可顯示資料</p>
+                        <p className="text-xs text-slate-500">目前沒有可顯示資料</p>
                       ) : (
                         section.items.map((item) => (
                           <div key={item.period} className="flex items-center justify-between text-xs">
-                            <span className="text-zinc-400">{item.period}</span>
+                            <span className="text-slate-400">{item.period}</span>
                             <span className={`font-mono ${item.return_pct >= 0 ? "text-red-400" : "text-green-400"}`}>
                               {formatPct(item.return_pct)}
                             </span>
@@ -531,11 +531,11 @@ export default function BacktestPanel({ stockId }: Props) {
             </div>
           </div>
 
-          <div className="rounded-md border border-zinc-700 bg-zinc-800/60 px-3 py-3">
+          <div className="rounded-md border border-slate-700 bg-slate-800/60 px-3 py-3">
             <div className="flex items-center justify-between">
-              <div className="text-sm font-medium text-zinc-100">策略建議</div>
+              <div className="text-sm font-medium text-slate-100">策略建議</div>
               {advice && (
-                <div className="text-xs text-zinc-500">
+                <div className="text-xs text-slate-500">
                   {advice.source === "openai" ? "OpenAI" : "Heuristic fallback"}
                 </div>
               )}
@@ -543,15 +543,15 @@ export default function BacktestPanel({ stockId }: Props) {
 
             {loadingAdvice && (
               <div className="mt-3 grid gap-3 lg:grid-cols-2">
-                <div className="rounded bg-zinc-900/60 px-3 py-3">
-                  <div className="h-3 w-20 animate-pulse rounded bg-zinc-700" />
-                  <div className="mt-3 h-4 w-full animate-pulse rounded bg-zinc-800" />
-                  <div className="mt-2 h-4 w-4/5 animate-pulse rounded bg-zinc-800" />
+                <div className="rounded bg-slate-900/60 px-3 py-3">
+                  <div className="h-3 w-20 animate-pulse rounded bg-slate-700" />
+                  <div className="mt-3 h-4 w-full animate-pulse rounded bg-slate-800" />
+                  <div className="mt-2 h-4 w-4/5 animate-pulse rounded bg-slate-800" />
                 </div>
-                <div className="rounded bg-zinc-900/60 px-3 py-3">
-                  <div className="h-3 w-20 animate-pulse rounded bg-zinc-700" />
-                  <div className="mt-3 h-4 w-full animate-pulse rounded bg-zinc-800" />
-                  <div className="mt-2 h-4 w-5/6 animate-pulse rounded bg-zinc-800" />
+                <div className="rounded bg-slate-900/60 px-3 py-3">
+                  <div className="h-3 w-20 animate-pulse rounded bg-slate-700" />
+                  <div className="mt-3 h-4 w-full animate-pulse rounded bg-slate-800" />
+                  <div className="mt-2 h-4 w-5/6 animate-pulse rounded bg-slate-800" />
                 </div>
               </div>
             )}
@@ -564,29 +564,29 @@ export default function BacktestPanel({ stockId }: Props) {
 
             {advice && !loadingAdvice && (
               <div className="mt-3 grid gap-3 lg:grid-cols-2">
-                <div className="rounded bg-zinc-900/60 px-3 py-3">
-                  <div className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">Summary</div>
-                  <p className="mt-2 text-sm text-zinc-200">{advice.summary}</p>
+                <div className="rounded bg-slate-900/60 px-3 py-3">
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-slate-500">Summary</div>
+                  <p className="mt-2 text-sm text-slate-200">{advice.summary}</p>
                 </div>
-                <div className="rounded bg-zinc-900/60 px-3 py-3">
-                  <div className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">Rewrite</div>
-                  <div className="mt-2 space-y-1 text-sm text-zinc-200">
+                <div className="rounded bg-slate-900/60 px-3 py-3">
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-slate-500">Rewrite</div>
+                  <div className="mt-2 space-y-1 text-sm text-slate-200">
                     {advice.rewrite_suggestions.map((item) => (
                       <p key={item}>- {item}</p>
                     ))}
                   </div>
                 </div>
-                <div className="rounded bg-zinc-900/60 px-3 py-3">
-                  <div className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">Strengths</div>
-                  <div className="mt-2 space-y-1 text-sm text-zinc-200">
+                <div className="rounded bg-slate-900/60 px-3 py-3">
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-slate-500">Strengths</div>
+                  <div className="mt-2 space-y-1 text-sm text-slate-200">
                     {advice.strengths.map((item) => (
                       <p key={item}>- {item}</p>
                     ))}
                   </div>
                 </div>
-                <div className="rounded bg-zinc-900/60 px-3 py-3">
-                  <div className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">Weaknesses & Risks</div>
-                  <div className="mt-2 space-y-1 text-sm text-zinc-200">
+                <div className="rounded bg-slate-900/60 px-3 py-3">
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-slate-500">Weaknesses & Risks</div>
+                  <div className="mt-2 space-y-1 text-sm text-slate-200">
                     {[...advice.weaknesses, ...advice.risk_notes].map((item) => (
                       <p key={item}>- {item}</p>
                     ))}
@@ -596,30 +596,30 @@ export default function BacktestPanel({ stockId }: Props) {
             )}
           </div>
 
-          <div className="rounded-md border border-zinc-700 bg-zinc-800/60 px-3 py-3">
+          <div className="rounded-md border border-slate-700 bg-slate-800/60 px-3 py-3">
             <div className="flex items-center justify-between">
-              <div className="text-sm font-medium text-zinc-100">交易紀錄</div>
-              <div className="text-xs text-zinc-500">最近 {Math.min(result.trades.length, 5)} 筆</div>
+              <div className="text-sm font-medium text-slate-100">交易紀錄</div>
+              <div className="text-xs text-slate-500">最近 {Math.min(result.trades.length, 5)} 筆</div>
             </div>
             <div className="mt-3 flex flex-col gap-2">
               {result.trades.length === 0 ? (
-                <div className="rounded bg-zinc-900/60 px-3 py-2 text-xs text-zinc-500">這段期間沒有完成交易。</div>
+                <div className="rounded bg-slate-900/60 px-3 py-2 text-xs text-slate-500">這段期間沒有完成交易。</div>
               ) : (
                 result.trades.slice(-5).reverse().map((trade) => (
                   <a
                     key={`${trade.entry_date}-${trade.exit_date}`}
                     href={`/stocks/${stockId}?date=${trade.exit_date}`}
-                    className="rounded border border-zinc-700 bg-zinc-900/60 px-3 py-2 text-sm transition-colors hover:border-zinc-500"
+                    className="rounded border border-slate-700 bg-slate-900/60 px-3 py-2 text-sm transition-colors hover:border-slate-500"
                   >
                     <div className="flex items-center justify-between gap-4">
-                      <div className="text-zinc-200">
+                      <div className="text-slate-200">
                         {trade.entry_date} -&gt; {trade.exit_date}
                       </div>
                       <div className={`font-mono ${trade.return_pct >= 0 ? "text-red-400" : "text-green-400"}`}>
                         {formatPct(trade.return_pct)}
                       </div>
                     </div>
-                    <div className="mt-1 flex items-center justify-between gap-4 text-xs text-zinc-500">
+                    <div className="mt-1 flex items-center justify-between gap-4 text-xs text-slate-500">
                       <span>{trade.holding_days} 天 / {trade.exit_reason}</span>
                       <span>{formatCurrency(trade.pnl_amount)}</span>
                     </div>
@@ -632,8 +632,8 @@ export default function BacktestPanel({ stockId }: Props) {
       )}
 
       {!result && (
-        <div className="flex flex-1 items-center justify-center rounded-md border border-dashed border-zinc-700">
-          <p className="text-xs text-zinc-600">選模板或輸入策略後執行回測，先看夏普、勝率、回撤與交易清單。</p>
+        <div className="flex flex-1 items-center justify-center rounded-md border border-dashed border-slate-700">
+          <p className="text-xs text-slate-600">選模板或輸入策略後執行回測，先看夏普、勝率、回撤與交易清單。</p>
         </div>
       )}
     </div>

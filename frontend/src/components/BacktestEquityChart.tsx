@@ -57,12 +57,12 @@ export default function BacktestEquityChart({ points, trades = [] }: Props) {
       backgroundColor: "transparent",
       tooltip: {
         trigger: "axis" as const,
-        backgroundColor: "rgba(24,24,27,0.95)",
-        borderColor: "#3f3f46",
+        backgroundColor: "rgba(15,23,42,0.95)",
+        borderColor: "#334155",
         textStyle: { color: "#fafafa", fontSize: 12 },
         formatter: (params: { seriesName: string; value: number; axisValue: string; seriesIndex: number }[]) => {
           if (!params?.length) return ""
-          let html = `<div style="font-size:11px;color:#a1a1aa;margin-bottom:4px">${params[0].axisValue}</div>`
+          let html = `<div style="font-size:11px;color:#94a3b8;margin-bottom:4px">${params[0].axisValue}</div>`
           for (const p of params) {
             if (p.seriesIndex >= 2) continue // skip drawdown in main tooltip
             const sign = p.value >= 0 ? "+" : ""
@@ -80,7 +80,7 @@ export default function BacktestEquityChart({ points, trades = [] }: Props) {
       legend: {
         data: ["策略報酬", "Buy & Hold"],
         top: 0,
-        textStyle: { color: "#a1a1aa", fontSize: 11 },
+        textStyle: { color: "#94a3b8", fontSize: 11 },
       },
       axisPointer: { link: [{ xAxisIndex: "all" }] },
       grid: [
@@ -94,15 +94,15 @@ export default function BacktestEquityChart({ points, trades = [] }: Props) {
           gridIndex: 0,
           boundaryGap: false,
           axisLabel: { show: false },
-          axisLine: { lineStyle: { color: "#3f3f46" } },
+          axisLine: { lineStyle: { color: "#334155" } },
         },
         {
           type: "category" as const,
           data: dates,
           gridIndex: 1,
           boundaryGap: false,
-          axisLabel: { color: "#71717a", fontSize: 10 },
-          axisLine: { lineStyle: { color: "#3f3f46" } },
+          axisLabel: { color: "#64748b", fontSize: 10 },
+          axisLine: { lineStyle: { color: "#334155" } },
         },
       ],
       yAxis: [
@@ -111,7 +111,7 @@ export default function BacktestEquityChart({ points, trades = [] }: Props) {
           gridIndex: 0,
           scale: true,
           axisLabel: {
-            color: "#71717a",
+            color: "#64748b",
             fontSize: 10,
             formatter: (v: number) => `${v >= 0 ? "+" : ""}${v}%`,
           },
@@ -122,7 +122,7 @@ export default function BacktestEquityChart({ points, trades = [] }: Props) {
           gridIndex: 1,
           scale: true,
           axisLabel: {
-            color: "#71717a",
+            color: "#64748b",
             fontSize: 10,
             formatter: (v: number) => `${v}%`,
           },

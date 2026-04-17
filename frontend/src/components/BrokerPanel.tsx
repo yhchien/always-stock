@@ -46,13 +46,13 @@ function BrokerRow({
   return (
     <tr
       onClick={onClick}
-      className={`border-b border-zinc-700/50 cursor-pointer transition-colors ${
-        isSelected ? "bg-zinc-600/40" : "hover:bg-zinc-700/30"
+      className={`border-b border-slate-700/50 cursor-pointer transition-colors ${
+        isSelected ? "bg-slate-600/40" : "hover:bg-slate-700/30"
       }`}
     >
       <td className="py-1.5 pr-1">
         <div className="flex flex-col gap-0.5">
-          <span className={`text-xs ${isSelected ? "text-zinc-50 font-medium" : "text-zinc-200"}`}>
+          <span className={`text-xs ${isSelected ? "text-slate-50 font-medium" : "text-slate-200"}`}>
             {broker.display_name}
           </span>
           {broker.categories.length > 0 && (
@@ -60,7 +60,7 @@ function BrokerRow({
               {broker.categories.map((cat) => (
                 <span
                   key={cat}
-                  className={`text-[9px] px-1 py-px rounded ${CATEGORY_COLORS[cat] ?? "bg-zinc-600/30 text-zinc-400"}`}
+                  className={`text-[9px] px-1 py-px rounded ${CATEGORY_COLORS[cat] ?? "bg-slate-600/30 text-slate-400"}`}
                 >
                   {CATEGORY_LABELS[cat] ?? cat}
                 </span>
@@ -73,7 +73,7 @@ function BrokerRow({
       <td className="py-1.5 text-right text-green-400 text-xs font-mono">{fmtLots(broker.sell_shares)}</td>
       <td
         className={`py-1.5 text-right text-xs font-mono font-medium ${
-          broker.net_shares > 0 ? "text-red-400" : broker.net_shares < 0 ? "text-green-400" : "text-zinc-500"
+          broker.net_shares > 0 ? "text-red-400" : broker.net_shares < 0 ? "text-green-400" : "text-slate-500"
         }`}
       >
         {fmtLots(broker.net_shares)}
@@ -163,10 +163,10 @@ export default function BrokerPanel({ stockId, date, days = 1, onSelectBroker, s
   }
 
   return (
-    <div className="flex flex-col gap-3 rounded-lg border border-zinc-600 bg-zinc-700 p-4 h-full">
+    <div className="flex flex-col gap-3 rounded-lg border border-slate-700/40 bg-slate-800/40 p-4 h-full">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-zinc-100">關鍵券商買賣</h2>
+        <h2 className="text-sm font-semibold text-slate-100">關鍵券商買賣</h2>
         <div className="flex items-center gap-2">
           {isFetching && !isInitialLoad && (
             <span className="flex items-center gap-1 text-[10px] text-yellow-400">
@@ -175,7 +175,7 @@ export default function BrokerPanel({ stockId, date, days = 1, onSelectBroker, s
             </span>
           )}
           {tradeDate && (
-            <span className="text-[10px] text-zinc-400">{tradeDate}</span>
+            <span className="text-[10px] text-slate-400">{tradeDate}</span>
           )}
         </div>
       </div>
@@ -191,7 +191,7 @@ export default function BrokerPanel({ stockId, date, days = 1, onSelectBroker, s
                 ? t === "buy"
                   ? "bg-red-500/20 text-red-300 border border-red-500/30"
                   : "bg-green-500/20 text-green-300 border border-green-500/30"
-                : "bg-zinc-700/50 text-zinc-400 border border-transparent hover:bg-zinc-600 hover:text-zinc-200"
+                : "bg-slate-800/50 text-slate-400 border border-transparent hover:bg-slate-700 hover:text-slate-200"
             }`}
           >
             {t === "buy" ? "買進 Top10" : "賣出 Top10"}
@@ -201,7 +201,7 @@ export default function BrokerPanel({ stockId, date, days = 1, onSelectBroker, s
 
       {/* Help text */}
       {onSelectBroker && !isEmpty && (
-        <p className="text-[10px] text-zinc-500">
+        <p className="text-[10px] text-slate-500">
           {selectedBrokerId ? "點擊同一券商取消選擇" : "點擊券商查看買賣超走勢"}
         </p>
       )}
@@ -211,8 +211,8 @@ export default function BrokerPanel({ stockId, date, days = 1, onSelectBroker, s
         {isInitialLoad ? (
           <div className="flex items-center justify-center h-full">
             <div className="flex flex-col items-center gap-2">
-              <div className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-500 border-t-zinc-200" />
-              <p className="text-xs text-zinc-400">正在從證交所取得資料...</p>
+              <div className="h-5 w-5 animate-spin rounded-full border-2 border-slate-500 border-t-slate-200" />
+              <p className="text-xs text-slate-400">正在從證交所取得資料...</p>
             </div>
           </div>
         ) : error ? (
@@ -222,7 +222,7 @@ export default function BrokerPanel({ stockId, date, days = 1, onSelectBroker, s
               <button
                 type="button"
                 onClick={() => setReloadKey((v) => v + 1)}
-                className="rounded-md border border-zinc-600 px-2 py-1 text-[11px] text-zinc-300 transition-colors hover:bg-zinc-600"
+                className="rounded-md border border-slate-600 px-2 py-1 text-[11px] text-slate-300 transition-colors hover:bg-slate-600"
               >
                 重新載入
               </button>
@@ -230,19 +230,19 @@ export default function BrokerPanel({ stockId, date, days = 1, onSelectBroker, s
           </div>
         ) : isEmpty && !isFetching ? (
           <div className="flex items-center justify-center h-full">
-            <p className="text-xs text-zinc-500">此日期無券商交易紀錄</p>
+            <p className="text-xs text-slate-500">此日期無券商交易紀錄</p>
           </div>
         ) : isEmpty ? (
           <div className="flex items-center justify-center h-full">
             <div className="flex flex-col items-center gap-2">
-              <div className="h-4 w-4 animate-spin rounded-full border-2 border-zinc-500 border-t-zinc-200" />
-              <p className="text-xs text-zinc-400">正在背景抓取券商資料...</p>
+              <div className="h-4 w-4 animate-spin rounded-full border-2 border-slate-500 border-t-slate-200" />
+              <p className="text-xs text-slate-400">正在背景抓取券商資料...</p>
             </div>
           </div>
         ) : (
           <table className="w-full text-xs">
             <thead>
-              <tr className="border-b border-zinc-600/50 text-zinc-400">
+              <tr className="border-b border-slate-600/50 text-slate-400">
                 <th className="text-left py-1.5 font-medium">券商</th>
                 <th className="text-right py-1.5 font-medium">買進</th>
                 <th className="text-right py-1.5 font-medium">賣出</th>

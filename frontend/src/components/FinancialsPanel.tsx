@@ -64,35 +64,35 @@ function ValuationChart({ stockId, chartDays }: { stockId: string; chartDays?: n
       backgroundColor: "transparent",
       tooltip: {
         trigger: "axis" as const,
-        backgroundColor: "rgba(24,24,27,0.95)",
-        borderColor: "#3f3f46",
+        backgroundColor: "rgba(15,23,42,0.95)",
+        borderColor: "#334155",
         textStyle: { color: "#fafafa", fontSize: 12 },
       },
       legend: {
         data: ["本益比", "股價淨值比", "殖利率(%)"],
-        textStyle: { color: "#a1a1aa", fontSize: 11 },
+        textStyle: { color: "#94a3b8", fontSize: 11 },
         top: 0,
       },
       grid: { left: 50, right: 50, top: 36, bottom: 40 },
       xAxis: {
         type: "category" as const,
         data: dates,
-        axisLabel: { color: "#71717a", fontSize: 10, formatter: (v: string) => v.slice(5) },
-        axisLine: { lineStyle: { color: "#52525b" } },
+        axisLabel: { color: "#64748b", fontSize: 10, formatter: (v: string) => v.slice(5) },
+        axisLine: { lineStyle: { color: "#475569" } },
       },
       yAxis: [
         {
           type: "value" as const,
           name: "PER / PBR",
-          nameTextStyle: { color: "#a1a1aa", fontSize: 10 },
-          axisLabel: { color: "#a1a1aa", fontSize: 10 },
-          splitLine: { lineStyle: { color: "#3f3f46" } },
+          nameTextStyle: { color: "#94a3b8", fontSize: 10 },
+          axisLabel: { color: "#94a3b8", fontSize: 10 },
+          splitLine: { lineStyle: { color: "#334155" } },
         },
         {
           type: "value" as const,
           name: "殖利率(%)",
-          nameTextStyle: { color: "#a1a1aa", fontSize: 10 },
-          axisLabel: { color: "#a1a1aa", fontSize: 10 },
+          nameTextStyle: { color: "#94a3b8", fontSize: 10 },
+          axisLabel: { color: "#94a3b8", fontSize: 10 },
           splitLine: { show: false },
         },
       ],
@@ -133,7 +133,7 @@ function ValuationChart({ stockId, chartDays }: { stockId: string; chartDays?: n
 
   if (loading) return <Skeleton className="h-[320px] w-full" />
   if (error) return <p className="text-xs text-red-400">{error}</p>
-  if (!chartOption) return <p className="text-xs text-zinc-500">無估值資料。</p>
+  if (!chartOption) return <p className="text-xs text-slate-500">無估值資料。</p>
 
   return (
     <div>
@@ -144,7 +144,7 @@ function ValuationChart({ stockId, chartDays }: { stockId: string; chartDays?: n
         opts={{ renderer: "svg" }}
       />
       {perAllNull && (
-        <p className="mt-1 text-center text-[11px] text-zinc-400">
+        <p className="mt-1 text-center text-[11px] text-slate-400">
           此期間 EPS 為負值或不適用，本益比無法顯示
         </p>
       )}
@@ -190,8 +190,8 @@ function RevenueChart({ stockId, chartDays }: { stockId: string; chartDays?: num
       backgroundColor: "transparent",
       tooltip: {
         trigger: "axis" as const,
-        backgroundColor: "rgba(24,24,27,0.95)",
-        borderColor: "#3f3f46",
+        backgroundColor: "rgba(15,23,42,0.95)",
+        borderColor: "#334155",
         textStyle: { color: "#fafafa", fontSize: 12 },
         formatter: (params: { seriesName: string; value: number | null; axisValue: string }[]) => {
           if (!params?.length) return ""
@@ -206,29 +206,29 @@ function RevenueChart({ stockId, chartDays }: { stockId: string; chartDays?: num
       },
       legend: {
         data: hasYoyData ? ["月營收", "YoY(%)"] : ["月營收"],
-        textStyle: { color: "#a1a1aa", fontSize: 11 },
+        textStyle: { color: "#94a3b8", fontSize: 11 },
         top: 0,
       },
       grid: { left: 55, right: 55, top: 36, bottom: 40 },
       xAxis: {
         type: "category" as const,
         data: months,
-        axisLabel: { color: "#71717a", fontSize: 10, rotate: 45 },
-        axisLine: { lineStyle: { color: "#52525b" } },
+        axisLabel: { color: "#64748b", fontSize: 10, rotate: 45 },
+        axisLine: { lineStyle: { color: "#475569" } },
       },
       yAxis: [
         {
           type: "value" as const,
           name: "營收(億)",
-          nameTextStyle: { color: "#a1a1aa", fontSize: 10 },
-          axisLabel: { color: "#a1a1aa", fontSize: 10 },
-          splitLine: { lineStyle: { color: "#3f3f46" } },
+          nameTextStyle: { color: "#94a3b8", fontSize: 10 },
+          axisLabel: { color: "#94a3b8", fontSize: 10 },
+          splitLine: { lineStyle: { color: "#334155" } },
         },
         {
           type: "value" as const,
           name: "YoY(%)",
-          nameTextStyle: { color: "#a1a1aa", fontSize: 10 },
-          axisLabel: { color: "#a1a1aa", fontSize: 10 },
+          nameTextStyle: { color: "#94a3b8", fontSize: 10 },
+          axisLabel: { color: "#94a3b8", fontSize: 10 },
           splitLine: { show: false },
         },
       ],
@@ -257,7 +257,7 @@ function RevenueChart({ stockId, chartDays }: { stockId: string; chartDays?: num
 
   if (loading) return <Skeleton className="h-[320px] w-full" />
   if (error) return <p className="text-xs text-red-400">{error}</p>
-  if (!chartOption) return <p className="text-xs text-zinc-500">無月營收資料。</p>
+  if (!chartOption) return <p className="text-xs text-slate-500">無月營收資料。</p>
 
   return (
     <div className="flex flex-col gap-2">
@@ -268,7 +268,7 @@ function RevenueChart({ stockId, chartDays }: { stockId: string; chartDays?: num
         opts={{ renderer: "svg" }}
       />
       {!data.some((d) => d.yoy_pct != null) && (
-        <p className="text-[11px] text-zinc-500">目前資料源尚未提供 YoY / MoM，圖上僅顯示月營收。</p>
+        <p className="text-[11px] text-slate-500">目前資料源尚未提供 YoY / MoM，圖上僅顯示月營收。</p>
       )}
     </div>
   )
@@ -333,16 +333,16 @@ function FinancialsTable({ stockId, chartDays }: { stockId: string; chartDays?: 
 
   if (loading) return <Skeleton className="h-[200px] w-full" />
   if (error) return <p className="text-xs text-red-400">{error}</p>
-  if (itemNames.length === 0) return <p className="text-xs text-zinc-500">無財報資料。</p>
+  if (itemNames.length === 0) return <p className="text-xs text-slate-500">無財報資料。</p>
 
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-xs">
         <thead>
-          <tr className="border-b border-zinc-600">
-            <th className="py-2 pr-4 text-left text-zinc-400 font-medium sticky left-0 bg-zinc-700">項目</th>
+          <tr className="border-b border-slate-600">
+            <th className="py-2 pr-4 text-left text-slate-400 font-medium sticky left-0 bg-slate-800">項目</th>
             {reportDates.map((d) => (
-              <th key={d} className="py-2 px-3 text-right text-zinc-400 font-medium whitespace-nowrap">
+              <th key={d} className="py-2 px-3 text-right text-slate-400 font-medium whitespace-nowrap">
                 {fmtDate(d)}
               </th>
             ))}
@@ -350,12 +350,12 @@ function FinancialsTable({ stockId, chartDays }: { stockId: string; chartDays?: 
         </thead>
         <tbody>
           {itemNames.map((name) => (
-            <tr key={name} className="border-b border-zinc-700/50">
-              <td className="py-2 pr-4 text-zinc-200 whitespace-nowrap sticky left-0 bg-zinc-700">{name}</td>
+            <tr key={name} className="border-b border-slate-700/50">
+              <td className="py-2 pr-4 text-slate-200 whitespace-nowrap sticky left-0 bg-slate-800">{name}</td>
               {reportDates.map((d) => {
                 const val = pivot.get(name)?.get(d) ?? null
                 return (
-                  <td key={d} className="py-2 px-3 text-right text-zinc-300 whitespace-nowrap">
+                  <td key={d} className="py-2 px-3 text-right text-slate-300 whitespace-nowrap">
                     {fmtVal(name, val)}
                   </td>
                 )
@@ -380,7 +380,7 @@ export default function FinancialsPanel({ stockId, chartDays }: Props) {
   ]
 
   return (
-    <div className="rounded-lg border border-zinc-600 bg-zinc-700 p-4">
+    <div className="rounded-lg border border-slate-700/40 bg-slate-800/40 p-4">
       <div className="flex items-center gap-1 mb-4">
         {tabs.map((tab) => (
           <button
@@ -388,8 +388,8 @@ export default function FinancialsPanel({ stockId, chartDays }: Props) {
             onClick={() => setActiveTab(tab.key)}
             className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
               activeTab === tab.key
-                ? "bg-zinc-600 text-zinc-100 font-medium"
-                : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-600/50"
+                ? "bg-slate-700 text-slate-100 font-medium"
+                : "text-slate-400 hover:text-slate-200 hover:bg-slate-700/50"
             }`}
           >
             {tab.label}

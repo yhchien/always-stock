@@ -54,12 +54,12 @@ function ToggleChip({
       onClick={() => onChange(!checked)}
       className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-colors ${
         checked
-          ? "bg-zinc-600 text-zinc-100 border border-zinc-500"
-          : "bg-zinc-800/60 text-zinc-500 border border-zinc-700 hover:text-zinc-300 hover:border-zinc-600"
+          ? "bg-slate-600 text-slate-100 border border-slate-500"
+          : "bg-slate-800/60 text-slate-500 border border-slate-700 hover:text-slate-300 hover:border-slate-600"
       }`}
     >
       <span
-        className={`inline-block h-1.5 w-1.5 rounded-full ${checked ? "bg-emerald-400" : "bg-zinc-600"}`}
+        className={`inline-block h-1.5 w-1.5 rounded-full ${checked ? "bg-emerald-400" : "bg-slate-600"}`}
       />
       {label}
     </button>
@@ -106,7 +106,7 @@ function StockContent({ stockId }: { stockId: string }) {
       <div className="flex items-center gap-2 flex-wrap">
         <Link
           href={`/stocks/${stockId}/backtest${date ? `?date=${date}` : ""}`}
-          className="flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium bg-zinc-800/60 text-zinc-400 border border-zinc-700 hover:text-zinc-200 hover:border-zinc-500 transition-colors"
+          className="flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium bg-slate-800/60 text-slate-400 border border-slate-700 hover:text-slate-200 hover:border-slate-500 transition-colors"
         >
           回測程式 →
         </Link>

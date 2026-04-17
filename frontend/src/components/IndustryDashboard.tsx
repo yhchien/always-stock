@@ -35,14 +35,14 @@ function getSortValue(row: IndustryFlowItem, key: SortKey): number {
 
 function AmountCell({ value }: { value: number }) {
   const formatted = fmtAmount(value)
-  const color = value > 0 ? "text-red-400" : value < 0 ? "text-green-400" : "text-zinc-400"
+  const color = value > 0 ? "text-red-400" : value < 0 ? "text-green-400" : "text-slate-400"
   return <span className={`font-mono text-sm ${color}`}>{formatted}</span>
 }
 
 function BarAmountCell({ value, maxAbs }: { value: number; maxAbs: number }) {
   const pct = maxAbs > 0 ? Math.min((Math.abs(value) / maxAbs) * 100, 100) : 0
   const barColor = value > 0 ? "bg-red-500/15" : value < 0 ? "bg-green-500/15" : ""
-  const textColor = value > 0 ? "text-red-400" : value < 0 ? "text-green-400" : "text-zinc-400"
+  const textColor = value > 0 ? "text-red-400" : value < 0 ? "text-green-400" : "text-slate-400"
   return (
     <div className="relative flex items-center justify-end">
       <div className={`absolute inset-y-0 right-0 rounded-sm ${barColor}`} style={{ width: `${pct}%` }} />
@@ -53,7 +53,7 @@ function BarAmountCell({ value, maxAbs }: { value: number; maxAbs: number }) {
 
 function StreakCell({ value }: { value: number }) {
   const text = fmtStreak(value)
-  const color = value > 0 ? "text-red-400" : value < 0 ? "text-green-400" : "text-zinc-500"
+  const color = value > 0 ? "text-red-400" : value < 0 ? "text-green-400" : "text-slate-500"
   return <span className={`text-xs font-medium ${color}`}>{text}</span>
 }
 
@@ -147,7 +147,7 @@ export default function IndustryDashboard({ defaultDate, onDateChange, onSelectI
           type="date"
           value={date}
           onChange={(e) => { setDate(e.target.value); onDateChange?.(e.target.value) }}
-          className="rounded-md border border-zinc-600 bg-zinc-700 px-3 py-1.5 text-sm text-zinc-100 focus:outline-none focus:ring-1 focus:ring-zinc-300"
+          className="rounded-md border border-slate-700/50 bg-slate-800/50 px-3 py-1.5 text-sm text-slate-100 focus:outline-none focus:ring-1 focus:ring-slate-300"
         />
       </div>
 
@@ -159,12 +159,12 @@ export default function IndustryDashboard({ defaultDate, onDateChange, onSelectI
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="搜尋產業..."
-            className="rounded-md border border-zinc-600 bg-zinc-800 px-3 py-1.5 pr-8 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-zinc-400 w-36"
+            className="rounded-md border border-slate-600 bg-slate-800 px-3 py-1.5 pr-8 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-400 w-36"
           />
           {search && (
             <button
               onClick={() => setSearch("")}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 text-base leading-none"
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 text-base leading-none"
               aria-label="清除搜尋"
             >
               ×
@@ -172,15 +172,15 @@ export default function IndustryDashboard({ defaultDate, onDateChange, onSelectI
           )}
         </div>
         {search && (
-          <span className="text-xs text-zinc-500">{sorted.length} / {rows.length}</span>
+          <span className="text-xs text-slate-500">{sorted.length} / {rows.length}</span>
         )}
         <Tabs value={tab} onValueChange={(v) => handleTabChange(v as Tab)}>
-          <TabsList className="bg-zinc-700 border border-zinc-500">
+          <TabsList className="bg-slate-800/50 border border-slate-600/40">
             {(Object.keys(TAB_LABELS) as Tab[]).map((t) => (
               <TabsTrigger
                 key={t}
                 value={t}
-                className="data-[state=active]:bg-zinc-600 data-[state=active]:text-white text-zinc-300"
+                className="data-[state=active]:bg-slate-700 data-[state=active]:text-white text-slate-300"
               >
                 {TAB_LABELS[t]}
               </TabsTrigger>
@@ -201,38 +201,38 @@ export default function IndustryDashboard({ defaultDate, onDateChange, onSelectI
 
       {/* Table */}
       {!loading && !error && sorted.length > 0 && (
-        <div className="rounded-lg border border-zinc-600 overflow-hidden">
+        <div className="rounded-lg border border-slate-600 overflow-hidden">
           <Table>
             <TableHeader>
-              <TableRow className="border-zinc-600 hover:bg-transparent">
-                <TableHead className="text-zinc-300 w-8">#</TableHead>
-                <TableHead className="text-zinc-300">產業</TableHead>
+              <TableRow className="border-slate-600 hover:bg-transparent">
+                <TableHead className="text-slate-300 w-8">#</TableHead>
+                <TableHead className="text-slate-300">產業</TableHead>
                 <TableHead
-                  className="text-zinc-300 text-right cursor-pointer select-none hover:text-zinc-100 hidden sm:table-cell"
+                  className="text-slate-300 text-right cursor-pointer select-none hover:text-slate-100 hidden sm:table-cell"
                   onClick={() => handleSort("foreign")}
                 >
                   外資{sortIndicator("foreign")}
                 </TableHead>
                 <TableHead
-                  className="text-zinc-300 text-right cursor-pointer select-none hover:text-zinc-100 hidden sm:table-cell"
+                  className="text-slate-300 text-right cursor-pointer select-none hover:text-slate-100 hidden sm:table-cell"
                   onClick={() => handleSort("trust")}
                 >
                   投信{sortIndicator("trust")}
                 </TableHead>
                 <TableHead
-                  className="text-zinc-300 text-right cursor-pointer select-none hover:text-zinc-100 hidden sm:table-cell"
+                  className="text-slate-300 text-right cursor-pointer select-none hover:text-slate-100 hidden sm:table-cell"
                   onClick={() => handleSort("dealer")}
                 >
                   自營商{sortIndicator("dealer")}
                 </TableHead>
                 <TableHead
-                  className="text-zinc-300 text-right cursor-pointer select-none hover:text-zinc-100"
+                  className="text-slate-300 text-right cursor-pointer select-none hover:text-slate-100"
                   onClick={() => handleSort("total")}
                 >
                   合計{sortIndicator("total")}
                 </TableHead>
                 <TableHead
-                  className="text-zinc-300 text-center cursor-pointer select-none hover:text-zinc-100"
+                  className="text-slate-300 text-center cursor-pointer select-none hover:text-slate-100"
                   onClick={() => handleSort("streak")}
                 >
                   趨勢{sortIndicator("streak")}
@@ -243,10 +243,10 @@ export default function IndustryDashboard({ defaultDate, onDateChange, onSelectI
               {sorted.map((row, i) => (
                 <TableRow
                   key={row.industry_name}
-                  className="border-zinc-600 hover:bg-zinc-600 cursor-pointer"
+                  className="border-slate-600 hover:bg-slate-800/60 cursor-pointer"
                   onClick={() => onSelectIndustry?.(row.industry_name)}
                 >
-                  <TableCell className="text-zinc-600 text-xs">{i + 1}</TableCell>
+                  <TableCell className="text-slate-600 text-xs">{i + 1}</TableCell>
                   <TableCell className="font-medium text-sm">{row.industry_name}</TableCell>
                   <TableCell className="text-right hidden sm:table-cell"><AmountCell value={row.foreign_net_amount} /></TableCell>
                   <TableCell className="text-right hidden sm:table-cell"><AmountCell value={row.trust_net_amount} /></TableCell>
@@ -261,7 +261,7 @@ export default function IndustryDashboard({ defaultDate, onDateChange, onSelectI
       )}
 
       {!loading && !error && sorted.length === 0 && (
-        <p className="text-sm text-zinc-500">此日期無資料，請選擇交易日。</p>
+        <p className="text-sm text-slate-500">此日期無資料，請選擇交易日。</p>
       )}
     </div>
   )

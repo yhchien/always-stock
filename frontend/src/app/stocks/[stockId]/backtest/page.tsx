@@ -22,24 +22,24 @@ function BacktestContent({ stockId }: { stockId: string }) {
   const date = searchParams.get("date") ?? undefined
 
   return (
-    <div className="flex flex-col h-[calc(100dvh-3rem)] overflow-hidden">
+    <div className="flex min-h-[calc(100dvh-3rem)] flex-col bg-slate-950">
       {/* Header */}
-      <div className="flex items-center gap-3 px-4 border-b border-zinc-800 bg-zinc-900/60 shrink-0 h-10">
+      <div className="flex items-center gap-3 px-4 border-b border-slate-800 bg-slate-900/60 shrink-0 h-10">
         <button
           type="button"
           onClick={() => router.back()}
-          className="flex items-center gap-1 text-xs text-zinc-400 hover:text-zinc-200 transition-colors"
+          className="flex items-center gap-1 text-xs text-slate-400 hover:text-slate-200 transition-colors"
         >
           ← 返回 {stockId}
         </button>
-        <span className="text-zinc-700 select-none">|</span>
-        <h1 className="text-sm font-semibold text-zinc-200">回測程式</h1>
+        <span className="text-slate-700 select-none">|</span>
+        <h1 className="text-sm font-semibold text-slate-200">回測程式</h1>
       </div>
 
       {/* Two-pane content */}
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-2 overflow-hidden">
+      <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-2">
         {/* Left pane: K-line chart */}
-        <div className="overflow-y-auto border-b lg:border-b-0 lg:border-r border-zinc-800">
+        <div className="min-h-0 overflow-y-auto border-b border-slate-800 bg-slate-950 lg:border-r lg:border-b-0">
           <StockChart
             stockId={stockId}
             defaultDate={date}
@@ -48,7 +48,7 @@ function BacktestContent({ stockId }: { stockId: string }) {
         </div>
 
         {/* Right pane: Backtest panel */}
-        <div className="overflow-y-auto">
+        <div className="min-h-0 overflow-y-auto bg-slate-950">
           <BacktestPanel stockId={stockId} />
         </div>
       </div>

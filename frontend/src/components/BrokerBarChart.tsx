@@ -61,14 +61,14 @@ export default function BrokerBarChart({
       backgroundColor: "transparent",
       tooltip: {
         trigger: "axis" as const,
-        backgroundColor: "rgba(24,24,27,0.95)",
-        borderColor: "#3f3f46",
+        backgroundColor: "rgba(15,23,42,0.95)",
+        borderColor: "#334155",
         textStyle: { color: "#fafafa", fontSize: 12 },
         formatter: (params: { axisValue: string; value: number }[]) => {
           if (!params || params.length === 0) return ""
           const p = params[0]
           const val = p.value
-          const color = val > 0 ? "#f87171" : val < 0 ? "#4ade80" : "#a1a1aa"
+          const color = val > 0 ? "#f87171" : val < 0 ? "#4ade80" : "#94a3b8"
           return `<div style="font-size:12px">${p.axisValue}</div>` +
             `<div style="color:${color}">${brokerDisplayName} 淨買超: <b>${val >= 0 ? "+" : ""}${val.toFixed(0)} 張</b></div>`
         },
@@ -78,25 +78,25 @@ export default function BrokerBarChart({
         type: "category" as const,
         data: dates,
         axisLabel: {
-          color: "#71717a",
+          color: "#64748b",
           fontSize: 10,
           formatter: (v: string) => v.slice(5),
           rotate: 45,
         },
-        axisLine: { lineStyle: { color: "#52525b" } },
+        axisLine: { lineStyle: { color: "#475569" } },
         splitLine: { show: false },
       },
       yAxis: {
         type: "value" as const,
         name: "淨買超(張)",
-        nameTextStyle: { color: "#a1a1aa", fontSize: 10 },
+        nameTextStyle: { color: "#94a3b8", fontSize: 10 },
         axisLabel: {
-          color: "#a1a1aa",
+          color: "#94a3b8",
           fontSize: 10,
           formatter: (v: number) => fmtLots(v * 1000),
         },
-        axisLine: { lineStyle: { color: "#52525b" } },
-        splitLine: { lineStyle: { color: "#3f3f46" } },
+        axisLine: { lineStyle: { color: "#475569" } },
+        splitLine: { lineStyle: { color: "#334155" } },
       },
       series: [
         {
@@ -113,17 +113,17 @@ export default function BrokerBarChart({
   }, [history, brokerDisplayName])
 
   return (
-    <div className="rounded-lg border border-zinc-600 bg-zinc-700 p-4">
+    <div className="rounded-lg border border-slate-600 bg-slate-800/40 p-4">
       <div className="flex items-center justify-between mb-3">
         <div>
-          <span className="text-sm font-semibold text-zinc-100">{brokerDisplayName}</span>
-          <span className="ml-2 text-xs text-zinc-400">逐日淨買超</span>
-          <span className="ml-2 text-xs text-zinc-500">{startDate} ～ {endDate}</span>
+          <span className="text-sm font-semibold text-slate-100">{brokerDisplayName}</span>
+          <span className="ml-2 text-xs text-slate-400">逐日淨買超</span>
+          <span className="ml-2 text-xs text-slate-500">{startDate} ～ {endDate}</span>
         </div>
         {onClose && (
           <button
             onClick={onClose}
-            className="text-xs text-zinc-400 hover:text-zinc-200 px-2 py-0.5 rounded border border-zinc-600 hover:border-zinc-400 transition-colors"
+            className="text-xs text-slate-400 hover:text-slate-200 px-2 py-0.5 rounded border border-slate-600 hover:border-slate-400 transition-colors"
           >
             關閉
           </button>
@@ -145,7 +145,7 @@ export default function BrokerBarChart({
         />
       )}
       {!loading && !error && history.length === 0 && (
-        <p className="text-xs text-zinc-500">此時間區間無此券商的交易紀錄。</p>
+        <p className="text-xs text-slate-500">此時間區間無此券商的交易紀錄。</p>
       )}
     </div>
   )

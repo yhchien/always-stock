@@ -78,30 +78,30 @@ function SummaryTable({
 
   function AmountCell({ value }: { value: number }) {
     const formatted = fmtAmount(value)
-    const color = value > 0 ? "text-red-400" : value < 0 ? "text-green-400" : "text-zinc-400"
+    const color = value > 0 ? "text-red-400" : value < 0 ? "text-green-400" : "text-slate-400"
     return <span className={`font-mono text-sm ${color}`}>{formatted}</span>
   }
 
   return (
-    <div className="rounded-lg border border-zinc-700 overflow-hidden">
+    <div className="rounded-lg border border-slate-700 overflow-hidden">
       <Table>
         <TableHeader>
-          <TableRow className="border-zinc-700 hover:bg-transparent">
-            <TableHead className="text-zinc-300">鏈</TableHead>
-            <TableHead className="text-zinc-300">子產業</TableHead>
-            <TableHead className="text-zinc-300 text-right cursor-pointer select-none hover:text-zinc-100" onClick={() => handleSort("foreign")}>
+          <TableRow className="border-slate-700 hover:bg-transparent">
+            <TableHead className="text-slate-300">鏈</TableHead>
+            <TableHead className="text-slate-300">子產業</TableHead>
+            <TableHead className="text-slate-300 text-right cursor-pointer select-none hover:text-slate-100" onClick={() => handleSort("foreign")}>
               外資{indicator("foreign")}
             </TableHead>
-            <TableHead className="text-zinc-300 text-right cursor-pointer select-none hover:text-zinc-100" onClick={() => handleSort("trust")}>
+            <TableHead className="text-slate-300 text-right cursor-pointer select-none hover:text-slate-100" onClick={() => handleSort("trust")}>
               投信{indicator("trust")}
             </TableHead>
-            <TableHead className="text-zinc-300 text-right cursor-pointer select-none hover:text-zinc-100" onClick={() => handleSort("dealer")}>
+            <TableHead className="text-slate-300 text-right cursor-pointer select-none hover:text-slate-100" onClick={() => handleSort("dealer")}>
               自營商{indicator("dealer")}
             </TableHead>
-            <TableHead className="text-zinc-300 text-right cursor-pointer select-none hover:text-zinc-100" onClick={() => handleSort("total")}>
+            <TableHead className="text-slate-300 text-right cursor-pointer select-none hover:text-slate-100" onClick={() => handleSort("total")}>
               合計{indicator("total")}
             </TableHead>
-            <TableHead className="text-zinc-300 text-center cursor-pointer select-none hover:text-zinc-100" onClick={() => handleSort("streak")}>
+            <TableHead className="text-slate-300 text-center cursor-pointer select-none hover:text-slate-100" onClick={() => handleSort("streak")}>
               趨勢{indicator("streak")}
             </TableHead>
           </TableRow>
@@ -112,12 +112,12 @@ function SummaryTable({
             return (
               <TableRow
                 key={row.sub_industry}
-                className={`border-zinc-700 cursor-pointer ${isActive ? "bg-zinc-700" : "hover:bg-zinc-800"}`}
+                className={`border-slate-700 cursor-pointer ${isActive ? "bg-slate-700/60" : "hover:bg-slate-800/40"}`}
                 onClick={() => onFilter(isActive ? null : row.sub_industry)}
               >
                 <TableCell>
                   {row.chain && (
-                    <Badge variant="outline" className="text-xs text-zinc-300 border-zinc-600">
+                    <Badge variant="outline" className="text-xs text-slate-300 border-slate-600">
                       {row.chain}
                     </Badge>
                   )}
@@ -128,7 +128,7 @@ function SummaryTable({
                 <TableCell className="text-right"><AmountCell value={row.dealer_net_amount} /></TableCell>
                 <TableCell className="text-right"><AmountCell value={row.total_net_amount} /></TableCell>
                 <TableCell className="text-center">
-                  <span className={`text-xs font-medium ${row.streak > 0 ? "text-red-400" : row.streak < 0 ? "text-green-400" : "text-zinc-500"}`}>
+                  <span className={`text-xs font-medium ${row.streak > 0 ? "text-red-400" : row.streak < 0 ? "text-green-400" : "text-slate-500"}`}>
                     {fmtStreak(row.streak)}
                   </span>
                 </TableCell>
@@ -144,8 +144,8 @@ function SummaryTable({
 // ── Card helpers ──────────────────────────────────────────────────────────────
 
 function PriceChange({ change, pct }: { change: number | null; pct: number | null }) {
-  if (change == null || pct == null) return <span className="text-zinc-500 text-xs">-</span>
-  const color = change > 0 ? "text-red-400" : change < 0 ? "text-green-400" : "text-zinc-400"
+  if (change == null || pct == null) return <span className="text-slate-500 text-xs">-</span>
+  const color = change > 0 ? "text-red-400" : change < 0 ? "text-green-400" : "text-slate-400"
   const arrow = change > 0 ? "\u25B2" : change < 0 ? "\u25BC" : ""
   return (
     <span className={`font-mono text-sm ${color}`}>
@@ -155,10 +155,10 @@ function PriceChange({ change, pct }: { change: number | null; pct: number | nul
 }
 
 function FlowBadge({ label, value }: { label: string; value: number }) {
-  const color = value > 0 ? "text-red-400" : value < 0 ? "text-green-400" : "text-zinc-500"
+  const color = value > 0 ? "text-red-400" : value < 0 ? "text-green-400" : "text-slate-500"
   return (
     <div className="flex items-center justify-between text-xs">
-      <span className="text-zinc-500">{label}</span>
+      <span className="text-slate-500">{label}</span>
       <span className={`font-mono ${color}`}>{fmtShares(value)}</span>
     </div>
   )
@@ -266,18 +266,18 @@ export default function StockList({ industryName, defaultDate, defaultSubFilter 
         <div className="flex items-center gap-3">
           <button
             onClick={() => router.back()}
-            className="text-zinc-400 hover:text-zinc-100 text-sm"
+            className="text-slate-400 hover:text-slate-100 text-sm"
           >
             &larr; 返回
           </button>
           <h1 className="text-xl font-semibold tracking-tight">{industryName}</h1>
-          <span className="text-sm text-zinc-500">{rows.length} 檔</span>
+          <span className="text-sm text-slate-500">{rows.length} 檔</span>
         </div>
         <input
           type="date"
           value={date}
           onChange={(e) => { setDate(e.target.value); syncUrl(e.target.value, subFilter) }}
-          className="rounded-md border border-zinc-600 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-100 focus:outline-none focus:ring-1 focus:ring-zinc-400"
+          className="rounded-md border border-slate-600 bg-slate-800/50 px-3 py-1.5 text-sm text-slate-100 focus:outline-none focus:ring-1 focus:ring-slate-400"
         />
       </div>
 
@@ -298,11 +298,11 @@ export default function StockList({ industryName, defaultDate, defaultSubFilter 
       {!loading && !error && summary.length > 0 && (
         <div>
           <div className="flex items-center gap-2 mb-2">
-            <h2 className="text-sm font-medium text-zinc-300">子產業彙總</h2>
+            <h2 className="text-sm font-medium text-slate-300">子產業彙總</h2>
             {subFilter && (
               <button
                 onClick={() => { setSubFilter(null); syncUrl(date, null) }}
-                className="text-xs text-zinc-300 hover:text-zinc-100 border border-zinc-600 bg-zinc-800 rounded px-2 py-0.5"
+                className="text-xs text-slate-300 hover:text-slate-100 border border-slate-600 bg-slate-800 rounded px-2 py-0.5"
               >
                 清除篩選: {subFilter} &times;
               </button>
@@ -318,10 +318,10 @@ export default function StockList({ industryName, defaultDate, defaultSubFilter 
           {[...grouped.entries()].map(([chain, items]) => (
             <section key={chain}>
               <div className="flex items-center gap-2 mb-3">
-                <Badge variant="outline" className="text-sm text-zinc-200 border-zinc-500 px-3 py-0.5">
+                <Badge variant="outline" className="text-sm text-slate-200 border-slate-500 px-3 py-0.5">
                   {chain}
                 </Badge>
-                <span className="text-xs text-zinc-600">{items.length} 檔</span>
+                <span className="text-xs text-slate-600">{items.length} 檔</span>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                 {items.map((stock) => {
@@ -335,7 +335,7 @@ export default function StockList({ industryName, defaultDate, defaultSubFilter 
                     ? "border-red-900/40 bg-red-950/20 hover:bg-red-950/30 hover:border-red-800/50"
                     : chg < 0
                     ? "border-green-900/40 bg-green-950/20 hover:bg-green-950/30 hover:border-green-800/50"
-                    : "border-zinc-700 bg-zinc-800/50 hover:border-zinc-500 hover:bg-zinc-800"
+                    : "border-slate-700 bg-slate-800/50 hover:border-slate-500 hover:bg-slate-800/40"
 
                   return (
                   <div
@@ -346,17 +346,17 @@ export default function StockList({ industryName, defaultDate, defaultSubFilter 
                     {/* Stock header */}
                     <div className="flex items-baseline justify-between mb-2">
                       <div className="flex items-baseline gap-2">
-                        <span className="font-mono text-sm text-zinc-400">{stock.stock_id}</span>
+                        <span className="font-mono text-sm text-slate-400">{stock.stock_id}</span>
                         <span className="font-medium text-sm">{stock.stock_name}</span>
                       </div>
                       {stock.sub_industry && (
-                        <span className="text-xs text-zinc-600 truncate ml-2">{stock.sub_industry}</span>
+                        <span className="text-xs text-slate-600 truncate ml-2">{stock.sub_industry}</span>
                       )}
                     </div>
 
                     {/* Price + change */}
                     <div className="flex items-baseline gap-3 mb-3">
-                      <span className="font-mono text-lg text-zinc-100">
+                      <span className="font-mono text-lg text-slate-100">
                         {displayPrice != null ? displayPrice.toFixed(2) : "-"}
                       </span>
                       <PriceChange change={displayChange ?? null} pct={displayPct ?? null} />
@@ -366,21 +366,21 @@ export default function StockList({ industryName, defaultDate, defaultSubFilter 
                     </div>
 
                     {/* Institutional flows */}
-                    <div className="flex flex-col gap-1 border-t border-zinc-700 pt-2">
+                    <div className="flex flex-col gap-1 border-t border-slate-700 pt-2">
                       <FlowBadge label="外資" value={stock.foreign_net_shares} />
                       <FlowBadge label="投信" value={stock.trust_net_shares} />
                       <FlowBadge label="自營" value={stock.dealer_net_shares} />
                     </div>
 
                     {/* Total net amount */}
-                    <div className="flex items-center justify-between mt-2 pt-2 border-t border-zinc-700">
-                      <span className="text-xs text-zinc-500">法人合計</span>
+                    <div className="flex items-center justify-between mt-2 pt-2 border-t border-slate-700">
+                      <span className="text-xs text-slate-500">法人合計</span>
                       <span className={`font-mono text-xs ${
                         stock.foreign_net_amount + stock.trust_net_amount + stock.dealer_net_amount > 0
                           ? "text-red-400"
                           : stock.foreign_net_amount + stock.trust_net_amount + stock.dealer_net_amount < 0
                           ? "text-green-400"
-                          : "text-zinc-400"
+                          : "text-slate-400"
                       }`}>
                         {fmtAmount(stock.foreign_net_amount + stock.trust_net_amount + stock.dealer_net_amount)}
                       </span>
@@ -395,7 +395,7 @@ export default function StockList({ industryName, defaultDate, defaultSubFilter 
       )}
 
       {!loading && !error && rows.length === 0 && (
-        <p className="text-sm text-zinc-500">此日期無資料，請選擇交易日。</p>
+        <p className="text-sm text-slate-500">此日期無資料，請選擇交易日。</p>
       )}
     </div>
   )

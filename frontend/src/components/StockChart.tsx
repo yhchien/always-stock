@@ -239,7 +239,7 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
           const map = new Map(brokerHistory.map((h) => [h.trade_date, h.net_shares]))
           return dates.map((d) => {
             const v = map.get(d) ?? 0
-            return { value: v / 1000, itemStyle: { color: v > 0 ? "#f87171" : v < 0 ? "#4ade80" : "#52525b" } }
+            return { value: v / 1000, itemStyle: { color: v > 0 ? "#f87171" : v < 0 ? "#4ade80" : "#475569" } }
           })
         })()
       : []
@@ -326,8 +326,8 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
       backgroundColor: "transparent",
       tooltip: {
         trigger: "axis" as const,
-        backgroundColor: "rgba(24,24,27,0.95)",
-        borderColor: "#3f3f46",
+        backgroundColor: "rgba(15,23,42,0.95)",
+        borderColor: "#334155",
         textStyle: { color: "#fafafa", fontSize: 12 },
         axisPointer: { type: "cross" as const },
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -348,7 +348,7 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
             } else if (p.seriesName?.includes("淨買超")) {
               const v = p.value as { value: number } | number
               const val = typeof v === "object" ? v.value : v
-              const color2 = val > 0 ? "#f87171" : val < 0 ? "#4ade80" : "#a1a1aa"
+              const color2 = val > 0 ? "#f87171" : val < 0 ? "#4ade80" : "#94a3b8"
               html += `<div style="color:${color2}">${p.marker} ${p.seriesName}: <b>${val >= 0 ? "+" : ""}${val.toFixed(0)} 張</b></div>`
             } else if (p.value != null) {
               html += `<div>${p.marker} ${p.seriesName}: <b>${fmtShares(p.value as number)}</b></div>`
@@ -359,7 +359,7 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
       },
       legend: {
         data: legendData,
-        textStyle: { color: "#a1a1aa", fontSize: 11 },
+        textStyle: { color: "#94a3b8", fontSize: 11 },
         top: 0,
         itemWidth: 16,
         itemHeight: 10,
@@ -378,14 +378,14 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
           end: zoomEnd,
           height: 20,
           bottom: 10,
-          borderColor: "#3f3f46",
+          borderColor: "#334155",
           backgroundColor: "#27272a",
           fillerColor: "rgba(113,113,122,0.2)",
-          handleStyle: { color: "#71717a" },
-          textStyle: { color: "#a1a1aa", fontSize: 10 },
+          handleStyle: { color: "#64748b" },
+          textStyle: { color: "#94a3b8", fontSize: 10 },
           dataBackground: {
-            lineStyle: { color: "#52525b" },
-            areaStyle: { color: "#3f3f46" },
+            lineStyle: { color: "#475569" },
+            areaStyle: { color: "#334155" },
           },
         },
         {
@@ -401,8 +401,8 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
               type: "category" as const,
               data: dates,
               gridIndex: 0,
-              axisLabel: { color: "#71717a", fontSize: 11, formatter: (v: string) => v.slice(5) },
-              axisLine: { lineStyle: { color: "#3f3f46" } },
+              axisLabel: { color: "#64748b", fontSize: 11, formatter: (v: string) => v.slice(5) },
+              axisLine: { lineStyle: { color: "#334155" } },
               splitLine: { show: false },
             },
             {
@@ -416,11 +416,11 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
             type: "category" as const,
             data: dates,
             axisLabel: {
-              color: "#71717a",
+              color: "#64748b",
               fontSize: 11,
               formatter: (v: string) => v.slice(5),
             },
-            axisLine: { lineStyle: { color: "#3f3f46" } },
+            axisLine: { lineStyle: { color: "#334155" } },
             splitLine: { show: false },
           },
       yAxis: [
@@ -428,9 +428,9 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
           gridIndex: hasBroker ? 0 : undefined,
           type: "value" as const,
           name: hasOHLC ? "股價" : "收盤價",
-          nameTextStyle: { color: "#a1a1aa", fontSize: 11 },
-          axisLabel: { color: "#a1a1aa", fontSize: 11 },
-          axisLine: { lineStyle: { color: "#3f3f46" } },
+          nameTextStyle: { color: "#94a3b8", fontSize: 11 },
+          axisLabel: { color: "#94a3b8", fontSize: 11 },
+          axisLine: { lineStyle: { color: "#334155" } },
           splitLine: { lineStyle: { color: "#27272a" } },
           scale: true,
         },
@@ -438,13 +438,13 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
           gridIndex: hasBroker ? 0 : undefined,
           type: "value" as const,
           name: "累積張數",
-          nameTextStyle: { color: "#a1a1aa", fontSize: 11 },
+          nameTextStyle: { color: "#94a3b8", fontSize: 11 },
           axisLabel: {
-            color: "#a1a1aa",
+            color: "#94a3b8",
             fontSize: 11,
             formatter: (v: number) => fmtShares(v),
           },
-          axisLine: { lineStyle: { color: "#3f3f46" } },
+          axisLine: { lineStyle: { color: "#334155" } },
           splitLine: { show: false },
         },
         ...(hasBroker
@@ -453,14 +453,14 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
                 gridIndex: 1,
                 type: "value" as const,
                 name: `${selectedBroker!.display_name}(張)`,
-                nameTextStyle: { color: "#a1a1aa", fontSize: 10 },
+                nameTextStyle: { color: "#94a3b8", fontSize: 10 },
                 axisLabel: {
-                  color: "#a1a1aa",
+                  color: "#94a3b8",
                   fontSize: 10,
                   // eslint-disable-next-line @typescript-eslint/no-explicit-any
                   formatter: (v: any) => fmtLots(v * 1000),
                 },
-                axisLine: { lineStyle: { color: "#3f3f46" } },
+                axisLine: { lineStyle: { color: "#334155" } },
                 splitLine: { lineStyle: { color: "#27272a" } },
               },
             ]
@@ -525,7 +525,7 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
         <div className="flex items-center gap-3">
           <button
             onClick={() => router.back()}
-            className="text-zinc-400 hover:text-zinc-100 text-sm"
+            className="text-slate-400 hover:text-slate-100 text-sm"
           >
             &larr; 返回
           </button>
@@ -534,7 +534,7 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
               <h1 className="text-xl font-semibold tracking-tight">
                 {data.stock_id} {data.stock_name}
               </h1>
-              <span className="text-sm text-zinc-500">
+              <span className="text-sm text-slate-500">
                 {data.sub_industry ?? data.industry_name}
               </span>
             </div>
@@ -544,11 +544,11 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
         {(() => {
           const rt = realtimeQuotes.get(stockId)
           if (!rt || rt.price == null) return null
-          const color = (rt.change ?? 0) > 0 ? "text-red-400" : (rt.change ?? 0) < 0 ? "text-green-400" : "text-zinc-300"
+          const color = (rt.change ?? 0) > 0 ? "text-red-400" : (rt.change ?? 0) < 0 ? "text-green-400" : "text-slate-300"
           const arrow = (rt.change ?? 0) > 0 ? "\u25B2" : (rt.change ?? 0) < 0 ? "\u25BC" : ""
           return (
             <div className="flex items-baseline gap-3">
-              <span className="font-mono text-2xl text-zinc-100">{rt.price.toFixed(2)}</span>
+              <span className="font-mono text-2xl text-slate-100">{rt.price.toFixed(2)}</span>
               <span className={`font-mono text-sm ${color}`}>
                 {arrow} {Math.abs(rt.change ?? 0).toFixed(2)} ({rt.change_pct != null ? (rt.change_pct >= 0 ? "+" : "") + rt.change_pct.toFixed(2) : "0.00"}%)
               </span>
@@ -569,8 +569,8 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
               onClick={() => clearCustomRange(opt.days)}
               className={`px-3 py-1 text-xs rounded-md border transition-colors ${
                 !appliedCustom && days === opt.days
-                  ? "bg-zinc-500 border-zinc-400 text-zinc-50"
-                  : "bg-zinc-700 border-zinc-600 text-zinc-300 hover:text-zinc-100 hover:border-zinc-400"
+                  ? "bg-slate-600 border-slate-500 text-slate-50"
+                  : "bg-slate-800/50 border-slate-700/50 text-slate-300 hover:text-slate-100 hover:border-slate-400"
               }`}
             >
               {opt.label}
@@ -580,35 +580,35 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
 
         {/* Custom date range */}
         <div className="flex items-center gap-1">
-          <span className="text-xs text-zinc-500">自訂</span>
+          <span className="text-xs text-slate-500">自訂</span>
           <input
             type="date"
             value={customStart}
             max={customEnd || undefined}
             onChange={(e) => setCustomStart(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && applyCustomRange()}
-            className="rounded border border-zinc-600 bg-zinc-700 px-2 py-0.5 text-xs text-zinc-200 focus:outline-none focus:ring-1 focus:ring-zinc-400 [color-scheme:dark]"
+            className="rounded border border-slate-600 bg-slate-700 px-2 py-0.5 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-slate-400 [color-scheme:dark]"
           />
-          <span className="text-xs text-zinc-600">～</span>
+          <span className="text-xs text-slate-600">～</span>
           <input
             type="date"
             value={customEnd}
             min={customStart || undefined}
             onChange={(e) => setCustomEnd(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && applyCustomRange()}
-            className="rounded border border-zinc-600 bg-zinc-700 px-2 py-0.5 text-xs text-zinc-200 focus:outline-none focus:ring-1 focus:ring-zinc-400 [color-scheme:dark]"
+            className="rounded border border-slate-600 bg-slate-700 px-2 py-0.5 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-slate-400 [color-scheme:dark]"
           />
           <button
             onClick={applyCustomRange}
             disabled={!customStart || !customEnd || customStart > customEnd}
-            className="px-2 py-0.5 text-xs rounded border border-zinc-600 bg-zinc-700 text-zinc-300 hover:text-zinc-100 hover:border-zinc-400 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            className="px-2 py-0.5 text-xs rounded border border-slate-600 bg-slate-700 text-slate-300 hover:text-slate-100 hover:border-slate-400 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
             套用
           </button>
           {appliedCustom && (
             <button
               onClick={() => { setAppliedCustom(null); setCustomStart(""); setCustomEnd("") }}
-              className="px-2 py-0.5 text-xs rounded border border-zinc-600 bg-zinc-700 text-zinc-400 hover:text-zinc-100 transition-colors"
+              className="px-2 py-0.5 text-xs rounded border border-slate-600 bg-slate-700 text-slate-400 hover:text-slate-100 transition-colors"
             >
               ×
             </button>
@@ -618,7 +618,7 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
 
       {/* Available data range hint */}
       {data?.earliest_date && data?.latest_date && (
-        <p className="text-[11px] text-zinc-600">
+        <p className="text-[11px] text-slate-600">
           資料範圍：{data.earliest_date} ～ {data.latest_date}
         </p>
       )}
@@ -633,13 +633,13 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
                 onClick={() => toggleInst(key)}
                 className={`flex items-center gap-1 px-2 py-1 text-xs rounded-md border transition-colors ${
                   active
-                    ? "border-zinc-400 bg-zinc-500 text-zinc-50"
-                    : "border-zinc-600 bg-zinc-700 text-zinc-400 hover:text-zinc-200"
+                    ? "border-slate-400 bg-slate-500 text-slate-50"
+                    : "border-slate-600 bg-slate-700 text-slate-400 hover:text-slate-200"
                 }`}
               >
                 <span
                   className="inline-block w-2.5 h-2.5 rounded-sm"
-                  style={{ backgroundColor: active ? color : "#52525b" }}
+                  style={{ backgroundColor: active ? color : "#475569" }}
                 />
                 {label}
               </button>
@@ -658,13 +658,13 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
                 onClick={() => toggleMA(period)}
                 className={`flex items-center gap-1 px-2 py-1 text-xs rounded-md border transition-colors ${
                   active
-                    ? "border-zinc-400 bg-zinc-500 text-zinc-50"
-                    : "border-zinc-600 bg-zinc-700 text-zinc-400 hover:text-zinc-200"
+                    ? "border-slate-400 bg-slate-500 text-slate-50"
+                    : "border-slate-600 bg-slate-700 text-slate-400 hover:text-slate-200"
                 }`}
               >
                 <span
                   className="inline-block w-2.5 h-2.5 rounded-sm"
-                  style={{ backgroundColor: active ? cfg.color : "#52525b" }}
+                  style={{ backgroundColor: active ? cfg.color : "#475569" }}
                 />
                 {cfg.label}
               </button>
@@ -683,8 +683,8 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
               }}
               className={`flex items-center gap-1 px-2 py-1 text-xs rounded-md border transition-colors ${
                 activeMAs.has(customMAPeriod)
-                  ? "border-zinc-400 bg-zinc-500 text-zinc-50"
-                  : "border-zinc-700 bg-zinc-900 text-zinc-500"
+                  ? "border-slate-400 bg-slate-500 text-slate-50"
+                  : "border-slate-700 bg-slate-900 text-slate-500"
               }`}
             >
               <span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: CUSTOM_MA_COLOR }} />
@@ -700,11 +700,11 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
               placeholder="自訂"
               min={2}
               max={200}
-              className="w-16 rounded-md border border-zinc-600 bg-zinc-700 px-2 py-1 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-zinc-400"
+              className="w-16 rounded-md border border-slate-600 bg-slate-700 px-2 py-1 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-400"
             />
             <button
               onClick={addCustomMA}
-              className="px-2 py-1 text-xs rounded-md border border-zinc-600 bg-zinc-700 text-zinc-300 hover:text-zinc-100 hover:border-zinc-400 transition-colors"
+              className="px-2 py-1 text-xs rounded-md border border-slate-600 bg-slate-700 text-slate-300 hover:text-slate-100 hover:border-slate-400 transition-colors"
             >
               +
             </button>
@@ -723,15 +723,15 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
 
       {/* Broker sub-panel loading indicator */}
       {brokerLoading && selectedBroker && (
-        <div className="flex items-center gap-2 text-xs text-zinc-400">
-          <div className="h-3 w-3 animate-spin rounded-full border border-zinc-500 border-t-zinc-200" />
+        <div className="flex items-center gap-2 text-xs text-slate-400">
+          <div className="h-3 w-3 animate-spin rounded-full border border-slate-500 border-t-slate-200" />
           正在載入 {selectedBroker.display_name} 買賣超資料...
         </div>
       )}
 
       {/* Chart — responsive height via CSS */}
       {!loading && !error && chartOption && (
-        <div ref={chartRef} className="rounded-lg border border-zinc-600 p-4">
+        <div ref={chartRef} className="rounded-lg border border-slate-600 p-4">
           <ReactECharts
             option={chartOption}
             notMerge
@@ -742,7 +742,7 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
       )}
 
       {!loading && !error && data && data.history.length === 0 && (
-        <p className="text-sm text-zinc-500">此區間無資料。</p>
+        <p className="text-sm text-slate-500">此區間無資料。</p>
       )}
     </div>
   )
