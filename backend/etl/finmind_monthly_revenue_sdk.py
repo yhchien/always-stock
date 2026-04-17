@@ -73,8 +73,7 @@ def fetch_and_upsert_monthly_revenue_sdk(
         def to_month_end(row):
             try:
                 yr = int(row.get("revenue_year") or str(row.get("revenue_month", ""))[:4])
-                mo_str = str(row.get("revenue_month", ""))
-                mo = int(mo_str[-2:]) if len(mo_str) >= 2 else 1
+                mo = int(row.get("revenue_month", 1))
                 import calendar
                 last_day = calendar.monthrange(yr, mo)[1]
                 return date(yr, mo, last_day)

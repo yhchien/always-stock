@@ -522,6 +522,92 @@ export function fmtStreak(streak: number): string {
   return streak > 0 ? `連買${days}天` : `連賣${days}天`
 }
 
+// ── Financials (M8) ───────────────────────────────────────────────────────
+
+export interface ValuationItem {
+  trade_date: string
+  per: number | null
+  pbr: number | null
+  dividend_yield: number | null
+}
+
+export interface ValuationResponse {
+  stock_id: string
+  stock_name: string
+  history: ValuationItem[]
+}
+
+export interface RevenueItem {
+  revenue_month: string
+  revenue: number | null
+  yoy_pct: number | null
+  mom_pct: number | null
+}
+
+export interface RevenueResponse {
+  stock_id: string
+  stock_name: string
+  history: RevenueItem[]
+}
+
+export interface FinancialItem {
+  report_date: string
+  item_name: string
+  item_code: string | null
+  value: number | null
+  period_type: string
+  unit: string | null
+}
+
+export interface FinancialResponse {
+  stock_id: string
+  stock_name: string
+  items: FinancialItem[]
+}
+
+export async function fetchValuation(
+  stockId: string,
+  startDate?: string,
+  endDate?: string,
+  options?: FetchOptions,
+): Promise<ValuationResponse> {
+  const params = new URLSearchParams()
+  if (startDate) params.set("start_date", startDate)
+  if (endDate) params.set("end_date", endDate)
+  const res = await fetch(`${API_BASE}/api/stocks/${stockId}/valuation?${params}`, {
+    signal: options?.signal,
+  })
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "估值資料載入失敗"))
+  return res.json()
+}
+
+export async function fetchRevenue(
+  stockId: string,
+  months = 24,
+  options?: FetchOptions,
+): Promise<RevenueResponse> {
+  const res = await fetch(`${API_BASE}/api/stocks/${stockId}/revenue?months=${months}`, {
+    signal: options?.signal,
+  })
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "月營收載入失敗"))
+  return res.json()
+}
+
+export async function fetchFinancials(
+  stockId: string,
+  quarters = 8,
+  itemNames?: string,
+  options?: FetchOptions,
+): Promise<FinancialResponse> {
+  const params = new URLSearchParams({ quarters: String(quarters) })
+  if (itemNames) params.set("item_names", itemNames)
+  const res = await fetch(`${API_BASE}/api/stocks/${stockId}/financials?${params}`, {
+    signal: options?.signal,
+  })
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "財報資料載入失敗"))
+  return res.json()
+}
+
 // ── Daily brief (market LLM analysis) ──────────────────────────────────────
 
 export interface DailyBriefResponse {

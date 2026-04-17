@@ -25,6 +25,11 @@ const BrokerPanel = dynamic(() => import("@/components/BrokerPanel"), {
   loading: () => <Skeleton className="h-full min-h-[360px] w-full rounded-lg" />,
 })
 
+const FinancialsPanel = dynamic(() => import("@/components/FinancialsPanel"), {
+  ssr: false,
+  loading: () => <Skeleton className="h-[380px] w-full rounded-lg" />,
+})
+
 
 function readStoredToggle(key: string, defaultValue: boolean): boolean {
   if (typeof window === "undefined") return defaultValue
@@ -101,6 +106,8 @@ function StockContent({ stockId }: { stockId: string }) {
           </div>
         </div>
       </section>
+
+      <FinancialsPanel stockId={stockId} />
 
       {showBrokerPanel && (
         <div className="min-h-[360px]">

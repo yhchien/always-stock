@@ -70,12 +70,14 @@
 
 ## Milestones 進度
 
-### 已完成（截至 2026-04-08）
+### 已完成（截至 2026-04-17）
 - M1~M4: ETL pipeline、FastAPI API、Next.js 三層 drill-down 儀表板
 - M5: Telegram Bot 個股籌碼查詢
 - M7: K 線圖（L2 candlestick + 法人累積買超，舊資料自動 fallback 折線圖）
+- M8: 財報面板（估值 PER/PBR/殖利率、月營收+YoY、季財報 EPS 等）— API + 前端完成
 - M9: AI 籌碼分析（`/ai` 指令，接 OpenAI GPT）
 - M10: 雲端部署（Render + Vercel）
+- M11: 回測程式（含 DSL + AI mapping + equity curve + 策略建議）
 
 ### 進行中
 - M6: 8 年歷史資料 backfill（2019~2026），OHLC 欄位已加入 daily_price
@@ -86,10 +88,8 @@
   - 關注券商買賣長條圖（下半部右，UI skeleton 先行）
 
 ### 待開始
-- M8 財報（ETL 模組已完成，等 backfill 驗證後再接前端）
-- M11 回測（L2 回測框架 UI 已先搭好）
 - M12 自然語言策略
-- M13 券商分點（ETL 模組已完成，`broker_trade_agg` 表已支援；L2 券商長條圖 UI 已搭好）
+- M13 券商分點（ETL 模組已完成，`broker_trade_agg` 表已支援；L2 券商長條圖 UI 已搭好；GitHub Actions 每小時自動 backfill）
 - M14 輿情分析
 - M15 Telegram 電子報
 
@@ -319,8 +319,8 @@
 - ⬜ TWSE ETL 改為 fallback / 校驗用途
 
 #### M8-M13 相依
-- M8 財報：ETL 模組已完成（`finmind_financial_statement_sdk.py`），需等 backfill 完成後驗證
-- M13 券商分點：ETL 模組已完成（`finmind_broker_trade_sdk.py`，Agg 版），`broker_trade_agg` 表已支援
+- M8 財報：✅ 已完成（API + 前端面板，2026-04-17）
+- M13 券商分點：ETL 模組已完成（`finmind_broker_trade_sdk.py`，Agg 版），`broker_trade_agg` 表已支援，GitHub Actions 每小時自動 backfill
 
 ## 前端功能更新（2026-04-14）
 
@@ -347,3 +347,24 @@
 ### UI 調整
 4. **背景/卡片調淺**：body `bg-zinc-800` → `bg-zinc-600`，卡片 `bg-zinc-900` → `bg-zinc-700`，border `zinc-700` → `zinc-600`
 5. **K 線圖放大**：StockChart `60vh / min 400px` → `70vh / min 500px`；BacktestEquityChart `240px` → `380px`
+
+## M8 財報面板（2026-04-17 完成）
+
+### 後端 API（`backend/app/routers/financials.py`）
+- `GET /api/stocks/{stock_id}/valuation` — PER/PBR/殖利率走勢（預設一年）
+- `GET /api/stocks/{stock_id}/revenue` — 月營收 + YoY/MoM（預設 24 個月）
+- `GET /api/stocks/{stock_id}/financials` — 財報項目，支援 `item_names` 篩選、`quarters` 參數
+
+### 前端（`frontend/src/components/FinancialsPanel.tsx`）
+- 三 tab：估值 / 月營收 / 財報
+- 估值：PER + PBR 折線（左軸）+ 殖利率折線（右軸），ECharts
+- 月營收：柱狀圖（營收，億元）+ YoY% 折線（右軸），ECharts
+- 財報：EPS、營業收入、淨利、毛利、營業利益 的季度橫向對照表
+- 位置：L2 個股頁，功能 toggle 區塊下方、券商面板上方
+
+### Bug 修復
+- `finmind_monthly_revenue_sdk.py`：月份解析 bug，`revenue_month` 為單位數（2~9）時 `mo_str[-2:]` 長度判斷錯誤，導致全部被歸到 1 月
+- 修正後 monthly_revenue 從 29,349 → 74,354 筆，全 12 個月覆蓋
+
+### GitHub Actions 優化
+- `broker_trade_backfill.yml`：batch 從 calendar days 改為 trading days 計算，跳過週末，效率提升 ~30%

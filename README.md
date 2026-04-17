@@ -121,7 +121,7 @@ npm run dev
 
 ## 資料表
 
-### 現有資料（2026-04-15 現況）
+### 現有資料（2026-04-17 現況）
 
 | 資料表 | 說明 | 資料狀態 | 日期範圍 | 資料源 |
 |--------|------|----------|----------|--------|
@@ -135,14 +135,14 @@ npm run dev
 
 | 資料表 | 說明 | 資料狀態 | 說明 |
 |--------|------|----------|------|
-| `daily_valuation` | 每日 P/E、P/B、殖利率 | 🔄 backfill 進行中 | FinMind `TaiwanStockPER`，2019 起 |
-| `monthly_revenue` | 每月營收 + YoY/MoM | 🔄 backfill 進行中 | FinMind `TaiwanStockMonthRevenue`，2019 起 |
-| `financial_statement` | 季財報各科目（EPS、營益率等） | 🔄 backfill 進行中 | FinMind 財報資料集，2019 起 |
-| `broker_trade_agg` | 分點買賣超聚合（取代舊 broker_trade） | ⬜ 待實作 | FinMind `TaiwanStockTradingDailyReport`，2021-06-30 起 |
+| `daily_valuation` | 每日 P/E、P/B、殖利率 | ✅ ~173 萬筆 | FinMind `TaiwanStockPER`，2019-01 ~ 2026-04 |
+| `monthly_revenue` | 每月營收 + YoY/MoM | ✅ ~7.4 萬筆 | FinMind `TaiwanStockMonthRevenue`，2019-01 ~ 2026-03 |
+| `financial_statement` | 季財報各科目（EPS、營益率等） | ✅ ~45 萬筆 | FinMind 財報資料集，2019-03 ~ 2026-03 |
+| `broker_trade_agg` | 分點買賣超聚合（取代舊 broker_trade） | 🔄 backfill 進行中 | FinMind `TaiwanStockTradingDailyReport`，2024-01 補到中（GitHub Actions 每小時自動跑） |
 | `broker_trade_raw` | 分點逐筆原始資料（未來用） | ⬜ 待實作 | — |
 | `industry_mapping` | 產業分類對照（Fugle ↔ FinMind） | ⬜ 待實作 | — |
 
-> **注意**：`daily_valuation`、`monthly_revenue`、`financial_statement` 目前 backfill 寫入 Render PostgreSQL，本地 SQLite 尚無資料。
+> **注意**：`daily_valuation`、`monthly_revenue`、`financial_statement` 資料在 Render PostgreSQL，本地 SQLite 尚無資料。
 
 ## API Endpoints
 
@@ -153,6 +153,9 @@ npm run dev
 | GET | `/api/industries/{name}/summary?date=YYYY-MM-DD` | L1：子產業彙總 |
 | GET | `/api/industries/{name}/stocks?date=YYYY-MM-DD` | L1：個股明細 |
 | GET | `/api/stocks/{id}/history?days=90` | L2：個股走勢 + 法人累積 |
+| GET | `/api/stocks/{id}/valuation?start_date=&end_date=` | L2：PER / PBR / 殖利率走勢 |
+| GET | `/api/stocks/{id}/revenue?months=24` | L2：月營收 + YoY / MoM |
+| GET | `/api/stocks/{id}/financials?quarters=8&item_names=` | L2：季財報項目（EPS 等） |
 | GET | `/api/realtime/quotes?stock_ids=2330,2317` | 即時盤中報價（最多 50 檔） |
 | GET | `/api/stocks/{id}/brokers?category=day_trade` | L2：關鍵券商分點 |
 
@@ -166,7 +169,7 @@ npm run dev
 | M5 | Telegram Bot 個股籌碼查詢 | ✅ |
 | M6 | 8 年歷史資料 backfill | 🔄 進行中 |
 | M7 | K 線圖（OHLC candlestick） | ✅ |
-| M8 | 財報資料庫 | ⬜ |
+| M8 | 財報資料庫 + 前端面板 | ✅ |
 | M9 | AI 籌碼分析（OpenAI GPT） | ✅ |
 | M10 | 雲端部署（Render + Vercel） | ✅ |
 | M11 | 回測程式（含 DSL + AI mapping） | ✅ |
