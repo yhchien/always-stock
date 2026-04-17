@@ -8,6 +8,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import type { BrokerTradeItem } from "@/lib/api"
 
 const BROKER_TOGGLE_STORAGE_KEY = "always-stock:show-broker-panel"
+const FINANCIALS_TOGGLE_STORAGE_KEY = "always-stock:show-financials-panel"
 
 // Lazy load ECharts-heavy components — excluded from initial bundle
 const StockChart = dynamic(() => import("@/components/StockChart"), {
@@ -38,21 +39,54 @@ function readStoredToggle(key: string, defaultValue: boolean): boolean {
   return stored === "true"
 }
 
+function ToggleChip({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string
+  checked: boolean
+  onChange: (v: boolean) => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onChange(!checked)}
+      className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+        checked
+          ? "bg-zinc-600 text-zinc-100 border border-zinc-500"
+          : "bg-zinc-800/60 text-zinc-500 border border-zinc-700 hover:text-zinc-300 hover:border-zinc-600"
+      }`}
+    >
+      <span
+        className={`inline-block h-1.5 w-1.5 rounded-full ${checked ? "bg-emerald-400" : "bg-zinc-600"}`}
+      />
+      {label}
+    </button>
+  )
+}
+
 function StockContent({ stockId }: { stockId: string }) {
   const searchParams = useSearchParams()
   const date = searchParams.get("date") ?? undefined
   const [showBrokerPanel, setShowBrokerPanel] = useState(true)
+  const [showFinancialsPanel, setShowFinancialsPanel] = useState(true)
   const [selectedBroker, setSelectedBroker] = useState<BrokerTradeItem | null>(null)
   const [chartDays, setChartDays] = useState(90)
 
   // 讀取 localStorage 必須在 useEffect（mount 後）
   useEffect(() => {
     setShowBrokerPanel(readStoredToggle(BROKER_TOGGLE_STORAGE_KEY, true))
+    setShowFinancialsPanel(readStoredToggle(FINANCIALS_TOGGLE_STORAGE_KEY, true))
   }, [])
 
   useEffect(() => {
     window.localStorage.setItem(BROKER_TOGGLE_STORAGE_KEY, String(showBrokerPanel))
   }, [showBrokerPanel])
+
+  useEffect(() => {
+    window.localStorage.setItem(FINANCIALS_TOGGLE_STORAGE_KEY, String(showFinancialsPanel))
+  }, [showFinancialsPanel])
 
   // Clear selected broker when date changes
   useEffect(() => {
@@ -68,46 +102,21 @@ function StockContent({ stockId }: { stockId: string }) {
         selectedBroker={selectedBroker}
       />
 
-      <section className="rounded-lg border border-zinc-700 bg-zinc-800/60 p-4">
-        <div className="flex flex-col gap-4">
-          <div className="flex flex-col gap-1">
-            <h2 className="text-sm font-semibold text-zinc-200">功能顯示</h2>
-            <p className="text-xs text-zinc-400">隱藏後就不會載入對應功能。</p>
-          </div>
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-6">
-            <Link
-              href={`/stocks/${stockId}/backtest${date ? `?date=${date}` : ""}`}
-              className="flex items-center justify-between gap-4 rounded-lg border border-zinc-700 bg-zinc-800/40 px-3 py-2 hover:border-zinc-500 hover:bg-zinc-700/80 transition-colors sm:min-w-[220px]"
-            >
-              <span className="text-sm text-zinc-200">回測程式</span>
-              <span className="text-xs text-zinc-400">開啟 →</span>
-            </Link>
+      {/* Compact toggle row */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <Link
+          href={`/stocks/${stockId}/backtest${date ? `?date=${date}` : ""}`}
+          className="flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium bg-zinc-800/60 text-zinc-400 border border-zinc-700 hover:text-zinc-200 hover:border-zinc-500 transition-colors"
+        >
+          回測程式 →
+        </Link>
+        <ToggleChip label="財報" checked={showFinancialsPanel} onChange={setShowFinancialsPanel} />
+        <ToggleChip label="關鍵券商" checked={showBrokerPanel} onChange={setShowBrokerPanel} />
+      </div>
 
-            <div className="flex items-center justify-between gap-4 rounded-lg border border-zinc-700 bg-zinc-800/40 px-3 py-2 sm:min-w-[220px]">
-              <span className="text-sm text-zinc-200">關鍵券商</span>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={showBrokerPanel}
-                onClick={() => setShowBrokerPanel((value) => !value)}
-                className={`relative inline-flex h-7 w-14 items-center rounded-full border transition-colors ${
-                  showBrokerPanel
-                    ? "border-emerald-500/50 bg-emerald-500/20"
-                    : "border-zinc-600 bg-zinc-700"
-                }`}
-              >
-                <span
-                  className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${
-                    showBrokerPanel ? "translate-x-8" : "translate-x-1"
-                  }`}
-                />
-              </button>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <FinancialsPanel stockId={stockId} />
+      {showFinancialsPanel && (
+        <FinancialsPanel stockId={stockId} chartDays={chartDays} />
+      )}
 
       {showBrokerPanel && (
         <div className="min-h-[360px]">

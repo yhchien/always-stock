@@ -158,6 +158,13 @@ npm run dev
 | GET | `/api/stocks/{id}/financials?quarters=8&item_names=` | L2：季財報項目（EPS 等） |
 | GET | `/api/realtime/quotes?stock_ids=2330,2317` | 即時盤中報價（最多 50 檔） |
 | GET | `/api/stocks/{id}/brokers?category=day_trade` | L2：關鍵券商分點 |
+| GET | `/api/stocks/{id}/brokers/ranked?date=&days=` | L2：券商買進/賣出 Top10 |
+| GET | `/api/stocks/{id}/brokers/{broker_id}/history?start=&end=` | L2：券商逐日買賣超走勢 |
+| GET | `/api/market/daily-brief` | 首頁 AI 盤前摘要 |
+| POST | `/api/backtest/run` | L3：回測執行 |
+| POST | `/api/backtest/interpret` | L3：策略文字解析 |
+| POST | `/api/backtest/advice` | L3：策略建議 |
+| GET | `/api/backtest/templates` | L3：策略模板清單 |
 
 ---
 

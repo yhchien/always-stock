@@ -91,10 +91,19 @@ export default function BrokerPanel({ stockId, date, days = 1, onSelectBroker, s
   const [errorState, setErrorState] = useState<{ requestKey: string; message: string } | null>(null)
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
+  const [emptyRefreshCount, setEmptyRefreshCount] = useState(0)
+
+  const MAX_EMPTY_RETRIES = 3
 
   const requestKey = `${stockId}:${date ?? ""}:${days}:${reloadKey}`
   const error = errorState?.requestKey === requestKey ? errorState.message : null
   const loading = !error && resolvedRequestKey !== requestKey
+
+  // Reset retry counter when stock/date/days changes (but not on reloadKey bump)
+  useEffect(() => {
+    setEmptyRefreshCount(0)
+    setReloadKey(0)
+  }, [stockId, date, days])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -104,6 +113,12 @@ export default function BrokerPanel({ stockId, date, days = 1, onSelectBroker, s
         setBuyTop(data.buy_top)
         setSellTop(data.sell_top)
         setTradeDate(String(data.trade_date))
+        const stillEmpty = data.buy_top.length === 0 && data.sell_top.length === 0
+        if (data.is_refreshing && stillEmpty) {
+          setEmptyRefreshCount((c) => c + 1)
+        } else {
+          setEmptyRefreshCount(0)
+        }
         setIsRefreshing(Boolean(data.is_refreshing))
         setErrorState(null)
         setResolvedRequestKey(requestKey)
@@ -122,18 +137,21 @@ export default function BrokerPanel({ stockId, date, days = 1, onSelectBroker, s
 
   useEffect(() => {
     if (!isRefreshing || loading || error) return
+    if (emptyRefreshCount >= MAX_EMPTY_RETRIES) return
     const timer = window.setTimeout(() => {
       setReloadKey((v) => v + 1)
     }, AUTO_REFRESH_MS)
     return () => { window.clearTimeout(timer) }
-  }, [isRefreshing, loading, error])
+  }, [isRefreshing, loading, error, emptyRefreshCount])
 
   const brokers = tab === "buy" ? buyTop : sellTop
   const isEmpty = brokers.length === 0
   // Only show full loading skeleton on first load (no data yet)
   const isInitialLoad = loading && buyTop.length === 0 && sellTop.length === 0
   // Show subtle badge when refreshing in background while data is already shown
-  const isFetching = loading || isRefreshing
+  // Stop treating as "fetching" once retries are exhausted
+  const gaveUp = emptyRefreshCount >= MAX_EMPTY_RETRIES
+  const isFetching = loading || (isRefreshing && !gaveUp)
 
   const handleRowClick = (broker: BrokerTradeItem) => {
     if (!onSelectBroker) return

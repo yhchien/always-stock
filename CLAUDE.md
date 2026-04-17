@@ -1,5 +1,9 @@
 # always-stock 專案記憶
 
+## 工作流程規範
+
+- 每次完成一輪修改後，**自動更新 README、CLAUDE.md、memory 並直接 commit & push**，不需要使用者每次重新提醒
+
 ## 部署相關文件
 
 - `docs/architecture/architecture_overview.md` — 技術選擇、通訊方式、部署架構總覽
@@ -184,6 +188,35 @@
   - strategy templates 7 個，對齊 spec 15.1.1：4 個核心 + 3 個延伸
   - 使用範例文件：docs/guides/backtest_strategy_examples.md
 
+## 最近重要修正（2026-04-17）
+
+- **環境定位確認（重要）**
+  - 本機 `localhost:8000` 當下執行中的 backend 進程環境變數 `DATABASE_URL` 指向 Render PostgreSQL（非本地 SQLite）。
+  - 本地 `backend/db/tw_stock.db` 的 `daily_valuation` 目前是 0 筆；本地與雲端資料差異需先確認連線目標。
+
+- **L1 產業名稱 fallback（TWSE ↔ stocks_master）**
+  - 修正 API：`/api/industries/{industry}/stocks`、`/api/industries/{industry}/summary`。
+  - 新增 fallback 對照（例）：`水泥工業→水泥`、`鋼鐵工業→鋼鐵`、`食品工業→食品`、`金融科技→金融`、`數位雲端→雲端運算`。
+  - 另外補 generic fallback：`工業` 後綴與 `業` 後綴剝離。
+  - Render 對帳（2026-04-08）實際不匹配為 5 個：`太空衛星科技`、`數位雲端`、`金融科技`、`鋼鐵工業`、`食品工業`（`水泥工業`不在該日 L0 清單）。
+  - `太空衛星科技` 目前仍無安全對應，不做硬映射避免誤導。
+
+- **L3 回測頁視覺修正**
+  - 修正回測頁右側 `BacktestPanel` 高度策略：`h-full` 改為 `min-h-full`，避免內容展開時底色不延伸造成「破圖感」。
+  - 回測頁容器補 `min-h-0` 與 pane 背景，確保雙欄滾動與背景覆蓋一致。
+
+- **L2 財報顯示修正**
+  - 估值圖：`PER <= 0` 視為 N/A（顯示 `null` 不畫線），避免誤讀為有效 0 值。
+  - 月營收圖：當 `yoy_pct` 無資料時，不顯示 YoY 線與圖例，並提示「目前僅顯示月營收」。
+  - 原因確認：Render `monthly_revenue` 目前 `COUNT(yoy_pct)=0`、`COUNT(mom_pct)=0`。
+
+- **monthly_revenue ETL 根因與修補**
+  - 根因：`etl/finmind_monthly_revenue_sdk.py` 先前僅讀特定欄位名（`revenue_year_difference_per` / `revenue_month_difference_per`），遇到 SDK 欄位名差異時全部寫成 `NULL`。
+  - 已修：支援多欄位名 fallback，並在資料源未提供 YoY/MoM 時以營收序列回算（同股月序列計算 YoY/MoM）。
+  - 另修：`revenue_month` 可能是整數月份（1~12），需搭配 `revenue_year` 轉月末日期。
+  - 已新增測試：`backend/tests/test_finmind_monthly_revenue_sdk.py`。
+  - 當日回補嘗試結果：FinMind 配額超限（`6352/6000`），ETL 回傳 `INSUFFICIENT_QUOTA`，DB 尚未補回 YoY/MoM（仍為 0 筆非空）。
+
 ## 回測引擎設計規範（2026-04-12 整理）
 
 ### normalized_text 生成方式
@@ -251,9 +284,9 @@
    - Upsert：`ON CONFLICT (trade_date, stock_id) DO UPDATE`
 
 4. **`etl/finmind_monthly_revenue_sdk.py`**
-   - 月營收：`revenue_year`/`revenue_month` 欄位轉換為月末日期（用 `calendar.monthrange()`）
-   - YoY/MoM 從 `revenue_year_difference_per`/`revenue_month_difference_per` 取（若有）
-   - Upsert：`ON CONFLICT ON CONSTRAINT uq_revenue_month_stock DO UPDATE`
+  - 月營收：`revenue_year`/`revenue_month` 欄位轉換為月末日期（用 `calendar.monthrange()`）
+  - YoY/MoM：優先吃 FinMind 回傳欄位（多欄位名 fallback），若資料源無提供則以同股營收序列回算
+  - Upsert：`ON CONFLICT ON CONSTRAINT uq_revenue_month_stock DO UPDATE`
 
 5. **`etl/finmind_financial_statement_sdk.py`**
    - 財報：`origin_name` → `item_name`、`type` → `item_code`
@@ -360,7 +393,9 @@
 - 估值：PER + PBR 折線（左軸）+ 殖利率折線（右軸），ECharts
 - 月營收：柱狀圖（營收，億元）+ YoY% 折線（右軸），ECharts
 - 財報：EPS、營業收入、淨利、毛利、營業利益 的季度橫向對照表
-- 位置：L2 個股頁，功能 toggle 區塊下方、券商面板上方
+- 位置：L2 個股頁，toggle 列下方、券商面板上方
+- `chartDays` prop：三個子元件隨 K 線天數連動（估值=天數、營收=天數÷30 月、財報=天數÷90 季）
+- PER <= 0 視為 N/A，全期間不適用時顯示提示文字
 
 ### Bug 修復
 - `finmind_monthly_revenue_sdk.py`：月份解析 bug，`revenue_month` 為單位數（2~9）時 `mo_str[-2:]` 長度判斷錯誤，導致全部被歸到 1 月
@@ -378,3 +413,27 @@
 - tooltip 整合策略報酬、Buy & Hold、回撤三項數值
 - 移除圖下方冗餘的 equity point 數字列表
 - Props 新增 `trades?: BacktestTrade[]`，用於繪製進出場標記
+
+## L2 個股頁 UX 改版（2026-04-17）
+
+### 功能 toggle 列
+- 原「功能顯示」獨立 section 改為 K 線圖下方的**緊湊 pill 列**（`ToggleChip` 元件）
+- 三項目橫排：`回測程式 →`（連結）、`財報`（toggle）、`關鍵券商`（toggle）
+- 兩個 toggle 存 `localStorage`（`always-stock:show-financials-panel` / `always-stock:show-broker-panel`）
+- 關閉的 panel 不 render、不觸發 API
+
+### 券商面板 retry 上限
+- `BrokerPanel` 新增 `emptyRefreshCount` 狀態
+- 當 API 回傳 `is_refreshing: true` 但 `buy_top` / `sell_top` 為空時計數 +1
+- **超過 3 次**後停止 auto-refresh polling，顯示「此日期無券商交易紀錄」
+- 切換股票/日期時自動重設計數器
+
+### FinancialsPanel 日期連動
+- 新增 `chartDays` prop，三個子元件隨 K 線天數變化重新載入
+- 估值：直接用 `chartDays` 計算 `startDate` / `endDate`
+- 月營收：`chartDays ÷ 30`（最少 6、最多 120 月）
+- 財報：`chartDays ÷ 90`（最少 4、最多 20 季）
+
+### PER 不適用提示
+- 當全期間 PER <= 0（EPS 為負），圖表下方顯示「此期間 EPS 為負值或不適用，本益比無法顯示」
+- FinMind 回傳 PER=0 即代表 EPS 為負值，非 ETL 錯誤

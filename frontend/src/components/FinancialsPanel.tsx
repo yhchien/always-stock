@@ -15,13 +15,14 @@ import {
 
 interface Props {
   stockId: string
+  chartDays?: number
 }
 
 type TabKey = "valuation" | "revenue" | "financials"
 
 // ── Valuation Chart ──────────────────────────────────────────────────────────
 
-function ValuationChart({ stockId }: { stockId: string }) {
+function ValuationChart({ stockId, chartDays }: { stockId: string; chartDays?: number }) {
   const [data, setData] = useState<ValuationItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -30,7 +31,15 @@ function ValuationChart({ stockId }: { stockId: string }) {
     const controller = new AbortController()
     setLoading(true)
     setError(null)
-    fetchValuation(stockId, undefined, undefined, { signal: controller.signal })
+
+    // Compute date range from chartDays (default 365)
+    const days = chartDays ?? 365
+    const endDate = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei" }).format(new Date())
+    const start = new Date()
+    start.setDate(start.getDate() - days)
+    const startDate = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei" }).format(start)
+
+    fetchValuation(stockId, startDate, endDate, { signal: controller.signal })
       .then((res) => {
         if (!controller.signal.aborted) setData(res.history)
       })
@@ -41,11 +50,16 @@ function ValuationChart({ stockId }: { stockId: string }) {
         if (!controller.signal.aborted) setLoading(false)
       })
     return () => controller.abort()
-  }, [stockId])
+  }, [stockId, chartDays])
 
   const chartOption = useMemo(() => {
     if (data.length === 0) return null
     const dates = data.map((d) => d.trade_date)
+    // FinMind/TWSE convention often uses 0 for "PER not applicable" (e.g. negative EPS).
+    // Render these as null to avoid misleading flat-zero lines.
+    const perSeries = data.map((d) => (d.per != null && d.per > 0 ? d.per : null))
+    const pbrSeries = data.map((d) => d.pbr)
+    const dySeries = data.map((d) => d.dividend_yield)
     return {
       backgroundColor: "transparent",
       tooltip: {
@@ -86,7 +100,7 @@ function ValuationChart({ stockId }: { stockId: string }) {
         {
           name: "本益比",
           type: "line",
-          data: data.map((d) => d.per),
+          data: perSeries,
           symbol: "none",
           lineStyle: { width: 1.5 },
           itemStyle: { color: "#60a5fa" },
@@ -94,7 +108,7 @@ function ValuationChart({ stockId }: { stockId: string }) {
         {
           name: "股價淨值比",
           type: "line",
-          data: data.map((d) => d.pbr),
+          data: pbrSeries,
           symbol: "none",
           lineStyle: { width: 1.5 },
           itemStyle: { color: "#f59e0b" },
@@ -103,7 +117,7 @@ function ValuationChart({ stockId }: { stockId: string }) {
           name: "殖利率(%)",
           type: "line",
           yAxisIndex: 1,
-          data: data.map((d) => d.dividend_yield),
+          data: dySeries,
           symbol: "none",
           lineStyle: { width: 1.5 },
           itemStyle: { color: "#34d399" },
@@ -112,32 +126,47 @@ function ValuationChart({ stockId }: { stockId: string }) {
     }
   }, [data])
 
+  const perAllNull = useMemo(
+    () => data.length > 0 && data.every((d) => d.per == null || d.per <= 0),
+    [data],
+  )
+
   if (loading) return <Skeleton className="h-[320px] w-full" />
   if (error) return <p className="text-xs text-red-400">{error}</p>
   if (!chartOption) return <p className="text-xs text-zinc-500">無估值資料。</p>
 
   return (
-    <ReactECharts
-      option={chartOption}
-      notMerge
-      style={{ height: 320, width: "100%" }}
-      opts={{ renderer: "svg" }}
-    />
+    <div>
+      <ReactECharts
+        option={chartOption}
+        notMerge
+        style={{ height: 320, width: "100%" }}
+        opts={{ renderer: "svg" }}
+      />
+      {perAllNull && (
+        <p className="mt-1 text-center text-[11px] text-zinc-400">
+          此期間 EPS 為負值或不適用，本益比無法顯示
+        </p>
+      )}
+    </div>
   )
 }
 
 // ── Revenue Chart ────────────────────────────────────────────────────────────
 
-function RevenueChart({ stockId }: { stockId: string }) {
+function RevenueChart({ stockId, chartDays }: { stockId: string; chartDays?: number }) {
   const [data, setData] = useState<RevenueItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+
+  // Map chart days → months (minimum 6, maximum 120)
+  const months = Math.max(6, Math.min(120, Math.ceil((chartDays ?? 365) / 30)))
 
   useEffect(() => {
     const controller = new AbortController()
     setLoading(true)
     setError(null)
-    fetchRevenue(stockId, 24, { signal: controller.signal })
+    fetchRevenue(stockId, months, { signal: controller.signal })
       .then((res) => {
         if (!controller.signal.aborted) setData(res.history)
       })
@@ -148,13 +177,14 @@ function RevenueChart({ stockId }: { stockId: string }) {
         if (!controller.signal.aborted) setLoading(false)
       })
     return () => controller.abort()
-  }, [stockId])
+  }, [stockId, months])
 
   const chartOption = useMemo(() => {
     if (data.length === 0) return null
     const months = data.map((d) => d.revenue_month.slice(0, 7))
     const revenues = data.map((d) => (d.revenue ? d.revenue / 1e8 : null))
     const yoyData = data.map((d) => d.yoy_pct)
+    const hasYoyData = yoyData.some((value) => value != null)
 
     return {
       backgroundColor: "transparent",
@@ -175,7 +205,7 @@ function RevenueChart({ stockId }: { stockId: string }) {
         },
       },
       legend: {
-        data: ["月營收", "YoY(%)"],
+        data: hasYoyData ? ["月營收", "YoY(%)"] : ["月營收"],
         textStyle: { color: "#a1a1aa", fontSize: 11 },
         top: 0,
       },
@@ -210,15 +240,17 @@ function RevenueChart({ stockId }: { stockId: string }) {
           barMaxWidth: 24,
           itemStyle: { color: "#60a5fa" },
         },
-        {
-          name: "YoY(%)",
-          type: "line",
-          yAxisIndex: 1,
-          data: yoyData,
-          symbol: "none",
-          lineStyle: { width: 1.5 },
-          itemStyle: { color: "#f59e0b" },
-        },
+        ...(hasYoyData
+          ? [{
+              name: "YoY(%)",
+              type: "line" as const,
+              yAxisIndex: 1,
+              data: yoyData,
+              symbol: "none",
+              lineStyle: { width: 1.5 },
+              itemStyle: { color: "#f59e0b" },
+            }]
+          : []),
       ],
     }
   }, [data])
@@ -228,12 +260,17 @@ function RevenueChart({ stockId }: { stockId: string }) {
   if (!chartOption) return <p className="text-xs text-zinc-500">無月營收資料。</p>
 
   return (
-    <ReactECharts
-      option={chartOption}
-      notMerge
-      style={{ height: 320, width: "100%" }}
-      opts={{ renderer: "svg" }}
-    />
+    <div className="flex flex-col gap-2">
+      <ReactECharts
+        option={chartOption}
+        notMerge
+        style={{ height: 320, width: "100%" }}
+        opts={{ renderer: "svg" }}
+      />
+      {!data.some((d) => d.yoy_pct != null) && (
+        <p className="text-[11px] text-zinc-500">目前資料源尚未提供 YoY / MoM，圖上僅顯示月營收。</p>
+      )}
+    </div>
   )
 }
 
@@ -241,16 +278,19 @@ function RevenueChart({ stockId }: { stockId: string }) {
 
 const KEY_ITEMS = "基本每股盈餘,營業收入,本期淨利（淨損）,營業毛利（毛損）,營業利益（損失）"
 
-function FinancialsTable({ stockId }: { stockId: string }) {
+function FinancialsTable({ stockId, chartDays }: { stockId: string; chartDays?: number }) {
   const [data, setData] = useState<FinancialItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+
+  // Map chart days → quarters (minimum 4, maximum 20)
+  const quarters = Math.max(4, Math.min(20, Math.ceil((chartDays ?? 365) / 90)))
 
   useEffect(() => {
     const controller = new AbortController()
     setLoading(true)
     setError(null)
-    fetchFinancials(stockId, 8, KEY_ITEMS, { signal: controller.signal })
+    fetchFinancials(stockId, quarters, KEY_ITEMS, { signal: controller.signal })
       .then((res) => {
         if (!controller.signal.aborted) setData(res.items)
       })
@@ -261,7 +301,7 @@ function FinancialsTable({ stockId }: { stockId: string }) {
         if (!controller.signal.aborted) setLoading(false)
       })
     return () => controller.abort()
-  }, [stockId])
+  }, [stockId, quarters])
 
   // pivot: rows = item_name, columns = report_date
   const { itemNames, reportDates, pivot } = useMemo(() => {
@@ -330,7 +370,7 @@ function FinancialsTable({ stockId }: { stockId: string }) {
 
 // ── Main Panel ───────────────────────────────────────────────────────────────
 
-export default function FinancialsPanel({ stockId }: Props) {
+export default function FinancialsPanel({ stockId, chartDays }: Props) {
   const [activeTab, setActiveTab] = useState<TabKey>("valuation")
 
   const tabs: { key: TabKey; label: string }[] = [
@@ -357,9 +397,9 @@ export default function FinancialsPanel({ stockId }: Props) {
         ))}
       </div>
 
-      {activeTab === "valuation" && <ValuationChart stockId={stockId} />}
-      {activeTab === "revenue" && <RevenueChart stockId={stockId} />}
-      {activeTab === "financials" && <FinancialsTable stockId={stockId} />}
+      {activeTab === "valuation" && <ValuationChart stockId={stockId} chartDays={chartDays} />}
+      {activeTab === "revenue" && <RevenueChart stockId={stockId} chartDays={chartDays} />}
+      {activeTab === "financials" && <FinancialsTable stockId={stockId} chartDays={chartDays} />}
     </div>
   )
 }
