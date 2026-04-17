@@ -18,6 +18,65 @@ logger = logging.getLogger(__name__)
 BULK_BATCH_SIZE = 1000
 
 
+def _to_month_end(value: Any) -> date:
+    """Convert FinMind month/date fields to month-end date."""
+    import calendar
+
+    if value is None:
+        raise ValueError("month value is None")
+
+    text = str(value).strip()
+    if not text:
+        raise ValueError("month value is empty")
+
+    # "YYYY-MM" or "YYYY-MM-DD"
+    parsed = pd.to_datetime(text, errors="coerce")
+    if pd.isna(parsed):
+        raise ValueError(f"unsupported month format: {text}")
+    y, m = int(parsed.year), int(parsed.month)
+    return date(y, m, calendar.monthrange(y, m)[1])
+
+
+def _pick_numeric_series(df: pd.DataFrame, candidates: list[str]) -> pd.Series:
+    """Pick the first matching numeric column from candidates; otherwise all-NaN."""
+    for name in candidates:
+        if name in df.columns:
+            return pd.to_numeric(df[name], errors="coerce")
+    return pd.Series([float("nan")] * len(df), index=df.index, dtype="float64")
+
+
+def _resolve_revenue_month_series(df: pd.DataFrame) -> pd.Series:
+    """
+    Prefer the payload's revenue month field over announcement date.
+    FinMind may expose revenue_month as either numeric month or YYYY-MM string.
+    """
+    if {"revenue_year", "revenue_month"}.issubset(df.columns):
+        year_series = pd.to_numeric(df["revenue_year"], errors="coerce")
+        month_series = pd.to_numeric(df["revenue_month"], errors="coerce")
+        if year_series.notna().all() and month_series.notna().all():
+            import calendar
+
+            years = year_series.astype(int)
+            months = month_series.astype(int)
+            if ((months >= 1) & (months <= 12)).all():
+                return pd.Series(
+                    [
+                        date(y, m, calendar.monthrange(y, m)[1])
+                        for y, m in zip(years, months)
+                    ],
+                    index=df.index,
+                    dtype="object",
+                )
+
+    if "revenue_month" in df.columns:
+        return df["revenue_month"].apply(_to_month_end)
+
+    month_source = df.get("date")
+    if month_source is None:
+        raise RuntimeError("FinMind monthly revenue payload has no revenue_month/date field")
+    return month_source.apply(_to_month_end)
+
+
 def fetch_and_upsert_monthly_revenue_sdk(
     db: Session,
     stock_ids: list,
@@ -69,22 +128,35 @@ def fetch_and_upsert_monthly_revenue_sdk(
         df["stock_id"] = df["stock_id"].astype(str).str.strip()
         df["revenue_val"] = pd.to_numeric(df["revenue"], errors="coerce")
 
-        # revenue_month 欄位格式為 "YYYY-MM"，轉成月末日期
-        def to_month_end(row):
-            try:
-                yr = int(row.get("revenue_year") or str(row.get("revenue_month", ""))[:4])
-                mo = int(row.get("revenue_month", 1))
-                import calendar
-                last_day = calendar.monthrange(yr, mo)[1]
-                return date(yr, mo, last_day)
-            except Exception:
-                return pd.to_datetime(row.get("date")).date()
+        df["rev_month_date"] = _resolve_revenue_month_series(df)
 
-        df["rev_month_date"] = df.apply(to_month_end, axis=1)
+        # 先吃資料源原生欄位（不同 SDK/版本欄位名不一致）
+        df["yoy_pct_val"] = _pick_numeric_series(df, [
+            "revenue_year_difference_per",
+            "revenue_year_difference_percent",
+            "revenue_year_difference_ratio",
+            "yoy",
+            "YoY",
+        ])
+        df["mom_pct_val"] = _pick_numeric_series(df, [
+            "revenue_month_difference_per",
+            "revenue_month_difference_percent",
+            "revenue_month_difference_ratio",
+            "mom",
+            "MoM",
+        ])
 
-        # 計算 YoY / MoM（若 FinMind 有提供則直接用，否則留 None）
-        df["yoy_pct_val"] = pd.to_numeric(df.get("revenue_year_difference_per"), errors="coerce") if "revenue_year_difference_per" in df.columns else None
-        df["mom_pct_val"] = pd.to_numeric(df.get("revenue_month_difference_per"), errors="coerce") if "revenue_month_difference_per" in df.columns else None
+        # 若資料源沒有 YoY/MoM，依營收序列回算（百分比）
+        if df["yoy_pct_val"].isna().all() or df["mom_pct_val"].isna().all():
+            ordered = df.sort_values(["stock_id", "rev_month_date"]).copy()
+            revenue = ordered["revenue_val"]
+            if ordered["yoy_pct_val"].isna().all():
+                prev_year = ordered.groupby("stock_id")["revenue_val"].shift(12)
+                ordered["yoy_pct_val"] = ((revenue / prev_year) - 1.0) * 100.0
+            if ordered["mom_pct_val"].isna().all():
+                prev_month = ordered.groupby("stock_id")["revenue_val"].shift(1)
+                ordered["mom_pct_val"] = ((revenue / prev_month) - 1.0) * 100.0
+            df = ordered
 
         records = df[["rev_month_date", "stock_id", "revenue_val",
                        "yoy_pct_val", "mom_pct_val"]].to_dict("records")

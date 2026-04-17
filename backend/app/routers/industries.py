@@ -18,6 +18,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["industries"])
 LOCK_RETRY_DELAY = 0.15
 LOCK_RETRY_ATTEMPTS = 2
+INDUSTRY_NAME_FALLBACKS: Dict[str, List[str]] = {
+    # TWSE official labels -> stocks_master canonical labels (Fugle/FinMind mixed)
+    "水泥工業": ["水泥"],
+    "鋼鐵工業": ["鋼鐵"],
+    "食品工業": ["食品"],
+    "金融科技": ["金融"],
+    "數位雲端": ["雲端運算"],
+}
 
 
 # ── Streak helper ────────────────────────────────────────────────────────────
@@ -116,6 +124,42 @@ def _raise_busy_if_locked(error: OperationalError) -> None:
     raise error
 
 
+def _candidate_industry_names(industry_name: str) -> List[str]:
+    candidates = [industry_name]
+    candidates.extend(INDUSTRY_NAME_FALLBACKS.get(industry_name, []))
+
+    # Generic fallback: "鋼鐵工業" -> "鋼鐵"
+    if industry_name.endswith("工業") and len(industry_name) > 2:
+        candidates.append(industry_name[:-2])
+
+    # Generic fallback: "半導體業" -> "半導體"
+    if industry_name.endswith("業") and len(industry_name) > 1:
+        candidates.append(industry_name[:-1])
+
+    deduped: List[str] = []
+    for candidate in candidates:
+        if candidate and candidate not in deduped:
+            deduped.append(candidate)
+    return deduped
+
+
+def _load_stocks_by_industry_name(db: Session, industry_name: str) -> tuple[List[StockMaster], str]:
+    for candidate_name in _candidate_industry_names(industry_name):
+        stocks = _run_with_lock_retry(
+            db,
+            lambda: (
+                db.query(StockMaster)
+                .filter(StockMaster.industry_name == candidate_name)
+                .all()
+            ),
+        )
+        if stocks:
+            if candidate_name != industry_name:
+                logger.info("Industry fallback matched: %s -> %s", industry_name, candidate_name)
+            return stocks, candidate_name
+    return [], industry_name
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.get("/industries", response_model=List[IndustryFlowItem])
@@ -205,16 +249,9 @@ def get_industry_sub_summary(
     """
     logger.info("GET /industries/%s/summary date=%s", industry_name, date)
 
-    # Find all stocks in this industry
+    # Find all stocks in this industry (supports TWSE -> canonical fallback mapping)
     try:
-        stocks = _run_with_lock_retry(
-            db,
-            lambda: (
-                db.query(StockMaster)
-                .filter(StockMaster.industry_name == industry_name)
-                .all()
-            ),
-        )
+        stocks, resolved_name = _load_stocks_by_industry_name(db, industry_name)
     except OperationalError as error:
         _raise_busy_if_locked(error)
     if not stocks:
@@ -316,7 +353,7 @@ def get_industry_sub_summary(
         ))
 
     result.sort(key=lambda x: x.total_net_amount, reverse=True)
-    logger.debug("Returning %d sub-industry summaries for '%s' on %s", len(result), industry_name, date)
+    logger.debug("Returning %d sub-industry summaries for '%s' (resolved=%s) on %s", len(result), industry_name, resolved_name, date)
     return result
 
 
@@ -332,16 +369,9 @@ def get_industry_stocks(
     """
     logger.info("GET /industries/%s/stocks date=%s", industry_name, date)
 
-    # Find stocks belonging to this industry (by broad Fugle category)
+    # Find stocks belonging to this industry (supports TWSE -> canonical fallback mapping)
     try:
-        stocks = _run_with_lock_retry(
-            db,
-            lambda: (
-                db.query(StockMaster)
-                .filter(StockMaster.industry_name == industry_name)
-                .all()
-            ),
-        )
+        stocks, resolved_name = _load_stocks_by_industry_name(db, industry_name)
     except OperationalError as error:
         _raise_busy_if_locked(error)
     if not stocks:
@@ -350,7 +380,7 @@ def get_industry_stocks(
 
     stock_ids = [s.stock_id for s in stocks]
     stock_map = {s.stock_id: s for s in stocks}
-    logger.debug("Found %d stocks in industry '%s'", len(stock_ids), industry_name)
+    logger.debug("Found %d stocks in industry '%s' (resolved=%s)", len(stock_ids), industry_name, resolved_name)
 
     # Load closing prices for the target date
     try:

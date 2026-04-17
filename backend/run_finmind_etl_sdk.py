@@ -14,11 +14,13 @@ import logging
 import sys
 import os
 from datetime import datetime, date, timedelta
+from pathlib import Path
 from typing import Dict, Any, List
 import json
 import argparse
 
 logger = logging.getLogger(__name__)
+BACKEND_DIR = Path(__file__).resolve().parent
 
 CRITICAL_STEPS = {"daily_price", "inst_flow"}
 RESUMEABLE_STEP_STATUSES = {"ok", "partial", "skipped", "empty"}
@@ -301,25 +303,25 @@ class FinMindETLOrchestratorSDK:
 
         return result
 
-    def save_etl_log(self, result: Dict[str, Any], log_dir: str = "backend/logs") -> str:
+    def save_etl_log(self, result: Dict[str, Any], log_dir: str = "logs") -> str:
         """保存 ETL 執行日誌"""
-        os.makedirs(log_dir, exist_ok=True)
+        log_dir_path = Path(log_dir)
+        if not log_dir_path.is_absolute():
+            log_dir_path = BACKEND_DIR / log_dir_path
+        log_dir_path.mkdir(parents=True, exist_ok=True)
 
         # 轉換 datetime 為字串
         result_json = json.loads(json.dumps(result, default=str))
 
         start_date_str = result_json["start_date"]
         end_date_str = result_json["end_date"]
-        log_file = os.path.join(
-            log_dir,
-            f"finmind_sdk_etl_{start_date_str}_to_{end_date_str}.json"
-        )
+        log_file = log_dir_path / f"finmind_sdk_etl_{start_date_str}_to_{end_date_str}.json"
 
         with open(log_file, "w") as f:
             json.dump(result_json, f, indent=2, ensure_ascii=False)
 
         logger.info(f"Log saved to {log_file}")
-        return log_file
+        return str(log_file)
 
 
 def main():
