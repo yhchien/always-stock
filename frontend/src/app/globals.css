@@ -127,6 +127,12 @@
   html {
     @apply font-sans;
   }
+  /* Global font-size bump: scale up tiny text for readability */
+  .text-\[9px\]  { font-size: 11px !important; }
+  .text-\[10px\] { font-size: 12px !important; }
+  .text-\[11px\] { font-size: 13px !important; }
+  .text-xs       { font-size: 13px !important; line-height: 1.25rem !important; }
+  .text-sm       { font-size: 14.5px !important; }
 }
 
 /* Vertical text for sidebar labels */

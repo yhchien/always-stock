@@ -69,7 +69,7 @@ function Sidebar({
   onToggle: (key: PanelKey) => void
 }) {
   return (
-    <nav className="flex flex-col items-center gap-1 py-4 w-12 shrink-0 border-r border-slate-700/30">
+    <nav className="sticky top-12 flex flex-col items-center gap-1 py-4 w-12 shrink-0 border-r border-slate-700/30 h-[calc(100dvh-3rem)] self-start">
       {SIDEBAR_ITEMS.map((item) => {
         const active = toggles[item.key]
 
