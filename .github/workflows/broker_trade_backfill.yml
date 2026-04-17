@@ -44,14 +44,36 @@ jobs:
           db_url = os.environ["DATABASE_URL"].replace("postgresql://", "postgresql+psycopg://", 1)
           engine = create_engine(db_url)
           with engine.connect() as conn:
-              row = conn.execute(text("SELECT MAX(trade_date) FROM broker_trade_agg")).fetchone()
-              max_date = row[0]
+              # 建立 checkpoint 表（若不存在）
+              conn.execute(text("""
+                  CREATE TABLE IF NOT EXISTS etl_checkpoint (
+                      step_name TEXT PRIMARY KEY,
+                      last_end_date DATE NOT NULL
+                  )
+              """))
+              conn.commit()
 
-          # 從 DB 最新日期的隔天開始，或從 2021-06-30 開始
-          if max_date:
-              start = max_date + timedelta(days=1)
+              # 取 DB 實際資料的最大日期
+              row_data = conn.execute(text(
+                  "SELECT MAX(trade_date) FROM broker_trade_agg"
+              )).fetchone()
+              max_data_date = row_data[0]
+
+              # 取 checkpoint 記錄的最後嘗試日期
+              row_ckpt = conn.execute(text(
+                  "SELECT last_end_date FROM etl_checkpoint "
+                  "WHERE step_name = 'broker_trade_backfill'"
+              )).fetchone()
+              max_ckpt_date = row_ckpt[0] if row_ckpt else None
+
+          # 用兩者較大的日期 +1 作為起始日，確保假日也能跳過
+          candidates = [d for d in [max_data_date, max_ckpt_date] if d]
+          if candidates:
+              start = max(candidates) + timedelta(days=1)
           else:
               start = date(2021, 6, 30)
+
+          print(f"max_data_date={max_data_date}, max_ckpt_date={max_ckpt_date}, start={start}")
 
           # 目標結束日（預設昨天）
           target_end_str = os.environ.get("END_DATE_INPUT", "").strip()
@@ -63,7 +85,7 @@ jobs:
           batch_days = int(os.environ.get("BATCH_DAYS", "3"))
 
           if start > target_end:
-              print(f"Already up to date (max={max_date}, target={target_end})")
+              print(f"Already up to date (max_data={max_data_date}, ckpt={max_ckpt_date}, target={target_end})")
               with open(os.environ["GITHUB_OUTPUT"], "a") as f:
                   f.write("skip=true\n")
               sys.exit(0)
@@ -100,6 +122,30 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
+
+      - name: Update checkpoint
+        if: steps.dates.outputs.skip != 'true' && success()
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          END_DATE: ${{ steps.dates.outputs.end_date }}
+        run: |
+          python3 - <<'EOF'
+          import os
+          from sqlalchemy import create_engine, text
+
+          db_url = os.environ["DATABASE_URL"].replace("postgresql://", "postgresql+psycopg://", 1)
+          end_date = os.environ["END_DATE"]
+          engine = create_engine(db_url)
+          with engine.connect() as conn:
+              conn.execute(text("""
+                  INSERT INTO etl_checkpoint (step_name, last_end_date)
+                  VALUES ('broker_trade_backfill', :end_date)
+                  ON CONFLICT (step_name)
+                  DO UPDATE SET last_end_date = EXCLUDED.last_end_date
+              """), {"end_date": end_date})
+              conn.commit()
+          print(f"Checkpoint updated: broker_trade_backfill -> {end_date}")
+          EOF
 
       - name: Report result
         if: always()
