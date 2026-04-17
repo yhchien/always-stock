@@ -8,7 +8,6 @@ GET /api/market/daily-brief?date=YYYY-MM-DD
   defined by DAILY_BRIEF_SYSTEM_PROMPT.
 """
 import logging
-import os
 from collections import defaultdict
 from datetime import date, timedelta
 from typing import Optional
@@ -22,13 +21,11 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import IndustryDailyFlow, InstStockFlow
+from app.settings import get_openai_api_key, get_openai_model
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["market"])
-
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 # ── System prompt (fixed output format) ─────────────────────────────────────
 
@@ -498,7 +495,8 @@ def get_daily_brief(
     market indicators (VIX, WTI crude, USD/TWD) from Yahoo Finance, then
     calls OpenAI to produce the structured analysis.
     """
-    if not OPENAI_API_KEY:
+    openai_api_key = get_openai_api_key()
+    if not openai_api_key:
         raise HTTPException(status_code=503, detail="OPENAI_API_KEY 未設定，AI 盤前摘要功能未啟用")
 
     # Resolve trade date: find the most recent day that actually has data
@@ -540,11 +538,12 @@ def get_daily_brief(
         top_stocks=top_stocks,
     )
 
-    logger.debug("Calling OpenAI for daily brief (model=%s)", OPENAI_MODEL)
+    openai_model = get_openai_model()
+    logger.debug("Calling OpenAI for daily brief (model=%s)", openai_model)
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
+        client = OpenAI(api_key=openai_api_key)
         response = client.chat.completions.create(
-            model=OPENAI_MODEL,
+            model=openai_model,
             messages=[
                 {"role": "system", "content": DAILY_BRIEF_SYSTEM_PROMPT},
                 {"role": "user", "content": user_msg},

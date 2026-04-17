@@ -134,13 +134,13 @@ class TestCollectStockContext:
 
 class TestAnalyzeStock:
     def test_no_api_key(self, db):
-        with patch("app.ai_analyst.OPENAI_API_KEY", ""):
+        with patch("app.ai_analyst.get_openai_api_key", return_value=""):
             result = analyze_stock("2330")
         assert "未啟用" in result
 
     def test_stock_not_found(self, db):
         with (
-            patch("app.ai_analyst.OPENAI_API_KEY", "fake-key"),
+            patch("app.ai_analyst.get_openai_api_key", return_value="fake-key"),
             patch("app.ai_analyst.SessionLocal", return_value=db),
         ):
             result = analyze_stock("9999")
@@ -164,7 +164,7 @@ class TestAnalyzeStock:
         mock_client.chat.completions.create.return_value = mock_response
 
         with (
-            patch("app.ai_analyst.OPENAI_API_KEY", "fake-key"),
+            patch("app.ai_analyst.get_openai_api_key", return_value="fake-key"),
             patch("app.ai_analyst.SessionLocal", return_value=db),
             patch("app.ai_analyst.OpenAI", return_value=mock_client),
         ):
@@ -182,7 +182,7 @@ class TestAnalyzeStock:
         mock_client.chat.completions.create.side_effect = Exception("API error")
 
         with (
-            patch("app.ai_analyst.OPENAI_API_KEY", "fake-key"),
+            patch("app.ai_analyst.get_openai_api_key", return_value="fake-key"),
             patch("app.ai_analyst.SessionLocal", return_value=db),
             patch("app.ai_analyst.OpenAI", return_value=mock_client),
         ):
@@ -241,7 +241,7 @@ class TestAiHandler:
         mock_client.chat.completions.create.return_value = mock_response
 
         with (
-            patch("app.ai_analyst.OPENAI_API_KEY", "fake-key"),
+            patch("app.ai_analyst.get_openai_api_key", return_value="fake-key"),
             patch("app.ai_analyst.SessionLocal", return_value=db),
             patch("app.ai_analyst.OpenAI", return_value=mock_client),
         ):

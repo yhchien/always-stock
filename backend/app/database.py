@@ -7,15 +7,13 @@ import sqlite3
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker, declarative_base
-from dotenv import load_dotenv
+
+from app.settings import BACKEND_DIR, PROJECT_ROOT
 
 logger = logging.getLogger(__name__)
 
-BACKEND_DIR = Path(__file__).resolve().parents[1]
-PROJECT_ROOT = BACKEND_DIR.parent
 DEFAULT_DB_PATH = BACKEND_DIR / "db" / "tw_stock.db"
 SQLITE_LOCK_TIMEOUT_SECONDS = 2
-load_dotenv(BACKEND_DIR / ".env")
 
 
 def resolve_sqlite_path(db_path: str) -> Path:

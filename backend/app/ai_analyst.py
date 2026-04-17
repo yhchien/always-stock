@@ -5,7 +5,6 @@ Takes stock data (institutional flow, price, industry) from the database
 and asks OpenAI to provide investment analysis and commentary.
 """
 import logging
-import os
 from datetime import date, timedelta
 from typing import Optional
 
@@ -15,11 +14,9 @@ from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
 from app.models import DailyPrice, InstStockFlow, StockMaster
+from app.settings import get_openai_api_key, get_openai_model
 
 logger = logging.getLogger(__name__)
-
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 SYSTEM_PROMPT = """你是一位專業的台股投資分析師，擅長籌碼面分析。
 你的任務是根據提供的三大法人買賣超資料，給出簡潔、有洞察力的分析。
@@ -118,7 +115,8 @@ def analyze_stock(stock_id: str) -> str:
     Run AI analysis for a given stock_id.
     Returns formatted analysis string.
     """
-    if not OPENAI_API_KEY:
+    openai_api_key = get_openai_api_key()
+    if not openai_api_key:
         return "⚠️ AI 分析功能未啟用（OPENAI_API_KEY 未設定）。"
 
     db = SessionLocal()
@@ -129,9 +127,9 @@ def analyze_stock(stock_id: str) -> str:
 
         logger.info("AI analysis request: stock_id=%s", stock_id)
 
-        client = OpenAI(api_key=OPENAI_API_KEY)
+        client = OpenAI(api_key=openai_api_key)
         response = client.chat.completions.create(
-            model=OPENAI_MODEL,
+            model=get_openai_model(),
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": f"請分析以下股票的近期籌碼動向：\n\n{context}"},

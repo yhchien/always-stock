@@ -1,16 +1,13 @@
 import json
 import logging
-import os
 from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
 
 from app.backtest_catalog import BACKTEST_CAPABILITY_CATALOG
+from app.settings import get_openai_api_key, get_openai_model
 
 logger = logging.getLogger(__name__)
-
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 BACKTEST_MAPPING_SYSTEM_PROMPT = """你是一位台股回測策略 mapping 助手。
 你的工作不是發明新策略，而是把使用者輸入的條件短語，映射到既有的受控 catalog。
@@ -98,7 +95,8 @@ def _validate_rule_mapping(indicator: str, params: Dict[str, Any]) -> Optional[D
 def map_conditions_with_ai(phrases: List[str]) -> Dict[str, Any]:
     if not phrases:
         return {"rules": [], "risk_controls": {}, "unsupported_conditions": [], "matched_capabilities": [], "source": "rule_based"}
-    if not OPENAI_API_KEY:
+    openai_api_key = get_openai_api_key()
+    if not openai_api_key:
         return {
             "rules": [],
             "risk_controls": {},
@@ -107,7 +105,7 @@ def map_conditions_with_ai(phrases: List[str]) -> Dict[str, Any]:
             "source": "rule_based",
         }
 
-    client = OpenAI(api_key=OPENAI_API_KEY)
+    client = OpenAI(api_key=openai_api_key)
     prompt_payload = {
         "phrases": phrases,
         "catalog": _catalog_prompt_payload(),
@@ -115,7 +113,7 @@ def map_conditions_with_ai(phrases: List[str]) -> Dict[str, Any]:
 
     try:
         response = client.chat.completions.create(
-            model=OPENAI_MODEL,
+            model=get_openai_model(),
             response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": BACKTEST_MAPPING_SYSTEM_PROMPT},

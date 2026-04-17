@@ -1,14 +1,11 @@
 import json
 import logging
-import os
 from typing import Any, Dict, List
 
 from openai import OpenAI
+from app.settings import get_openai_api_key, get_openai_model
 
 logger = logging.getLogger(__name__)
-
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 BACKTEST_ADVICE_SYSTEM_PROMPT = """你是一位專業的台股策略研究助手。
 請根據使用者提供的回測資料，輸出具體、可操作、簡潔的建議。
@@ -101,10 +98,11 @@ def build_local_backtest_advice(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 def generate_backtest_advice(payload: Dict[str, Any]) -> Dict[str, Any]:
     fallback = build_local_backtest_advice(payload)
-    if not OPENAI_API_KEY:
+    openai_api_key = get_openai_api_key()
+    if not openai_api_key:
         return fallback
 
-    client = OpenAI(api_key=OPENAI_API_KEY)
+    client = OpenAI(api_key=openai_api_key)
     prompt_payload = {
         "stock_id": payload.get("stock_id"),
         "strategy_text": payload.get("strategy_text"),
@@ -116,7 +114,7 @@ def generate_backtest_advice(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     try:
         response = client.chat.completions.create(
-            model=OPENAI_MODEL,
+            model=get_openai_model(),
             response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": BACKTEST_ADVICE_SYSTEM_PROMPT},

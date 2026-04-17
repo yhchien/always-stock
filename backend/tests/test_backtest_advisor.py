@@ -39,7 +39,7 @@ def test_build_local_backtest_advice_returns_structured_sections():
 
 
 def test_generate_backtest_advice_without_api_key_returns_fallback():
-    with patch("app.backtest_advisor.OPENAI_API_KEY", ""):
+    with patch("app.backtest_advisor.get_openai_api_key", return_value=""):
         advice = generate_backtest_advice(_sample_payload())
     assert advice["source"] == "heuristic"
 
@@ -59,7 +59,7 @@ def test_generate_backtest_advice_uses_openai_when_available():
     mock_client.chat.completions.create.return_value = mock_response
 
     with (
-        patch("app.backtest_advisor.OPENAI_API_KEY", "fake-key"),
+        patch("app.backtest_advisor.get_openai_api_key", return_value="fake-key"),
         patch("app.backtest_advisor.OpenAI", return_value=mock_client),
     ):
         advice = generate_backtest_advice(_sample_payload())
