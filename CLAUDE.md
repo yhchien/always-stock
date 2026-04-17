@@ -368,3 +368,13 @@
 
 ### GitHub Actions 優化
 - `broker_trade_backfill.yml`：batch 從 calendar days 改為 trading days 計算，跳過週末，效率提升 ~30%
+
+## 回測圖表改版（2026-04-17）
+
+### BacktestEquityChart 改善
+- Y 軸從絕對金額改為**報酬率 %**（`+10.5%` 取代 `$1,105,000`）
+- 新增**回撤副圖**（drawdown % 紅色面積圖），上下圖聯動
+- 標記**進出場點**：買入 ▲ 紅色三角、賣出 pin（獲利黃/虧損綠）
+- tooltip 整合策略報酬、Buy & Hold、回撤三項數值
+- 移除圖下方冗餘的 equity point 數字列表
+- Props 新增 `trades?: BacktestTrade[]`，用於繪製進出場標記

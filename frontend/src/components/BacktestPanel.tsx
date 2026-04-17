@@ -89,7 +89,6 @@ export default function BacktestPanel({ stockId }: Props) {
   }, [])
 
   const latestEquity = result?.equity_curve.at(-1)?.equity ?? null
-  const equityPreview = useMemo(() => result?.equity_curve.slice(-8) ?? [], [result])
   const monthlyPreview = useMemo(() => result?.period_returns.monthly.slice(-6).reverse() ?? [], [result])
   const quarterlyPreview = useMemo(() => result?.period_returns.quarterly.slice(-4).reverse() ?? [], [result])
   const yearlyPreview = useMemo(() => result?.period_returns.yearly.slice(-4).reverse() ?? [], [result])
@@ -446,18 +445,7 @@ export default function BacktestPanel({ stockId }: Props) {
                 </a>
               </div>
               <div className="mt-3">
-                <BacktestEquityChart points={result.equity_curve} />
-              </div>
-              <div className="mt-3 grid gap-1">
-                {equityPreview.map((point) => (
-                  <div
-                    key={point.trade_date}
-                    className="flex items-center justify-between rounded bg-zinc-900/60 px-2 py-1 text-xs text-zinc-300"
-                  >
-                    <span>{point.trade_date}</span>
-                    <span className="font-mono">{formatCurrency(point.equity)}</span>
-                  </div>
-                ))}
+                <BacktestEquityChart points={result.equity_curve} trades={result.trades} />
               </div>
             </div>
 
