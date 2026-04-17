@@ -127,12 +127,13 @@
   html {
     @apply font-sans;
   }
-  /* Global font-size bump: scale up tiny text for readability */
-  .text-\[9px\]  { font-size: 11px !important; }
-  .text-\[10px\] { font-size: 12px !important; }
-  .text-\[11px\] { font-size: 13px !important; }
-  .text-xs       { font-size: 13px !important; line-height: 1.25rem !important; }
-  .text-sm       { font-size: 14.5px !important; }
+  /* Global font-size bump: scale up all text for readability */
+  .text-\[9px\]  { font-size: 12px !important; }
+  .text-\[10px\] { font-size: 13px !important; }
+  .text-\[11px\] { font-size: 14px !important; }
+  .text-xs       { font-size: 14px !important; line-height: 1.35rem !important; }
+  .text-sm       { font-size: 15px !important; line-height: 1.4rem !important; }
+  .text-base     { font-size: 16.5px !important; }
 }
 
 /* Vertical text for sidebar labels */

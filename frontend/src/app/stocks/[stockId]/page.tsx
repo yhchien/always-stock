@@ -69,7 +69,7 @@ function Sidebar({
   onToggle: (key: PanelKey) => void
 }) {
   return (
-    <nav className="sticky top-12 flex flex-col items-center gap-1 py-4 w-12 shrink-0 border-r border-slate-700/30 h-[calc(100dvh-3rem)] self-start">
+    <nav className="fixed left-0 top-12 flex flex-col items-center gap-1 py-4 w-12 border-r border-slate-700/30 h-[calc(100dvh-3rem)] z-40 bg-slate-900">
       {SIDEBAR_ITEMS.map((item) => {
         const active = toggles[item.key]
 
@@ -166,8 +166,8 @@ function StockContent({ stockId }: { stockId: string }) {
   }
 
   return (
-    <div className="flex min-h-[calc(100dvh-3rem)]">
-      {/* Left sidebar */}
+    <div className="min-h-[calc(100dvh-3rem)]">
+      {/* Left sidebar (fixed) */}
       <Sidebar
         stockId={stockId}
         date={date}
@@ -175,8 +175,8 @@ function StockContent({ stockId }: { stockId: string }) {
         onToggle={handleToggle}
       />
 
-      {/* Main content */}
-      <main className="flex-1 min-w-0 overflow-y-auto">
+      {/* Main content — offset by sidebar width */}
+      <main className="ml-12">
         <div className="mx-auto w-full max-w-5xl px-4 py-8 flex flex-col gap-6">
           <StockChart
             stockId={stockId}

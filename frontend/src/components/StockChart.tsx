@@ -569,11 +569,11 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
         })()}
       </div>
 
-      {/* Range + MA controls */}
+      {/* Range + Inst + MA controls */}
       <div className="flex flex-col gap-2">
       <div className="flex items-center gap-2 flex-wrap">
         {/* Range selector */}
-        <div className="flex gap-1">
+        <div className="flex gap-1 items-center">
           {RANGE_OPTIONS.map((opt) => (
             <button
               key={opt.label}
@@ -625,16 +625,11 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
             </button>
           )}
         </div>
-      </div>
 
-      {/* Available data range hint */}
-      {data?.earliest_date && data?.latest_date && (
-        <p className="text-[11px] text-slate-600">
-          資料範圍：{data.earliest_date} ～ {data.latest_date}
-        </p>
-      )}
+        {/* Divider */}
+        <span className="text-slate-700 select-none">|</span>
 
-        {/* Institutional line toggles */}
+        {/* Institutional line toggles (same row) */}
         <div className="flex items-center gap-1">
           {INST_CONFIGS.map(({ key, label, color }) => {
             const active = activeInst.has(key)
@@ -657,6 +652,14 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
             )
           })}
         </div>
+      </div>
+
+      {/* Available data range hint */}
+      {data?.earliest_date && data?.latest_date && (
+        <p className="text-[11px] text-slate-600">
+          資料範圍：{data.earliest_date} ～ {data.latest_date}
+        </p>
+      )}
 
         {/* MA toggles */}
         <div className="flex items-center gap-1 flex-wrap">
