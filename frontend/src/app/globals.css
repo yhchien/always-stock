@@ -128,3 +128,10 @@
     @apply font-sans;
   }
 }
+
+/* Vertical text for sidebar labels */
+.writing-vertical {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  letter-spacing: 0.1em;
+}

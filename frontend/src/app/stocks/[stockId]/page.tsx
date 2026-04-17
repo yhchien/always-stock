@@ -1,6 +1,6 @@
 "use client"
 
-import { Suspense, use, useEffect, useState } from "react"
+import { Suspense, use, useEffect, useMemo, useState } from "react"
 import dynamic from "next/dynamic"
 import Link from "next/link"
 import { useSearchParams } from "next/navigation"
@@ -39,36 +39,97 @@ function readStoredToggle(key: string, defaultValue: boolean): boolean {
   return stored === "true"
 }
 
-function ToggleChip({
-  label,
-  checked,
-  onChange,
-}: {
+// ── Sidebar item types ─────────────────────────────────────────────────────
+
+type PanelKey = "backtest" | "financials" | "broker"
+
+interface SidebarItem {
+  key: PanelKey
   label: string
-  checked: boolean
-  onChange: (v: boolean) => void
+  isLink?: boolean
+}
+
+const SIDEBAR_ITEMS: SidebarItem[] = [
+  { key: "backtest", label: "回測", isLink: true },
+  { key: "financials", label: "基本面" },
+  { key: "broker", label: "籌碼面" },
+]
+
+// ── Vertical Sidebar ───────────────────────────────────────────────────────
+
+function Sidebar({
+  stockId,
+  date,
+  toggles,
+  onToggle,
+}: {
+  stockId: string
+  date?: string
+  toggles: Record<PanelKey, boolean>
+  onToggle: (key: PanelKey) => void
 }) {
   return (
-    <button
-      type="button"
-      onClick={() => onChange(!checked)}
-      className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-colors ${
-        checked
-          ? "bg-slate-600 text-slate-100 border border-slate-500"
-          : "bg-slate-800/60 text-slate-500 border border-slate-700 hover:text-slate-300 hover:border-slate-600"
-      }`}
-    >
-      <span
-        className={`inline-block h-1.5 w-1.5 rounded-full ${checked ? "bg-emerald-400" : "bg-slate-600"}`}
-      />
-      {label}
-    </button>
+    <nav className="flex flex-col items-center gap-1 py-4 w-12 shrink-0 border-r border-slate-700/30">
+      {SIDEBAR_ITEMS.map((item) => {
+        const active = toggles[item.key]
+
+        if (item.isLink) {
+          return (
+            <Link
+              key={item.key}
+              href={`/stocks/${stockId}/backtest${date ? `?date=${date}` : ""}`}
+              className="group relative flex items-center justify-center w-10 h-16 rounded-md transition-colors hover:bg-slate-800/60"
+              title={item.label}
+            >
+              <span className="writing-vertical text-[11px] font-medium text-slate-500 group-hover:text-slate-200 transition-colors">
+                {item.label}
+              </span>
+              <span className="absolute right-0.5 top-1 text-[8px] text-slate-600 group-hover:text-slate-400">
+                &rarr;
+              </span>
+            </Link>
+          )
+        }
+
+        return (
+          <button
+            key={item.key}
+            type="button"
+            onClick={() => onToggle(item.key)}
+            className={`relative flex items-center justify-center w-10 h-16 rounded-md transition-colors ${
+              active
+                ? "bg-slate-800/60 text-slate-200"
+                : "text-slate-600 hover:bg-slate-800/40 hover:text-slate-400"
+            }`}
+            title={item.label}
+          >
+            {active && (
+              <span className="absolute left-0.5 top-1/2 -translate-y-1/2 h-4 w-0.5 rounded-full bg-emerald-400" />
+            )}
+            <span className="writing-vertical text-[11px] font-medium">
+              {item.label}
+            </span>
+          </button>
+        )
+      })}
+    </nav>
   )
 }
+
+// ── Main content ───────────────────────────────────────────────────────────
 
 function StockContent({ stockId }: { stockId: string }) {
   const searchParams = useSearchParams()
   const date = searchParams.get("date") ?? undefined
+
+  // Read date range passed back from L3
+  const backtestStart = searchParams.get("start") ?? undefined
+  const backtestEnd = searchParams.get("end") ?? undefined
+  const externalDateRange = useMemo(
+    () => (backtestStart && backtestEnd ? { start: backtestStart, end: backtestEnd } : null),
+    [backtestStart, backtestEnd],
+  )
+
   const [showBrokerPanel, setShowBrokerPanel] = useState(true)
   const [showFinancialsPanel, setShowFinancialsPanel] = useState(true)
   const [selectedBroker, setSelectedBroker] = useState<BrokerTradeItem | null>(null)
@@ -93,43 +154,56 @@ function StockContent({ stockId }: { stockId: string }) {
     setSelectedBroker(null)
   }, [date, stockId])
 
+  const toggles: Record<PanelKey, boolean> = {
+    backtest: false,
+    financials: showFinancialsPanel,
+    broker: showBrokerPanel,
+  }
+
+  const handleToggle = (key: PanelKey) => {
+    if (key === "financials") setShowFinancialsPanel((v) => !v)
+    if (key === "broker") setShowBrokerPanel((v) => !v)
+  }
+
   return (
-    <main className="mx-auto w-full max-w-5xl px-4 py-8 flex flex-col gap-6">
-      <StockChart
+    <div className="flex min-h-[calc(100dvh-3rem)]">
+      {/* Left sidebar */}
+      <Sidebar
         stockId={stockId}
-        defaultDate={date}
-        onDaysChange={setChartDays}
-        selectedBroker={selectedBroker}
+        date={date}
+        toggles={toggles}
+        onToggle={handleToggle}
       />
 
-      {/* Compact toggle row */}
-      <div className="flex items-center gap-2 flex-wrap">
-        <Link
-          href={`/stocks/${stockId}/backtest${date ? `?date=${date}` : ""}`}
-          className="flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium bg-slate-800/60 text-slate-400 border border-slate-700 hover:text-slate-200 hover:border-slate-500 transition-colors"
-        >
-          回測程式 →
-        </Link>
-        <ToggleChip label="財報" checked={showFinancialsPanel} onChange={setShowFinancialsPanel} />
-        <ToggleChip label="關鍵券商" checked={showBrokerPanel} onChange={setShowBrokerPanel} />
-      </div>
-
-      {showFinancialsPanel && (
-        <FinancialsPanel stockId={stockId} chartDays={chartDays} />
-      )}
-
-      {showBrokerPanel && (
-        <div className="min-h-[360px]">
-          <BrokerPanel
+      {/* Main content */}
+      <main className="flex-1 min-w-0 overflow-y-auto">
+        <div className="mx-auto w-full max-w-5xl px-4 py-8 flex flex-col gap-6">
+          <StockChart
             stockId={stockId}
-            date={date}
-            days={chartDays}
-            onSelectBroker={setSelectedBroker}
-            selectedBrokerId={selectedBroker?.broker_id ?? null}
+            defaultDate={date}
+            onDaysChange={setChartDays}
+            selectedBroker={selectedBroker}
+            dateRange={externalDateRange}
           />
+
+          {showFinancialsPanel && (
+            <FinancialsPanel stockId={stockId} chartDays={chartDays} />
+          )}
+
+          {showBrokerPanel && (
+            <div className="min-h-[360px]">
+              <BrokerPanel
+                stockId={stockId}
+                date={date}
+                days={chartDays}
+                onSelectBroker={setSelectedBroker}
+                selectedBrokerId={selectedBroker?.broker_id ?? null}
+              />
+            </div>
+          )}
         </div>
-      )}
-    </main>
+      </main>
+    </div>
   )
 }
 

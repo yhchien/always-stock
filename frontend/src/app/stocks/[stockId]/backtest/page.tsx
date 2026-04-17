@@ -1,6 +1,6 @@
 "use client"
 
-import { Suspense, use } from "react"
+import { Suspense, use, useCallback, useState } from "react"
 import { useSearchParams, useRouter } from "next/navigation"
 import dynamic from "next/dynamic"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -20,6 +20,23 @@ function BacktestContent({ stockId }: { stockId: string }) {
   const searchParams = useSearchParams()
   const router = useRouter()
   const date = searchParams.get("date") ?? undefined
+  const [backtestRange, setBacktestRange] = useState<{ start: string; end: string } | null>(null)
+
+  const handleDateRangeChange = useCallback((start: string, end: string) => {
+    setBacktestRange({ start, end })
+  }, [])
+
+  const handleBack = () => {
+    // Navigate back to L2 with backtest date range in URL
+    const params = new URLSearchParams()
+    if (date) params.set("date", date)
+    if (backtestRange) {
+      params.set("start", backtestRange.start)
+      params.set("end", backtestRange.end)
+    }
+    const qs = params.toString()
+    router.push(`/stocks/${stockId}${qs ? `?${qs}` : ""}`)
+  }
 
   return (
     <div className="flex min-h-[calc(100dvh-3rem)] flex-col bg-slate-950">
@@ -27,7 +44,7 @@ function BacktestContent({ stockId }: { stockId: string }) {
       <div className="flex items-center gap-3 px-4 border-b border-slate-800 bg-slate-900/60 shrink-0 h-10">
         <button
           type="button"
-          onClick={() => router.back()}
+          onClick={handleBack}
           className="flex items-center gap-1 text-xs text-slate-400 hover:text-slate-200 transition-colors"
         >
           ← 返回 {stockId}
@@ -44,12 +61,13 @@ function BacktestContent({ stockId }: { stockId: string }) {
             stockId={stockId}
             defaultDate={date}
             chartHeight="calc(100dvh - 240px)"
+            dateRange={backtestRange}
           />
         </div>
 
         {/* Right pane: Backtest panel */}
         <div className="min-h-0 overflow-y-auto bg-slate-950">
-          <BacktestPanel stockId={stockId} />
+          <BacktestPanel stockId={stockId} onDateRangeChange={handleDateRangeChange} />
         </div>
       </div>
     </div>

@@ -20,6 +20,7 @@ import BacktestEquityChart from "@/components/BacktestEquityChart"
 
 interface Props {
   stockId: string
+  onDateRangeChange?: (start: string, end: string) => void
 }
 
 function oneYearAgoInTaipei(): string {
@@ -47,9 +48,14 @@ function formatTimes(value: number): string {
   return `${value} 次`
 }
 
-export default function BacktestPanel({ stockId }: Props) {
+export default function BacktestPanel({ stockId, onDateRangeChange }: Props) {
   const [startDate, setStartDate] = useState(oneYearAgoInTaipei)
   const [endDate, setEndDate] = useState(todayInTaipei)
+
+  // Notify parent when date range changes
+  useEffect(() => {
+    onDateRangeChange?.(startDate, endDate)
+  }, [startDate, endDate, onDateRangeChange])
   const [initialCapital, setInitialCapital] = useState("1000000")
   const [strategyText, setStrategyText] = useState("")
   const [templates, setTemplates] = useState<BacktestTemplate[]>([])

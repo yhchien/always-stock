@@ -58,6 +58,8 @@ interface Props {
   chartHeight?: string
   onDaysChange?: (days: number) => void
   selectedBroker?: BrokerTradeItem | null
+  /** Externally controlled date range (e.g. from backtest panel) */
+  dateRange?: { start: string; end: string } | null
 }
 
 // 永遠載入全量資料，用 dataZoom 控制初始視窗
@@ -65,7 +67,7 @@ const FULL_LOAD_DAYS = 3650
 // Broker history polling interval (ms) — stops when count stabilises
 const BROKER_POLL_MS = 7000
 
-export default function StockChart({ stockId, defaultDate, days: initialDays = 90, chartHeight, onDaysChange, selectedBroker }: Props) {
+export default function StockChart({ stockId, defaultDate, days: initialDays = 90, chartHeight, onDaysChange, selectedBroker, dateRange }: Props) {
   const router = useRouter()
   const chartRef = useRef<HTMLDivElement>(null)
   const [days, setDays] = useState(initialDays)
@@ -84,6 +86,15 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
   const [customStart, setCustomStart] = useState("")
   const [customEnd, setCustomEnd] = useState("")
   const [appliedCustom, setAppliedCustom] = useState<{ start: string; end: string } | null>(null)
+
+  // Sync external dateRange prop → appliedCustom
+  useEffect(() => {
+    if (dateRange) {
+      setAppliedCustom(dateRange)
+      setCustomStart(dateRange.start)
+      setCustomEnd(dateRange.end)
+    }
+  }, [dateRange?.start, dateRange?.end])
 
   // Institutional line toggle state
   const [activeInst, setActiveInst] = useState<Set<InstKey>>(new Set(["foreign", "trust", "dealer"]))
