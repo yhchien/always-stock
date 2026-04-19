@@ -472,3 +472,34 @@
 - `frontend/src/app/stocks/[stockId]/page.tsx`：從 `SIDEBAR_ITEMS` 移除 `broker` 項目，不再載入 `BrokerPanel`、不再讀寫 `always-stock:show-broker-panel` localStorage
 - 程式碼保留（`components/BrokerPanel.tsx`、`components/BrokerBarChart.tsx`、對應 API）僅隱藏入口
 - 理由：使用者希望優先聚焦「策略回測」與「主動推薦」，券商分點面板待產品優先序再決定是否復活
+
+## Phase 2：交易質量 AI 分析（規劃中，2026-04-19 啟動）
+
+### 需求背景
+- `docs/交易想法.md` 是使用者沉澱下來的買方分析師 prompt：輸入 `{stock, buy_date}`，輸出 A/B/C 分類 + JSON + 中文分析報告
+- 核心規則：no hindsight bias、只用 buy_date 當日及以前的資訊、target price 必須自己推導、資料不足要明講「無法建立有效交易判斷」
+- 此 phase 將 prompt 接成首頁的互動功能
+
+### 功能落點
+- **位置**：首頁（`frontend/src/app/page.tsx`）`DailyBrief` 下方新增 `TradeQualityAnalysis` section
+- **輸入**：
+  - 股票代號 / 名稱（autocomplete，user 打字即時 filter 下拉選單）
+  - 買進日期（空白時預設為 DB 最近一個交易日）
+- **輸出**：
+  - 5 階顏色評級：強烈推薦（深綠）/ 推薦（綠）/ 中立（黃）/ 再看看（橘）/ 快跑（紅）
+  - Summary（一段話原因）
+  - 預估目標價區間
+  - 「詳細」按鈕 → 展開 PART 2 完整中文分析報告
+
+### 設計決策（2026-04-19）
+- **5 階由 prompt 直接輸出** `rating` 欄位（不在後端做 A/B/C → 5 階映射，避免 JSON 與 PART 2 不一致）
+- **第一版不接新聞資料**：prompt 裡註明「本次分析無 10 天內新聞」；依規則 15，缺新聞時分析師應趨向保守判斷（C/快跑或中立），這是刻意的行為 —— 日後接 Google News / 輿情 ETL 再補
+- **context 組裝**：後端會把 buy_date 前可觀察資料（近 10 交易日 OHLC、法人、最近一次月營收 YoY/MoM）塞進 user message，再把 `docs/交易想法.md` 作為 system prompt
+
+### API 設計
+- `POST /api/analysis/trade-quality`
+  - Request: `{ stock_id: str, buy_date?: date }`（buy_date 空白時 fallback 到 latest trade date）
+  - Response: `{ rating, rating_label, summary, target_price_low, target_price_high, classification, action, report_markdown, ... }`
+- 支援端點（若尚未存在則新增）：
+  - `GET /api/stocks/search?q=...` — 股票 autocomplete
+  - `GET /api/market/latest-trade-date` — DB 最新交易日

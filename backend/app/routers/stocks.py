@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 
 from app.database import get_db
 from app.models import DailyPrice, InstStockFlow, StockMaster
@@ -76,7 +76,68 @@ class StockHistoryResponse(BaseModel):
     latest_date: Optional[str] = None    # 此股票在 DB 中最新的交易日
 
 
+class StockSearchItem(BaseModel):
+    stock_id: str
+    stock_name: str
+    industry_name: str
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
+
+
+@router.get("/stocks/search", response_model=List[StockSearchItem])
+def search_stocks(
+    q: str = Query(..., min_length=1, max_length=40, description="關鍵字（股票代號或名稱）"),
+    limit: int = Query(default=20, ge=1, le=50),
+    db: Session = Depends(get_db),
+):
+    """
+    Autocomplete search for stocks. Matches prefix of stock_id or substring of stock_name.
+    Prefix-on-ID matches rank first.
+    """
+    keyword = q.strip()
+    if not keyword:
+        return []
+
+    like = f"%{keyword}%"
+    try:
+        rows: List[StockMaster] = _run_with_lock_retry(
+            db,
+            lambda: (
+                db.query(StockMaster)
+                .filter(
+                    or_(
+                        StockMaster.stock_id.like(f"{keyword}%"),
+                        StockMaster.stock_name.like(like),
+                    )
+                )
+                .limit(limit * 2)
+                .all()
+            ),
+        )
+    except OperationalError as error:
+        _raise_busy_if_locked(error)
+
+    # Sort: exact stock_id match first, then stock_id prefix, then name match
+    def rank(m: StockMaster) -> tuple[int, str]:
+        if m.stock_id == keyword:
+            return (0, m.stock_id)
+        if m.stock_id.startswith(keyword):
+            return (1, m.stock_id)
+        return (2, m.stock_id)
+
+    sorted_rows = sorted(rows, key=rank)[:limit]
+    return [
+        StockSearchItem(
+            stock_id=r.stock_id,
+            stock_name=r.stock_name,
+            industry_name=r.industry_name,
+        )
+        for r in sorted_rows
+    ]
+
+
+
 
 @router.get("/stocks/{stock_id}/history", response_model=StockHistoryResponse)
 def get_stock_history(

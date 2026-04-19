@@ -1,0 +1,421 @@
+"""
+Trade quality analysis endpoint.
+
+POST /api/analysis/trade-quality
+  Given a stock_id + optional buy_date, reconstruct the observable market
+  context as of that date, then call OpenAI with the buy-side research
+  prompt defined in `docs/交易想法.md`.
+
+Output is a structured JSON with a 5-level rating plus a full markdown
+report in Traditional Chinese. No hindsight bias — only pre-buy-date data.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from datetime import date, timedelta
+from pathlib import Path
+from typing import Any, List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException
+from openai import OpenAI
+from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
+
+from app.database import get_db
+from app.industry_flow_service import get_latest_industry_trade_date
+from app.models import (
+    DailyPrice,
+    FinancialStatement,
+    InstStockFlow,
+    MonthlyRevenue,
+    StockMaster,
+)
+from app.settings import get_openai_api_key, get_openai_model
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(tags=["analysis"])
+
+RATING_LABELS = {
+    "STRONG_BUY": "強烈推薦",
+    "BUY": "推薦",
+    "NEUTRAL": "中立",
+    "WATCH": "再看看",
+    "RUN": "快跑",
+}
+
+PROMPT_FILE = Path(__file__).resolve().parents[2].parent / "docs" / "交易想法.md"
+
+
+# ── Request / Response schemas ───────────────────────────────────────────────
+
+
+class TradeQualityRequest(BaseModel):
+    stock_id: str = Field(..., min_length=1, max_length=20)
+    buy_date: Optional[date] = None
+
+
+class TradeQualityResponse(BaseModel):
+    stock_id: str
+    stock_name: str
+    buy_date: str
+    rating: str  # STRONG_BUY | BUY | NEUTRAL | WATCH | RUN
+    rating_label: str
+    classification: Optional[str] = None  # A | B | C
+    action: Optional[str] = None
+    summary: str
+    core_logic: Optional[str] = None
+    risk_level: Optional[str] = None
+    target_price_low: Optional[float] = None
+    target_price_high: Optional[float] = None
+    time_horizon_days: Optional[int] = None
+    exit_price_low: Optional[float] = None
+    exit_price_high: Optional[float] = None
+    max_holding_days: Optional[int] = None
+    report_markdown: str
+    warnings: List[str] = []
+    source: str  # "openai" | "unavailable"
+
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+
+def _load_system_prompt() -> str:
+    if not PROMPT_FILE.exists():
+        logger.error("Prompt file missing: %s", PROMPT_FILE)
+        return ""
+    return PROMPT_FILE.read_text(encoding="utf-8")
+
+
+def _resolve_buy_date(db: Session, requested: Optional[date]) -> Optional[date]:
+    """Resolve buy_date: if None or non-trading day, fall back to most recent trade date."""
+    return get_latest_industry_trade_date(db, requested)
+
+
+def _format_price_rows(rows: list[DailyPrice]) -> str:
+    if not rows:
+        return "無資料"
+    lines = []
+    for r in rows:
+        spread_pct: Optional[float] = None
+        if r.spread is not None:
+            spread_pct = float(r.spread)
+        lines.append(
+            f"{r.trade_date} | O:{_fmt(r.open_price)} H:{_fmt(r.high_price)} "
+            f"L:{_fmt(r.low_price)} C:{_fmt(r.close_price)} "
+            f"Vol:{_fmt(r.volume)} Δ%:{_fmt(spread_pct)}"
+        )
+    return "\n".join(lines)
+
+
+def _format_inst_flows(rows: list[InstStockFlow]) -> str:
+    if not rows:
+        return "無資料"
+    by_date: dict[date, dict[str, float]] = {}
+    for f in rows:
+        by_date.setdefault(f.trade_date, {})[f.inst_type] = float(f.net_shares or 0)
+    lines = []
+    for d in sorted(by_date.keys()):
+        entry = by_date[d]
+        lines.append(
+            f"{d} | 外資:{int(entry.get('foreign', 0))} "
+            f"投信:{int(entry.get('trust', 0))} "
+            f"自營:{int(entry.get('dealer', 0))}"
+        )
+    return "\n".join(lines)
+
+
+def _format_monthly_revenue(rows: list[MonthlyRevenue]) -> str:
+    if not rows:
+        return "無資料"
+    lines = []
+    for r in rows:
+        lines.append(
+            f"{r.revenue_month} | 營收:{_fmt(r.revenue)} 百萬元 "
+            f"YoY:{_fmt_pct(r.yoy_pct)} MoM:{_fmt_pct(r.mom_pct)}"
+        )
+    return "\n".join(lines)
+
+
+def _fmt(x: Any) -> str:
+    if x is None:
+        return "—"
+    if isinstance(x, float):
+        return f"{x:.2f}"
+    return str(x)
+
+
+def _fmt_pct(x: Any) -> str:
+    if x is None:
+        return "—"
+    return f"{float(x):+.2f}%"
+
+
+def _collect_context(
+    db: Session, stock_id: str, buy_date: date
+) -> tuple[StockMaster, dict, list[str]]:
+    warnings: list[str] = []
+
+    stock = db.get(StockMaster, stock_id)
+    if not stock:
+        raise HTTPException(status_code=404, detail=f"Stock not found: {stock_id}")
+
+    start_10d = buy_date - timedelta(days=21)  # 10 trading days ≈ 14~21 calendar days
+    prices = (
+        db.query(DailyPrice)
+        .filter(
+            DailyPrice.stock_id == stock_id,
+            DailyPrice.trade_date <= buy_date,
+            DailyPrice.trade_date >= start_10d,
+        )
+        .order_by(DailyPrice.trade_date)
+        .all()
+    )
+    prices = prices[-10:]
+    if not prices:
+        warnings.append("無近 10 交易日股價資料")
+
+    flows = (
+        db.query(InstStockFlow)
+        .filter(
+            InstStockFlow.stock_id == stock_id,
+            InstStockFlow.trade_date <= buy_date,
+            InstStockFlow.trade_date >= start_10d,
+        )
+        .order_by(InstStockFlow.trade_date)
+        .all()
+    )
+    if not flows:
+        warnings.append("無近 10 交易日三大法人資料")
+
+    revenue_rows = (
+        db.query(MonthlyRevenue)
+        .filter(
+            MonthlyRevenue.stock_id == stock_id,
+            MonthlyRevenue.revenue_month <= buy_date,
+        )
+        .order_by(MonthlyRevenue.revenue_month.desc())
+        .limit(3)
+        .all()
+    )
+    revenue_rows = list(reversed(revenue_rows))
+    if not revenue_rows:
+        warnings.append("無買進日前月營收資料")
+
+    latest_close = prices[-1].close_price if prices else None
+
+    context = {
+        "stock_id": stock.stock_id,
+        "stock_name": stock.stock_name,
+        "industry_name": stock.industry_name,
+        "sub_industry": stock.sub_industry,
+        "buy_date": str(buy_date),
+        "latest_close": latest_close,
+        "prices_text": _format_price_rows(prices),
+        "flows_text": _format_inst_flows(flows),
+        "revenue_text": _format_monthly_revenue(revenue_rows),
+    }
+    return stock, context, warnings
+
+
+def _build_user_message(context: dict, warnings: list[str]) -> str:
+    news_note = (
+        "本次分析無 10 天內新聞資料可供佐證；"
+        "請依系統 prompt 規則 15 處理 —— 若你認為缺新聞導致無法建立有效交易判斷，"
+        "請明講並歸類為 (C)。"
+    )
+
+    warning_block = ""
+    if warnings:
+        warning_block = "\n[資料警告]\n- " + "\n- ".join(warnings)
+
+    return f"""[INPUT]
+{{"stock": "{context['stock_name']} ({context['stock_id']})", "buy_date": "{context['buy_date']}"}}
+
+[股票基本資訊]
+- 代號：{context['stock_id']}
+- 名稱：{context['stock_name']}
+- 產業：{context['industry_name']}
+- 細產業：{context['sub_industry'] or '—'}
+- 買進日收盤價：{_fmt(context['latest_close'])}
+
+[近 10 交易日 OHLC / 成交量 / 漲跌%]
+{context['prices_text']}
+
+[近 10 交易日三大法人淨買賣（張）]
+{context['flows_text']}
+
+[最近 3 個月月營收 + YoY/MoM]
+{context['revenue_text']}
+
+[新聞]
+{news_note}
+{warning_block}
+
+[輸出要求]
+請依系統 prompt 的分析邏輯（A/B/C 分類、正常 or 弱勢路徑）完成分析，
+並回傳單一 JSON object，欄位如下：
+
+{{
+  "stock": "股票名稱 (代號)",
+  "buy_date": "YYYY-MM-DD",
+  "classification": "A" | "B" | "C",
+  "classification_reason": "一句話",
+  "action": "BUY" | "HOLD" | "EXIT" | "SHORT-TERM-TRADE",
+  "core_logic": "一句話核心邏輯",
+  "risk_level": "LOW" | "MEDIUM" | "HIGH",
+  "rating": "STRONG_BUY" | "BUY" | "NEUTRAL" | "WATCH" | "RUN",
+  "summary": "約 100~150 字的段落摘要，綜合判斷原因",
+  "target_price_low": number 或 null,
+  "target_price_high": number 或 null,
+  "time_horizon_days": number 或 null,
+  "exit_price_low": number 或 null,
+  "exit_price_high": number 或 null,
+  "max_holding_days": number 或 null,
+  "report_markdown": "PART 2 完整中文分析報告（markdown 字串）"
+}}
+
+rating 對應規則（由你依分析強度自行判斷，不依死板 A/B/C 映射）：
+- STRONG_BUY 強烈推薦：A 類且多重條件同時成立
+- BUY 推薦：A 類但部分條件仍待驗證
+- NEUTRAL 中立：B 類
+- WATCH 再看看：B 類偏弱 / C 類但不必立即退出
+- RUN 快跑：C 類且應快速退出或停損
+
+若 rating = RUN，target_price_low/high 應為 null，改填 exit_price_low/high。
+若 rating = STRONG_BUY/BUY/NEUTRAL，exit_price_low/high 可為 null。
+
+嚴格規則：
+- 禁止 hindsight bias
+- report_markdown 必須是繁體中文、完整段落、可讀
+- classification 與 rating 邏輯需一致（C 不可對應 STRONG_BUY）
+"""
+
+
+def _call_openai(system_prompt: str, user_msg: str) -> Optional[dict]:
+    api_key = get_openai_api_key()
+    if not api_key:
+        logger.warning("OPENAI_API_KEY not configured; trade-quality analysis unavailable")
+        return None
+
+    model = get_openai_model()
+    client = OpenAI(api_key=api_key)
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_msg},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.3,
+            max_tokens=3000,
+        )
+        raw = response.choices[0].message.content or ""
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        logger.exception("Failed to parse OpenAI JSON response for trade-quality")
+        return None
+    except Exception:
+        logger.exception("OpenAI call failed for trade-quality")
+        return None
+
+
+def _normalize_response(
+    payload: dict,
+    stock: StockMaster,
+    buy_date: date,
+    warnings: list[str],
+    source: str,
+) -> TradeQualityResponse:
+    rating = str(payload.get("rating", "NEUTRAL")).upper()
+    if rating not in RATING_LABELS:
+        rating = "NEUTRAL"
+
+    return TradeQualityResponse(
+        stock_id=stock.stock_id,
+        stock_name=stock.stock_name,
+        buy_date=str(buy_date),
+        rating=rating,
+        rating_label=RATING_LABELS[rating],
+        classification=payload.get("classification"),
+        action=payload.get("action"),
+        summary=str(payload.get("summary", "")).strip() or "（AI 未提供摘要）",
+        core_logic=payload.get("core_logic"),
+        risk_level=payload.get("risk_level"),
+        target_price_low=_to_float(payload.get("target_price_low")),
+        target_price_high=_to_float(payload.get("target_price_high")),
+        time_horizon_days=_to_int(payload.get("time_horizon_days")),
+        exit_price_low=_to_float(payload.get("exit_price_low")),
+        exit_price_high=_to_float(payload.get("exit_price_high")),
+        max_holding_days=_to_int(payload.get("max_holding_days")),
+        report_markdown=str(payload.get("report_markdown", "")).strip()
+        or "（AI 未提供完整報告）",
+        warnings=warnings,
+        source=source,
+    )
+
+
+def _to_float(x: Any) -> Optional[float]:
+    if x is None or x == "":
+        return None
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return None
+
+
+def _to_int(x: Any) -> Optional[int]:
+    if x is None or x == "":
+        return None
+    try:
+        return int(x)
+    except (TypeError, ValueError):
+        return None
+
+
+# ── Endpoint ─────────────────────────────────────────────────────────────────
+
+
+@router.post("/analysis/trade-quality", response_model=TradeQualityResponse)
+def analyze_trade_quality(
+    req: TradeQualityRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Produce a buy-side analyst report for a given stock + buy_date.
+    Reconstructs observable market context up to buy_date (OHLC / institutional
+    flows / monthly revenue), then calls OpenAI with the prompt in docs/交易想法.md.
+    """
+    logger.info("POST /analysis/trade-quality stock=%s buy_date=%s", req.stock_id, req.buy_date)
+
+    resolved = _resolve_buy_date(db, req.buy_date)
+    if not resolved:
+        raise HTTPException(status_code=404, detail="資料庫無交易日資料")
+
+    stock, context, warnings = _collect_context(db, req.stock_id, resolved)
+
+    system_prompt = _load_system_prompt()
+    if not system_prompt:
+        raise HTTPException(status_code=500, detail="分析 prompt 檔案缺失")
+
+    user_msg = _build_user_message(context, warnings)
+    payload = _call_openai(system_prompt, user_msg)
+
+    if payload is None:
+        # Fallback: build a minimal "data insufficient" response
+        return TradeQualityResponse(
+            stock_id=stock.stock_id,
+            stock_name=stock.stock_name,
+            buy_date=str(resolved),
+            rating="WATCH",
+            rating_label=RATING_LABELS["WATCH"],
+            summary="AI 分析服務目前不可用（OpenAI 未設定或呼叫失敗），無法建立有效交易判斷。",
+            report_markdown="⚠️ 無法連線 AI 分析服務，請稍後再試或檢查 OpenAI 設定。",
+            warnings=warnings + ["OpenAI 服務不可用"],
+            source="unavailable",
+        )
+
+    return _normalize_response(payload, stock, resolved, warnings, source="openai")

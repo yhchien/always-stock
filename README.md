@@ -2,6 +2,10 @@
 
 台股產業別三大法人資金流向分析儀表板。
 
+首頁目前提供兩個 AI 輔助模組：
+- `Daily Brief`：依指定交易日產出盤前市場摘要
+- `Trade Quality Analysis`：輸入股票與買進日，還原當時可觀察資訊後給出 5 階交易質量評級
+
 ## 專案目的
 
 追蹤 TWSE 上市股票的三大法人（外資、投信、自營商）每日買賣超，
@@ -160,7 +164,10 @@ npm run dev
 | GET | `/api/stocks/{id}/brokers?category=day_trade` | L2：關鍵券商分點 |
 | GET | `/api/stocks/{id}/brokers/ranked?date=&days=` | L2：券商買進/賣出 Top10 |
 | GET | `/api/stocks/{id}/brokers/{broker_id}/history?start=&end=` | L2：券商逐日買賣超走勢 |
+| GET | `/api/stocks/search?q=...` | 股票 autocomplete 搜尋 |
 | GET | `/api/market/daily-brief` | 首頁 AI 盤前摘要 |
+| GET | `/api/market/latest-trade-date` | 取得 DB 最新交易日 |
+| POST | `/api/analysis/trade-quality` | 首頁 AI 交易質量分析 |
 | POST | `/api/backtest/run` | L3：回測執行 |
 | POST | `/api/backtest/interpret` | L3：策略文字解析 |
 | POST | `/api/backtest/advice` | L3：策略建議 |

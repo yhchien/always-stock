@@ -247,6 +247,10 @@ class DailyBriefResponse(BaseModel):
     source: str  # "openai" | "unavailable"
 
 
+class LatestTradeDateResponse(BaseModel):
+    trade_date: Optional[str]
+
+
 # ── Yahoo Finance helper ─────────────────────────────────────────────────────
 
 def _yf_price(symbol: str, days: int = 5, end_date: Optional[date] = None) -> list[dict]:
@@ -565,6 +569,14 @@ def _build_user_message(
 
 
 # ── Endpoint ─────────────────────────────────────────────────────────────────
+
+
+@router.get("/market/latest-trade-date", response_model=LatestTradeDateResponse)
+def get_latest_trade_date(db: Session = Depends(get_db)):
+    """Return the most recent trading date that has industry flow data in DB."""
+    latest = _get_latest_trade_date(db)
+    return LatestTradeDateResponse(trade_date=str(latest) if latest else None)
+
 
 @router.get("/market/daily-brief", response_model=DailyBriefResponse)
 def get_daily_brief(

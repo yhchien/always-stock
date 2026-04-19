@@ -639,3 +639,69 @@ export async function fetchDailyBrief(date: string, options?: FetchOptions): Pro
   if (!res.ok) throw new Error(await buildErrorMessage(res, "盤前摘要載入失敗"))
   return res.json()
 }
+
+// ── Trade quality analysis ───────────────────────────────────────────────
+
+export interface StockSearchItem {
+  stock_id: string
+  stock_name: string
+  industry_name: string
+}
+
+export async function searchStocks(q: string, options?: FetchOptions): Promise<StockSearchItem[]> {
+  const params = new URLSearchParams({ q, limit: "20" })
+  const res = await fetch(`${API_BASE}/api/stocks/search?${params}`, {
+    signal: options?.signal,
+  })
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "股票搜尋失敗"))
+  return res.json()
+}
+
+export async function fetchLatestTradeDate(options?: FetchOptions): Promise<string | null> {
+  const res = await fetch(`${API_BASE}/api/market/latest-trade-date`, {
+    signal: options?.signal,
+  })
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "最新交易日載入失敗"))
+  const data: { trade_date: string | null } = await res.json()
+  return data.trade_date
+}
+
+export type TradeQualityRating = "STRONG_BUY" | "BUY" | "NEUTRAL" | "WATCH" | "RUN"
+
+export interface TradeQualityResponse {
+  stock_id: string
+  stock_name: string
+  buy_date: string
+  rating: TradeQualityRating
+  rating_label: string
+  classification?: string | null
+  action?: string | null
+  summary: string
+  core_logic?: string | null
+  risk_level?: string | null
+  target_price_low?: number | null
+  target_price_high?: number | null
+  time_horizon_days?: number | null
+  exit_price_low?: number | null
+  exit_price_high?: number | null
+  max_holding_days?: number | null
+  report_markdown: string
+  warnings: string[]
+  source: "openai" | "unavailable"
+}
+
+export async function analyzeTradeQuality(
+  payload: { stock_id: string; buy_date?: string | null },
+  options?: FetchOptions,
+): Promise<TradeQualityResponse> {
+  const body: Record<string, unknown> = { stock_id: payload.stock_id }
+  if (payload.buy_date) body.buy_date = payload.buy_date
+  const res = await fetch(`${API_BASE}/api/analysis/trade-quality`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal: options?.signal,
+  })
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "交易質量分析失敗"))
+  return res.json()
+}
