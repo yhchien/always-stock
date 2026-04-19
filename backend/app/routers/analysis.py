@@ -46,7 +46,10 @@ RATING_LABELS = {
     "RUN": "快跑",
 }
 
-PROMPT_FILE = Path(__file__).resolve().parents[2].parent / "docs" / "交易想法.md"
+PROMPT_FILES = [
+    Path(__file__).resolve().parents[3] / "docs" / "交易想法.md",
+    Path(__file__).resolve().parents[1] / "prompts" / "trade_quality.md",
+]
 
 
 # ── Request / Response schemas ───────────────────────────────────────────────
@@ -83,10 +86,12 @@ class TradeQualityResponse(BaseModel):
 
 
 def _load_system_prompt() -> str:
-    if not PROMPT_FILE.exists():
-        logger.error("Prompt file missing: %s", PROMPT_FILE)
-        return ""
-    return PROMPT_FILE.read_text(encoding="utf-8")
+    for prompt_file in PROMPT_FILES:
+        if prompt_file.exists():
+            return prompt_file.read_text(encoding="utf-8")
+
+    logger.error("Prompt file missing. Tried: %s", ", ".join(str(path) for path in PROMPT_FILES))
+    return ""
 
 
 def _resolve_buy_date(db: Session, requested: Optional[date]) -> Optional[date]:

@@ -22,6 +22,7 @@ from app.models import (
     MonthlyRevenue,
     StockMaster,
 )
+from app.routers.analysis import _load_system_prompt
 
 
 @pytest.fixture
@@ -307,3 +308,9 @@ def test_trade_quality_returns_404_for_unknown_stock(api):
         )
 
     assert resp.status_code == 404
+
+
+def test_trade_quality_prompt_can_be_loaded():
+    prompt = _load_system_prompt()
+    assert "buy-side research analyst" in prompt
+    assert "時空隔離" in prompt
