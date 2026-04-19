@@ -11,7 +11,7 @@ const StockChart = dynamic(() => import("@/components/StockChart"), {
   loading: () => (
     <div className="flex flex-col gap-4 p-4">
       <Skeleton className="h-8 w-48" />
-      <Skeleton className="h-[calc(100dvh-240px)] min-h-[280px] w-full rounded-lg" />
+      <Skeleton className="h-[70vh] min-h-[500px] w-full rounded-lg" />
     </div>
   ),
 })
@@ -53,20 +53,16 @@ function BacktestContent({ stockId }: { stockId: string }) {
         <h1 className="text-sm font-semibold text-slate-200">回測程式</h1>
       </div>
 
-      {/* Two-pane content */}
-      <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-2">
-        {/* Left pane: K-line chart */}
-        <div className="min-h-0 overflow-y-auto border-b border-slate-800 bg-slate-950 lg:border-r lg:border-b-0">
+      {/* Single-column content: chart on top, backtest panel below */}
+      <div className="flex flex-1 flex-col bg-slate-950">
+        <div className="border-b border-slate-800">
           <StockChart
             stockId={stockId}
             defaultDate={date}
-            chartHeight="calc(100dvh - 240px)"
             dateRange={backtestRange}
           />
         </div>
-
-        {/* Right pane: Backtest panel */}
-        <div className="min-h-0 overflow-y-auto bg-slate-950">
+        <div className="flex-1">
           <BacktestPanel stockId={stockId} onDateRangeChange={handleDateRangeChange} />
         </div>
       </div>
