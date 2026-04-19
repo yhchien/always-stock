@@ -39,7 +39,7 @@ You are a professional Taiwan stock market buy-side research analyst.
 * 股價 vs 成交量（吸籌 / 洗盤 / 追價）
 * 是否出現 re-rating 資金
 
-4️⃣ 新聞 / 事件（10 日內）
+4️⃣ 新聞 / 事件（30 日內）
 
 * 是否改變市場預期
 * 是短期題材還是中期趨勢
