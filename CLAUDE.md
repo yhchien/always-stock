@@ -476,7 +476,8 @@
 ## Phase 2：交易質量 AI 分析（規劃中，2026-04-19 啟動）
 
 ### 需求背景
-- `docs/交易想法.md` 是使用者沉澱下來的買方分析師 prompt：輸入 `{stock, buy_date}`，輸出 A/B/C 分類 + JSON + 中文分析報告
+- `docs/trade_quality_prompt.md` 是使用者沉澱下來的買方分析師 prompt：輸入 `{stock, buy_date}`，輸出 A/B/C 分類 + JSON + 中文分析報告
+- 線上 backend 實際部署的 canonical prompt 應放在 `backend/app/prompts/trade_quality.md`，因為 Render Web Service `rootDir=backend`，不保證 repo 根目錄 `docs/` 會被帶進 production artifact
 - 核心規則：no hindsight bias、只用 buy_date 當日及以前的資訊、target price 必須自己推導、資料不足要明講「無法建立有效交易判斷」
 - 此 phase 將 prompt 接成首頁的互動功能
 
@@ -494,7 +495,7 @@
 ### 設計決策（2026-04-19）
 - **5 階由 prompt 直接輸出** `rating` 欄位（不在後端做 A/B/C → 5 階映射，避免 JSON 與 PART 2 不一致）
 - **第一版不接新聞資料**：prompt 裡註明「本次分析無 10 天內新聞」；依規則 15，缺新聞時分析師應趨向保守判斷（C/快跑或中立），這是刻意的行為 —— 日後接 Google News / 輿情 ETL 再補
-- **context 組裝**：後端會把 buy_date 前可觀察資料（近 10 交易日 OHLC、法人、最近一次月營收 YoY/MoM）塞進 user message，再把 `docs/交易想法.md` 作為 system prompt
+- **context 組裝**：後端會把 buy_date 前可觀察資料（近 10 交易日 OHLC、法人、最近一次月營收 YoY/MoM）塞進 user message，再把 `backend/app/prompts/trade_quality.md` 作為主要 system prompt；repo `docs/trade_quality_prompt.md` 保留給人讀與編輯
 
 ### API 設計
 - `POST /api/analysis/trade-quality`

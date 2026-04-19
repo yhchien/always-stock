@@ -3,8 +3,8 @@ Trade quality analysis endpoint.
 
 POST /api/analysis/trade-quality
   Given a stock_id + optional buy_date, reconstruct the observable market
-  context as of that date, then call OpenAI with the buy-side research
-  prompt defined in `docs/交易想法.md`.
+  context as of that date, then call OpenAI with the bundled buy-side research
+  prompt in `backend/app/prompts/trade_quality.md`.
 
 Output is a structured JSON with a 5-level rating plus a full markdown
 report in Traditional Chinese. No hindsight bias — only pre-buy-date data.
@@ -47,8 +47,8 @@ RATING_LABELS = {
 }
 
 PROMPT_FILES = [
-    Path(__file__).resolve().parents[3] / "docs" / "交易想法.md",
     Path(__file__).resolve().parents[1] / "prompts" / "trade_quality.md",
+    Path(__file__).resolve().parents[3] / "docs" / "trade_quality_prompt.md",
 ]
 
 
@@ -392,7 +392,8 @@ def analyze_trade_quality(
     """
     Produce a buy-side analyst report for a given stock + buy_date.
     Reconstructs observable market context up to buy_date (OHLC / institutional
-    flows / monthly revenue), then calls OpenAI with the prompt in docs/交易想法.md.
+    flows / monthly revenue), then calls OpenAI with the bundled prompt in
+    backend/app/prompts/trade_quality.md.
     """
     logger.info("POST /analysis/trade-quality stock=%s buy_date=%s", req.stock_id, req.buy_date)
 
