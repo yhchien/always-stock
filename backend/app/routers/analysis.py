@@ -67,6 +67,9 @@ class TradeQualityResponse(BaseModel):
     rating: str  # STRONG_BUY | BUY | NEUTRAL | WATCH | RUN
     rating_label: str
     classification: Optional[str] = None  # A | B | C
+    market_state: Optional[str] = None  # Hot | Cold
+    quadrant: Optional[str] = None  # AA | AB | BA | BB
+    expectation_gap: Optional[str] = None  # High | Medium | Low | Negative
     action: Optional[str] = None
     summary: str
     core_logic: Optional[str] = None
@@ -260,14 +263,17 @@ def _build_user_message(context: dict, warnings: list[str]) -> str:
 {warning_block}
 
 [輸出要求]
-請依系統 prompt 的分析邏輯（A/B/C 分類、正常 or 弱勢路徑）完成分析，
+請依系統 prompt 的分析邏輯（市場狀態 / 股票本質 / 四象限 / 預期差 / A/B/C 分類）完成分析，
 並回傳單一 JSON object，欄位如下：
 
 {{
   "stock": "股票名稱 (代號)",
   "buy_date": "YYYY-MM-DD",
+  "market_state": "Hot" | "Cold",
+  "quadrant": "AA" | "AB" | "BA" | "BB",
   "classification": "A" | "B" | "C",
   "classification_reason": "一句話",
+  "expectation_gap": "High" | "Medium" | "Low" | "Negative",
   "action": "BUY" | "HOLD" | "EXIT" | "SHORT-TERM-TRADE",
   "core_logic": "一句話核心邏輯",
   "risk_level": "LOW" | "MEDIUM" | "HIGH",
@@ -374,6 +380,9 @@ def _normalize_response(
         rating=rating,
         rating_label=RATING_LABELS[rating],
         classification=payload.get("classification"),
+        market_state=payload.get("market_state"),
+        quadrant=payload.get("quadrant"),
+        expectation_gap=payload.get("expectation_gap"),
         action=payload.get("action"),
         summary=str(payload.get("summary", "")).strip() or "（AI 未提供摘要）",
         core_logic=payload.get("core_logic"),

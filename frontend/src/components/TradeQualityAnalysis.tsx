@@ -309,6 +309,15 @@ export default function TradeQualityAnalysis() {
                 ) : null}
               </span>
             )}
+            {result.market_state && (
+              <span className="text-slate-400">市場：{result.market_state}</span>
+            )}
+            {result.quadrant && (
+              <span className="text-slate-400">象限：{result.quadrant}</span>
+            )}
+            {result.expectation_gap && (
+              <span className="text-slate-400">預期差：{result.expectation_gap}</span>
+            )}
             {result.classification && (
               <span className="text-slate-400">分類：{result.classification}</span>
             )}

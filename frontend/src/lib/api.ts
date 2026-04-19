@@ -675,6 +675,9 @@ export interface TradeQualityResponse {
   rating: TradeQualityRating
   rating_label: string
   classification?: string | null
+  market_state?: string | null
+  quadrant?: string | null
+  expectation_gap?: string | null
   action?: string | null
   summary: string
   core_logic?: string | null
