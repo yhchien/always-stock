@@ -272,14 +272,14 @@ def _build_user_message(context: dict, warnings: list[str]) -> str:
   "core_logic": "一句話核心邏輯",
   "risk_level": "LOW" | "MEDIUM" | "HIGH",
   "rating": "STRONG_BUY" | "BUY" | "NEUTRAL" | "WATCH" | "RUN",
-  "summary": "約 100~150 字的段落摘要，綜合判斷原因",
+  "summary": "約 60~100 字的段落摘要，綜合判斷原因",
   "target_price_low": number 或 null,
   "target_price_high": number 或 null,
   "time_horizon_days": number 或 null,
   "exit_price_low": number 或 null,
   "exit_price_high": number 或 null,
   "max_holding_days": number 或 null,
-  "report_markdown": "PART 2 完整中文分析報告（markdown 字串）"
+  "report_markdown": "精簡版中文分析報告（markdown 字串）"
 }}
 
 rating 對應規則（由你依分析強度自行判斷，不依死板 A/B/C 映射）：
@@ -295,6 +295,11 @@ rating 對應規則（由你依分析強度自行判斷，不依死板 A/B/C 映
 嚴格規則：
 - 禁止 hindsight bias
 - report_markdown 必須是繁體中文、完整段落、可讀
+- report_markdown 請精簡：
+  - 固定保留 5 個章節標題
+  - 每個章節 1 小段，2~4 句即可
+  - 總長盡量控制在 800~1200 個中文字內
+  - 不要重複 JSON 已經表達過的欄位
 - classification 與 rating 邏輯需一致（C 不可對應 STRONG_BUY）
 """
 
@@ -308,7 +313,7 @@ def _call_openai(system_prompt: str, user_msg: str) -> Optional[dict]:
     model = get_openai_model()
     client = OpenAI(api_key=api_key)
 
-    def request_json(messages: list[dict[str, str]], max_completion_tokens: int = 5000) -> str:
+    def request_json(messages: list[dict[str, str]], max_completion_tokens: int = 4000) -> str:
         response = client.chat.completions.create(
             model=model,
             messages=messages,
@@ -341,7 +346,7 @@ def _call_openai(system_prompt: str, user_msg: str) -> Optional[dict]:
                     ),
                 },
             ]
-            retry_raw = request_json(retry_messages, max_completion_tokens=6000)
+            retry_raw = request_json(retry_messages, max_completion_tokens=4500)
             return json.loads(retry_raw)
         except Exception:
             logger.exception("Retry also failed for trade-quality JSON parse")
