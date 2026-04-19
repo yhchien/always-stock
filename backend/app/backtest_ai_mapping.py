@@ -192,7 +192,7 @@ def map_conditions_with_ai(phrases: List[str]) -> Dict[str, Any]:
                 {"role": "user", "content": json.dumps(prompt_payload, ensure_ascii=False)},
             ],
             temperature=0.1,
-            max_tokens=1000,
+            max_completion_tokens=1000,
         )
         content = response.choices[0].message.content or ""
         parsed = json.loads(content)

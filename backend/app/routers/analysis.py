@@ -316,7 +316,7 @@ def _call_openai(system_prompt: str, user_msg: str) -> Optional[dict]:
             ],
             response_format={"type": "json_object"},
             temperature=0.3,
-            max_tokens=3000,
+            max_completion_tokens=3000,
         )
         raw = response.choices[0].message.content or ""
         return json.loads(raw)

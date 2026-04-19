@@ -134,7 +134,7 @@ def analyze_stock(stock_id: str) -> str:
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": f"請分析以下股票的近期籌碼動向：\n\n{context}"},
             ],
-            max_tokens=500,
+            max_completion_tokens=500,
             temperature=0.7,
         )
 

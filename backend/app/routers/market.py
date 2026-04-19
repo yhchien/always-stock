@@ -642,7 +642,7 @@ def get_daily_brief(
                     {"role": "system", "content": DAILY_BRIEF_SYSTEM_PROMPT},
                     {"role": "user", "content": user_msg},
                 ],
-                max_tokens=1200,
+                max_completion_tokens=1200,
                 temperature=0.4,
             )
             content = response.choices[0].message.content.strip()

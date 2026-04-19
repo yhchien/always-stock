@@ -121,7 +121,7 @@ def generate_backtest_advice(payload: Dict[str, Any]) -> Dict[str, Any]:
                 {"role": "user", "content": json.dumps(prompt_payload, ensure_ascii=False)},
             ],
             temperature=0.4,
-            max_tokens=700,
+            max_completion_tokens=700,
         )
         content = response.choices[0].message.content or ""
         parsed = json.loads(content)
