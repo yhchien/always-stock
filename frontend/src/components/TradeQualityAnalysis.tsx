@@ -36,6 +36,7 @@ export default function TradeQualityAnalysis() {
   const [suggestions, setSuggestions] = useState<StockSearchItem[]>([])
   const [showSuggest, setShowSuggest] = useState(false)
 
+  const [useCustomDate, setUseCustomDate] = useState(false)
   const [buyDate, setBuyDate] = useState("")
   const [latestDate, setLatestDate] = useState<string | null>(null)
 
@@ -98,30 +99,62 @@ export default function TradeQualityAnalysis() {
   const handleQueryChange = (value: string) => {
     setQuery(value)
     setSelected(null)
+    setResult(null)
     setError(null)
   }
 
   const handleAnalyze = useCallback(async () => {
-    if (!selected) {
-      setError("請先選擇股票")
+    const keyword = query.trim()
+    let resolved = selected
+
+    if (!resolved && keyword) {
+      const exact = suggestions.find((item) =>
+        item.stock_id === keyword ||
+        item.stock_name === keyword ||
+        `${item.stock_id} ${item.stock_name}` === keyword
+      )
+      if (exact) {
+        resolved = exact
+      }
+    }
+
+    if (!resolved && /^\d{4,6}$/.test(keyword)) {
+      try {
+        const items = await searchStocks(keyword)
+        const exact = items.find((item) => item.stock_id === keyword)
+        if (exact) {
+          resolved = exact
+          setSuggestions(items)
+        }
+      } catch {
+        // Keep original UX and let the common error path handle execution issues later.
+      }
+    }
+
+    if (!resolved) {
+      setError("請輸入或選擇正確股票")
       return
     }
+
+    setSelected(resolved)
+    setQuery(`${resolved.stock_id} ${resolved.stock_name}`)
+    setShowSuggest(false)
     setLoading(true)
     setError(null)
     setResult(null)
     setShowDetail(false)
     try {
       const res = await analyzeTradeQuality({
-        stock_id: selected.stock_id,
-        buy_date: buyDate || null,
+        stock_id: resolved.stock_id,
+        buy_date: useCustomDate ? (buyDate || null) : null,
       })
       setResult(res)
     } catch (e) {
-      setError(toDisplayError(e, "分析失敗"))
+      setError(toDisplayError(e, "執行失敗"))
     } finally {
       setLoading(false)
     }
-  }, [selected, buyDate])
+  }, [selected, query, suggestions, useCustomDate, buyDate])
 
   const ratingStyle = result ? RATING_STYLE[result.rating] : null
   const targetRange = result
@@ -137,13 +170,13 @@ export default function TradeQualityAnalysis() {
       <div className="px-4 py-3 border-b border-slate-700/40">
         <span className="text-sm font-semibold text-slate-100">交易質量分析</span>
         <span className="ml-2 text-xs text-slate-400">
-          輸入股票與買進日期，AI 會還原當天的市場情境並給出評級
+          輸入股票後直接執行，系統會還原當天市場情境並給出評級
         </span>
       </div>
 
       {/* Inputs */}
       <div className="p-4 flex flex-col gap-3" ref={containerRef}>
-        <div className="grid grid-cols-1 sm:grid-cols-[1fr_180px_auto] gap-2">
+        <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2">
           {/* Stock autocomplete */}
           <div className="relative">
             <input
@@ -174,31 +207,48 @@ export default function TradeQualityAnalysis() {
             )}
           </div>
 
-          {/* Buy date */}
-          <input
-            type="date"
-            value={buyDate}
-            onChange={(e) => setBuyDate(e.target.value)}
-            max={latestDate ?? undefined}
-            placeholder={latestDate ?? ""}
-            className="rounded-md border border-slate-600 bg-slate-900/60 px-3 py-2 text-sm text-slate-100 focus:border-slate-400 focus:outline-none"
-          />
-
           {/* Submit */}
           <button
             type="button"
             onClick={handleAnalyze}
-            disabled={loading || !selected}
+            disabled={loading || !query.trim()}
             className="rounded-md bg-slate-700 px-4 py-2 text-sm text-slate-100 hover:bg-slate-600 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {loading ? "分析中…" : "AI 分析"}
+            {loading ? "執行中…" : "執行"}
           </button>
         </div>
 
-        <p className="text-xs text-slate-500">
-          未填買進日期時，預設使用 DB 最近交易日
-          {latestDate ? `（${latestDate}）` : ""}。
-        </p>
+        <div className="flex flex-col gap-2 rounded-md border border-slate-700/50 bg-slate-900/30 px-3 py-2">
+          <label className="flex items-center gap-2 text-xs text-slate-300">
+            <input
+              type="checkbox"
+              checked={useCustomDate}
+              onChange={(e) => {
+                setUseCustomDate(e.target.checked)
+                if (!e.target.checked) {
+                  setBuyDate("")
+                }
+              }}
+              className="h-4 w-4 rounded border-slate-500 bg-slate-900 text-slate-200"
+            />
+            自訂買進日期
+          </label>
+
+          {useCustomDate ? (
+            <input
+              type="date"
+              value={buyDate}
+              onChange={(e) => setBuyDate(e.target.value)}
+              max={latestDate ?? undefined}
+              className="rounded-md border border-slate-600 bg-slate-900/60 px-3 py-2 text-sm text-slate-100 focus:border-slate-400 focus:outline-none"
+            />
+          ) : (
+            <p className="text-xs text-slate-500">
+              未指定日期時，預設使用最近可用交易日
+              {latestDate ? `（${latestDate}）` : ""}。
+            </p>
+          )}
+        </div>
       </div>
 
       {/* Body */}
@@ -206,7 +256,7 @@ export default function TradeQualityAnalysis() {
         <div className="border-t border-slate-700/40 p-4 flex flex-col gap-2">
           <div className="flex items-center gap-2">
             <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-slate-500 border-t-slate-200" />
-            <span className="text-xs text-slate-400">AI 正在還原當天市場情境…</span>
+            <span className="text-xs text-slate-400">系統正在還原當天市場情境…</span>
           </div>
           <Skeleton className="h-5 w-40" />
           <Skeleton className="h-4 w-full" />
@@ -300,7 +350,7 @@ export default function TradeQualityAnalysis() {
       {!loading && !error && !result && (
         <div className="border-t border-slate-700/40 px-4 py-3">
           <p className="text-xs text-slate-500">
-            選擇股票後點擊「AI 分析」以產生交易質量評級與分析報告。
+            輸入股票後點擊「執行」以產生交易質量評級與分析報告。
           </p>
         </div>
       )}

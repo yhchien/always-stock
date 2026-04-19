@@ -99,6 +99,7 @@ def search_stocks(
     if not keyword:
         return []
 
+    is_numeric_query = keyword.isdigit()
     like = f"%{keyword}%"
     try:
         rows: List[StockMaster] = _run_with_lock_retry(
@@ -106,7 +107,9 @@ def search_stocks(
             lambda: (
                 db.query(StockMaster)
                 .filter(
-                    or_(
+                    StockMaster.stock_id.like(f"{keyword}%")
+                    if is_numeric_query
+                    else or_(
                         StockMaster.stock_id.like(f"{keyword}%"),
                         StockMaster.stock_name.like(like),
                     )
