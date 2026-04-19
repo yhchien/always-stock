@@ -74,6 +74,10 @@ export interface BacktestTemplate {
   id: string
   name: string
   description: string
+  entry_text?: string
+  exit_text?: string
+  stop_loss_pct?: number | null
+  take_profit_pct?: number | null
   strategy_text: string
 }
 
@@ -81,10 +85,18 @@ export interface BacktestCapabilityItem {
   id: string
   category?: string
   label: string
+  aliases?: string[]
   examples: string[]
 }
 
+export interface BacktestCapabilityGroup {
+  id: string
+  label: string
+  categories: string[]
+}
+
 export interface BacktestCapabilityCatalog {
+  groups?: BacktestCapabilityGroup[]
   indicators: BacktestCapabilityItem[]
   risk_controls: BacktestCapabilityItem[]
   notes: string[]
@@ -95,7 +107,11 @@ export interface BacktestRunRequest {
   start_date: string
   end_date: string
   initial_capital: number
-  strategy_text: string
+  entry_text?: string
+  exit_text?: string
+  stop_loss_pct?: number | null
+  take_profit_pct?: number | null
+  strategy_text?: string
 }
 
 export interface BacktestInterpretResponse {

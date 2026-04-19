@@ -5,9 +5,7 @@ import dynamic from "next/dynamic"
 import Link from "next/link"
 import { useSearchParams } from "next/navigation"
 import { Skeleton } from "@/components/ui/skeleton"
-import type { BrokerTradeItem } from "@/lib/api"
 
-const BROKER_TOGGLE_STORAGE_KEY = "always-stock:show-broker-panel"
 const FINANCIALS_TOGGLE_STORAGE_KEY = "always-stock:show-financials-panel"
 
 // Lazy load ECharts-heavy components — excluded from initial bundle
@@ -19,11 +17,6 @@ const StockChart = dynamic(() => import("@/components/StockChart"), {
       <Skeleton className="h-[70vh] min-h-[500px] w-full rounded-lg" />
     </div>
   ),
-})
-
-const BrokerPanel = dynamic(() => import("@/components/BrokerPanel"), {
-  ssr: false,
-  loading: () => <Skeleton className="h-full min-h-[360px] w-full rounded-lg" />,
 })
 
 const FinancialsPanel = dynamic(() => import("@/components/FinancialsPanel"), {
@@ -52,7 +45,7 @@ interface SidebarItem {
 const SIDEBAR_ITEMS: SidebarItem[] = [
   { key: "backtest", label: "回測", isLink: true },
   { key: "financials", label: "基本面" },
-  { key: "broker", label: "籌碼面" },
+  // 關鍵券商（籌碼面）暫時隱藏：使用者希望優先聚焦策略回測與主動推薦。
 ]
 
 // ── Vertical Sidebar ───────────────────────────────────────────────────────
@@ -130,39 +123,25 @@ function StockContent({ stockId }: { stockId: string }) {
     [backtestStart, backtestEnd],
   )
 
-  const [showBrokerPanel, setShowBrokerPanel] = useState(true)
   const [showFinancialsPanel, setShowFinancialsPanel] = useState(true)
-  const [selectedBroker, setSelectedBroker] = useState<BrokerTradeItem | null>(null)
   const [chartDays, setChartDays] = useState(90)
 
-  // 讀取 localStorage 必須在 useEffect（mount 後）
   useEffect(() => {
-    setShowBrokerPanel(readStoredToggle(BROKER_TOGGLE_STORAGE_KEY, true))
     setShowFinancialsPanel(readStoredToggle(FINANCIALS_TOGGLE_STORAGE_KEY, true))
   }, [])
-
-  useEffect(() => {
-    window.localStorage.setItem(BROKER_TOGGLE_STORAGE_KEY, String(showBrokerPanel))
-  }, [showBrokerPanel])
 
   useEffect(() => {
     window.localStorage.setItem(FINANCIALS_TOGGLE_STORAGE_KEY, String(showFinancialsPanel))
   }, [showFinancialsPanel])
 
-  // Clear selected broker when date changes
-  useEffect(() => {
-    setSelectedBroker(null)
-  }, [date, stockId])
-
   const toggles: Record<PanelKey, boolean> = {
     backtest: false,
     financials: showFinancialsPanel,
-    broker: showBrokerPanel,
+    broker: false,
   }
 
   const handleToggle = (key: PanelKey) => {
     if (key === "financials") setShowFinancialsPanel((v) => !v)
-    if (key === "broker") setShowBrokerPanel((v) => !v)
   }
 
   return (
@@ -182,24 +161,12 @@ function StockContent({ stockId }: { stockId: string }) {
             stockId={stockId}
             defaultDate={date}
             onDaysChange={setChartDays}
-            selectedBroker={selectedBroker}
+            selectedBroker={null}
             dateRange={externalDateRange}
           />
 
           {showFinancialsPanel && (
             <FinancialsPanel stockId={stockId} chartDays={chartDays} />
-          )}
-
-          {showBrokerPanel && (
-            <div className="min-h-[360px]">
-              <BrokerPanel
-                stockId={stockId}
-                date={date}
-                days={chartDays}
-                onSelectBroker={setSelectedBroker}
-                selectedBrokerId={selectedBroker?.broker_id ?? null}
-              />
-            </div>
           )}
         </div>
       </main>

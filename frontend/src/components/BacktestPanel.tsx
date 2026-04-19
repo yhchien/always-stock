@@ -57,10 +57,14 @@ export default function BacktestPanel({ stockId, onDateRangeChange }: Props) {
     onDateRangeChange?.(startDate, endDate)
   }, [startDate, endDate, onDateRangeChange])
   const [initialCapital, setInitialCapital] = useState("1000000")
-  const [strategyText, setStrategyText] = useState("")
+  const [entryText, setEntryText] = useState("")
+  const [exitText, setExitText] = useState("")
+  const [stopLossText, setStopLossText] = useState("")
+  const [takeProfitText, setTakeProfitText] = useState("")
   const [templates, setTemplates] = useState<BacktestTemplate[]>([])
   const [capabilities, setCapabilities] = useState<BacktestCapabilityCatalog | null>(null)
   const [selectedTemplateId, setSelectedTemplateId] = useState("")
+  const [showCatalog, setShowCatalog] = useState(false)
   const [interpretation, setInterpretation] = useState<BacktestInterpretResponse | null>(null)
   const [result, setResult] = useState<BacktestRunResponse | null>(null)
   const [advice, setAdvice] = useState<BacktestAdviceResponse | null>(null)
@@ -81,8 +85,12 @@ export default function BacktestPanel({ stockId, onDateRangeChange }: Props) {
         setTemplates(nextTemplates)
         setCapabilities(nextCapabilities)
         if (nextTemplates[0]) {
-          setSelectedTemplateId(nextTemplates[0].id)
-          setStrategyText(nextTemplates[0].strategy_text)
+          const first = nextTemplates[0]
+          setSelectedTemplateId(first.id)
+          setEntryText(first.entry_text ?? "")
+          setExitText(first.exit_text ?? "")
+          setStopLossText(first.stop_loss_pct != null ? String(first.stop_loss_pct) : "")
+          setTakeProfitText(first.take_profit_pct != null ? String(first.take_profit_pct) : "")
         }
       } catch (fetchError) {
         setError(toDisplayError(fetchError, "讀取策略模板失敗"))
@@ -119,6 +127,14 @@ export default function BacktestPanel({ stockId, onDateRangeChange }: Props) {
     return item ? `${item.label}${paramText ? ` (${paramText})` : ""}` : `${rule.indicator ?? "unknown"}${paramText ? ` (${paramText})` : ""}`
   }
 
+  const parsePctInput = (raw: string): number | null => {
+    const cleaned = raw.replace(/%/g, "").trim()
+    if (!cleaned) return null
+    const parsed = Number(cleaned)
+    if (!Number.isFinite(parsed) || parsed <= 0) return null
+    return parsed
+  }
+
   const handleRun = async () => {
     setError(null)
     setAdviceError(null)
@@ -126,8 +142,12 @@ export default function BacktestPanel({ stockId, onDateRangeChange }: Props) {
     setResult(null)
     setInterpretation(null)
 
-    if (!strategyText.trim()) {
-      setError("策略文字不能空白")
+    if (!entryText.trim()) {
+      setError("買進條件不能空白")
+      return
+    }
+    if (!exitText.trim()) {
+      setError("賣出條件不能空白")
       return
     }
     if (startDate > endDate) {
@@ -135,15 +155,23 @@ export default function BacktestPanel({ stockId, onDateRangeChange }: Props) {
       return
     }
 
+    const stopLossPct = parsePctInput(stopLossText)
+    const takeProfitPct = parsePctInput(takeProfitText)
+
+    const payload = {
+      stock_id: stockId,
+      start_date: startDate,
+      end_date: endDate,
+      initial_capital: Number(initialCapital),
+      entry_text: entryText,
+      exit_text: exitText,
+      stop_loss_pct: stopLossPct,
+      take_profit_pct: takeProfitPct,
+    }
+
     try {
       setInterpreting(true)
-      const interpreted = await interpretBacktest({
-        stock_id: stockId,
-        start_date: startDate,
-        end_date: endDate,
-        initial_capital: Number(initialCapital),
-        strategy_text: strategyText,
-      })
+      const interpreted = await interpretBacktest(payload)
       setInterpretation(interpreted)
       setInterpreting(false)
 
@@ -153,20 +181,14 @@ export default function BacktestPanel({ stockId, onDateRangeChange }: Props) {
       }
 
       setRunning(true)
-      const backtestResult = await runBacktest({
-        stock_id: stockId,
-        start_date: startDate,
-        end_date: endDate,
-        initial_capital: Number(initialCapital),
-        strategy_text: strategyText,
-      })
+      const backtestResult = await runBacktest(payload)
       setResult(backtestResult)
 
       setLoadingAdvice(true)
       try {
         const nextAdvice = await fetchBacktestAdvice({
           stock_id: stockId,
-          strategy_text: strategyText,
+          strategy_text: backtestResult.normalized_text,
           normalized_text: backtestResult.normalized_text,
           metrics: backtestResult.metrics,
           trades: backtestResult.trades,
@@ -205,7 +227,12 @@ export default function BacktestPanel({ stockId, onDateRangeChange }: Props) {
             onChange={(e) => {
               const template = templates.find((item) => item.id === e.target.value)
               setSelectedTemplateId(e.target.value)
-              if (template) setStrategyText(template.strategy_text)
+              if (template) {
+                setEntryText(template.entry_text ?? "")
+                setExitText(template.exit_text ?? "")
+                setStopLossText(template.stop_loss_pct != null ? String(template.stop_loss_pct) : "")
+                setTakeProfitText(template.take_profit_pct != null ? String(template.take_profit_pct) : "")
+              }
             }}
             disabled={loadingTemplates}
             className="rounded-md border border-slate-700 bg-slate-800/50 px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-1 focus:ring-slate-500"
@@ -257,24 +284,84 @@ export default function BacktestPanel({ stockId, onDateRangeChange }: Props) {
           </div>
         </div>
 
-        <div className="flex flex-col gap-1">
-          <label htmlFor="backtest-strategy-text" className="text-xs text-slate-500">策略文字</label>
-          <textarea
-            id="backtest-strategy-text"
-            value={strategyText}
-            onChange={(e) => setStrategyText(e.target.value)}
-            rows={4}
-            className="rounded-md border border-slate-700 bg-slate-800/50 px-3 py-2 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-slate-500"
-          />
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+          <div className="flex flex-col gap-1">
+            <label htmlFor="backtest-entry-text" className="text-xs text-slate-500">
+              買進條件（可自由描述，例如：黃金交叉、外資連買 3 天、出現紅三兵）
+            </label>
+            <textarea
+              id="backtest-entry-text"
+              value={entryText}
+              onChange={(e) => setEntryText(e.target.value)}
+              rows={4}
+              placeholder="任意描述買進條件，AI 會自動轉換為可執行規則"
+              className="rounded-md border border-slate-700 bg-slate-800/50 px-3 py-2 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-slate-500"
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <label htmlFor="backtest-exit-text" className="text-xs text-slate-500">
+              賣出條件（可自由描述，例如：跌破月線、三大法人轉賣、出現頭肩頂）
+            </label>
+            <textarea
+              id="backtest-exit-text"
+              value={exitText}
+              onChange={(e) => setExitText(e.target.value)}
+              rows={4}
+              placeholder="任意描述賣出條件，AI 會自動轉換為可執行規則"
+              className="rounded-md border border-slate-700 bg-slate-800/50 px-3 py-2 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-slate-500"
+            />
+          </div>
         </div>
 
-        <button
-          onClick={handleRun}
-          disabled={running || interpreting}
-          className="rounded-md bg-slate-700 px-4 py-1.5 text-sm text-slate-100 transition-colors hover:bg-slate-600 disabled:opacity-50"
-        >
-          {interpreting ? "解析策略中..." : running ? "計算中..." : "執行回測"}
-        </button>
+        <div className="grid grid-cols-2 gap-3">
+          <div className="flex flex-col gap-1">
+            <label htmlFor="backtest-stop-loss" className="text-xs text-slate-500">停損 %（留白表示不設）</label>
+            <input
+              id="backtest-stop-loss"
+              type="number"
+              min={0}
+              step="0.1"
+              value={stopLossText}
+              onChange={(e) => setStopLossText(e.target.value)}
+              placeholder="例：8"
+              className="rounded-md border border-slate-700 bg-slate-800/50 px-2 py-1.5 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-slate-500"
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <label htmlFor="backtest-take-profit" className="text-xs text-slate-500">停利 %（留白表示不設）</label>
+            <input
+              id="backtest-take-profit"
+              type="number"
+              min={0}
+              step="0.1"
+              value={takeProfitText}
+              onChange={(e) => setTakeProfitText(e.target.value)}
+              placeholder="例：20"
+              className="rounded-md border border-slate-700 bg-slate-800/50 px-2 py-1.5 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-slate-500"
+            />
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <button
+            onClick={handleRun}
+            disabled={running || interpreting}
+            className="rounded-md bg-slate-700 px-4 py-1.5 text-sm text-slate-100 transition-colors hover:bg-slate-600 disabled:opacity-50"
+          >
+            {interpreting ? "解析策略中..." : running ? "計算中..." : "執行回測"}
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowCatalog((prev) => !prev)}
+            className="text-xs text-slate-400 underline-offset-2 hover:text-slate-200 hover:underline"
+          >
+            {showCatalog ? "隱藏可用條件列表" : "查看可用條件列表"}
+          </button>
+        </div>
+
+        {showCatalog && capabilities && (
+          <CatalogGroups catalog={capabilities} />
+        )}
       </div>
 
       {error && (
@@ -370,32 +457,6 @@ export default function BacktestPanel({ stockId, onDateRangeChange }: Props) {
                 {interpretation.warnings.map((warning) => (
                   <p key={warning}>- {warning}</p>
                 ))}
-              </div>
-            </div>
-          )}
-          {capabilities && (
-            <div className="rounded border border-slate-700 bg-slate-900/40 px-3 py-3">
-              <div className="text-xs font-medium text-slate-200">目前可判讀的條件 catalog</div>
-              <div className="mt-2 grid gap-3 lg:grid-cols-2">
-                <div>
-                  <div className="text-[10px] uppercase tracking-[0.18em] text-slate-500">Indicators</div>
-                  <div className="mt-2 space-y-1 text-xs text-slate-300">
-                    {capabilities.indicators.slice(0, 8).map((item) => (
-                      <p key={item.id}>- {item.label}</p>
-                    ))}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-[10px] uppercase tracking-[0.18em] text-slate-500">Risk Controls</div>
-                  <div className="mt-2 space-y-1 text-xs text-slate-300">
-                    {capabilities.risk_controls.map((item) => (
-                      <p key={item.id}>- {item.label}</p>
-                    ))}
-                    {capabilities.notes.slice(0, 2).map((note) => (
-                      <p key={note} className="text-slate-500">- {note}</p>
-                    ))}
-                  </div>
-                </div>
               </div>
             </div>
           )}
@@ -640,6 +701,63 @@ export default function BacktestPanel({ stockId, onDateRangeChange }: Props) {
       {!result && (
         <div className="flex flex-1 items-center justify-center rounded-md border border-dashed border-slate-700">
           <p className="text-xs text-slate-600">選模板或輸入策略後執行回測，先看夏普、勝率、回撤與交易清單。</p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function CatalogGroups({ catalog }: { catalog: BacktestCapabilityCatalog }) {
+  const groupDefs = catalog.groups && catalog.groups.length > 0
+    ? catalog.groups
+    : [
+        { id: "indicators", label: "指標", categories: [] },
+        { id: "risk", label: "風險控制", categories: ["risk"] },
+      ]
+
+  const itemsByCategory = useMemo(() => {
+    const map = new Map<string, typeof catalog.indicators>()
+    for (const item of catalog.indicators) {
+      const key = item.category ?? "other"
+      const arr = map.get(key) ?? []
+      arr.push(item)
+      map.set(key, arr)
+    }
+    for (const item of catalog.risk_controls) {
+      const key = item.category ?? "risk"
+      const arr = map.get(key) ?? []
+      arr.push(item)
+      map.set(key, arr)
+    }
+    return map
+  }, [catalog])
+
+  return (
+    <div className="rounded-md border border-slate-700 bg-slate-900/40 px-3 py-3">
+      <div className="mb-2 text-xs font-medium text-slate-200">
+        目前可判讀的條件（依類別分組；未列出的 AI 會嘗試映射到這個清單）
+      </div>
+      <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+        {groupDefs.map((group) => {
+          const items = group.categories.flatMap((cat) => itemsByCategory.get(cat) ?? [])
+          if (items.length === 0) return null
+          return (
+            <div key={group.id} className="rounded bg-slate-900/60 px-3 py-3">
+              <div className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{group.label}</div>
+              <div className="mt-2 space-y-1 text-xs text-slate-300">
+                {items.map((item) => (
+                  <p key={item.id}>- {item.label}</p>
+                ))}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+      {catalog.notes.length > 0 && (
+        <div className="mt-3 space-y-1 text-[11px] text-slate-500">
+          {catalog.notes.map((note) => (
+            <p key={note}>· {note}</p>
+          ))}
         </div>
       )}
     </div>

@@ -505,6 +505,64 @@ def test_interpret_supports_consecutive_sell(api):
     assert "foreign_consecutive_sell" in exit_ids
 
 
+def test_interpret_accepts_entry_exit_fields(api):
+    """新流程：entry_text / exit_text / stop_loss_pct / take_profit_pct 分離輸入。"""
+    client, db = api
+    seed_stock(db, stock_id="2330", name="台積電", industry="半導體業")
+    db.commit()
+
+    response = client.post(
+        "/api/backtest/interpret",
+        json={
+            "stock_id": "2330",
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-31",
+            "initial_capital": 1000000,
+            "entry_text": "收盤價站上20日均線且外資連買3天",
+            "exit_text": "收盤價跌破20日均線",
+            "stop_loss_pct": 8.0,
+            "take_profit_pct": 20.0,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["supported"] is True
+    entry_ids = [r["indicator"] for r in payload["strategy"]["entry_rules"]]
+    assert "close_above_ma" in entry_ids
+    assert "foreign_consecutive_buy" in entry_ids
+    exit_ids = [r["indicator"] for r in payload["strategy"]["exit_rules"]]
+    assert "close_below_ma" in exit_ids
+    assert payload["strategy"]["stop_loss_pct"] == 8.0
+    assert payload["strategy"]["take_profit_pct"] == 20.0
+
+
+def test_interpret_accepts_candlestick_pattern_keyword(api):
+    """K 棒型態關鍵字可直接被 rule-based parser 識別。"""
+    client, db = api
+    seed_stock(db, stock_id="2330", name="台積電", industry="半導體業")
+    db.commit()
+
+    response = client.post(
+        "/api/backtest/interpret",
+        json={
+            "stock_id": "2330",
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-31",
+            "initial_capital": 1000000,
+            "entry_text": "出現紅三兵",
+            "exit_text": "出現三隻烏鴉",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    entry_ids = [r["indicator"] for r in payload["strategy"]["entry_rules"]]
+    exit_ids = [r["indicator"] for r in payload["strategy"]["exit_rules"]]
+    assert "candle_three_white_soldiers" in entry_ids
+    assert "candle_three_black_crows" in exit_ids
+
+
 def test_run_backtest_chip_ma_resonance_template(api):
     """均線 + 籌碼共振型模板（外資買超 + 投信買超）可正常執行。"""
     client, db = api

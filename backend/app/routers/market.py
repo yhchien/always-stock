@@ -9,7 +9,7 @@ GET /api/market/daily-brief?date=YYYY-MM-DD
 """
 import logging
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional
 
 import requests
@@ -20,7 +20,13 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import IndustryDailyFlow, InstStockFlow
+from app.industry_flow_service import (
+    get_latest_industry_trade_date,
+    get_recent_industry_trade_dates,
+    load_industry_flow_rows,
+    load_industry_flow_rows_for_dates,
+)
+from app.models import InstStockFlow, StockMaster
 from app.settings import get_openai_api_key, get_openai_model
 
 logger = logging.getLogger(__name__)
@@ -243,14 +249,18 @@ class DailyBriefResponse(BaseModel):
 
 # ── Yahoo Finance helper ─────────────────────────────────────────────────────
 
-def _yf_price(symbol: str, days: int = 5) -> list[dict]:
+def _yf_price(symbol: str, days: int = 5, end_date: Optional[date] = None) -> list[dict]:
     """Fetch recent daily OHLCV from Yahoo Finance v8 API. Returns [] on failure."""
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
-    params = {
-        "range": f"{days}d",
-        "interval": "1d",
-        "includePrePost": "false",
-    }
+    params = {"interval": "1d", "includePrePost": "false"}
+    if end_date is not None:
+        lookback_days = max(days * 3, 10)
+        start_date = end_date - timedelta(days=lookback_days)
+        end_exclusive = end_date + timedelta(days=1)
+        params["period1"] = int(datetime.combine(start_date, time.min, tzinfo=timezone.utc).timestamp())
+        params["period2"] = int(datetime.combine(end_exclusive, time.min, tzinfo=timezone.utc).timestamp())
+    else:
+        params["range"] = f"{days}d"
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
         resp = requests.get(url, params=params, headers=headers, timeout=6)
@@ -263,9 +273,10 @@ def _yf_price(symbol: str, days: int = 5) -> list[dict]:
         for ts, c in zip(timestamps, closes):
             if c is None:
                 continue
-            from datetime import datetime, timezone
             dt = datetime.fromtimestamp(ts, tz=timezone.utc).date()
             rows.append({"date": str(dt), "close": c})
+        if end_date is not None:
+            rows = [row for row in rows if row["date"] <= str(end_date)]
         return rows[-days:]
     except Exception as exc:
         logger.warning("Yahoo Finance fetch failed for %s: %s", symbol, exc)
@@ -305,7 +316,7 @@ def _format_vix(rows: list[dict], label: str) -> str:
 # ── DB helpers ───────────────────────────────────────────────────────────────
 
 def _get_latest_trade_date(db: Session) -> Optional[date]:
-    return db.query(func.max(IndustryDailyFlow.trade_date)).scalar()
+    return get_latest_industry_trade_date(db)
 
 
 def _resolve_trade_date(db: Session, requested: Optional[date]) -> Optional[date]:
@@ -314,11 +325,7 @@ def _resolve_trade_date(db: Session, requested: Optional[date]) -> Optional[date
     This ensures we always land on a date that actually has data, regardless of
     weekends or market holidays.
     """
-    ceiling = requested  # may be None → no filter
-    q = db.query(func.max(IndustryDailyFlow.trade_date))
-    if ceiling is not None:
-        q = q.filter(IndustryDailyFlow.trade_date <= ceiling)
-    return q.scalar()
+    return get_latest_industry_trade_date(db, requested)
 
 
 def _get_inst_totals(db: Session, trade_date: date) -> dict:
@@ -335,48 +342,30 @@ def _get_inst_totals(db: Session, trade_date: date) -> dict:
 
 def _top_industries(db: Session, trade_date: date, n: int = 5) -> list[dict]:
     """Top N industries by total_net_amount on the given date."""
-    rows = (
-        db.query(IndustryDailyFlow)
-        .filter(IndustryDailyFlow.trade_date == trade_date)
-        .order_by(IndustryDailyFlow.total_net_amount.desc())
-        .limit(n)
-        .all()
-    )
-    return [{"industry_name": r.industry_name, "total_net_amount": r.total_net_amount} for r in rows]
+    rows = load_industry_flow_rows(db, trade_date)
+    return [
+        {"industry_name": row.industry_name, "total_net_amount": row.total_net_amount}
+        for row in rows[:n]
+    ]
 
 
 def _top_industries_3d(db: Session, end_date: date, n: int = 5) -> list[dict]:
     """Top N industries by cumulative total_net_amount over last 3 trading days."""
-    # Find last 3 trading dates
-    recent_dates = (
-        db.query(IndustryDailyFlow.trade_date)
-        .filter(IndustryDailyFlow.trade_date <= end_date)
-        .distinct()
-        .order_by(IndustryDailyFlow.trade_date.desc())
-        .limit(3)
-        .all()
-    )
-    date_list = [r[0] for r in recent_dates]
+    date_list = get_recent_industry_trade_dates(db, end_date, limit=3)
     if not date_list:
         return []
 
-    rows = (
-        db.query(
-            IndustryDailyFlow.industry_name,
-            func.sum(IndustryDailyFlow.total_net_amount).label("cum"),
-        )
-        .filter(IndustryDailyFlow.trade_date.in_(date_list))
-        .group_by(IndustryDailyFlow.industry_name)
-        .order_by(func.sum(IndustryDailyFlow.total_net_amount).desc())
-        .limit(n)
-        .all()
-    )
-    return [{"industry_name": r[0], "cum_net_amount": r[1]} for r in rows]
+    snapshots = load_industry_flow_rows_for_dates(db, date_list)
+    totals = defaultdict(float)
+    for row in snapshots:
+        totals[row.industry_name] += row.total_net_amount
+
+    ranked = sorted(totals.items(), key=lambda item: item[1], reverse=True)[:n]
+    return [{"industry_name": industry_name, "cum_net_amount": amount} for industry_name, amount in ranked]
 
 
 def _top_stocks_by_industry(db: Session, trade_date: date, industry_names: list[str], per_industry: int = 3) -> dict:
     """For each industry name, get top stocks by total net flow."""
-    from app.models import InstStockFlow, StockMaster
     result = defaultdict(list)
     for ind in industry_names:
         stocks = (
@@ -413,6 +402,99 @@ def _top_stocks_by_industry(db: Session, trade_date: date, industry_names: list[
                     "net_amount": f[1] or 0.0,
                 })
     return result
+
+
+def _choose_market_stance(
+    us_vix_str: str,
+    oil_str: str,
+    usd_twd_str: str,
+    inst_totals: dict,
+) -> tuple[str, str]:
+    total_net = sum(inst_totals.values())
+    is_risk_off = "高恐慌" in us_vix_str or "偏高" in us_vix_str or "上漲" in oil_str or "走強" in usd_twd_str
+    is_supportive = "偏低" in us_vix_str or "中性" in us_vix_str
+
+    if total_net > 0 and is_supportive and not is_risk_off:
+        return "積極買進", "法人偏多且外部風險指標未明顯惡化"
+    if total_net < 0 and is_risk_off:
+        return "偏保守撤退", "法人偏空，且波動與匯率訊號同步轉弱"
+    return "留倉觀望", "資金與外部因子未形成明確單邊訊號"
+
+
+def _build_fallback_brief(
+    trade_date: date,
+    us_vix_str: str,
+    oil_str: str,
+    usd_twd_str: str,
+    inst_totals: dict,
+    top1d: list[dict],
+    top3d: list[dict],
+    top_stocks: dict,
+) -> str:
+    top1d_names = [row["industry_name"] for row in top1d[:3]]
+    top3d_names = [row["industry_name"] for row in top3d[:3]]
+    overlap = [name for name in top1d_names if name in top3d_names]
+    stance, reason = _choose_market_stance(us_vix_str, oil_str, usd_twd_str, inst_totals)
+
+    overlap_lines = []
+    for index, name in enumerate(overlap[:2], start=1):
+        overlap_lines.append(f"{index}. {name}: 短中期資金榜同步出現，延續性較佳")
+    if not overlap_lines:
+        overlap_lines = ["交集細產業: 無明確交集", "代表資金輪動快速，主流尚未集中"]
+
+    recommendation_lines = ["推薦關注個股"]
+    if overlap:
+        for industry_name in overlap[:2]:
+            recommendation_lines.append("")
+            recommendation_lines.append(f"[{industry_name}]")
+            stocks = top_stocks.get(industry_name, [])[:2]
+            if not stocks:
+                recommendation_lines.append("- 資料不足，無法判定")
+                continue
+            for stock in stocks:
+                recommendation_lines.append(
+                    f"- {stock['stock_name']}: 法人同日淨流入 {_fmt_amount(stock['net_amount'])}，屬該族群代表股"
+                )
+    else:
+        recommendation_lines.append("")
+        recommendation_lines.append("[資料不足]")
+        recommendation_lines.append("- 暫無明確交集細產業，先觀察資金是否重新集中")
+
+    return "\n".join([
+        "市場因子分析",
+        "",
+        "台股恐懼指數: 資料不足，無法判定",
+        "缺少一致指標，先以法人與外部市場因子輔助判讀。",
+        "",
+        f"美國恐懼指數: {us_vix_str}",
+        "用波動高低觀察風險偏好是否降溫。",
+        "",
+        f"石油價格(前三日): {oil_str}",
+        "油價變動可反映通膨與景氣敏感族群壓力。",
+        "",
+        f"美元匯率: {usd_twd_str}",
+        "美元走強通常代表資金偏保守。",
+        "",
+        f"三大法人買賣超: 合計 {_fmt_amount(sum(inst_totals.values()))}",
+        "外資、投信、自營商合計資金方向可作為短線風向。",
+        "",
+        "綜合判斷",
+        "",
+        f"綜合判斷: {stance}",
+        f"原因: {reason}",
+        "",
+        "細產業資金分析",
+        "",
+        "前1日買超前三細產業:",
+        *(f"{i}. {name}" for i, name in enumerate(top1d_names, start=1)),
+        "前3日累積買超前三細產業:",
+        *(f"{i}. {name}" for i, name in enumerate(top3d_names, start=1)),
+        "交集細產業:" if overlap else overlap_lines[0],
+        *([] if not overlap else overlap_lines),
+        *(overlap_lines[1:] if not overlap else []),
+        "",
+        *recommendation_lines,
+    ])
 
 
 # ── Build LLM user message ────────────────────────────────────────────────────
@@ -495,10 +577,6 @@ def get_daily_brief(
     market indicators (VIX, WTI crude, USD/TWD) from Yahoo Finance, then
     calls OpenAI to produce the structured analysis.
     """
-    openai_api_key = get_openai_api_key()
-    if not openai_api_key:
-        raise HTTPException(status_code=503, detail="OPENAI_API_KEY 未設定，AI 盤前摘要功能未啟用")
-
     # Resolve trade date: find the most recent day that actually has data
     # (handles weekends, public holidays, or user passing a non-trading day)
     trade_date = _resolve_trade_date(db, date)
@@ -517,9 +595,9 @@ def get_daily_brief(
     top_stocks = _top_stocks_by_industry(db, trade_date, all_ind_names, per_industry=3)
 
     # External market data (best-effort)
-    us_vix_rows = _yf_price("^VIX", days=3)
-    oil_rows = _yf_price("CL=F", days=5)
-    usd_twd_rows = _yf_price("TWD=X", days=3)  # USD/TWD
+    us_vix_rows = _yf_price("^VIX", days=3, end_date=trade_date)
+    oil_rows = _yf_price("CL=F", days=5, end_date=trade_date)
+    usd_twd_rows = _yf_price("TWD=X", days=3, end_date=trade_date)  # USD/TWD
 
     tw_vix_str = "資料不足，無法判定"  # Taiwan doesn't have a standard fear index via Yahoo
     us_vix_str = _format_vix(us_vix_rows, "美國")
@@ -538,24 +616,41 @@ def get_daily_brief(
         top_stocks=top_stocks,
     )
 
-    openai_model = get_openai_model()
-    logger.debug("Calling OpenAI for daily brief (model=%s)", openai_model)
-    try:
-        client = OpenAI(api_key=openai_api_key)
-        response = client.chat.completions.create(
-            model=openai_model,
-            messages=[
-                {"role": "system", "content": DAILY_BRIEF_SYSTEM_PROMPT},
-                {"role": "user", "content": user_msg},
-            ],
-            max_tokens=1200,
-            temperature=0.4,
+    openai_api_key = get_openai_api_key()
+    content = ""
+    source = "unavailable"
+    if openai_api_key:
+        openai_model = get_openai_model()
+        logger.debug("Calling OpenAI for daily brief (model=%s)", openai_model)
+        try:
+            client = OpenAI(api_key=openai_api_key)
+            response = client.chat.completions.create(
+                model=openai_model,
+                messages=[
+                    {"role": "system", "content": DAILY_BRIEF_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_msg},
+                ],
+                max_tokens=1200,
+                temperature=0.4,
+            )
+            content = response.choices[0].message.content.strip()
+            source = "openai"
+        except Exception:
+            logger.exception("OpenAI call failed for daily brief, falling back to deterministic summary")
+    else:
+        logger.warning("OPENAI_API_KEY not configured for daily brief, using deterministic fallback")
+
+    if not content:
+        content = _build_fallback_brief(
+            trade_date=trade_date,
+            us_vix_str=us_vix_str,
+            oil_str=oil_str,
+            usd_twd_str=usd_twd_str,
+            inst_totals=inst_totals,
+            top1d=top1d,
+            top3d=top3d,
+            top_stocks=top_stocks,
         )
-        content = response.choices[0].message.content.strip()
-        source = "openai"
-    except Exception:
-        logger.exception("OpenAI call failed for daily brief")
-        raise HTTPException(status_code=502, detail="AI 服務暫時無法使用，請稍後再試")
 
     return DailyBriefResponse(
         trade_date=str(trade_date),

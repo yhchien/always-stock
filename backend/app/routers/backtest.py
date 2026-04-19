@@ -1,5 +1,5 @@
 from datetime import date
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -8,7 +8,11 @@ from sqlalchemy.orm import Session
 from app.backtest_catalog import BACKTEST_CAPABILITY_CATALOG, BACKTEST_TEMPLATES, DEFAULT_INITIAL_CAPITAL
 from app.backtest_advisor import generate_backtest_advice
 from app.backtest_engine import BacktestDay, run_backtest, summarize_dataset_warnings
-from app.backtest_parser import estimate_strategy_lookback_days, interpret_strategy_text
+from app.backtest_parser import (
+    estimate_strategy_lookback_days,
+    interpret_strategy_parts,
+    interpret_strategy_text,
+)
 from app.database import get_db
 from app.models import DailyPrice, InstStockFlow, StockMaster
 
@@ -19,8 +23,35 @@ class BacktestInterpretRequest(BaseModel):
     stock_id: str
     start_date: date
     end_date: date
-    strategy_text: str
     initial_capital: float = Field(default=DEFAULT_INITIAL_CAPITAL, gt=0)
+    # 新流程：使用 entry_text / exit_text 分離，停損停利獨立欄位
+    entry_text: Optional[str] = None
+    exit_text: Optional[str] = None
+    stop_loss_pct: Optional[float] = Field(default=None, gt=0)
+    take_profit_pct: Optional[float] = Field(default=None, gt=0)
+    # 舊流程（向後相容）：「買進：…；賣出：…」單一字串
+    strategy_text: Optional[str] = None
+
+
+def _interpret_request(payload: BacktestInterpretRequest) -> Dict[str, Any]:
+    if (payload.entry_text and payload.entry_text.strip()) or (payload.exit_text and payload.exit_text.strip()):
+        return interpret_strategy_parts(
+            stock_id=payload.stock_id,
+            start_date=payload.start_date.isoformat(),
+            end_date=payload.end_date.isoformat(),
+            entry_text=payload.entry_text or "",
+            exit_text=payload.exit_text or "",
+            stop_loss_pct=payload.stop_loss_pct,
+            take_profit_pct=payload.take_profit_pct,
+            initial_capital=payload.initial_capital,
+        )
+    return interpret_strategy_text(
+        stock_id=payload.stock_id,
+        start_date=payload.start_date.isoformat(),
+        end_date=payload.end_date.isoformat(),
+        strategy_text=payload.strategy_text or "",
+        initial_capital=payload.initial_capital,
+    )
 
 
 class PeriodReturnItem(BaseModel):
@@ -98,13 +129,7 @@ def post_backtest_interpret(payload: BacktestInterpretRequest):
     if payload.start_date > payload.end_date:
         raise HTTPException(status_code=422, detail="start_date cannot be later than end_date")
     try:
-        return interpret_strategy_text(
-            stock_id=payload.stock_id,
-            start_date=payload.start_date.isoformat(),
-            end_date=payload.end_date.isoformat(),
-            strategy_text=payload.strategy_text,
-            initial_capital=payload.initial_capital,
-        )
+        return _interpret_request(payload)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
 
@@ -119,13 +144,7 @@ def post_backtest_run(payload: BacktestInterpretRequest, db: Session = Depends(g
         raise HTTPException(status_code=404, detail=f"Stock not found: {payload.stock_id}")
 
     try:
-        interpreted = interpret_strategy_text(
-            stock_id=payload.stock_id,
-            start_date=payload.start_date.isoformat(),
-            end_date=payload.end_date.isoformat(),
-            strategy_text=payload.strategy_text,
-            initial_capital=payload.initial_capital,
-        )
+        interpreted = _interpret_request(payload)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
 

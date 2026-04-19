@@ -11,7 +11,12 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import IndustryDailyFlow, InstStockFlow, StockMaster, DailyPrice
+from app.industry_flow_service import (
+    get_recent_industry_trade_dates,
+    load_industry_flow_rows,
+    load_industry_flow_rows_for_dates,
+)
+from app.models import InstStockFlow, StockMaster, DailyPrice
 
 logger = logging.getLogger(__name__)
 
@@ -174,12 +179,7 @@ def get_industries(
     try:
         rows = _run_with_lock_retry(
             db,
-            lambda: (
-                db.query(IndustryDailyFlow)
-                .filter(IndustryDailyFlow.trade_date == date)
-                .order_by(IndustryDailyFlow.total_net_amount.desc())
-                .all()
-            ),
+            lambda: load_industry_flow_rows(db, date),
         )
     except OperationalError as error:
         _raise_busy_if_locked(error)
@@ -190,35 +190,17 @@ def get_industries(
     # Compute streaks: load last 31 trading dates per industry (enough to detect 30+ streak)
     industry_names = [r.industry_name for r in rows]
     try:
-        recent_dates_l0 = (
-            db.query(IndustryDailyFlow.trade_date)
-            .filter(
-                IndustryDailyFlow.industry_name.in_(industry_names),
-                IndustryDailyFlow.trade_date <= date,
-            )
-            .distinct()
-            .order_by(IndustryDailyFlow.trade_date.desc())
-            .limit(31)
-            .subquery()
-        )
+        recent_dates = get_recent_industry_trade_dates(db, date, limit=31)
         history = _run_with_lock_retry(
             db,
-            lambda: (
-                db.query(IndustryDailyFlow.industry_name, IndustryDailyFlow.trade_date, IndustryDailyFlow.total_net_amount)
-                .filter(
-                    IndustryDailyFlow.industry_name.in_(industry_names),
-                    IndustryDailyFlow.trade_date.in_(select(recent_dates_l0.c.trade_date)),
-                )
-                .order_by(IndustryDailyFlow.industry_name, IndustryDailyFlow.trade_date.desc())
-                .all()
-            ),
+            lambda: load_industry_flow_rows_for_dates(db, recent_dates, industry_names),
         )
     except OperationalError as error:
         _raise_busy_if_locked(error)
     # Group by industry → list of net amounts (date desc)
     streak_data: Dict[str, list] = defaultdict(list)
-    for name, _, net_amt in history:
-        streak_data[name].append(net_amt)
+    for row in history:
+        streak_data[row.industry_name].append(row.total_net_amount)
 
     result = []
     for r in rows:

@@ -7,6 +7,8 @@ from datetime import date
 from statistics import mean, pstdev
 from typing import Dict, List, Optional
 
+from app.backtest_patterns import PATTERN_DISPATCH, PATTERN_LOOKBACK
+
 
 @dataclass
 class BacktestDay:
@@ -160,6 +162,10 @@ def _evaluate_rule(rule: Dict, series: Dict[str, List[float]], index: int) -> bo
     if indicator == "all_inst_net_negative":
         return (series["foreign"][index] + series["trust"][index] + series["dealer"][index]) < 0
 
+    pattern_fn = PATTERN_DISPATCH.get(indicator)
+    if pattern_fn is not None:
+        return pattern_fn(series, index)
+
     raise ValueError(f"Unsupported indicator: {indicator}")
 
 
@@ -208,6 +214,8 @@ def summarize_dataset_warnings(days: List[BacktestDay], strategy: Dict) -> List[
             "foreign_consecutive_sell", "trust_consecutive_sell", "dealer_consecutive_sell",
         }:
             max_lookback = max(max_lookback, int(params.get("days", 1)))
+        if indicator in PATTERN_LOOKBACK:
+            max_lookback = max(max_lookback, PATTERN_LOOKBACK[indicator])
 
     if len(days) < max_lookback:
         warnings.append(
@@ -222,6 +230,7 @@ def run_backtest(days: List[BacktestDay], strategy: Dict) -> Dict:
         raise ValueError("At least 2 trading days are required for backtesting")
 
     series = {
+        "open": [day.open_price if day.open_price is not None else day.close_price for day in days],
         "close": [day.close_price for day in days],
         "high": [day.high_price if day.high_price is not None else day.close_price for day in days],
         "low": [day.low_price if day.low_price is not None else day.close_price for day in days],

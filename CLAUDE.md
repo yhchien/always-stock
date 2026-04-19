@@ -437,3 +437,38 @@
 ### PER 不適用提示
 - 當全期間 PER <= 0（EPS 為負），圖表下方顯示「此期間 EPS 為負值或不適用，本益比無法顯示」
 - FinMind 回傳 PER=0 即代表 EPS 為負值，非 ETL 錯誤
+
+## L3 回測 4 欄位改版與 K 棒型態擴充（2026-04-19）
+
+### 策略輸入改為 4 欄位
+- 原單一 `strategy_text` textarea → **四欄位分離**：買進條件（entry_text）、賣出條件（exit_text）、停損 %（stop_loss_pct）、停利 %（take_profit_pct）
+- 後端 `BacktestRunRequest` / `BacktestInterpretRequest` 皆新增 optional 欄位，保留 `strategy_text` 做向後相容
+- `backtest_parser.parse_strategy()` 優先使用 entry/exit 分段；未提供時 fallback 解析 `strategy_text`
+- `stop_loss_pct` / `take_profit_pct` 優先序：顯式參數 > entry 文字 > exit 文字 > AI mapping
+- 自由文字無格式限制，parser 無法匹配的條件會走 OpenAI AI mapping fallback
+
+### K 棒 / 技術型態擴充（backend/app/backtest_patterns.py）
+- K 棒型態（OHLC-based）：
+  - 紅三兵 `candle_three_white_soldiers`、三隻烏鴉 `candle_three_black_crows`
+  - 錘子線 `candle_hammer`、吊人 `candle_hanging_man`
+  - 十字星 `candle_doji`
+  - 多頭吞噬 `candle_bullish_engulfing`、空頭吞噬 `candle_bearish_engulfing`
+  - 晨星 `candle_morning_star`、夜星 `candle_evening_star`
+- 技術型態（peak/trough via `_find_local_peaks` / `_find_local_troughs`, radius=3）：
+  - 頭肩頂/底 `pattern_head_shoulders_top` / `pattern_head_shoulders_bottom`
+  - 雙頂 M `pattern_double_top`、雙底 W `pattern_double_bottom`
+  - V 型反轉 `pattern_v_reversal`、A 型反轉/倒 V `pattern_a_reversal`
+- **Gotcha**：`detect_head_shoulders_*` / `detect_double_*` guard 須用 `if i < lookback - 1`，不可寫 `if i < lookback`（V/A 用後者，因為 n 天資料 index 0..n-1，lookback=n 時 i=n-1 合法）
+
+### 可用條件目錄分組（backend/app/backtest_catalog.py）
+- `CapabilityCatalog.groups` 新增 high-level 分組：
+  - 外資買賣、投信買賣、自營商買賣
+  - 均線 / MA（站上/跌破/黃金交叉/死亡交叉）
+  - K 棒型態、技術型態
+  - 風險控制（停損 / 停利 / 突破高低點 / 量能倍數）
+- 前端 `BacktestPanel` 加入可收合的「查看可用條件列表」，以 `CatalogGroups` 元件依 `groups` 渲染；後端未提供 `groups` 時退回 flat 顯示
+
+### L2 關鍵券商面板暫時隱藏
+- `frontend/src/app/stocks/[stockId]/page.tsx`：從 `SIDEBAR_ITEMS` 移除 `broker` 項目，不再載入 `BrokerPanel`、不再讀寫 `always-stock:show-broker-panel` localStorage
+- 程式碼保留（`components/BrokerPanel.tsx`、`components/BrokerBarChart.tsx`、對應 API）僅隱藏入口
+- 理由：使用者希望優先聚焦「策略回測」與「主動推薦」，券商分點面板待產品優先序再決定是否復活

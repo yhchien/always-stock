@@ -103,6 +103,21 @@ class TestGetIndustries:
         resp = client.get("/api/industries?date=2000-01-01")
         assert resp.status_code == 404
 
+    def test_falls_back_to_inst_flow_when_agg_table_is_missing(self, api):
+        client, db = api
+        seed_stock(db, "2330", "台積電", "半導體")
+        seed_flow(db, "2330", "foreign", 500, 500000)
+        seed_flow(db, "2330", "trust", 100, 100000)
+        seed_flow(db, "2330", "dealer", -50, -50000)
+        db.commit()
+
+        resp = client.get(f"/api/industries?date={TRADE_DATE}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["industry_name"] == "半導體"
+        assert data[0]["total_net_amount"] == 550000
+
     def test_returns_correct_fields(self, api):
         client, db = api
         seed_industry(db, "晶圓代工", 1000, 800, 100, 100)
@@ -268,4 +283,3 @@ class TestGetSubIndustrySummary:
         data = resp.json()
         assert len(data) == 1
         assert data[0]["sub_industry"] == "食品加工"
-

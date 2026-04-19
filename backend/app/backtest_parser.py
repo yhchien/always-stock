@@ -1,23 +1,36 @@
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from app.backtest_catalog import (
     DEFAULT_INITIAL_CAPITAL,
     DEFAULT_POSITION_SIZE_PCT,
     DEFAULT_TRADE_TIMING,
 )
+from app.backtest_patterns import PATTERN_LOOKBACK
 
 
-def _try_ai_map_unsupported(entry_unsupported: List[str], exit_unsupported: List[str]) -> Dict:
-    """嘗試用 AI 補充解析 rule-based parser 無法識別的條件。回傳空結果而不拋例外。"""
+def _try_ai_map(phrases: List[str]) -> Dict:
+    """對 rule-based parser 無法識別的條件丟 AI；異常或失敗回空結果。"""
+    if not phrases:
+        return {
+            "rules": [],
+            "risk_controls": {},
+            "unsupported_conditions": [],
+            "matched_capabilities": [],
+            "source": "rule_based",
+        }
     try:
-        from app.backtest_ai_mapping import map_conditions_with_ai  # lazy import 避免循環依賴
+        from app.backtest_ai_mapping import map_conditions_with_ai  # lazy import
 
-        all_phrases = list(dict.fromkeys(entry_unsupported + exit_unsupported))
-        ai_result = map_conditions_with_ai(all_phrases)
-        return ai_result
+        return map_conditions_with_ai(phrases)
     except Exception:
-        return {"rules": [], "risk_controls": {}, "unsupported_conditions": list(entry_unsupported + exit_unsupported), "matched_capabilities": [], "source": "rule_based"}
+        return {
+            "rules": [],
+            "risk_controls": {},
+            "unsupported_conditions": list(phrases),
+            "matched_capabilities": [],
+            "source": "rule_based",
+        }
 
 
 def _normalize_text(text: str) -> str:
@@ -54,18 +67,85 @@ def _parse_percent(token: str, keyword: str) -> Optional[float]:
 
 
 def _normalize_ma_notation(token: str) -> str:
-    """把 MA5 / 5MA / ma5 / 5ma 等寫法統一轉為「5日均線」。
-    不能用 \\b 因為 Python 3 把中文視為 word character，導致「MA」後接中文時邊界判斷失效。
-    """
+    """把 MA5 / 5MA / ma5 / 5ma 等寫法統一轉為「5日均線」。"""
     token = re.sub(r"(?<!\d)(\d+)\s*[Mm][Aa](?!\d)", r"\1日均線", token)
     token = re.sub(r"(?<![a-zA-Z])[Mm][Aa]\s*(\d+)(?!\d)", r"\1日均線", token)
     return token
 
 
+# 關鍵字 → indicator id 對照（單 token、無參數的型態）
+_PATTERN_KEYWORDS: List[Tuple[str, str]] = [
+    # 單根 K 棒
+    ("十字星", "candle_doji"),
+    ("十字線", "candle_doji"),
+    ("錘子線", "candle_hammer"),
+    ("錘子", "candle_hammer"),
+    ("吊人線", "candle_hanging_man"),
+    ("吊頸線", "candle_hanging_man"),
+    ("流星線", "candle_shooting_star"),
+    ("射擊之星", "candle_shooting_star"),
+    ("倒錘線", "candle_inverted_hammer"),
+    ("倒槌線", "candle_inverted_hammer"),
+    ("長紅K", "candle_long_bullish"),
+    ("長紅", "candle_long_bullish"),
+    ("大陽線", "candle_long_bullish"),
+    ("長黑K", "candle_long_bearish"),
+    ("長黑", "candle_long_bearish"),
+    ("大陰線", "candle_long_bearish"),
+    # 組合 K 棒（順序要把更長的詞放前面，避免 substring 誤匹配）
+    ("多頭吞噬", "candle_bullish_engulfing"),
+    ("看漲吞噬", "candle_bullish_engulfing"),
+    ("紅K吞噬", "candle_bullish_engulfing"),
+    ("空頭吞噬", "candle_bearish_engulfing"),
+    ("看跌吞噬", "candle_bearish_engulfing"),
+    ("黑K吞噬", "candle_bearish_engulfing"),
+    ("紅三兵", "candle_three_white_soldiers"),
+    ("三白兵", "candle_three_white_soldiers"),
+    ("三隻烏鴉", "candle_three_black_crows"),
+    ("黑三兵", "candle_three_black_crows"),
+    ("三烏鴉", "candle_three_black_crows"),
+    ("早晨之星", "candle_morning_star"),
+    ("晨星", "candle_morning_star"),
+    ("黃昏之星", "candle_evening_star"),
+    ("夜星", "candle_evening_star"),
+    ("好友反攻", "candle_bullish_piercing"),
+    ("刺透線", "candle_bullish_piercing"),
+    ("刺透", "candle_bullish_piercing"),
+    ("烏雲蓋頂", "candle_dark_cloud_cover"),
+    ("烏雲罩頂", "candle_dark_cloud_cover"),
+    # 型態
+    ("頭肩頂", "pattern_head_shoulders_top"),
+    ("頭肩底", "pattern_head_shoulders_bottom"),
+    ("逆頭肩", "pattern_head_shoulders_bottom"),
+    ("雙重頂", "pattern_double_top"),
+    ("雙頂", "pattern_double_top"),
+    ("M頭", "pattern_double_top"),
+    ("M 頭", "pattern_double_top"),
+    ("雙重底", "pattern_double_bottom"),
+    ("雙底", "pattern_double_bottom"),
+    ("W底", "pattern_double_bottom"),
+    ("W 底", "pattern_double_bottom"),
+    ("V型反轉", "pattern_v_reversal"),
+    ("V 型反轉", "pattern_v_reversal"),
+    ("V反轉", "pattern_v_reversal"),
+    ("A型反轉", "pattern_a_reversal"),
+    ("A 型反轉", "pattern_a_reversal"),
+    ("A反轉", "pattern_a_reversal"),
+    ("倒V反轉", "pattern_a_reversal"),
+    ("倒 V 反轉", "pattern_a_reversal"),
+]
+
+
+def _match_pattern_keyword(token: str) -> Optional[str]:
+    for keyword, indicator in _PATTERN_KEYWORDS:
+        if keyword in token:
+            return indicator
+    return None
+
+
 def _parse_rule(token: str) -> Dict:
     token = _normalize_ma_notation(token.strip())
 
-    # Cross 要先判斷，避免「5日均線跌破20日均線」被誤判為 close_below_ma
     ma_cross_match = re.search(r"(\d+)日均線(黃金交叉|上穿|突破)(\d+)日均線", token)
     if ma_cross_match:
         return {
@@ -80,7 +160,6 @@ def _parse_rule(token: str) -> Dict:
             "params": {"short_window": int(ma_dead_cross_match.group(1)), "long_window": int(ma_dead_cross_match.group(3))},
         }
 
-    # 收盤價 prefix 可選，允許「跌破MA20」「站上20日均線」等省略前綴的寫法
     ma_match = re.search(r"(?:收盤價)?(站上|跌破)(\d+)日均線", token)
     if ma_match:
         indicator = "close_above_ma" if ma_match.group(1) == "站上" else "close_below_ma"
@@ -140,6 +219,11 @@ def _parse_rule(token: str) -> Dict:
         inst_map = {"外資": "foreign", "投信": "trust", "自營商": "dealer"}
         inst_key = inst_map[inst_negative_match.group(1)]
         return {"indicator": f"{inst_key}_net_negative", "params": {}}
+
+    # K 棒 / 型態 關鍵字
+    pattern_id = _match_pattern_keyword(token)
+    if pattern_id is not None:
+        return {"indicator": pattern_id, "params": {}}
 
     raise ValueError(f"Unsupported condition: {token}")
 
@@ -219,6 +303,32 @@ def _rule_to_text(rule: Dict) -> str:
         return "三大法人合計買超"
     if indicator == "all_inst_net_negative":
         return "三大法人合計轉賣"
+    # K 棒 / 型態：反查 label（用 keyword 對應的第一個中文詞）
+    pattern_label_map = {
+        "candle_doji": "十字星",
+        "candle_hammer": "錘子線",
+        "candle_hanging_man": "吊人線",
+        "candle_shooting_star": "流星線",
+        "candle_inverted_hammer": "倒錘線",
+        "candle_long_bullish": "長紅 / 大陽線",
+        "candle_long_bearish": "長黑 / 大陰線",
+        "candle_bullish_engulfing": "看漲吞噬",
+        "candle_bearish_engulfing": "看跌吞噬",
+        "candle_three_white_soldiers": "紅三兵",
+        "candle_three_black_crows": "三隻烏鴉",
+        "candle_morning_star": "晨星",
+        "candle_evening_star": "夜星",
+        "candle_bullish_piercing": "好友反攻",
+        "candle_dark_cloud_cover": "烏雲蓋頂",
+        "pattern_head_shoulders_top": "頭肩頂",
+        "pattern_head_shoulders_bottom": "頭肩底",
+        "pattern_double_top": "雙頂（M 頭）",
+        "pattern_double_bottom": "雙底（W 底）",
+        "pattern_v_reversal": "V 型反轉",
+        "pattern_a_reversal": "A 型反轉",
+    }
+    if indicator in pattern_label_map:
+        return f"出現{pattern_label_map[indicator]}"
     return indicator
 
 
@@ -238,36 +348,88 @@ def estimate_strategy_lookback_days(strategy: Dict) -> int:
             "foreign_consecutive_sell", "trust_consecutive_sell", "dealer_consecutive_sell",
         }:
             lookback = max(lookback, int(params.get("days", 1)))
+        if indicator in PATTERN_LOOKBACK:
+            lookback = max(lookback, PATTERN_LOOKBACK[indicator])
     return lookback
 
 
-def interpret_strategy_text(
+def _split_tokens(text: str) -> Tuple[List[str], str]:
+    """把條件文字切成 tokens，並判斷 logic（"且"=all, 否則 any）。"""
+    logic = "all" if "且" in text else "any"
+    tokens = [token.strip() for token in re.split(r"且|或", text) if token.strip()]
+    return tokens, logic
+
+
+def _process_clause(text: str) -> Dict:
+    """rule-based 解一段條件子句，回傳 rules/unsupported/risk_controls/logic。"""
+    normalized = _strip_trade_action(_normalize_text(text))
+    tokens, logic = _split_tokens(normalized)
+    parsed = _parse_tokens(tokens)
+    return {
+        "logic": logic,
+        "rules": parsed["rules"],
+        "unsupported_conditions": parsed["unsupported_conditions"],
+        "risk_controls": parsed["risk_controls"],
+    }
+
+
+def interpret_strategy_parts(
     stock_id: str,
     start_date: str,
     end_date: str,
-    strategy_text: str,
+    entry_text: str,
+    exit_text: str,
+    stop_loss_pct: Optional[float] = None,
+    take_profit_pct: Optional[float] = None,
     initial_capital: float = DEFAULT_INITIAL_CAPITAL,
-):
-    normalized = _normalize_text(strategy_text)
-    if not normalized:
-        raise ValueError("Strategy text cannot be blank")
+) -> Dict:
+    if not entry_text or not entry_text.strip():
+        raise ValueError("Entry text cannot be blank")
+    if not exit_text or not exit_text.strip():
+        raise ValueError("Exit text cannot be blank")
 
-    parts = [part.strip() for part in normalized.split(";") if part.strip()]
-    if len(parts) != 2:
-        raise ValueError("Strategy text must contain one buy clause and one sell clause separated by ；")
+    entry_parsed = _process_clause(entry_text)
+    exit_parsed = _process_clause(exit_text)
 
-    entry_text = _strip_trade_action(parts[0])
-    exit_text = _strip_trade_action(parts[1])
+    # 對未解析條件分別丟 AI（entry 解出的加到 entry、exit 解出的加到 exit）
+    entry_ai = _try_ai_map(entry_parsed["unsupported_conditions"])
+    exit_ai = _try_ai_map(exit_parsed["unsupported_conditions"])
 
-    entry_tokens = [token.strip() for token in re.split(r"且", entry_text) if token.strip()]
-    exit_logic = "all" if "且" in exit_text else "any"
-    exit_tokens = [token.strip() for token in re.split(r"且|或", exit_text) if token.strip()]
-    if not entry_tokens or not exit_tokens:
-        raise ValueError("Strategy text must include both entry and exit conditions")
+    entry_rules = list(entry_parsed["rules"]) + list(entry_ai["rules"])
+    exit_rules = list(exit_parsed["rules"]) + list(exit_ai["rules"])
 
-    parsed_entry = _parse_tokens(entry_tokens)
-    parsed_exit = _parse_tokens(exit_tokens)
-    unsupported_conditions = parsed_entry["unsupported_conditions"] + parsed_exit["unsupported_conditions"]
+    ai_mapped_conditions: List[str] = []
+    for rule in entry_ai["rules"] + exit_ai["rules"]:
+        ai_mapped_conditions.append(rule["indicator"])
+
+    # 停損停利優先吃明確參數，否則吃文字裡解出的（entry/exit/AI 任一）
+    def _pick_pct(explicit: Optional[float], *sources: Dict) -> Optional[float]:
+        if explicit is not None:
+            return float(explicit)
+        for source in sources:
+            if source and source.get("stop_loss_pct") is not None:
+                return source["stop_loss_pct"]
+        return None
+
+    final_stop_loss = stop_loss_pct if stop_loss_pct is not None else None
+    if final_stop_loss is None:
+        for source in (entry_parsed["risk_controls"], exit_parsed["risk_controls"], entry_ai["risk_controls"], exit_ai["risk_controls"]):
+            if "stop_loss_pct" in source:
+                final_stop_loss = source["stop_loss_pct"]
+                if source in (entry_ai["risk_controls"], exit_ai["risk_controls"]):
+                    ai_mapped_conditions.append("stop_loss_pct")
+                break
+
+    final_take_profit = take_profit_pct if take_profit_pct is not None else None
+    if final_take_profit is None:
+        for source in (entry_parsed["risk_controls"], exit_parsed["risk_controls"], entry_ai["risk_controls"], exit_ai["risk_controls"]):
+            if "take_profit_pct" in source:
+                final_take_profit = source["take_profit_pct"]
+                if source in (entry_ai["risk_controls"], exit_ai["risk_controls"]):
+                    ai_mapped_conditions.append("take_profit_pct")
+                break
+
+    unsupported_conditions = list(entry_ai["unsupported_conditions"]) + list(exit_ai["unsupported_conditions"])
 
     strategy = {
         "stock_id": stock_id,
@@ -276,68 +438,65 @@ def interpret_strategy_text(
         "initial_capital": initial_capital,
         "trade_timing": DEFAULT_TRADE_TIMING,
         "position_size_pct": DEFAULT_POSITION_SIZE_PCT,
-        "entry_logic": "all",
-        "exit_logic": exit_logic,
-        "entry_rules": parsed_entry["rules"],
-        "exit_rules": parsed_exit["rules"],
-        "stop_loss_pct": parsed_entry["risk_controls"].get("stop_loss_pct") or parsed_exit["risk_controls"].get("stop_loss_pct"),
-        "take_profit_pct": parsed_entry["risk_controls"].get("take_profit_pct")
-        or parsed_exit["risk_controls"].get("take_profit_pct"),
+        "entry_logic": entry_parsed["logic"],
+        "exit_logic": exit_parsed["logic"],
+        "entry_rules": entry_rules,
+        "exit_rules": exit_rules,
+        "stop_loss_pct": final_stop_loss,
+        "take_profit_pct": final_take_profit,
     }
 
-    ai_mapped_conditions: List[str] = []
-
+    warnings: List[str] = []
     if unsupported_conditions:
-        ai_result = _try_ai_map_unsupported(
-            parsed_entry["unsupported_conditions"],
-            parsed_exit["unsupported_conditions"],
-        )
-
-        if ai_result["rules"] or ai_result["risk_controls"]:
-            # 把 AI 解出的 rules 追加到 entry/exit（此處無法區分屬於 entry 或 exit，
-            # 暫時依照「進場條件未滿則給 entry，否則給 exit」的簡單規則）
-            ai_rules = list(ai_result["rules"])
-            for rule in ai_rules:
-                indicator = rule.get("indicator", "")
-                # 正向信號（連買/站上/突破）傾向 entry；負向信號傾向 exit
-                is_negative = any(k in indicator for k in ("net_negative", "dead_cross", "below", "breakdown"))
-                if is_negative:
-                    strategy["exit_rules"].append(rule)
-                else:
-                    strategy["entry_rules"].append(rule)
-                ai_mapped_conditions.append(indicator)
-
-            for ctrl_id, ctrl_val in ai_result["risk_controls"].items():
-                if ctrl_id == "stop_loss_pct" and not strategy.get("stop_loss_pct"):
-                    strategy["stop_loss_pct"] = ctrl_val
-                    ai_mapped_conditions.append("stop_loss_pct")
-                elif ctrl_id == "take_profit_pct" and not strategy.get("take_profit_pct"):
-                    strategy["take_profit_pct"] = ctrl_val
-                    ai_mapped_conditions.append("take_profit_pct")
-
-            unsupported_conditions = [c for c in unsupported_conditions if c in ai_result["unsupported_conditions"]]
-
-    warnings = []
-    if unsupported_conditions:
-        warnings.append("部分條件目前不支援，因此無法直接執行這組策略。")
-    if not strategy["entry_rules"] or not strategy["exit_rules"]:
+        warnings.append("部分條件即便 AI 輔助也無法對應到支援的指標。")
+    if not entry_rules or not exit_rules:
         warnings.append("策略至少需要一個可解析的進場條件與一個可解析的出場條件。")
 
     entry_sep = "且" if strategy["entry_logic"] == "all" else "或"
     exit_sep = "且" if strategy["exit_logic"] == "all" else "或"
-    entry_parts = [_rule_to_text(rule) for rule in strategy["entry_rules"]]
-    exit_parts = [_rule_to_text(rule) for rule in strategy["exit_rules"]]
-    if strategy.get("stop_loss_pct"):
-        exit_parts.append(f"停損{strategy['stop_loss_pct']:g}%")
-    if strategy.get("take_profit_pct"):
-        exit_parts.append(f"停利{strategy['take_profit_pct']:g}%")
-    normalized_text = f"買進：{entry_sep.join(entry_parts)}；賣出：{exit_sep.join(exit_parts)}"
+    entry_parts = [_rule_to_text(rule) for rule in entry_rules]
+    exit_parts = [_rule_to_text(rule) for rule in exit_rules]
+    if final_stop_loss is not None:
+        exit_parts.append(f"停損{float(final_stop_loss):g}%")
+    if final_take_profit is not None:
+        exit_parts.append(f"停利{float(final_take_profit):g}%")
+
+    normalized_text = f"買進：{entry_sep.join(entry_parts) or '（無）'}；賣出：{exit_sep.join(exit_parts) or '（無）'}"
 
     return {
-        "supported": not unsupported_conditions and bool(strategy["entry_rules"]) and bool(strategy["exit_rules"]),
+        "supported": not unsupported_conditions and bool(entry_rules) and bool(exit_rules),
         "normalized_text": normalized_text,
         "strategy": strategy,
         "unsupported_conditions": unsupported_conditions,
-        "ai_mapped_conditions": ai_mapped_conditions,
+        "ai_mapped_conditions": list(dict.fromkeys(ai_mapped_conditions)),
         "warnings": warnings,
     }
+
+
+def interpret_strategy_text(
+    stock_id: str,
+    start_date: str,
+    end_date: str,
+    strategy_text: str,
+    initial_capital: float = DEFAULT_INITIAL_CAPITAL,
+) -> Dict:
+    """向後相容：接受 `買進：...；賣出：...` 單一文字輸入。"""
+    normalized = _normalize_text(strategy_text)
+    if not normalized:
+        raise ValueError("Strategy text cannot be blank")
+
+    parts = [part.strip() for part in normalized.split(";") if part.strip()]
+    if len(parts) != 2:
+        raise ValueError("Strategy text must contain one buy clause and one sell clause separated by ；")
+
+    entry_text = parts[0]
+    exit_text = parts[1]
+
+    return interpret_strategy_parts(
+        stock_id=stock_id,
+        start_date=start_date,
+        end_date=end_date,
+        entry_text=entry_text,
+        exit_text=exit_text,
+        initial_capital=initial_capital,
+    )
