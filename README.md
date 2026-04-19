@@ -143,6 +143,13 @@ npm run dev
 | `monthly_revenue` | 每月營收 + YoY/MoM | ✅ ~7.4 萬筆 | FinMind `TaiwanStockMonthRevenue`，2019-01 ~ 2026-03 |
 | `financial_statement` | 季財報各科目（EPS、營益率等） | ✅ ~45 萬筆 | FinMind 財報資料集，2019-03 ~ 2026-03 |
 | `broker_trade_agg` | 分點買賣超聚合（取代舊 broker_trade） | 🔄 backfill 進行中 | FinMind `TaiwanStockTradingDailyReport`，2024-01 補到中（GitHub Actions 每小時自動跑） |
+
+### 自動化排程（GitHub Actions）
+
+| Workflow | 排程 | 說明 |
+|----------|------|------|
+| `.github/workflows/daily_etl_update.yml` | 週一~五 21:00（台北） | 每個交易日收盤後全量刷新 Render PostgreSQL（6 個 FinMind 模組：daily_price / inst_flow / daily_valuation / monthly_revenue / financial_statement / broker_trade_agg） |
+| `.github/workflows/broker_trade_backfill.yml` | 每小時第 5 分 | 分點買賣超歷史 backfill，以交易日為單位逐批推進 |
 | `broker_trade_raw` | 分點逐筆原始資料（未來用） | ⬜ 待實作 | — |
 | `industry_mapping` | 產業分類對照（Fugle ↔ FinMind） | ⬜ 待實作 | — |
 

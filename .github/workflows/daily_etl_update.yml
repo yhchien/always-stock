@@ -1,0 +1,75 @@
+name: Daily ETL Update
+
+on:
+  schedule:
+    # 台北 21:00（週一到週五）= UTC 13:00
+    # GitHub Actions cron 只吃 UTC，無法直接指定 Asia/Taipei
+    - cron: '0 13 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      target_date:
+        description: '目標交易日 (YYYY-MM-DD)，預設為台北當日'
+        required: false
+
+jobs:
+  run_etl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      TZ: Asia/Taipei
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --quiet -r backend/requirements.txt
+
+      - name: Resolve target date
+        id: resolve
+        env:
+          INPUT_DATE: ${{ github.event.inputs.target_date }}
+        run: |
+          if [ -n "$INPUT_DATE" ]; then
+            TARGET_DATE="$INPUT_DATE"
+          else
+            TARGET_DATE=$(date +%F)
+          fi
+          echo "target_date=$TARGET_DATE" >> "$GITHUB_OUTPUT"
+          echo "Target date (Taipei): $TARGET_DATE"
+
+      - name: Run full FinMind ETL
+        id: etl
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
+        run: |
+          set +e
+          python3 run_finmind_etl_sdk.py --date ${{ steps.resolve.outputs.target_date }}
+          ETL_EXIT=$?
+          echo "etl_exit=$ETL_EXIT" >> "$GITHUB_OUTPUT"
+          # 0=ok, 1=partial, 2=insufficient_quota, 3=error
+          # 只有 error (3) 視為失敗；partial / quota 仍讓 workflow pass
+          if [ "$ETL_EXIT" -eq 3 ]; then
+            exit 1
+          fi
+          exit 0
+
+      - name: Report result
+        if: always()
+        run: |
+          echo "Target date: ${{ steps.resolve.outputs.target_date }}"
+          echo "ETL exit code: ${{ steps.etl.outputs.etl_exit }}"
+          case "${{ steps.etl.outputs.etl_exit }}" in
+            0) echo "Status: ok" ;;
+            1) echo "Status: partial" ;;
+            2) echo "Status: insufficient_quota" ;;
+            3) echo "Status: error" ;;
+            *) echo "Status: unknown" ;;
+          esac
