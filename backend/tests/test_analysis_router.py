@@ -296,6 +296,37 @@ def test_trade_quality_falls_back_when_openai_returns_invalid_json(api):
     assert data["rating"] == "WATCH"
 
 
+def test_trade_quality_retries_once_when_openai_returns_invalid_json(api):
+    client, db = api
+    _seed_full_context(db)
+
+    valid_payload = {
+        "rating": "BUY",
+        "summary": "重試後成功",
+        "report_markdown": "retry-ok",
+    }
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.side_effect = [
+        MagicMock(choices=[MagicMock(message=MagicMock(content='{"rating":"BUY","summary":"broken'))]),
+        MagicMock(choices=[MagicMock(message=MagicMock(content=json.dumps(valid_payload)))]),
+    ]
+
+    with patch("app.routers.analysis.get_openai_api_key", return_value="k"), \
+         patch("app.routers.analysis.OpenAI", return_value=mock_client):
+        resp = client.post(
+            "/api/analysis/trade-quality",
+            json={"stock_id": "2330", "buy_date": "2024-01-11"},
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["source"] == "openai"
+    assert data["rating"] == "BUY"
+    assert data["summary"] == "重試後成功"
+    assert mock_client.chat.completions.create.call_count == 2
+
+
 def test_trade_quality_returns_404_for_unknown_stock(api):
     client, db = api
     _seed_industry_flow(db, date(2024, 1, 5), "半導體")

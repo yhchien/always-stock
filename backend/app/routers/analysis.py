@@ -307,22 +307,45 @@ def _call_openai(system_prompt: str, user_msg: str) -> Optional[dict]:
 
     model = get_openai_model()
     client = OpenAI(api_key=api_key)
-    try:
+
+    def request_json(messages: list[dict[str, str]], max_completion_tokens: int = 5000) -> str:
         response = client.chat.completions.create(
             model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_msg},
-            ],
+            messages=messages,
             response_format={"type": "json_object"},
             temperature=0.3,
-            max_completion_tokens=3000,
+            max_completion_tokens=max_completion_tokens,
         )
-        raw = response.choices[0].message.content or ""
+        return response.choices[0].message.content or ""
+
+    try:
+        base_messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_msg},
+        ]
+        raw = request_json(base_messages)
         return json.loads(raw)
     except json.JSONDecodeError:
-        logger.exception("Failed to parse OpenAI JSON response for trade-quality")
-        return None
+        logger.exception("Failed to parse OpenAI JSON response for trade-quality; retrying once")
+        try:
+            retry_messages = [
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": (
+                        f"{user_msg}\n\n"
+                        "[重要補充]\n"
+                        "你上一版輸出不是合法 JSON，請重新輸出一次。\n"
+                        "只回傳單一、完整、可被 json.loads 解析的 JSON object。\n"
+                        "不要加 markdown code fence、不要加任何前言或結尾。"
+                    ),
+                },
+            ]
+            retry_raw = request_json(retry_messages, max_completion_tokens=6000)
+            return json.loads(retry_raw)
+        except Exception:
+            logger.exception("Retry also failed for trade-quality JSON parse")
+            return None
     except Exception:
         logger.exception("OpenAI call failed for trade-quality")
         return None
