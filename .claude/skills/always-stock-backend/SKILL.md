@@ -128,7 +128,19 @@ exit code：`0=ok, 1=partial, 2=insufficient_quota, 3=error`。只有 `error` �
 
 `daily_valuation`、`monthly_revenue`、`financial_statement` 資料只在 Render，本地 SQLite 尚無。
 
-## 10. L1 產業名稱 fallback
+## 10. Render Python 版本 / 語法相容
+
+Render 的 Docker image（Python runtime）目前跑 **Python 3.9**。撰寫 `backend/` 下的 Python 時：
+
+- **禁用 PEP 604 union 語法** `X | Y` / `X | None`（Python 3.10+ 才支援）
+  - 一律用 `Optional[X]` / `Union[X, Y]` 搭配 `from typing import Optional, Union`
+  - 本機 Python 3.11+ 不會報錯，但 Render build 成功後 import 時會掛 `TypeError: unsupported operand type(s) for |`
+- 其他 3.10+ only 功能也要避開：structural pattern matching (`match/case`)、`type` 語句別名、`ExceptionGroup` 等
+- 本機開發前可以跑 `python3.9 -c "import ast; ast.parse(open('app/main.py').read())"` 驗證（但光 AST 過不代表 runtime 過，type annotation 是 runtime 解析的）
+
+**Dockerfile 沒 pin Python 版本時，Render 預設給 3.9。** 若要升版需要在 `backend/Dockerfile` 改 base image 並重測所有相依。
+
+## 11. L1 產業名稱 fallback
 
 修改 `/api/industries/{name}/*` 時，需保留 fallback 對照：
 - `水泥工業→水泥`、`鋼鐵工業→鋼鐵`、`食品工業→食品`、`金融科技→金融`、`數位雲端→雲端運算`
