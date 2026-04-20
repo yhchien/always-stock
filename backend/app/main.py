@@ -1,6 +1,7 @@
 import logging
 import os
 from contextlib import asynccontextmanager
+from typing import Optional
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -105,7 +106,7 @@ def health():
 @app.post("/telegram/webhook")
 async def telegram_webhook(
     request: Request,
-    x_telegram_bot_api_secret_token: str | None = Header(default=None),
+    x_telegram_bot_api_secret_token: Optional[str] = Header(default=None),
 ):
     """
     Receive Telegram updates in webhook mode. Telegram POSTs here whenever a
