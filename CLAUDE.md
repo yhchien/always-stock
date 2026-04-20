@@ -77,26 +77,23 @@
 
 ## Milestones 進度
 
-### 已完成（截至 2026-04-17）
+### 已完成（截至 2026-04-20）
 - M1~M4: ETL pipeline、FastAPI API、Next.js 三層 drill-down 儀表板
 - M5: Telegram Bot 個股籌碼查詢
+- M6: 8 年歷史資料 backfill（2019-01 ~ 2026-04），僅 5 天 OHLC 資料源缺漏
 - M7: K 線圖（L2 candlestick + 法人累積買超，舊資料自動 fallback 折線圖）
 - M8: 財報面板（估值 PER/PBR/殖利率、月營收+YoY、季財報 EPS 等）— API + 前端完成
 - M9: AI 籌碼分析（`/ai` 指令，接 OpenAI GPT）
 - M10: 雲端部署（Render + Vercel）
-- M11: 回測程式（含 DSL + AI mapping + equity curve + 策略建議）
+- M11: 回測程式（DSL + AI mapping + equity curve + 策略建議；2026-04 擴充 4 欄位改版 + 9 K棒型態 + 6 技術型態 + 報酬率%回撤圖）
+- M16: 首頁 AI 盤前摘要（Daily Brief）
+- M17: 交易質量 AI 分析（Trade Quality Analysis，5 階評級 + 四象限 + 目標價）
 
 ### 進行中
-- M6: 8 年歷史資料 backfill（2019~2026），OHLC 欄位已加入 daily_price
-- L2 頁面進階功能（2026-04-09 起）：
-  - 均線疊加（MA10/MA20/MA60 + 自定義，可切換）
-  - K 線圖響應式放大
-  - 回測策略框架（下半部左，UI skeleton 先行）
-  - 關注券商買賣長條圖（下半部右，UI skeleton 先行）
+- M13 關鍵券商分點：ETL 模組與 `broker_trade_agg` backfill 已完成；L2 券商面板在 2026-04-19 主動隱藏（產品優先序下調），未來視需要復活
 
 ### 待開始
 - M12 自然語言策略
-- M13 券商分點（ETL 模組已完成，`broker_trade_agg` 表已支援；L2 券商長條圖 UI 已搭好；GitHub Actions 每小時自動 backfill）
 - M14 輿情分析
 - M15 Telegram 電子報
 

@@ -150,8 +150,13 @@ npm run dev
 |----------|------|------|
 | `.github/workflows/daily_etl_update.yml` | 週一~五 21:00（台北） | 每個交易日收盤後全量刷新 Render PostgreSQL（6 個 FinMind 模組：daily_price / inst_flow / daily_valuation / monthly_revenue / financial_statement / broker_trade_agg） |
 | `.github/workflows/broker_trade_backfill.yml` | 每小時第 5 分 | 分點買賣超歷史 backfill，以交易日為單位逐批推進 |
-| `broker_trade_raw` | 分點逐筆原始資料（未來用） | ⬜ 待實作 | — |
-| `industry_mapping` | 產業分類對照（Fugle ↔ FinMind） | ⬜ 待實作 | — |
+
+### 待實作資料表
+
+| 資料表 | 說明 | 狀態 |
+|--------|------|------|
+| `broker_trade_raw` | 分點逐筆原始資料（未來用） | ⬜ 待實作 |
+| `industry_mapping` | 產業分類對照（Fugle ↔ FinMind） | ⬜ 待實作 |
 
 > **注意**：`daily_valuation`、`monthly_revenue`、`financial_statement` 資料在 Render PostgreSQL，本地 SQLite 尚無資料。
 
@@ -188,16 +193,18 @@ npm run dev
 |---|------|------|
 | M1~M4 | ETL + API + 前端三層儀表板 | ✅ |
 | M5 | Telegram Bot 個股籌碼查詢 | ✅ |
-| M6 | 8 年歷史資料 backfill | 🔄 進行中 |
+| M6 | 8 年歷史資料 backfill（2019-01 ~ 2026-04） | ✅（僅 5 天 OHLC 資料源缺漏） |
 | M7 | K 線圖（OHLC candlestick） | ✅ |
 | M8 | 財報資料庫 + 前端面板 | ✅ |
 | M9 | AI 籌碼分析（OpenAI GPT） | ✅ |
 | M10 | 雲端部署（Render + Vercel） | ✅ |
-| M11 | 回測程式（含 DSL + AI mapping） | ✅ |
+| M11 | 回測程式（含 DSL + AI mapping；2026-04 擴充 4 欄位 + 9 K棒 + 6 技術型態 + 報酬率%回撤圖） | ✅ |
 | M12 | 自然語言策略優化 | ⬜ |
-| M13 | 關鍵券商分點（FinMind 資料切換） | 🔄 進行中 |
+| M13 | 關鍵券商分點（FinMind 資料切換） | 🔄 ETL / backfill 完成，L2 UI 暫時隱藏 |
 | M14 | LLM 輿情分析 | ⬜ |
 | M15 | Telegram 電子報 | ⬜ |
+| M16 | 首頁 AI 盤前摘要（Daily Brief） | ✅ |
+| M17 | 交易質量 AI 分析（Trade Quality Analysis，5 階評級 + 四象限 + 目標價） | ✅ |
 
 ---
 
