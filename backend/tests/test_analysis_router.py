@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -22,7 +22,7 @@ from app.models import (
     MonthlyRevenue,
     StockMaster,
 )
-from app.routers.analysis import _load_system_prompt
+from app.routers.analysis import _is_market_not_open_yet, _load_system_prompt
 
 
 @pytest.fixture
@@ -339,6 +339,48 @@ def test_trade_quality_returns_404_for_unknown_stock(api):
         )
 
     assert resp.status_code == 404
+
+
+def test_trade_quality_returns_market_not_open_before_today_open(api):
+    client, db = api
+    _seed_stock(db, "2330", "台積電")
+    db.commit()
+
+    fake_now = datetime(2026, 4, 21, 8, 30)
+
+    with patch("app.routers.analysis._get_taipei_now", return_value=fake_now):
+        resp = client.post(
+            "/api/analysis/trade-quality",
+            json={"stock_id": "2330", "buy_date": "2026-04-21"},
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["source"] == "market_not_open"
+    assert data["summary"] == "還沒開盤"
+    assert "所選日期台股還沒開盤" in data["warnings"]
+
+
+def test_trade_quality_returns_market_not_open_for_future_date(api):
+    client, db = api
+    _seed_stock(db, "2330", "台積電")
+    db.commit()
+
+    fake_now = datetime(2026, 4, 21, 10, 0)
+
+    with patch("app.routers.analysis._get_taipei_now", return_value=fake_now):
+        resp = client.post(
+            "/api/analysis/trade-quality",
+            json={"stock_id": "2330", "buy_date": "2026-04-22"},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["source"] == "market_not_open"
+
+
+def test_market_not_open_helper_returns_false_after_open():
+    fake_now = datetime(2026, 4, 21, 9, 1)
+    assert _is_market_not_open_yet(date(2026, 4, 21), fake_now) is False
 
 
 def test_trade_quality_prompt_can_be_loaded():

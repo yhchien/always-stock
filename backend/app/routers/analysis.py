@@ -14,9 +14,10 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, List, Optional
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
 from openai import OpenAI
@@ -35,6 +36,8 @@ from app.models import (
 from app.settings import get_openai_api_key, get_openai_model
 
 logger = logging.getLogger(__name__)
+TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+TW_MARKET_OPEN_TIME = time(hour=9, minute=0)
 
 router = APIRouter(tags=["analysis"])
 
@@ -82,7 +85,7 @@ class TradeQualityResponse(BaseModel):
     max_holding_days: Optional[int] = None
     report_markdown: str
     warnings: List[str] = []
-    source: str  # "openai" | "unavailable"
+    source: str  # "openai" | "unavailable" | "market_not_open"
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -100,6 +103,32 @@ def _load_system_prompt() -> str:
 def _resolve_buy_date(db: Session, requested: Optional[date]) -> Optional[date]:
     """Resolve buy_date: if None or non-trading day, fall back to most recent trade date."""
     return get_latest_industry_trade_date(db, requested)
+
+
+def _get_taipei_now() -> datetime:
+    return datetime.now(TAIPEI_TZ)
+
+
+def _is_market_not_open_yet(requested: date, now: Optional[datetime] = None) -> bool:
+    now = now or _get_taipei_now()
+    if requested > now.date():
+        return True
+    return requested == now.date() and now.timetz().replace(tzinfo=None) < TW_MARKET_OPEN_TIME
+
+
+def _build_market_not_open_response(stock: StockMaster, buy_date: date) -> TradeQualityResponse:
+    message = "還沒開盤"
+    return TradeQualityResponse(
+        stock_id=stock.stock_id,
+        stock_name=stock.stock_name,
+        buy_date=str(buy_date),
+        rating="WATCH",
+        rating_label=RATING_LABELS["WATCH"],
+        summary=message,
+        report_markdown="還沒開盤，請等台股開盤後再分析。",
+        warnings=["所選日期台股還沒開盤"],
+        source="market_not_open",
+    )
 
 
 def _format_price_rows(rows: list[DailyPrice]) -> str:
@@ -433,6 +462,12 @@ def analyze_trade_quality(
     backend/app/prompts/trade_quality.md.
     """
     logger.info("POST /analysis/trade-quality stock=%s buy_date=%s", req.stock_id, req.buy_date)
+
+    if req.buy_date and _is_market_not_open_yet(req.buy_date):
+        stock = db.get(StockMaster, req.stock_id)
+        if not stock:
+            raise HTTPException(status_code=404, detail=f"Stock not found: {req.stock_id}")
+        return _build_market_not_open_response(stock, req.buy_date)
 
     resolved = _resolve_buy_date(db, req.buy_date)
     if not resolved:

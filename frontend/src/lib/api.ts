@@ -690,7 +690,7 @@ export interface TradeQualityResponse {
   max_holding_days?: number | null
   report_markdown: string
   warnings: string[]
-  source: "openai" | "unavailable"
+  source: "openai" | "unavailable" | "market_not_open"
 }
 
 export async function analyzeTradeQuality(

@@ -239,7 +239,6 @@ export default function TradeQualityAnalysis() {
               type="date"
               value={buyDate}
               onChange={(e) => setBuyDate(e.target.value)}
-              max={latestDate ?? undefined}
               className="rounded-md border border-slate-600 bg-slate-900/60 px-3 py-2 text-sm text-slate-100 focus:border-slate-400 focus:outline-none"
             />
           ) : (
@@ -285,6 +284,9 @@ export default function TradeQualityAnalysis() {
             <span className="text-xs text-slate-500">買進日：{result.buy_date}</span>
             {result.source === "unavailable" && (
               <span className="text-xs text-amber-400">AI 服務不可用（fallback 中）</span>
+            )}
+            {result.source === "market_not_open" && (
+              <span className="text-xs text-amber-400">所選日期台股還沒開盤</span>
             )}
           </div>
 
