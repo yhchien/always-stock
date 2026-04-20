@@ -55,7 +55,7 @@ def fetch_and_upsert_inst_flow_finmind_sdk(
 
         if df is None or df.empty:
             logger.warning("No data returned from FinMind")
-            result["status"] = "error"
+            result["status"] = "no_data"
             return result
 
         result["total_records"] = len(df)

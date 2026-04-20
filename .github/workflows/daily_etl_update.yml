@@ -2,9 +2,10 @@ name: Daily ETL Update
 
 on:
   schedule:
-    # 台北 21:00（週一到週五）= UTC 13:00
+    # 台北 23:00（週一到週五）= UTC 15:00
     # GitHub Actions cron 只吃 UTC，無法直接指定 Asia/Taipei
-    - cron: '0 13 * * 1-5'
+    # 推遲到 23:00 是為了對齊 FinMind 慢同步 dataset（inst_flow / daily_valuation）
+    - cron: '0 15 * * 1-5'
   workflow_dispatch:
     inputs:
       target_date:
@@ -14,7 +15,8 @@ on:
 jobs:
   run_etl:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # 45（原本 ETL）+ 30（critical step no_data retry 最多 10+20 分鐘）= 75 分鐘
+    timeout-minutes: 75
 
     env:
       TZ: Asia/Taipei

@@ -13,9 +13,10 @@ FinMind ETL 協調器 (SDK 版本)
 import logging
 import sys
 import os
+import time
 from datetime import datetime, date, timedelta
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Callable, Dict, Any, List
 import json
 import argparse
 
@@ -23,7 +24,11 @@ logger = logging.getLogger(__name__)
 BACKEND_DIR = Path(__file__).resolve().parent
 
 CRITICAL_STEPS = {"daily_price", "inst_flow"}
-RESUMEABLE_STEP_STATUSES = {"ok", "partial", "skipped", "empty"}
+# no_data 視為可延續狀態（非 critical step 的空資料是正常情境，例如月營收只有每月 10 日才有新值）
+RESUMEABLE_STEP_STATUSES = {"ok", "partial", "skipped", "empty", "no_data"}
+
+# CRITICAL step 遇到 no_data 時的重試間隔（秒），對齊 FinMind 慢同步 dataset
+NO_DATA_RETRY_SCHEDULE = [600, 1200]  # 10 min, 20 min
 
 
 def determine_overall_status(step_results: Dict[str, Any]) -> str:
@@ -34,10 +39,11 @@ def determine_overall_status(step_results: Dict[str, Any]) -> str:
     ):
         return "insufficient_quota"
 
+    # CRITICAL step 若為 error 或最終仍 no_data（retry 用盡）→ 整包 error
     if any(
         step_name in CRITICAL_STEPS
         and step_result
-        and step_result.get("status") == "error"
+        and step_result.get("status") in ("error", "no_data")
         for step_name, step_result in step_results.items()
     ):
         return "error"
@@ -50,6 +56,41 @@ def determine_overall_status(step_results: Dict[str, Any]) -> str:
         return "partial"
 
     return "ok"
+
+
+def _run_critical_step_with_retry(
+    step_name: str,
+    step_func: Callable[[], Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    CRITICAL step 若回 no_data，依 NO_DATA_RETRY_SCHEDULE 重試。
+
+    只對 no_data 重試（FinMind 尚未同步完成）；真正 exception 的 error 不重試。
+    """
+    try:
+        result = step_func()
+    except Exception as e:
+        logger.error(f"[{step_name}] first attempt raised: {e}")
+        return {"status": "error", "error": str(e)}
+
+    for attempt, delay in enumerate(NO_DATA_RETRY_SCHEDULE, start=1):
+        if result.get("status") != "no_data":
+            return result
+        logger.warning(
+            f"[{step_name}] returned no_data, retry #{attempt}/"
+            f"{len(NO_DATA_RETRY_SCHEDULE)} in {delay}s"
+        )
+        time.sleep(delay)
+        try:
+            result = step_func()
+            logger.info(
+                f"[{step_name}] retry #{attempt} result: {result.get('status')}"
+            )
+        except Exception as e:
+            logger.error(f"[{step_name}] retry #{attempt} raised: {e}")
+            return {"status": "error", "error": str(e)}
+
+    return result
 
 
 class FinMindETLOrchestratorSDK:
@@ -184,34 +225,32 @@ class FinMindETLOrchestratorSDK:
                 result["status"] = "insufficient_quota"
                 return result
 
-            # 1. 每日股價（一次 batch fetch）
+            # 1. 每日股價（一次 batch fetch，CRITICAL → no_data 時重試）
             if "daily_price" in active_steps:
                 logger.info("\n[1/6] Fetching daily prices (SDK batch)...")
-                try:
-                    price_result = fetch_and_upsert_daily_price_finmind_sdk(
+                price_result = _run_critical_step_with_retry(
+                    "daily_price",
+                    lambda: fetch_and_upsert_daily_price_finmind_sdk(
                         db, stock_ids, start_date, end_date, self.client
-                    )
-                    result["results"]["daily_price"] = price_result
-                    logger.info(f"✓ Daily prices: {price_result['status']}")
-                except Exception as e:
-                    logger.error(f"✗ Daily price ETL failed: {e}")
-                    result["results"]["daily_price"] = {"status": "error", "error": str(e)}
+                    ),
+                )
+                result["results"]["daily_price"] = price_result
+                logger.info(f"✓ Daily prices: {price_result['status']}")
             else:
                 logger.info("\n[1/6] Daily prices: skipped")
                 result["results"]["daily_price"] = {"status": "skipped"}
 
-            # 2. 三大法人買賣超（一次 batch fetch）
+            # 2. 三大法人買賣超（一次 batch fetch，CRITICAL → no_data 時重試）
             if "inst_flow" in active_steps:
                 logger.info("\n[2/6] Fetching institutional flows (SDK batch)...")
-                try:
-                    inst_result = fetch_and_upsert_inst_flow_finmind_sdk(
+                inst_result = _run_critical_step_with_retry(
+                    "inst_flow",
+                    lambda: fetch_and_upsert_inst_flow_finmind_sdk(
                         db, stock_ids, start_date, end_date, self.client
-                    )
-                    result["results"]["inst_flow"] = inst_result
-                    logger.info(f"✓ Institutional flows: {inst_result['status']}")
-                except Exception as e:
-                    logger.error(f"✗ Institutional flow ETL failed: {e}")
-                    result["results"]["inst_flow"] = {"status": "error", "error": str(e)}
+                    ),
+                )
+                result["results"]["inst_flow"] = inst_result
+                logger.info(f"✓ Institutional flows: {inst_result['status']}")
             else:
                 logger.info("\n[2/6] Institutional flows: skipped")
                 result["results"]["inst_flow"] = {"status": "skipped"}

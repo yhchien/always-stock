@@ -512,3 +512,29 @@
 - 支援端點（若尚未存在則新增）：
   - `GET /api/stocks/search?q=...` — 股票 autocomplete
   - `GET /api/market/latest-trade-date` — DB 最新交易日
+
+## Daily ETL 穩定性修正（2026-04-21）
+
+### 問題
+- 2026-04-20 的 scheduled run（台北 21:00 觸發，實際因 Actions cron 延遲在 22:54 才跑）被標 `error`、GitHub Actions fail
+- 根因：FinMind `TaiwanStockInstitutionalInvestorsBuySell` 與 `TaiwanStockPER` 同步比 broker_trade_agg 慢；22:54 時 inst_flow / daily_valuation 還拿不到全市場資料
+- inst_flow 在空資料時直接回傳 `status: "error"`，因為它屬於 `CRITICAL_STEPS`，整包被拖倒
+
+### 修正
+1. **cron 推遲**：`.github/workflows/daily_etl_update.yml`
+   - `0 13 * * 1-5`（台北 21:00）→ `0 15 * * 1-5`（台北 23:00）
+   - `timeout-minutes: 45 → 75`（預留 30 分鐘給 critical step retry）
+2. **no_data 語義拆分**：`backend/etl/finmind_inst_flow_sdk.py`
+   - 空資料時 `status: "error" → "no_data"`（與真的 exception 區分）
+3. **CRITICAL step retry**：`backend/run_finmind_etl_sdk.py`
+   - 新增 `NO_DATA_RETRY_SCHEDULE = [600, 1200]`（10 / 20 分鐘）
+   - `_run_critical_step_with_retry()`：CRITICAL step 回 `no_data` 時依排程重試最多 2 次
+   - `daily_price` / `inst_flow` 兩個 step 呼叫改用 helper
+4. **整體狀態判定**：
+   - `RESUMEABLE_STEP_STATUSES` 加入 `no_data`（非 CRITICAL 的空資料視為正常，例如月營收 / 財報）
+   - CRITICAL step 最終仍 `no_data`（retry 用盡）→ 整包 `error`（觸發 workflow fail，提醒人工檢查）
+
+### 測試
+- `backend/tests/test_run_finmind_etl_sdk.py` 新增兩個測試案例：
+  - CRITICAL step `no_data` 最終仍 no_data → error
+  - 非 CRITICAL step `no_data` → ok
