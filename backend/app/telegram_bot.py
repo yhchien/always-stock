@@ -39,11 +39,13 @@ HELP_TEXT = (
     "*指令：*\n"
     "/start — 歡迎訊息\n"
     "/help — 顯示此說明\n"
+    "/brief — 今日盤前觀察重點\n"
     "/ai `股號` — AI 籌碼分析（如 `/ai 2330`）\n\n"
     "*範例：*\n"
     "`2330` — 查詢台積電法人資料\n"
     "`2317` — 查詢鴻海法人資料\n"
     "/ai `2330` — AI 分析台積電籌碼動向\n"
+    "/brief — 今日盤前觀察重點\n"
 )
 
 
@@ -178,6 +180,39 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(HELP_TEXT, parse_mode="Markdown")
 
 
+async def brief_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /brief command — send today's pre-market briefing."""
+    from app.routers.market import build_daily_brief
+
+    logger.info("brief requested by user=%s", update.effective_user.id)
+    await update.message.chat.send_action("typing")
+
+    db = SessionLocal()
+    try:
+        resp = build_daily_brief(db, None)
+    except ValueError as e:
+        await update.message.reply_text(f"⚠️ {e}")
+        return
+    except Exception:
+        logger.exception("Failed to build daily brief")
+        await update.message.reply_text("⚠️ 產生盤前觀察重點時發生錯誤，請稍後再試。")
+        return
+    finally:
+        db.close()
+
+    header = f"📊 今日盤前觀察重點（{resp.trade_date}）\n\n"
+    body = resp.content or "（無內容）"
+    text = header + body
+
+    # Telegram single-message limit is 4096 chars; chunk conservatively.
+    chunk_size = 3900
+    if len(text) <= chunk_size:
+        await update.message.reply_text(text)
+    else:
+        for i in range(0, len(text), chunk_size):
+            await update.message.reply_text(text[i:i + chunk_size])
+
+
 async def ai_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /ai <stock_id> command — AI-powered stock analysis."""
     from app.ai_analyst import analyze_stock
@@ -235,6 +270,7 @@ def create_bot_app(token: str = "") -> Application:
     app = Application.builder().token(bot_token).build()
     app.add_handler(CommandHandler("start", start_handler))
     app.add_handler(CommandHandler("help", help_handler))
+    app.add_handler(CommandHandler("brief", brief_handler))
     app.add_handler(CommandHandler("ai", ai_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, stock_query_handler))
 

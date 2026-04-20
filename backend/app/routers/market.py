@@ -578,22 +578,16 @@ def get_latest_trade_date(db: Session = Depends(get_db)):
     return LatestTradeDateResponse(trade_date=str(latest) if latest else None)
 
 
-@router.get("/market/daily-brief", response_model=DailyBriefResponse)
-def get_daily_brief(
-    date: Optional[date] = Query(default=None, description="trade date YYYY-MM-DD; defaults to latest available"),
-    db: Session = Depends(get_db),
-):
+def build_daily_brief(db: Session, requested_date: Optional[date]) -> DailyBriefResponse:
     """
-    Generate a pre-market briefing for the given date using OpenAI.
-    Collects institutional flow + industry data from DB, fetches external
-    market indicators (VIX, WTI crude, USD/TWD) from Yahoo Finance, then
-    calls OpenAI to produce the structured analysis.
+    Build a pre-market briefing payload. Shared by the HTTP endpoint and the
+    Telegram bot so both surfaces return identical content.
+
+    Raises ValueError when no trade data is available.
     """
-    # Resolve trade date: find the most recent day that actually has data
-    # (handles weekends, public holidays, or user passing a non-trading day)
-    trade_date = _resolve_trade_date(db, date)
+    trade_date = _resolve_trade_date(db, requested_date)
     if not trade_date:
-        raise HTTPException(status_code=404, detail="資料庫無產業流向資料")
+        raise ValueError("資料庫無產業流向資料")
 
     logger.info("daily-brief requested for %s", trade_date)
 
@@ -669,3 +663,14 @@ def get_daily_brief(
         content=content,
         source=source,
     )
+
+
+@router.get("/market/daily-brief", response_model=DailyBriefResponse)
+def get_daily_brief(
+    date: Optional[date] = Query(default=None, description="trade date YYYY-MM-DD; defaults to latest available"),
+    db: Session = Depends(get_db),
+):
+    try:
+        return build_daily_brief(db, date)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))

@@ -6,7 +6,6 @@ import dynamic from "next/dynamic"
 import IndustryDashboard from "@/components/IndustryDashboard"
 import { todayInTaipei } from "@/lib/utils"
 
-const DailyBrief = dynamic(() => import("@/components/DailyBrief"), { ssr: false })
 const TradeQualityAnalysis = dynamic(() => import("@/components/TradeQualityAnalysis"), { ssr: false })
 
 function HomeContent() {
@@ -16,7 +15,6 @@ function HomeContent() {
 
   return (
     <main className="mx-auto w-full max-w-5xl px-4 py-8 flex flex-col gap-6">
-      <DailyBrief date={date} />
       <TradeQualityAnalysis />
       <IndustryDashboard
         defaultDate={date}
