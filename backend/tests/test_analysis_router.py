@@ -274,6 +274,41 @@ def test_trade_quality_resolves_buy_date_when_absent(api):
     assert '"buy_date": "2024-01-11"' in captured["user_msg"]
 
 
+def test_trade_quality_keeps_explicit_buy_date_in_prompt(api):
+    client, db = api
+    _seed_full_context(db, stock_id="2330")
+
+    captured = {}
+
+    def fake_create(*args, **kwargs):
+        messages = kwargs["messages"]
+        captured["user_msg"] = messages[1]["content"]
+        return MagicMock(
+            choices=[MagicMock(message=MagicMock(
+                content=json.dumps({
+                    "rating": "NEUTRAL",
+                    "summary": "中立",
+                    "report_markdown": "report",
+                })
+            ))]
+        )
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.side_effect = fake_create
+
+    with patch("app.routers.analysis.get_openai_api_key", return_value="k"), \
+         patch("app.routers.analysis.OpenAI", return_value=mock_client):
+        resp = client.post(
+            "/api/analysis/trade-quality",
+            json={"stock_id": "2330", "buy_date": "2024-01-20"},
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["buy_date"] == "2024-01-20"
+    assert '"buy_date": "2024-01-20"' in captured["user_msg"]
+
+
 def test_trade_quality_falls_back_when_openai_returns_invalid_json(api):
     client, db = api
     _seed_full_context(db)

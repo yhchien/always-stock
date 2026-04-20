@@ -101,8 +101,10 @@ def _load_system_prompt() -> str:
 
 
 def _resolve_buy_date(db: Session, requested: Optional[date]) -> Optional[date]:
-    """Resolve buy_date: if None or non-trading day, fall back to most recent trade date."""
-    return get_latest_industry_trade_date(db, requested)
+    """Resolve buy_date: explicit user input wins; otherwise fall back to latest trade date."""
+    if requested is not None:
+        return requested
+    return get_latest_industry_trade_date(db)
 
 
 def _get_taipei_now() -> datetime:
