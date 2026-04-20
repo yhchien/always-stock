@@ -4,6 +4,11 @@
 
 - 每次完成一輪修改後，**自動更新 README、CLAUDE.md、memory 並直接 commit & push**，不需要使用者每次重新提醒
 
+## Claude Code Skills
+
+- `.claude/skills/always-stock-backend/SKILL.md` — 後端開發規範（FinMind ETL 欄位對照 / bulk upsert / 回測引擎 / prompt 管理 / Daily Brief 模式 / L1 產業 fallback）。修改 `backend/` 下的 Python 檔案時自動觸發
+- `.claude/skills/always-stock-frontend/SKILL.md` — 前端開發規範（時區日期 / Panel toggle / 圖表 null 處理 / API 邊界 / L2-L3 頁面結構 / TradeQuality 輸入）。修改 `frontend/` 下的檔案時自動觸發
+
 ## 部署相關文件
 
 - `docs/architecture/architecture_overview.md` — 技術選擇、通訊方式、部署架構總覽
