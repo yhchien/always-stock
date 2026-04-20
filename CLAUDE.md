@@ -91,7 +91,7 @@
 - M9: AI 籌碼分析（`/ai` 指令，接 OpenAI GPT）
 - M10: 雲端部署（Render + Vercel）
 - M11: 回測程式（DSL + AI mapping + equity curve + 策略建議；2026-04 擴充 4 欄位改版 + 9 K棒型態 + 6 技術型態 + 報酬率%回撤圖）
-- M16: 首頁 AI 盤前摘要（Daily Brief）
+- M16: AI 盤前摘要（Daily Brief，2026-04-20 起改由 Telegram Bot `/brief` 提供）
 - M17: 交易質量 AI 分析（Trade Quality Analysis，5 階評級 + 四象限 + 目標價）
 
 ### 進行中
@@ -363,13 +363,16 @@
 ## 前端功能更新（2026-04-14）
 
 ### 新增功能
-1. **首頁今日觀察重點**（AI 盤前摘要）
-   - 後端：`backend/app/routers/market.py`，endpoint `GET /api/market/daily-brief`
+1. **今日觀察重點**（AI 盤前摘要）
+   - 後端：`backend/app/routers/market.py`
+     - 共用函式 `build_daily_brief(db, requested_date)` — HTTP endpoint 與 Telegram bot 共用，確保兩個入口輸出一致
+     - HTTP endpoint `GET /api/market/daily-brief` 僅負責 `ValueError → HTTPException` 轉換
    - 收集 DB 法人流向資料 + Yahoo Finance（VIX、WTI、USD/TWD）→ OpenAI 生成盤前摘要
    - `_resolve_trade_date()` 確保一定落在有資料的交易日（非假日/非休市日）
    - `_top_industries_3d()` 使用 DB 實際有資料的 3 個交易日，不依曆法推算
-   - 前端：`frontend/src/components/DailyBrief.tsx`（手動觸發，不自動載入）
-   - 掛在首頁 `page.tsx` IndustryDashboard 上方
+   - 曝光入口（2026-04-20 調整）：
+     - Telegram Bot `/brief`（主要入口，handler 在 `backend/app/telegram_bot.py::brief_handler`）
+     - 前端 `DailyBrief.tsx` 元件保留但已從首頁移除；若未來要重新掛回再 import 即可
 
 2. **BrokerPanel 改版**（買進 / 賣出排行 + 標籤）
    - 後端新增 `GET /api/stocks/{stock_id}/brokers/ranked`：返回 `buy_top` / `sell_top` 各 10 筆
@@ -487,7 +490,7 @@
 - 此 phase 將 prompt 接成首頁的互動功能
 
 ### 功能落點
-- **位置**：首頁（`frontend/src/app/page.tsx`）`DailyBrief` 下方新增 `TradeQualityAnalysis` section
+- **位置**：首頁（`frontend/src/app/page.tsx`）`TradeQualityAnalysis` section（2026-04-20 起為首頁頂部，DailyBrief 已移至 Telegram Bot）
 - **輸入**：
   - 股票代號 / 名稱（autocomplete，user 打字即時 filter 下拉選單）
   - 買進日期（空白時預設為 DB 最近一個交易日）
