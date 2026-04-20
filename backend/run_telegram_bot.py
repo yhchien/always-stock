@@ -1,5 +1,10 @@
 """
-Launch the Telegram bot in long-polling mode.
+Launch the Telegram bot in long-polling mode. Local development only.
+
+Production runs the bot in webhook mode inside the FastAPI web service
+(see app/main.py lifespan + /telegram/webhook endpoint), so there is no
+separate Render worker. Use this script when you want to iterate on bot
+handlers locally without exposing a public webhook.
 
 Usage:
     python run_telegram_bot.py
