@@ -219,6 +219,43 @@ class BrokerTradeAgg(Base):
     )
 
 
+class User(Base):
+    """
+    使用者帳號（M18）
+    認證方式：email + password（bcrypt hash）
+    admin 帳號由啟動時 seeder 建立，可透過 ADMIN_EMAIL / ADMIN_PASSWORD 覆寫
+    """
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    email = Column(String, nullable=False, unique=True, index=True)
+    password_hash = Column(String, nullable=False)
+    name = Column(String, nullable=True)
+    is_admin = Column(Boolean, default=False, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_login_at = Column(DateTime, nullable=True)
+
+
+class UserSession(Base):
+    """
+    Server-side session（M18）
+    登入成功後建立一筆，session_id 以 httpOnly cookie 發給前端
+    登出 / revoke 時把 revoked_at 設為 now()，不刪 row 保留稽核軌跡
+    """
+    __tablename__ = "user_sessions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(String, nullable=False, unique=True, index=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    last_seen_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    user_agent = Column(String, nullable=True)
+    ip_address = Column(String, nullable=True)
+    revoked_at = Column(DateTime, nullable=True)
+
+
 class IndustryMapping(Base):
     """
     產業分類對照表（雙軌驗證用）

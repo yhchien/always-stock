@@ -24,6 +24,10 @@ requests>=2.31.0
 # Environment config
 python-dotenv>=1.0.0
 
+# Auth (M18)
+bcrypt>=4.1.0
+slowapi>=0.1.9
+
 # FinMind SDK (ETL 資料源)
 FinMind>=0.8.0
 pandas>=1.5.0
