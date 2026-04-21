@@ -9,9 +9,13 @@ on:
         description: '目標結束日期 (YYYY-MM-DD)，預設為昨天'
         required: false
       batch_days:
-        description: '每批交易日數 (預設 3)'
+        description: '每批交易日數 (預設 15)'
         required: false
-        default: '3'
+        default: '15'
+      min_backfill_date:
+        description: 'backfill 最早日期 (YYYY-MM-DD)，預設 2022-01-01'
+        required: false
+        default: '2022-01-01'
 
 jobs:
   backfill:
@@ -34,7 +38,8 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           END_DATE_INPUT: ${{ github.event.inputs.end_date }}
-          BATCH_DAYS: ${{ github.event.inputs.batch_days || '3' }}
+          BATCH_DAYS: ${{ github.event.inputs.batch_days || '15' }}
+          MIN_BACKFILL_DATE: ${{ github.event.inputs.min_backfill_date || '2022-01-01' }}
         run: |
           python3 - <<'EOF'
           import os, sys
@@ -43,37 +48,6 @@ jobs:
 
           db_url = os.environ["DATABASE_URL"].replace("postgresql://", "postgresql+psycopg://", 1)
           engine = create_engine(db_url)
-          with engine.connect() as conn:
-              # 建立 checkpoint 表（若不存在）
-              conn.execute(text("""
-                  CREATE TABLE IF NOT EXISTS etl_checkpoint (
-                      step_name TEXT PRIMARY KEY,
-                      last_end_date DATE NOT NULL
-                  )
-              """))
-              conn.commit()
-
-              # 取 DB 實際資料的最大日期
-              row_data = conn.execute(text(
-                  "SELECT MAX(trade_date) FROM broker_trade_agg"
-              )).fetchone()
-              max_data_date = row_data[0]
-
-              # 取 checkpoint 記錄的最後嘗試日期
-              row_ckpt = conn.execute(text(
-                  "SELECT last_end_date FROM etl_checkpoint "
-                  "WHERE step_name = 'broker_trade_backfill'"
-              )).fetchone()
-              max_ckpt_date = row_ckpt[0] if row_ckpt else None
-
-          # 用兩者較大的日期 +1 作為起始日，確保假日也能跳過
-          candidates = [d for d in [max_data_date, max_ckpt_date] if d]
-          if candidates:
-              start = max(candidates) + timedelta(days=1)
-          else:
-              start = date(2021, 6, 30)
-
-          print(f"max_data_date={max_data_date}, max_ckpt_date={max_ckpt_date}, start={start}")
 
           # 目標結束日（預設昨天）
           target_end_str = os.environ.get("END_DATE_INPUT", "").strip()
@@ -82,28 +56,68 @@ jobs:
           else:
               target_end = date.today() - timedelta(days=1)
 
-          batch_days = int(os.environ.get("BATCH_DAYS", "3"))
+          min_backfill_date = date.fromisoformat(os.environ["MIN_BACKFILL_DATE"])
+          batch_days = int(os.environ.get("BATCH_DAYS", "15"))
 
-          if start > target_end:
-              print(f"Already up to date (max_data={max_data_date}, ckpt={max_ckpt_date}, target={target_end})")
+          with engine.connect() as conn:
+              # 建立 checkpoint 表（若不存在）— 僅作為 monitoring，不再驅動 start 計算
+              conn.execute(text("""
+                  CREATE TABLE IF NOT EXISTS etl_checkpoint (
+                      step_name TEXT PRIMARY KEY,
+                      last_end_date DATE NOT NULL
+                  )
+              """))
+              conn.commit()
+
+              # 找出 [min_backfill_date, target_end] 範圍內「缺資料」的週一~五交易日
+              rows = conn.execute(text("""
+                  WITH expected AS (
+                      SELECT generate_series(:min_date, :end_date, '1 day'::interval)::date AS d
+                  ),
+                  actual AS (
+                      SELECT DISTINCT trade_date FROM broker_trade_agg
+                      WHERE trade_date BETWEEN :min_date AND :end_date
+                  )
+                  SELECT e.d FROM expected e
+                  LEFT JOIN actual a ON a.trade_date = e.d
+                  WHERE EXTRACT(ISODOW FROM e.d) <= 5
+                    AND a.trade_date IS NULL
+                  ORDER BY e.d
+                  LIMIT :batch_limit
+              """), {
+                  "min_date": min_backfill_date,
+                  "end_date": target_end,
+                  "batch_limit": batch_days,
+              }).fetchall()
+
+              # 順便算一下「總剩餘缺日」方便追蹤進度
+              total_remaining = conn.execute(text("""
+                  WITH expected AS (
+                      SELECT generate_series(:min_date, :end_date, '1 day'::interval)::date AS d
+                  ),
+                  actual AS (
+                      SELECT DISTINCT trade_date FROM broker_trade_agg
+                      WHERE trade_date BETWEEN :min_date AND :end_date
+                  )
+                  SELECT COUNT(*) FROM expected e
+                  LEFT JOIN actual a ON a.trade_date = e.d
+                  WHERE EXTRACT(ISODOW FROM e.d) <= 5
+                    AND a.trade_date IS NULL
+              """), {"min_date": min_backfill_date, "end_date": target_end}).fetchone()[0]
+
+          gaps = [row[0] for row in rows]
+          print(f"Backfill range: [{min_backfill_date}, {target_end}]")
+          print(f"Total remaining gaps: {total_remaining}")
+
+          if not gaps:
+              print("No gaps left, skipping")
               with open(os.environ["GITHUB_OUTPUT"], "a") as f:
                   f.write("skip=true\n")
               sys.exit(0)
 
-          # 往前數 batch_days 個交易日（跳過週末）
-          trading_days_found = 0
-          end = start
-          d = start
-          while d <= target_end:
-              if d.isoweekday() <= 5:  # 週一到週五
-                  trading_days_found += 1
-                  end = d
-                  if trading_days_found >= batch_days:
-                      break
-              d += timedelta(days=1)
-          end = min(end, target_end)
-
-          print(f"Batch: {start} ~ {end} (target end: {target_end})")
+          # 用最舊~最新缺日當 ETL 範圍；中間若有 non-gap 日會被重新 upsert（idempotent）
+          start, end = gaps[0], gaps[-1]
+          print(f"Batch: {start} ~ {end} (selected {len(gaps)} gap days, target end: {target_end})")
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"start_date={start}\n")
               f.write(f"end_date={end}\n")
