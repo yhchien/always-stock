@@ -100,8 +100,10 @@
 - M18 使用者註冊系統（Gmail OAuth + admin local auth，未登入僅開放 M17）
 - M19 關注買進清單（L0 側邊欄 + 持股卡片 + M17 交易分析整合）
 - M20 交易分析擴充（預期 45% 報酬率加碼建議 + 風報比 1:1.75）
+- M21 Trade Quality Context 資料管線（industry/chip/peer_rank/fundamental/price_structure 預聚合，餵結論層給 LLM）
 
 > M18 → M19 → M20 依序執行。M19 需 M18 註冊系統落地，M20 擴充建立在 M19 卡片帶入 context 之上。
+> M21 與 M20 平行但互補：M20 改 prompt、M21 改 backend context 組裝，兩者合起來才能讓 M17 分析真正精準。
 
 ## 開發注意事項
 - 優先考慮資料正確性與 TWSE API rate limiting
@@ -608,3 +610,25 @@
   - 風報比 = **1 : 1.75**（即每承擔 1 單位下行風險，追求 1.75 單位上行報酬）
 - **實作方式**：修改 `backend/app/prompts/trade_quality.md`（canonical），同步 `docs/trade_quality_prompt.md`（鏡像）。程式碼只需把 avg_price 加進 context，不改 API 契約。
 - **JSON schema 調整**：`if_strong` 視需要新增 `add_position_levels: [{price, reason}, ...]` 欄位
+
+### M21 Trade Quality Context 資料管線
+- **定位**：與 M20 平行互補。M20 是 prompt 工程；M21 是把 DB raw data 預聚合成「結論層」訊號，避免 AI 自己瞎推
+- **輸出**：`build_stock_analysis_input(stock_id, buy_date) -> dict`，回傳 6 區塊結構化 JSON：
+  - `industry_summary`（hot_score / hot_level / price_strength / volume_trend / institution_flow / capital_type / is_false_hot）
+  - `chip_summary`（foreign/trust/dealer buy_days / volume_trend / price_trend / is_accumulation / chip_strength）
+  - `peer_rank`（return_5d_percentile / volume_percentile / institution_rank_percentile / leader_or_follower）
+  - `fundamental`（revenue_yoy / revenue_mom / guidance）
+  - `price_structure`（trend / is_breakout / is_consolidation / is_accelerating）
+  - `news_input_stub`（query_stock / query_industry / date_end，給未來 M14 接入）
+- **可行度**：~92%。`industry_news_heat` / `guidance` 兩欄必為 `null`（無 DB 來源，未來 M14 輿情 ETL 完成再補）
+- **完整 spec**：`docs/plans/trade_quality_context_spec.md`（含 DB 欄位對照表、SQL 範例、常數門檻、null 政策）
+- **實作原則**：
+  - 只用 `buy_date` 當日及以前資料（no hindsight bias）
+  - 規則 deterministic、可測試、不用 LLM 判斷
+  - 所有門檻常數集中 `backend/app/analysis/context_thresholds.py`
+  - Raw extraction 與 derived signal 分開寫（未來加欄位容易擴充）
+- **技術注意**：
+  - `industry_daily_flow` 只有法人淨買超，**沒有** volume → industry_volume_trend 要從 `daily_price` + `stocks_master` 跨股聚合
+  - peer_rank 用 `PERCENT_RANK() OVER (PARTITION BY industry_name)` 即時算（同產業小集合速度可接受）
+  - 連續買超 N 日建議 Python loop 從最新日往回數（SQL `SUM(CASE WHEN) OVER` 可讀性差）
+  - Lookback 一律以**交易日**為單位（`ORDER BY trade_date DESC LIMIT N`），非 calendar days

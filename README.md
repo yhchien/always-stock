@@ -207,6 +207,7 @@ npm run dev
 | M18 | 使用者註冊系統（Gmail OAuth + Admin local auth；未登入僅開放 M17） | ⬜ 規劃中 |
 | M19 | 關注買進清單（L0 側邊欄 + 持股卡片 + 綁 M17 交易分析） | ⬜ 規劃中（M18 完成後） |
 | M20 | 交易分析擴充（預期 45% 報酬率加碼建議 + 風報比 1:1.75） | ⬜ 規劃中（M19 完成後） |
+| M21 | Trade Quality Context 資料管線（industry/chip/peer_rank/fundamental/price_structure 預聚合，餵結論層給 LLM） | ⬜ 規劃中 |
 
 ---
 

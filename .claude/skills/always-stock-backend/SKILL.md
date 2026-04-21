@@ -168,3 +168,18 @@ Render 的 Docker image（Python runtime）目前跑 **Python 3.9**。撰寫 `ba
 - **寫死參數**：目標報酬 45%、風報比 1:1.75
 - JSON schema 視需要新增 `if_strong.add_position_levels: [{price, reason}, ...]`
 - 程式碼只改 context 組裝（加 avg_price），API 契約與分析邏輯改 md 不改 code
+
+### M21 Trade Quality Context 資料管線（⬜ 待開始，可與 M20 平行）
+- 完整 spec：`docs/plans/trade_quality_context_spec.md`
+- 主入口：`backend/app/analysis/context_builder.py::build_stock_analysis_input(stock_id, buy_date) -> dict`
+- 產出 6 區塊結論層 JSON（industry_summary / chip_summary / peer_rank / fundamental / price_structure / news_input_stub）
+- **必 null 欄位**：`industry_news_heat`（DB 無新聞源）、`guidance`（DB 無法說會/展望）。每個 null 必須寫進 `data_quality_notes`
+- **必踩坑**：
+  - `industry_daily_flow` **沒有** volume，`industry_volume_trend` 要從 `daily_price` + `stocks_master` 跨股聚合
+  - 連續買超天數用 Python loop（SQL window function 可讀性差）
+  - Lookback 單位一律交易日（`ORDER BY trade_date DESC LIMIT N`），非 calendar days
+  - Peer rank 用 `PERCENT_RANK() OVER (PARTITION BY industry_name)` 即時算，不預聚合
+- **No hindsight bias 強制**：所有 SQL / Python 計算只能用 `trade_date <= buy_date` 資料
+- **門檻集中**：`backend/app/analysis/context_thresholds.py`（改門檻只改這檔）
+- **檔案結構**：`industry_signals.py` / `chip_signals.py` / `peer_rank.py` / `fundamental_signals.py` / `price_structure.py` / `news_stub.py` 拆檔
+- **測試**：固定 `(stock_id, buy_date)` snapshot 測試；新上市 / 孤兒產業 null 處理測試；deterministic 測試
