@@ -121,10 +121,6 @@ def main() -> None:
     parser.add_argument("--skip-master", action="store_true", help="Skip stock_master update")
     parser.add_argument("--reset", action="store_true", help="Ignore checkpoint, start from --start")
     parser.add_argument("--token", type=str, default="", help="FinMind API token")
-    parser.add_argument(
-        "--fugle-mapping", type=str, default=None,
-        help="Path to Fugle sub-industry CSV",
-    )
     args = parser.parse_args()
 
     start_date = date.fromisoformat(args.start)
@@ -137,20 +133,11 @@ def main() -> None:
     # Initialize DB tables
     init_db()
 
-    # Resolve Fugle mapping path
-    fugle_mapping = args.fugle_mapping
-    if fugle_mapping is None:
-        default_path = os.path.join(
-            os.path.dirname(__file__), "..", "tools", "output", "fugle_industry_mapping.csv"
-        )
-        if os.path.exists(default_path):
-            fugle_mapping = os.path.normpath(default_path)
-
     # Update stock master once at start (unless skipped)
     if not args.skip_master:
         db = SessionLocal()
         try:
-            n = fetch_and_upsert_stock_master(db, token=args.token, fugle_mapping_path=fugle_mapping)
+            n = fetch_and_upsert_stock_master(db, token=args.token)
             logger.info("Stock master updated: %d stocks", n)
         finally:
             db.close()

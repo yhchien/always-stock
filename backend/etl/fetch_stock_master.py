@@ -1,65 +1,39 @@
 """
-Fetch TWSE listed stock master data from FinMind and merge Fugle sub-industry mapping.
+Fetch TWSE listed stock master data from FinMind.
 
-API: https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInfo
-Response fields: stock_id, stock_name, industry_category, type, date
+Data sources (both from FinMind):
+- TaiwanStockInfo: stock_id, stock_name, industry_category (fallback), type
+- TaiwanStockIndustryChain: industry, sub_industry (primary classification)
 
-Industry classification logic:
-- If a stock exists in the Fugle mapping CSV, use the first row (primary sub-industry)
-  to populate industry, chain, and sub_industry.
-- Otherwise fall back to FinMind's industry_category; chain and sub_industry are left null.
-- FinMind may return multiple rows per stock; only the first row is used (finer classification).
+Classification logic (all stocks_master records marked source='finmind'):
+- Primary: TaiwanStockIndustryChain 的 industry / sub_industry
+- Fallback: 不在 IndustryChain 的股票（ETF、剛上市）退回 TaiwanStockInfo.industry_category，
+           sub_industry 留 None
+- chain 欄位（原 Fugle 上中下游）全面停用，永遠寫 None
 """
-import csv
 import json
 import logging
 import urllib.parse
 import urllib.request
-from typing import Optional
 
 from sqlalchemy.orm import Session
 
 from app.models import StockMaster
+from etl.finmind_industry_chain_sdk import fetch_industry_chain
 
 logger = logging.getLogger(__name__)
 
 FINMIND_URL = "https://api.finmindtrade.com/api/v4/data"
 
 
-def load_fugle_mapping(csv_path: str) -> "dict[str, dict]":
+def fetch_and_upsert_stock_master(db: Session, token: str = "") -> int:
     """
-    Load Fugle industry mapping CSV and return {stock_id: {industry, chain, sub_industry}}.
-    When a stock appears multiple times, only the first row is kept (primary sub-industry).
-
-    CSV columns: stock_id, stock_name, industry, chain, sub_industry
-    """
-    mapping = {}  # type: dict[str, dict]
-    with open(csv_path, encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            sid = row["stock_id"].strip()
-            if sid not in mapping:
-                mapping[sid] = {
-                    "industry": row["industry"].strip(),
-                    "chain": row["chain"].strip(),
-                    "sub_industry": row["sub_industry"].strip(),
-                }
-    logger.debug("Fugle mapping loaded: %d stocks from %s", len(mapping), csv_path)
-    return mapping
-
-
-def fetch_and_upsert_stock_master(
-    db: Session,
-    token: str = "",
-    fugle_mapping_path: Optional[str] = None,
-) -> int:
-    """
-    Fetch TWSE listed stocks from FinMind, merge Fugle sub-industry mapping, and upsert into DB.
+    Fetch TWSE listed stocks from FinMind, merge with TaiwanStockIndustryChain,
+    and upsert into stocks_master.
 
     Args:
-        db: SQLAlchemy session
-        token: FinMind API token (not required for free tier)
-        fugle_mapping_path: path to Fugle industry mapping CSV; skipped if None
+        db:    SQLAlchemy session
+        token: FinMind API token（TaiwanStockIndustryChain 需要 Backer/Sponsor）
 
     Returns:
         number of stocks inserted or updated
@@ -71,7 +45,7 @@ def fetch_and_upsert_stock_master(
     url = FINMIND_URL + "?" + urllib.parse.urlencode(params)
     req = urllib.request.Request(url, headers={"User-Agent": "always-stock/1.0"})
 
-    logger.debug("Fetching stock master from FinMind: %s", url)
+    logger.debug("Fetching TaiwanStockInfo from FinMind: %s", url)
     with urllib.request.urlopen(req, timeout=30) as resp:
         data = json.loads(resp.read())
 
@@ -79,10 +53,9 @@ def fetch_and_upsert_stock_master(
         raise RuntimeError(f"FinMind API error: {data.get('msg')}")
 
     rows = data.get("data", [])
-    logger.debug("FinMind returned %d rows", len(rows))
+    logger.debug("TaiwanStockInfo returned %d rows", len(rows))
 
-    # Keep only the first row per stock, TWSE-listed only
-    seen = {}  # type: dict[str, dict]
+    seen: "dict[str, dict]" = {}
     for row in rows:
         if row.get("type") != "twse":
             continue
@@ -90,36 +63,53 @@ def fetch_and_upsert_stock_master(
         if sid not in seen:
             seen[sid] = row
 
-    fugle_map = load_fugle_mapping(fugle_mapping_path) if fugle_mapping_path else {}
+    industry_chain_map: "dict[str, dict]" = {}
+    if token:
+        try:
+            industry_chain_map = fetch_industry_chain(token)
+            logger.info(
+                "TaiwanStockIndustryChain coverage: %d / %d stocks",
+                len(industry_chain_map), len(seen),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to fetch TaiwanStockIndustryChain, fallback to industry_category only: %s",
+                exc,
+            )
+    else:
+        logger.warning(
+            "No FinMind token provided; skipping TaiwanStockIndustryChain (sub_industry will be NULL)"
+        )
 
     count = 0
     for sid, row in seen.items():
         stock_name = row["stock_name"].strip()
+        chain_entry = industry_chain_map.get(sid)
 
-        if sid in fugle_map:
-            industry_name = fugle_map[sid]["industry"]
-            chain = fugle_map[sid]["chain"] or None
-            sub_industry = fugle_map[sid]["sub_industry"] or None
+        if chain_entry and chain_entry.get("industry"):
+            industry_name = chain_entry["industry"]
+            sub_industry = chain_entry.get("sub_industry") or None
         else:
-            industry_name = row["industry_category"].strip() or "其他"
-            chain = None
+            industry_name = row.get("industry_category", "").strip() or "其他"
             sub_industry = None
 
         existing = db.get(StockMaster, sid)
         if existing:
             existing.stock_name = stock_name
             existing.industry_name = industry_name
-            existing.chain = chain
+            existing.chain = None
             existing.sub_industry = sub_industry
             existing.is_active = True
+            existing.source = "finmind"
         else:
             db.add(StockMaster(
                 stock_id=sid,
                 stock_name=stock_name,
                 industry_name=industry_name,
-                chain=chain,
+                chain=None,
                 sub_industry=sub_industry,
                 is_active=True,
+                source="finmind",
             ))
         count += 1
 

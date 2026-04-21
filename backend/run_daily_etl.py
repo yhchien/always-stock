@@ -2,7 +2,7 @@
 Daily ETL entry point.
 
 Execution order (per day):
-  1. fetch_stock_master   — refresh stock master data (with Fugle sub-industry)
+  1. fetch_stock_master   — refresh stock master data (FinMind TaiwanStockIndustryChain)
   2. fetch_daily_price    — fetch closing prices for the day
   3. fetch_inst_flow      — fetch institutional buy/sell (amount estimate depends on step 2)
   4. aggregate_industry   — aggregate into industry_daily_flow
@@ -17,19 +17,13 @@ Usage:
   # Backfill N calendar days (non-trading days are skipped automatically)
   python run_daily_etl.py --backfill-days 30
 
-  # Specify a custom Fugle mapping file
-  python run_daily_etl.py --date 2025-04-01 \\
-      --fugle-mapping ../tools/output/fugle_industry_mapping.csv
-
   # Skip stock master update (speeds up backfill)
   python run_daily_etl.py --backfill-days 30 --skip-master
 """
 import argparse
 import logging
-import os
 import sys
 from datetime import date, timedelta
-from typing import Optional
 
 from logging_config import setup_logging
 from app.database import SessionLocal
@@ -44,7 +38,6 @@ logger = logging.getLogger(__name__)
 
 def run_one_day(
     trade_date: date,
-    fugle_mapping_path: Optional[str],
     skip_master: bool,
     token: str,
 ) -> bool:
@@ -56,7 +49,7 @@ def run_one_day(
         logger.info("── %s ─────────────────────────────", trade_date)
 
         if not skip_master:
-            n = fetch_and_upsert_stock_master(db, token=token, fugle_mapping_path=fugle_mapping_path)
+            n = fetch_and_upsert_stock_master(db, token=token)
             logger.info("[1/4] stock_master: %d stocks", n)
 
         price_count = fetch_and_upsert_daily_price(db, trade_date)
@@ -93,29 +86,14 @@ def main() -> None:
         help="backfill N calendar days (--date is ignored when this is set)",
     )
     parser.add_argument(
-        "--fugle-mapping", type=str, default=None,
-        dest="fugle_mapping",
-        help="path to Fugle sub-industry CSV (default: ../tools/output/fugle_industry_mapping.csv)",
-    )
-    parser.add_argument(
         "--skip-master", action="store_true",
         help="skip stock_master update (speeds up backfill runs)",
     )
     parser.add_argument(
         "--token", type=str, default="",
-        help="FinMind API token (optional for free tier)",
+        help="FinMind API token (required for TaiwanStockIndustryChain)",
     )
     args = parser.parse_args()
-
-    # Resolve Fugle mapping path
-    fugle_mapping = args.fugle_mapping
-    if fugle_mapping is None:
-        default_path = os.path.join(
-            os.path.dirname(__file__), "..", "tools", "output", "fugle_industry_mapping.csv"
-        )
-        if os.path.exists(default_path):
-            fugle_mapping = os.path.normpath(default_path)
-            logger.info("Using default Fugle mapping: %s", fugle_mapping)
 
     # Initialize DB (idempotent)
     init_db()
@@ -134,7 +112,6 @@ def main() -> None:
     for d in dates:
         result = run_one_day(
             trade_date=d,
-            fugle_mapping_path=fugle_mapping,
             skip_master=args.skip_master,
             token=args.token,
         )

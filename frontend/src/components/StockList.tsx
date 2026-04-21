@@ -24,15 +24,6 @@ import {
 } from "@/lib/api"
 import { useRealtimeQuotes } from "@/lib/useRealtimeQuotes"
 
-// ── Chain ordering ────────────────────────────────────────────────────────────
-
-const CHAIN_ORDER: Record<string, number> = { "上游": 0, "中游": 1, "下游": 2 }
-
-function chainSortKey(chain: string | null): number {
-  if (!chain) return 99
-  return CHAIN_ORDER[chain] ?? 50
-}
-
 // ── Sub-industry summary table ────────────────────────────────────────────────
 
 type SummarySortKey = "total" | "foreign" | "trust" | "dealer" | "streak"
@@ -56,11 +47,6 @@ function SummaryTable({
 
   const sorted = useMemo(() => {
     return [...rows].sort((a, b) => {
-      // Primary: chain order, secondary: sortKey
-      const ca = chainSortKey(a.chain)
-      const cb = chainSortKey(b.chain)
-      if (ca !== cb) return ca - cb
-
       let va: number, vb: number
       switch (sortKey) {
         case "foreign": va = a.foreign_net_amount; vb = b.foreign_net_amount; break
@@ -87,7 +73,6 @@ function SummaryTable({
       <Table>
         <TableHeader>
           <TableRow className="border-slate-700 hover:bg-transparent">
-            <TableHead className="text-slate-300">鏈</TableHead>
             <TableHead className="text-slate-300">子產業</TableHead>
             <TableHead className="text-slate-300 text-right cursor-pointer select-none hover:text-slate-100" onClick={() => handleSort("foreign")}>
               外資{indicator("foreign")}
@@ -115,13 +100,6 @@ function SummaryTable({
                 className={`border-slate-700 cursor-pointer ${isActive ? "bg-slate-700/60" : "hover:bg-slate-800/40"}`}
                 onClick={() => onFilter(isActive ? null : row.sub_industry)}
               >
-                <TableCell>
-                  {row.chain && (
-                    <Badge variant="outline" className="text-xs text-slate-300 border-slate-600">
-                      {row.chain}
-                    </Badge>
-                  )}
-                </TableCell>
                 <TableCell className="font-medium text-sm">{row.sub_industry}</TableCell>
                 <TableCell className="text-right"><AmountCell value={row.foreign_net_amount} /></TableCell>
                 <TableCell className="text-right"><AmountCell value={row.trust_net_amount} /></TableCell>
@@ -236,15 +214,14 @@ export default function StockList({ industryName, defaultDate, defaultSubFilter 
     return rows.filter((r) => (r.sub_industry || r.industry_name) === subFilter)
   }, [rows, subFilter])
 
-  // Group filtered stocks by chain (with proper ordering)
+  // Group filtered stocks by sub_industry, ordered by summary total desc
   const grouped = useMemo(() => {
     const map = new Map<string, StockFlowItem[]>()
     for (const row of filteredRows) {
-      const key = row.chain ?? "其他"
+      const key = row.sub_industry ?? "其他"
       if (!map.has(key)) map.set(key, [])
       map.get(key)!.push(row)
     }
-    // Sort each group by total net amount desc
     for (const items of map.values()) {
       items.sort(
         (a, b) =>
@@ -252,12 +229,12 @@ export default function StockList({ industryName, defaultDate, defaultSubFilter 
           (a.foreign_net_amount + a.trust_net_amount + a.dealer_net_amount)
       )
     }
-    // Sort groups by chain order
-    const sorted = new Map(
-      [...map.entries()].sort((a, b) => chainSortKey(a[0]) - chainSortKey(b[0]))
-    )
-    return sorted
-  }, [filteredRows])
+    const orderIndex = new Map<string, number>()
+    const ordered = [...summary].sort((a, b) => b.total_net_amount - a.total_net_amount)
+    ordered.forEach((s, i) => orderIndex.set(s.sub_industry, i))
+    const sortKeyOf = (name: string) => orderIndex.get(name) ?? 99
+    return new Map([...map.entries()].sort((a, b) => sortKeyOf(a[0]) - sortKeyOf(b[0])))
+  }, [filteredRows, summary])
 
   return (
     <div className="flex flex-col gap-6">
@@ -312,14 +289,14 @@ export default function StockList({ industryName, defaultDate, defaultSubFilter 
         </div>
       )}
 
-      {/* Cards grouped by chain */}
+      {/* Cards grouped by sub-industry */}
       {!loading && !error && grouped.size > 0 && (
         <div className="flex flex-col gap-8">
-          {[...grouped.entries()].map(([chain, items]) => (
-            <section key={chain}>
+          {[...grouped.entries()].map(([sub, items]) => (
+            <section key={sub}>
               <div className="flex items-center gap-2 mb-3">
                 <Badge variant="outline" className="text-sm text-slate-200 border-slate-500 px-3 py-0.5">
-                  {chain}
+                  {sub}
                 </Badge>
                 <span className="text-xs text-slate-600">{items.length} 檔</span>
               </div>

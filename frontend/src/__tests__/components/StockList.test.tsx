@@ -15,7 +15,6 @@ jest.mock("next/navigation", () => ({
 const MOCK_SUMMARY: api.SubIndustrySummaryItem[] = [
   {
     sub_industry: "晶圓製造",
-    chain: "上游",
     total_net_amount: 4_675_000_000,
     foreign_net_amount: 4_140_000_000,
     trust_net_amount: 866_500_000,
@@ -24,7 +23,6 @@ const MOCK_SUMMARY: api.SubIndustrySummaryItem[] = [
   },
   {
     sub_industry: "IC封裝測試",
-    chain: "下游",
     total_net_amount: 165_000_000,
     foreign_net_amount: 150_000_000,
     trust_net_amount: 30_000_000,
@@ -38,7 +36,6 @@ const MOCK_STOCKS: api.StockFlowItem[] = [
     stock_id: "2330",
     stock_name: "台積電",
     industry_name: "半導體",
-    chain: "上游",
     sub_industry: "晶圓製造",
     close_price: 850.0,
     prev_close_price: 840.0,
@@ -55,7 +52,6 @@ const MOCK_STOCKS: api.StockFlowItem[] = [
     stock_id: "2303",
     stock_name: "聯電",
     industry_name: "半導體",
-    chain: "上游",
     sub_industry: "晶圓製造",
     close_price: 55.0,
     prev_close_price: 56.0,
@@ -72,7 +68,6 @@ const MOCK_STOCKS: api.StockFlowItem[] = [
     stock_id: "3711",
     stock_name: "日月光投控",
     industry_name: "半導體",
-    chain: "下游",
     sub_industry: "IC封裝測試",
     close_price: 150.0,
     prev_close_price: 148.0,
@@ -114,15 +109,15 @@ describe("StockList", () => {
     })
   })
 
-  it("groups stocks by chain", async () => {
+  it("groups stocks by sub-industry", async () => {
     mockBothApis()
 
     render(<StockList industryName="半導體" defaultDate="2026-04-01" />)
 
     await waitFor(() => {
-      // "上游"/"下游" appear in both summary table and card section headers
-      expect(screen.getAllByText("上游").length).toBeGreaterThanOrEqual(1)
-      expect(screen.getAllByText("下游").length).toBeGreaterThanOrEqual(1)
+      // sub-industry names appear in summary table and card section headers
+      expect(screen.getAllByText("晶圓製造").length).toBeGreaterThanOrEqual(2)
+      expect(screen.getAllByText("IC封裝測試").length).toBeGreaterThanOrEqual(2)
     })
   })
 

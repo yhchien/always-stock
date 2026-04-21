@@ -23,14 +23,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["industries"])
 LOCK_RETRY_DELAY = 0.15
 LOCK_RETRY_ATTEMPTS = 2
-INDUSTRY_NAME_FALLBACKS: Dict[str, List[str]] = {
-    # TWSE official labels -> stocks_master canonical labels (Fugle/FinMind mixed)
-    "水泥工業": ["水泥"],
-    "鋼鐵工業": ["鋼鐵"],
-    "食品工業": ["食品"],
-    "金融科技": ["金融"],
-    "數位雲端": ["雲端運算"],
-}
 
 
 # ── Streak helper ────────────────────────────────────────────────────────────
@@ -99,7 +91,6 @@ class StockFlowItem(BaseModel):
     stock_id: str
     stock_name: str
     industry_name: str
-    chain: Optional[str]
     sub_industry: Optional[str]
     close_price: Optional[float]
     prev_close_price: Optional[float]
@@ -115,7 +106,6 @@ class StockFlowItem(BaseModel):
 
 class SubIndustrySummaryItem(BaseModel):
     sub_industry: str
-    chain: Optional[str]
     total_net_amount: float
     foreign_net_amount: float
     trust_net_amount: float
@@ -129,40 +119,16 @@ def _raise_busy_if_locked(error: OperationalError) -> None:
     raise error
 
 
-def _candidate_industry_names(industry_name: str) -> List[str]:
-    candidates = [industry_name]
-    candidates.extend(INDUSTRY_NAME_FALLBACKS.get(industry_name, []))
-
-    # Generic fallback: "鋼鐵工業" -> "鋼鐵"
-    if industry_name.endswith("工業") and len(industry_name) > 2:
-        candidates.append(industry_name[:-2])
-
-    # Generic fallback: "半導體業" -> "半導體"
-    if industry_name.endswith("業") and len(industry_name) > 1:
-        candidates.append(industry_name[:-1])
-
-    deduped: List[str] = []
-    for candidate in candidates:
-        if candidate and candidate not in deduped:
-            deduped.append(candidate)
-    return deduped
-
-
-def _load_stocks_by_industry_name(db: Session, industry_name: str) -> tuple[List[StockMaster], str]:
-    for candidate_name in _candidate_industry_names(industry_name):
-        stocks = _run_with_lock_retry(
-            db,
-            lambda: (
-                db.query(StockMaster)
-                .filter(StockMaster.industry_name == candidate_name)
-                .all()
-            ),
-        )
-        if stocks:
-            if candidate_name != industry_name:
-                logger.info("Industry fallback matched: %s -> %s", industry_name, candidate_name)
-            return stocks, candidate_name
-    return [], industry_name
+def _load_stocks_by_industry_name(db: Session, industry_name: str) -> List[StockMaster]:
+    """直接用 FinMind 分類名稱查 stocks_master，不再做 TWSE/Fugle fallback。"""
+    return _run_with_lock_retry(
+        db,
+        lambda: (
+            db.query(StockMaster)
+            .filter(StockMaster.industry_name == industry_name)
+            .all()
+        ),
+    )
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -227,30 +193,23 @@ def get_industry_sub_summary(
 ):
     """
     L1 summary: Return sub_industry level aggregation for a given industry,
-    with chain grouping and streak info.
+    with streak info.
     """
     logger.info("GET /industries/%s/summary date=%s", industry_name, date)
 
-    # Find all stocks in this industry (supports TWSE -> canonical fallback mapping)
     try:
-        stocks, resolved_name = _load_stocks_by_industry_name(db, industry_name)
+        stocks = _load_stocks_by_industry_name(db, industry_name)
     except OperationalError as error:
         _raise_busy_if_locked(error)
     if not stocks:
         raise HTTPException(status_code=404, detail=f"Industry not found: {industry_name}")
 
     stock_ids = [s.stock_id for s in stocks]
-    # stock_id → (sub_industry, chain)
     stock_sub = {
-        s.stock_id: (s.sub_industry or s.industry_name, s.chain)
+        s.stock_id: s.sub_industry or s.industry_name
         for s in stocks
     }
-    # Collect unique sub_industries with their chain
-    sub_chain: Dict[str, Optional[str]] = {}
-    for s in stocks:
-        sub = s.sub_industry or s.industry_name
-        if sub not in sub_chain:
-            sub_chain[sub] = s.chain
+    sub_set: set[str] = {s.sub_industry or s.industry_name for s in stocks}
 
     # Load flows for the target date
     try:
@@ -270,7 +229,7 @@ def get_industry_sub_summary(
         "foreign_net": 0.0, "trust_net": 0.0, "dealer_net": 0.0,
     })
     for f in flows:
-        sub, _ = stock_sub.get(f.stock_id, (None, None))
+        sub = stock_sub.get(f.stock_id)
         if sub is None:
             continue
         if f.inst_type == "foreign":
@@ -305,28 +264,24 @@ def get_industry_sub_summary(
     except OperationalError as error:
         _raise_busy_if_locked(error)
 
-    # Aggregate by (sub_industry, date) → total net
     daily_sub_net: Dict[str, Dict[date, float]] = defaultdict(lambda: defaultdict(float))
     for f in all_flows:
-        sub, _ = stock_sub.get(f.stock_id, (None, None))
+        sub = stock_sub.get(f.stock_id)
         if sub is None:
             continue
         daily_sub_net[sub][f.trade_date] += f.net_amount_est or 0.0
 
-    # Compute streak per sub_industry
     sub_streaks: Dict[str, int] = {}
     for sub, date_nets in daily_sub_net.items():
         sorted_vals = [v for _, v in sorted(date_nets.items(), reverse=True)]
         sub_streaks[sub] = compute_streak(sorted_vals)
 
-    # Build result
     result = []
-    for sub, chain in sub_chain.items():
+    for sub in sub_set:
         vals = agg.get(sub, {"foreign_net": 0.0, "trust_net": 0.0, "dealer_net": 0.0})
         total = vals["foreign_net"] + vals["trust_net"] + vals["dealer_net"]
         result.append(SubIndustrySummaryItem(
             sub_industry=sub,
-            chain=chain,
             total_net_amount=total,
             foreign_net_amount=vals["foreign_net"],
             trust_net_amount=vals["trust_net"],
@@ -335,7 +290,7 @@ def get_industry_sub_summary(
         ))
 
     result.sort(key=lambda x: x.total_net_amount, reverse=True)
-    logger.debug("Returning %d sub-industry summaries for '%s' (resolved=%s) on %s", len(result), industry_name, resolved_name, date)
+    logger.debug("Returning %d sub-industry summaries for '%s' on %s", len(result), industry_name, date)
     return result
 
 
@@ -351,9 +306,8 @@ def get_industry_stocks(
     """
     logger.info("GET /industries/%s/stocks date=%s", industry_name, date)
 
-    # Find stocks belonging to this industry (supports TWSE -> canonical fallback mapping)
     try:
-        stocks, resolved_name = _load_stocks_by_industry_name(db, industry_name)
+        stocks = _load_stocks_by_industry_name(db, industry_name)
     except OperationalError as error:
         _raise_busy_if_locked(error)
     if not stocks:
@@ -362,7 +316,7 @@ def get_industry_stocks(
 
     stock_ids = [s.stock_id for s in stocks]
     stock_map = {s.stock_id: s for s in stocks}
-    logger.debug("Found %d stocks in industry '%s' (resolved=%s)", len(stock_ids), industry_name, resolved_name)
+    logger.debug("Found %d stocks in industry '%s'", len(stock_ids), industry_name)
 
     # Load closing prices for the target date
     try:
@@ -455,7 +409,6 @@ def get_industry_stocks(
             stock_id=sid,
             stock_name=sm.stock_name,
             industry_name=sm.industry_name,
-            chain=sm.chain,
             sub_industry=sm.sub_industry,
             close_price=close,
             prev_close_price=prev,

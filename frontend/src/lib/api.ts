@@ -18,7 +18,6 @@ export interface StockFlowItem {
   stock_id: string
   stock_name: string
   industry_name: string
-  chain: string | null
   sub_industry: string | null
   close_price: number | null
   prev_close_price: number | null
@@ -34,7 +33,6 @@ export interface StockFlowItem {
 
 export interface SubIndustrySummaryItem {
   sub_industry: string
-  chain: string | null
   total_net_amount: number
   foreign_net_amount: number
   trust_net_amount: number

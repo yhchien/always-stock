@@ -23,7 +23,7 @@
 - **Backend**: FastAPI + SQLAlchemy, Python 3.9+
 - **Frontend**: Next.js + Tailwind CSS + shadcn/ui + ECharts
 - **DB**: PostgreSQL（Render Managed）；本地開發可用 SQLite（`backend/db/tw_stock.db`）
-- **ETL 資料來源**: 目前為 TWSE 公開資料 + FinMind + Fugle；目標方向已確定為「全面切 FinMind 為主資料源」，TWSE/TPEX 僅保留備援或校驗
+- **ETL 資料來源**: FinMind 為主（價、法人、估值、月營收、財報、券商分點、產業分類），TWSE/TPEX 僅保留備援或校驗；Fugle 已全面下線（2026-04-21）
 - **Bot**: Telegram Bot（long-polling）+ OpenAI GPT 籌碼分析
 - **排程**:
   - macOS launchd（本地）
@@ -70,15 +70,11 @@
   - FinMind `max` -> DB `high_price`
   - FinMind `min` -> DB `low_price`
 - 不要把外部資料源 naming 直接散落到全系統，避免未來 ETL 切換時 schema 混亂
-- FinMind 已提供細產業分類資料集：
-  - `TaiwanStockIndustryChain`
-  - 欄位：`stock_id / industry / sub_industry / date`
-  - 權限：`Backer/Sponsor`
-- 但 FinMind 的細產業分類目前不應直接無條件取代既有 Fugle mapping
-- 正確做法：
-  - 先把 `TaiwanStockIndustryChain` 拉下來
-  - 和現有 Fugle mapping 對照
-  - 再決定最終採用 FinMind、Fugle，或保留 `industry_source` 雙軌策略
+- FinMind 為**唯一產業分類來源**（2026-04-21 完成切換）：
+  - `TaiwanStockIndustryChain`：`stock_id / industry / sub_industry / date`（`Backer/Sponsor`）
+  - Fugle CSV mapping 已全面下線，`chain`（上游/中游/下游）欄位永久捨棄
+  - `stocks_master.industry_name` / `sub_industry` 由 FinMind 寫入；`chain` 欄位保留但永遠 NULL
+  - `industry_daily_flow` 的 `industry_name` 已重建為 FinMind 細分類（53 個產業/日）
 
 ## Milestones 進度
 
@@ -199,12 +195,9 @@
   - 本機 `localhost:8000` 當下執行中的 backend 進程環境變數 `DATABASE_URL` 指向 Render PostgreSQL（非本地 SQLite）。
   - 本地 `backend/db/tw_stock.db` 的 `daily_valuation` 目前是 0 筆；本地與雲端資料差異需先確認連線目標。
 
-- **L1 產業名稱 fallback（TWSE ↔ stocks_master）**
-  - 修正 API：`/api/industries/{industry}/stocks`、`/api/industries/{industry}/summary`。
-  - 新增 fallback 對照（例）：`水泥工業→水泥`、`鋼鐵工業→鋼鐵`、`食品工業→食品`、`金融科技→金融`、`數位雲端→雲端運算`。
-  - 另外補 generic fallback：`工業` 後綴與 `業` 後綴剝離。
-  - Render 對帳（2026-04-08）實際不匹配為 5 個：`太空衛星科技`、`數位雲端`、`金融科技`、`鋼鐵工業`、`食品工業`（`水泥工業`不在該日 L0 清單）。
-  - `太空衛星科技` 目前仍無安全對應，不做硬映射避免誤導。
+- **L1 產業名稱 fallback（已於 2026-04-21 全面移除）**
+  - 舊設計（TWSE `industry_daily_flow` ↔ Fugle `stocks_master` 名稱不一致）需要 `INDUSTRY_NAME_FALLBACKS` 硬映射 + 後綴剝離。
+  - 2026-04-21 切換後，`industry_daily_flow.industry_name` 與 `stocks_master.industry_name` 皆由 FinMind 寫入，名稱一致，fallback 已全部刪除。
 
 - **L3 回測頁視覺修正**
   - 修正回測頁右側 `BacktestPanel` 高度策略：`h-full` 改為 `min-h-full`，避免內容展開時底色不延伸造成「破圖感」。
@@ -538,3 +531,34 @@
 - `backend/tests/test_run_finmind_etl_sdk.py` 新增兩個測試案例：
   - CRITICAL step `no_data` 最終仍 no_data → error
   - 非 CRITICAL step `no_data` → ok
+
+## 產業分類全面切換至 FinMind（2026-04-21）
+
+### 背景
+- 舊架構：`industry_daily_flow` 用 TWSE 名稱（`水泥工業` 等），`stocks_master` 用 Fugle 名稱（`水泥` 等），L1 API 靠 `INDUSTRY_NAME_FALLBACKS` + 後綴剝離硬接
+- 舊架構的 `chain`（上游/中游/下游）是 Fugle 特有三層結構，FinMind 沒有
+- 決策：**全面切 FinMind `TaiwanStockIndustryChain`**，徹底移除 Fugle 與 `chain` 欄位
+
+### 執行步驟
+1. **`backend/etl/fetch_stock_master.py` 重寫**：移除 Fugle CSV，改吃 `TaiwanStockInfo` + `TaiwanStockIndustryChain`；`chain` 寫 NULL、`source="finmind"`
+2. **`backend/run_daily_etl.py` / `run_backfill.py`**：移除 `--fugle-mapping` argparse 與 `fugle_mapping_path` 參數
+3. **`backend/run_finmind_etl_sdk.py` 新增 step 0**：`stocks_master`（non-CRITICAL），每日 ETL 自動 refresh 產業分類
+4. **`backend/app/routers/industries.py`**：移除 `INDUSTRY_NAME_FALLBACKS` + `_candidate_industry_names`；`StockFlowItem` / `SubIndustrySummaryItem` schema 拔掉 `chain`
+5. **`backend/app/ai_analyst.py` + `telegram_bot.py`**：移除 `stock.chain` 輸出（`供應鏈位置` / `⛓ 供應鏈`）
+6. **`frontend/src/lib/api.ts`**：TS 型別拔掉 `chain`
+7. **`frontend/src/components/StockList.tsx`**：移除 `CHAIN_ORDER` / `chainSortKey`；卡片由 `chain` 分組改為 `sub_industry` 分組，SummaryTable 移除「鏈」欄位
+8. **`rebuild_industry_flow.py`** 全量重建：清空 `industry_daily_flow` 1672 個交易日 + 逐日 re-aggregate
+
+### DB 欄位保留政策
+- `stock_master.chain` 欄位**不做 migration**（避免 schema 震盪），ETL 永遠寫 NULL
+- `source` 欄位統一寫 `finmind`
+- 前端 / API schema / 測試 **完全不再引用** `chain`
+
+### 重建後資料
+- `industry_daily_flow` 從 267 筆（舊 TWSE 粗分類） → ~53 個產業 × 1672 天 ≈ 88,000 筆（FinMind 細分類）
+- Render Postgres 端執行，每天 aggregate 約 5 秒，全量耗時約 2 小時
+- L0→L1 drill-down 100% 對應（53/53 產業都能在 stocks_master 找到股票）
+
+### 環境變數命名對齊
+- 本地 `.env` 跟 Render dashboard 對齊：`TARGET_DATABASE_URL` → `DATABASE_URL`、`FINMIND_API_TOKEN` → `FINMIND_TOKEN`
+- 舊名仍保留於 `.env.example` / `infra/render/render.yaml.template` / `docs/operations/security_and_secrets.md` —— 這些是 doc drift，後續另行修正

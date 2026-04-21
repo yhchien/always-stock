@@ -86,8 +86,6 @@ def _collect_stock_context(db: Session, stock_id: str, days: int = 5) -> Optiona
     ]
     if stock.sub_industry:
         lines.append(f"子產業：{stock.sub_industry}")
-    if stock.chain:
-        lines.append(f"供應鏈位置：{stock.chain}")
 
     lines.append(f"\n最近 {len(prices)} 個交易日資料（由新到舊）：")
 

@@ -126,8 +126,6 @@ def query_stock(stock_id: str) -> str:
         lines.append(f"🏭 產業：{stock.industry_name}")
         if stock.sub_industry:
             lines.append(f"🔗 子產業：{stock.sub_industry}")
-        if stock.chain:
-            lines.append(f"⛓ 供應鏈：{stock.chain}")
 
         lines.append("")
         lines.append("*三大法人買賣超：*")

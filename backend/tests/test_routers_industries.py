@@ -200,22 +200,6 @@ class TestGetIndustryStocks:
         resp = client.get(f"/api/industries/不存在的產業/stocks?date={TRADE_DATE}")
         assert resp.status_code == 404
 
-    def test_fallback_from_twse_industry_name(self, api):
-        client, db = api
-        seed_stock(db, "1101", "台泥", "水泥", sub_industry="水泥", chain="中游")
-        seed_price(db, "1101", 42.0)
-        seed_flow(db, "1101", "foreign", 100, 4200)
-        seed_flow(db, "1101", "trust", 0, 0)
-        seed_flow(db, "1101", "dealer", 0, 0)
-        db.commit()
-
-        resp = client.get(f"/api/industries/水泥工業/stocks?date={TRADE_DATE}")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert len(data) == 1
-        assert data[0]["stock_id"] == "1101"
-        assert data[0]["industry_name"] == "水泥"
-
     def test_fallback_to_industry_name(self, api):
         client, db = api
         seed_stock(db, "2454", "聯發科", "IC設計業", sub_industry=None)
@@ -251,16 +235,14 @@ class TestGetSubIndustrySummary:
         assert "晶圓製造" in subs
         assert "IC封裝測試" in subs
 
-    def test_summary_includes_chain_and_streak(self, api):
+    def test_summary_includes_streak(self, api):
         client, db = api
-        seed_stock(db, "2330", "台積電", "半導體", sub_industry="晶圓製造", chain="上游")
+        seed_stock(db, "2330", "台積電", "半導體", sub_industry="晶圓製造")
         seed_flow(db, "2330", "foreign", 500, 500000)
         db.commit()
 
         resp = client.get(f"/api/industries/半導體/summary?date={TRADE_DATE}")
         item = resp.json()[0]
-        assert "chain" in item
-        assert item["chain"] == "上游"
         assert "streak" in item
         assert "total_net_amount" in item
         assert "foreign_net_amount" in item
@@ -270,16 +252,3 @@ class TestGetSubIndustrySummary:
         resp = client.get(f"/api/industries/不存在的產業/summary?date={TRADE_DATE}")
         assert resp.status_code == 404
 
-    def test_summary_fallback_from_twse_industry_name(self, api):
-        client, db = api
-        seed_stock(db, "1216", "統一", "食品", sub_industry="食品加工", chain="中游")
-        seed_flow(db, "1216", "foreign", 300, 300000)
-        seed_flow(db, "1216", "trust", 100, 100000)
-        seed_flow(db, "1216", "dealer", 0, 0)
-        db.commit()
-
-        resp = client.get(f"/api/industries/食品工業/summary?date={TRADE_DATE}")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert len(data) == 1
-        assert data[0]["sub_industry"] == "食品加工"

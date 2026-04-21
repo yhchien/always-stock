@@ -175,6 +175,7 @@ class FinMindETLOrchestratorSDK:
             }
         """
         from app.database import SessionLocal
+        from etl.fetch_stock_master import fetch_and_upsert_stock_master
         from etl.finmind_daily_price_sdk import fetch_and_upsert_daily_price_finmind_sdk
         from etl.finmind_inst_flow_sdk import fetch_and_upsert_inst_flow_finmind_sdk
         from etl.finmind_daily_valuation_sdk import fetch_and_upsert_daily_valuation_finmind_sdk
@@ -189,7 +190,7 @@ class FinMindETLOrchestratorSDK:
             close_db = False
 
         # 決定要執行的步驟（None 代表全部）
-        ALL_STEPS = ["daily_price", "inst_flow", "daily_valuation",
+        ALL_STEPS = ["stocks_master", "daily_price", "inst_flow", "daily_valuation",
                      "monthly_revenue", "financial_statement", "broker_trade_agg"]
         active_steps = set(steps) if steps else set(ALL_STEPS)
 
@@ -209,7 +210,22 @@ class FinMindETLOrchestratorSDK:
         }
 
         try:
-            # 取得股票清單
+            # 0. stocks_master 更新（FinMind TaiwanStockInfo + TaiwanStockIndustryChain）
+            #    非 CRITICAL：失敗只 warn，不影響後續 price/flow 寫入
+            if "stocks_master" in active_steps:
+                logger.info("\n[0/7] Updating stocks_master (FinMind industry chain)...")
+                try:
+                    n = fetch_and_upsert_stock_master(db, token=self.client.token)
+                    result["results"]["stocks_master"] = {"status": "ok", "count": n}
+                    logger.info(f"✓ stocks_master: {n} stocks")
+                except Exception as e:
+                    logger.warning(f"⚠ stocks_master update failed (non-critical): {e}")
+                    result["results"]["stocks_master"] = {"status": "error", "error": str(e)}
+            else:
+                logger.info("\n[0/7] stocks_master: skipped")
+                result["results"]["stocks_master"] = {"status": "skipped"}
+
+            # 取得股票清單（此時 stocks_master 若剛更新完，會拿到最新名單）
             stock_ids = self.get_stock_ids(db)
             logger.info(f"Total stocks to process: {len(stock_ids)}")
 
@@ -227,7 +243,7 @@ class FinMindETLOrchestratorSDK:
 
             # 1. 每日股價（一次 batch fetch，CRITICAL → no_data 時重試）
             if "daily_price" in active_steps:
-                logger.info("\n[1/6] Fetching daily prices (SDK batch)...")
+                logger.info("\n[1/7] Fetching daily prices (SDK batch)...")
                 price_result = _run_critical_step_with_retry(
                     "daily_price",
                     lambda: fetch_and_upsert_daily_price_finmind_sdk(
@@ -237,12 +253,12 @@ class FinMindETLOrchestratorSDK:
                 result["results"]["daily_price"] = price_result
                 logger.info(f"✓ Daily prices: {price_result['status']}")
             else:
-                logger.info("\n[1/6] Daily prices: skipped")
+                logger.info("\n[1/7] Daily prices: skipped")
                 result["results"]["daily_price"] = {"status": "skipped"}
 
             # 2. 三大法人買賣超（一次 batch fetch，CRITICAL → no_data 時重試）
             if "inst_flow" in active_steps:
-                logger.info("\n[2/6] Fetching institutional flows (SDK batch)...")
+                logger.info("\n[2/7] Fetching institutional flows (SDK batch)...")
                 inst_result = _run_critical_step_with_retry(
                     "inst_flow",
                     lambda: fetch_and_upsert_inst_flow_finmind_sdk(
@@ -252,12 +268,12 @@ class FinMindETLOrchestratorSDK:
                 result["results"]["inst_flow"] = inst_result
                 logger.info(f"✓ Institutional flows: {inst_result['status']}")
             else:
-                logger.info("\n[2/6] Institutional flows: skipped")
+                logger.info("\n[2/7] Institutional flows: skipped")
                 result["results"]["inst_flow"] = {"status": "skipped"}
 
             # 3. 日常估值（一次 batch fetch）
             if "daily_valuation" in active_steps:
-                logger.info("\n[3/6] Fetching daily valuation (SDK batch)...")
+                logger.info("\n[3/7] Fetching daily valuation (SDK batch)...")
                 try:
                     valuation_result = fetch_and_upsert_daily_valuation_finmind_sdk(
                         db, stock_ids, start_date, end_date, self.client
@@ -268,12 +284,12 @@ class FinMindETLOrchestratorSDK:
                     logger.error(f"✗ Daily valuation ETL failed: {e}")
                     result["results"]["daily_valuation"] = {"status": "error", "error": str(e)}
             else:
-                logger.info("\n[3/6] Daily valuation: skipped")
+                logger.info("\n[3/7] Daily valuation: skipped")
                 result["results"]["daily_valuation"] = {"status": "skipped"}
 
             # 4. 月營收
             if "monthly_revenue" in active_steps:
-                logger.info("\n[4/6] Fetching monthly revenue (SDK batch)...")
+                logger.info("\n[4/7] Fetching monthly revenue (SDK batch)...")
                 try:
                     rev_result = fetch_and_upsert_monthly_revenue_sdk(
                         db, stock_ids, start_date, end_date, self.client
@@ -284,12 +300,12 @@ class FinMindETLOrchestratorSDK:
                     logger.error(f"✗ Monthly revenue ETL failed: {e}")
                     result["results"]["monthly_revenue"] = {"status": "error", "error": str(e)}
             else:
-                logger.info("\n[4/6] Monthly revenue: skipped")
+                logger.info("\n[4/7] Monthly revenue: skipped")
                 result["results"]["monthly_revenue"] = {"status": "skipped"}
 
             # 5. 財報（季報）
             if "financial_statement" in active_steps:
-                logger.info("\n[5/6] Fetching financial statements (SDK batch)...")
+                logger.info("\n[5/7] Fetching financial statements (SDK batch)...")
                 try:
                     fs_result = fetch_and_upsert_financial_statement_sdk(
                         db, stock_ids, start_date, end_date, self.client
@@ -300,12 +316,12 @@ class FinMindETLOrchestratorSDK:
                     logger.error(f"✗ Financial statement ETL failed: {e}")
                     result["results"]["financial_statement"] = {"status": "error", "error": str(e)}
             else:
-                logger.info("\n[5/6] Financial statements: skipped")
+                logger.info("\n[5/7] Financial statements: skipped")
                 result["results"]["financial_statement"] = {"status": "skipped"}
 
             # 6. 券商分點聚合（Sponsor，起點 2021-06-30）
             if "broker_trade_agg" in active_steps:
-                logger.info("\n[6/6] Fetching broker trade agg (Sponsor, from 2021-06-30)...")
+                logger.info("\n[6/7] Fetching broker trade agg (Sponsor, from 2021-06-30)...")
                 try:
                     broker_result = fetch_and_upsert_broker_trade_agg_sdk(
                         db, stock_ids, start_date, end_date, self.client
@@ -316,7 +332,7 @@ class FinMindETLOrchestratorSDK:
                     logger.error(f"✗ Broker trade agg ETL failed: {e}")
                     result["results"]["broker_trade_agg"] = {"status": "error", "error": str(e)}
             else:
-                logger.info("\n[6/6] Broker trade agg: skipped")
+                logger.info("\n[6/7] Broker trade agg: skipped")
                 result["results"]["broker_trade_agg"] = {"status": "skipped"}
 
             # 判定整體狀態
@@ -390,7 +406,7 @@ def main():
         default=None,
         help=(
             "只執行指定步驟，逗號分隔（預設全部）。"
-            "可選：daily_price,inst_flow,daily_valuation,"
+            "可選：stocks_master,daily_price,inst_flow,daily_valuation,"
             "monthly_revenue,financial_statement,broker_trade_agg"
         )
     )

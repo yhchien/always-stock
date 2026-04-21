@@ -27,16 +27,14 @@ class TestRunOneDay:
         patches = _patch_all(price_count=100)
         with patches["db"], patches["master"], patches["price"] as mp, \
              patches["flow"], patches["agg"]:
-            result = run_one_day(TRADE_DATE, fugle_mapping_path=None,
-                                 skip_master=False, token="")
+            result = run_one_day(TRADE_DATE, skip_master=False, token="")
         assert result is True
 
     def test_returns_false_on_non_trading_day(self):
         patches = _patch_all(price_count=0)
         with patches["db"], patches["master"], patches["price"], \
              patches["flow"] as mf, patches["agg"] as ma:
-            result = run_one_day(TRADE_DATE, fugle_mapping_path=None,
-                                 skip_master=False, token="")
+            result = run_one_day(TRADE_DATE, skip_master=False, token="")
         assert result is False
         mf.assert_not_called()  # 非交易日不應呼叫 inst_flow
         ma.assert_not_called()  # 非交易日不應呼叫 aggregation
@@ -45,13 +43,11 @@ class TestRunOneDay:
         patches = _patch_all()
         with patches["db"], patches["master"] as mm, patches["price"], \
              patches["flow"], patches["agg"]:
-            run_one_day(TRADE_DATE, fugle_mapping_path=None,
-                        skip_master=True, token="")
+            run_one_day(TRADE_DATE, skip_master=True, token="")
         mm.assert_not_called()
 
     def test_returns_false_on_exception(self):
         with patch("run_daily_etl.SessionLocal"), \
              patch("run_daily_etl.fetch_and_upsert_stock_master", side_effect=RuntimeError("boom")):
-            result = run_one_day(TRADE_DATE, fugle_mapping_path=None,
-                                 skip_master=False, token="")
+            result = run_one_day(TRADE_DATE, skip_master=False, token="")
         assert result is False

@@ -100,7 +100,7 @@ class TestCollectStockContext:
         assert "2330" in result
         assert "半導體" in result
         assert "晶圓代工" in result
-        assert "上游" in result
+        assert "供應鏈" not in result
 
     def test_includes_price_data(self, db):
         _seed_stock(db)
