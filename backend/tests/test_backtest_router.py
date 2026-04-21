@@ -6,11 +6,11 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.auth import require_user
 from app.backtest_catalog import DEFAULT_STRATEGY_TEXT
-from app.models import DailyPrice
 from app.database import get_db
 from app.main import app
-from app.models import Base
+from app.models import Base, DailyPrice, User
 
 from test_routers_stocks import seed_flow, seed_price, seed_stock
 
@@ -31,7 +31,19 @@ def api():
     def override_get_db():
         yield session
 
+    test_user = User(
+        id=1,
+        email="tester@example.com",
+        password_hash="x",
+        is_admin=False,
+        is_active=True,
+    )
+
+    def override_require_user():
+        return test_user
+
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[require_user] = override_require_user
     client = TestClient(app)
     yield client, session
     app.dependency_overrides.clear()

@@ -157,8 +157,14 @@ def get_optional_user(
     request: Request,
     db: Session = Depends(get_db),
 ) -> Optional[User]:
-    """讀取 cookie 查找使用者；無 / 過期 / revoked 時回 None（不拋例外）"""
-    return _lookup_active_user(db, _read_session_cookie(request))
+    """讀取 cookie 查找使用者；無 / 過期 / revoked 時回 None（不拋例外）。
+
+    同時把 user.id 存進 request.state.auth_user_id，rate limiter 的 key_func
+    與 limit_value 依此判斷使用者是否已登入。
+    """
+    user = _lookup_active_user(db, _read_session_cookie(request))
+    request.state.auth_user_id = user.id if user else None
+    return user
 
 
 def require_user(
@@ -172,6 +178,7 @@ def require_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="未登入或登入階段已失效",
         )
+    request.state.auth_user_id = user.id
     return user
 
 

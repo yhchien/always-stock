@@ -5,7 +5,10 @@ from typing import Optional
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
+from app.rate_limit import limiter
 from app.routers import analysis, auth as auth_router, backtest, brokers, financials, industries, market, realtime, stocks
 
 logger = logging.getLogger(__name__)
@@ -84,6 +87,9 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 _allowed_origins = [
     "http://localhost:3000",

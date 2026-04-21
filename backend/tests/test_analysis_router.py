@@ -22,6 +22,7 @@ from app.models import (
     MonthlyRevenue,
     StockMaster,
 )
+from app.rate_limit import limiter
 from app.routers.analysis import _is_market_not_open_yet, _load_system_prompt
 
 
@@ -40,6 +41,8 @@ def api():
         yield session
 
     app.dependency_overrides[get_db] = override_get_db
+    # 清空 slowapi in-memory storage，避免跨測試累積 rate limit counter
+    limiter.reset()
     client = TestClient(app)
     yield client, session
     app.dependency_overrides.clear()

@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.auth import require_user
 from app.backtest_catalog import BACKTEST_CAPABILITY_CATALOG, BACKTEST_TEMPLATES, DEFAULT_INITIAL_CAPITAL
 from app.backtest_advisor import generate_backtest_advice
 from app.backtest_engine import BacktestDay, run_backtest, summarize_dataset_warnings
@@ -14,7 +15,7 @@ from app.backtest_parser import (
     interpret_strategy_text,
 )
 from app.database import get_db
-from app.models import DailyPrice, InstStockFlow, StockMaster
+from app.models import DailyPrice, InstStockFlow, StockMaster, User
 
 router = APIRouter(tags=["backtest"])
 
@@ -125,7 +126,10 @@ def get_backtest_capabilities():
 
 
 @router.post("/backtest/interpret")
-def post_backtest_interpret(payload: BacktestInterpretRequest):
+def post_backtest_interpret(
+    payload: BacktestInterpretRequest,
+    user: User = Depends(require_user),
+):
     if payload.start_date > payload.end_date:
         raise HTTPException(status_code=422, detail="start_date cannot be later than end_date")
     try:
@@ -135,7 +139,11 @@ def post_backtest_interpret(payload: BacktestInterpretRequest):
 
 
 @router.post("/backtest/run", response_model=BacktestRunResponse)
-def post_backtest_run(payload: BacktestInterpretRequest, db: Session = Depends(get_db)):
+def post_backtest_run(
+    payload: BacktestInterpretRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+):
     if payload.start_date > payload.end_date:
         raise HTTPException(status_code=422, detail="start_date cannot be later than end_date")
 
@@ -228,5 +236,8 @@ def post_backtest_run(payload: BacktestInterpretRequest, db: Session = Depends(g
 
 
 @router.post("/backtest/advice", response_model=BacktestAdviceResponse)
-def post_backtest_advice(payload: BacktestAdviceRequest):
+def post_backtest_advice(
+    payload: BacktestAdviceRequest,
+    user: User = Depends(require_user),
+):
     return generate_backtest_advice(payload.model_dump())

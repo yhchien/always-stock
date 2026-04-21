@@ -19,11 +19,12 @@ from pathlib import Path
 from typing import Any, List, Optional
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from openai import OpenAI
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.auth import get_optional_user
 from app.database import get_db
 from app.industry_flow_service import get_latest_industry_trade_date
 from app.models import (
@@ -32,7 +33,9 @@ from app.models import (
     InstStockFlow,
     MonthlyRevenue,
     StockMaster,
+    User,
 )
+from app.rate_limit import limiter, trade_quality_limit_value
 from app.settings import get_openai_api_key, get_openai_model
 
 logger = logging.getLogger(__name__)
@@ -453,9 +456,12 @@ def _to_int(x: Any) -> Optional[int]:
 
 
 @router.post("/analysis/trade-quality", response_model=TradeQualityResponse)
+@limiter.limit(trade_quality_limit_value)
 def analyze_trade_quality(
+    request: Request,
     req: TradeQualityRequest,
     db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_optional_user),
 ):
     """
     Produce a buy-side analyst report for a given stock + buy_date.
