@@ -97,6 +97,11 @@
 - M12 自然語言策略
 - M14 輿情分析
 - M15 Telegram 電子報
+- M18 使用者註冊系統（Gmail OAuth + admin local auth，未登入僅開放 M17）
+- M19 關注買進清單（L0 側邊欄 + 持股卡片 + M17 交易分析整合）
+- M20 交易分析擴充（預期 45% 報酬率加碼建議 + 風報比 1:1.75）
+
+> M18 → M19 → M20 依序執行。M19 需 M18 註冊系統落地，M20 擴充建立在 M19 卡片帶入 context 之上。
 
 ## 開發注意事項
 - 優先考慮資料正確性與 TWSE API rate limiting
@@ -561,4 +566,45 @@
 
 ### 環境變數命名對齊
 - 本地 `.env` 跟 Render dashboard 對齊：`TARGET_DATABASE_URL` → `DATABASE_URL`、`FINMIND_API_TOKEN` → `FINMIND_TOKEN`
-- 舊名仍保留於 `.env.example` / `infra/render/render.yaml.template` / `docs/operations/security_and_secrets.md` —— 這些是 doc drift，後續另行修正
+- 2026-04-21 commit `bc51dc9` 已修完 `.env.example` / `backend/.env.example` / `infra/render/render.yaml.template` / `docs/operations/security_and_secrets.md` / `docs/architecture/architecture_overview.md`
+- `backend/migrate_sqlite_to_postgres.py` / `backend/validate_migrated_data.py` 保留 `TARGET_DATABASE_URL`（migration 工具區別來源/目的，有 fallback 到 `DATABASE_URL`）
+
+## Phase 3：使用者註冊 + 關注清單 + 加碼建議（規劃中，2026-04-21 啟動）
+
+三個相依的 milestone，依 **M18 → M19 → M20** 順序執行。
+
+### M18 使用者註冊系統
+- **認證方式**：第一階段僅支援 Gmail OAuth（未來可能加其他 provider）
+- **Admin local auth**：帳號 `admin` / 密碼 `forwork`（寫死在後端 env 或 seeder，給開發者繞過 Gmail 用）
+- **Gating 範圍**：
+  - 未登入：全站頁面可 render，但互動 **disable**（灰掉蓋提示「請登入」），**唯一例外**是首頁 M17 AI 交易分析（不需登入即可使用）
+  - Telegram Bot 也要 gating：chat_id 需先綁定已註冊的 Gmail 帳號才能使用任何指令（Bot 第一次互動時引導至登入頁）
+- **登入頁**：新增 `/login` 前端路由，含 Gmail OAuth 按鈕 + Admin local auth fallback 區塊
+- **DB schema**：新增 `users` 表（email / provider / provider_user_id / is_admin / created_at）與 `user_sessions` 或 JWT token 機制；Telegram 綁定另建 `user_telegram_bindings`（user_id / chat_id / verified_at）
+- **API**：`POST /api/auth/google/callback`、`POST /api/auth/admin-login`、`POST /api/auth/logout`、`GET /api/auth/me`
+
+### M19 關注買進清單
+- **前提**：M18 完成（清單必須綁使用者帳號）
+- **資料持久化**：一律存 **Render Postgres**，不走 localStorage（跨裝置同步需求）
+- **L0 sidebar 擴展**：把現在 L1 頁面左側的 sidebar 樣式套到 L0 首頁，兩層 UI 導覽一致
+- **「關注買進清單」入口**：放在 sidebar 中（具體位置設計階段再定）
+- **新增持股 popup**（shadcn/ui Dialog）：
+  - 股票代號（autocomplete，沿用 `/api/stocks/search`）
+  - 買進日期（date picker，預設最近交易日）
+  - 均價（數字輸入，必填）
+  - 按「儲存」寫入 `user_watchlist` 表
+- **清單展開頁**（新路由，例如 `/watchlist`）：
+  - 每檔持股一張卡片：顯示股票代號/名稱、買進日期、均價、今日股價、未實現損益 %（帶顏色）
+  - 卡片**右下角「交易分析」按鈕** → 呼叫 M17 AI 交易分析 endpoint，`stock_id` / `buy_date` 從卡片資料帶入（使用者無需重新輸入）
+- **DB schema**：`user_watchlist`（user_id / stock_id / buy_date / avg_price / created_at，複合 unique 視需求）
+
+### M20 交易分析擴充：加碼建議
+- **前提**：M19 完成（交易分析從卡片觸發，可以帶入 avg_price 作為 context）
+- **新增分析段落**：在 M17 的 PART 2 中新增「如何操作以達到 45% 預期報酬率」段落
+  - 加碼點位建議：跌到 X 加碼 / 漲到 Y 加碼
+  - 停損與停利點位（配合風報比 1:1.75）
+- **寫死參數**（不做 UI 調整）：
+  - 目標報酬率 = **45%**
+  - 風報比 = **1 : 1.75**（即每承擔 1 單位下行風險，追求 1.75 單位上行報酬）
+- **實作方式**：修改 `backend/app/prompts/trade_quality.md`（canonical），同步 `docs/trade_quality_prompt.md`（鏡像）。程式碼只需把 avg_price 加進 context，不改 API 契約。
+- **JSON schema 調整**：`if_strong` 視需要新增 `add_position_levels: [{price, reason}, ...]` 欄位

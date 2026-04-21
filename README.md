@@ -204,6 +204,9 @@ npm run dev
 | M15 | Telegram 電子報 | ⬜ |
 | M16 | 首頁 AI 盤前摘要（Daily Brief） | ✅ |
 | M17 | 交易質量 AI 分析（Trade Quality Analysis，5 階評級 + 四象限 + 目標價） | ✅ |
+| M18 | 使用者註冊系統（Gmail OAuth + Admin local auth；未登入僅開放 M17） | ⬜ 規劃中 |
+| M19 | 關注買進清單（L0 側邊欄 + 持股卡片 + 綁 M17 交易分析） | ⬜ 規劃中（M18 完成後） |
+| M20 | 交易分析擴充（預期 45% 報酬率加碼建議 + 風報比 1:1.75） | ⬜ 規劃中（M19 完成後） |
 
 ---
 

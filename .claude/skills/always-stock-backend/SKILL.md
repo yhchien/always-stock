@@ -140,10 +140,31 @@ Render 的 Docker image（Python runtime）目前跑 **Python 3.9**。撰寫 `ba
 
 **Dockerfile 沒 pin Python 版本時，Render 預設給 3.9。** 若要升版需要在 `backend/Dockerfile` 改 base image 並重測所有相依。
 
-## 11. L1 產業名稱 fallback
+## 11. L1 產業名稱 fallback（已於 2026-04-21 全面移除）
 
-修改 `/api/industries/{name}/*` 時，需保留 fallback 對照：
-- `水泥工業→水泥`、`鋼鐵工業→鋼鐵`、`食品工業→食品`、`金融科技→金融`、`數位雲端→雲端運算`
-- Generic：剝離 `工業` / `業` 後綴
+舊設計的 `INDUSTRY_NAME_FALLBACKS` 硬映射 + 後綴剝離在產業分類切 FinMind 後已全部刪除。`industry_daily_flow.industry_name` 與 `stocks_master.industry_name` 皆由 FinMind 寫入，名稱一致。
 
-`太空衛星科技` 目前無安全對應，**不做硬映射**避免誤導。
+**不要**再引入任何 Fugle CSV / TWSE mapping / 硬寫死的產業名稱對照表。
+
+## 12. Phase 3 規劃（M18/M19/M20）
+
+### M18 使用者註冊系統（⬜ 待開始）
+- 認證：Gmail OAuth（第一階段唯一）+ Admin local auth（`admin` / `forwork`）
+- Gating：未登入僅開放首頁 M17（`POST /api/analysis/trade-quality`），其他 endpoint 全部要求登入
+- Telegram Bot：chat_id 需綁定已註冊帳號才能用任何指令
+- 新增表：`users`、`user_telegram_bindings`（+ session/JWT）
+- 新增 API：`POST /api/auth/google/callback`、`POST /api/auth/admin-login`、`POST /api/auth/logout`、`GET /api/auth/me`
+- Admin 密碼即使寫死也**必須 hash**（bcrypt / argon2），不可 plaintext 存 DB
+
+### M19 關注買進清單（⬜ 待開始，M18 完成後）
+- 必須綁 `user_id`，存 Render Postgres（不走 localStorage）
+- 新增表：`user_watchlist`（user_id / stock_id / buy_date / avg_price / created_at）
+- 對應 API：`POST /api/watchlist`、`GET /api/watchlist`、`DELETE /api/watchlist/{id}`
+- 持股卡片觸發「交易分析」時，需把 `avg_price` 加進 `/api/analysis/trade-quality` 的 context（為 M20 鋪路）
+
+### M20 M17 交易分析擴充（⬜ 待開始，M19 完成後）
+- 改 `backend/app/prompts/trade_quality.md`（canonical）+ 同步 `docs/trade_quality_prompt.md`
+- 新增分析段落：「如何操作以達 45% 預期報酬率」含加碼點位 + 停損停利
+- **寫死參數**：目標報酬 45%、風報比 1:1.75
+- JSON schema 視需要新增 `if_strong.add_position_levels: [{price, reason}, ...]`
+- 程式碼只改 context 組裝（加 avg_price），API 契約與分析邏輯改 md 不改 code

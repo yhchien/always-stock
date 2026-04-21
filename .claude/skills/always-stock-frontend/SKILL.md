@@ -130,3 +130,24 @@ K 線圖下方為緊湊 pill 列（`ToggleChip` 元件），不要另闢 section
 
 - 從 BacktestPanel 交易紀錄 / 最新訊號可跳回 L2 研究頁
 - StockChart 有 `onDaysChange` prop，讓 L2 頁追蹤當前 K 線時間範圍（給 BrokerBarChart / FinancialsPanel 用）
+
+## 10. Phase 3 規劃（M18/M19）
+
+### M18 使用者註冊系統（⬜ 待開始）
+- 新增 `/login` 路由：Gmail OAuth 按鈕 + Admin local auth fallback 區塊
+- 未登入 gating：頁面可 render，**但互動 disable**（灰掉 + 「請登入」提示）
+- 唯一例外：首頁 M17 AI 交易分析（`TradeQualityAnalysis`）不登入也能用
+- 實作方式：router guard / session hook，disable 掉 L0/L1/L2/L3 的互動元件；唯獨 `TradeQualityAnalysis` 保持可互動
+
+### M19 關注買進清單（⬜ 待開始，M18 完成後）
+- **L0 sidebar**：把目前 L1 左側 sidebar 樣式套到 L0 首頁，複用元件別從零重建
+- **「關注買進清單」入口**放在 sidebar
+- **新增持股 popup**（shadcn/ui Dialog）：
+  - 股票代號 autocomplete（沿用 `/api/stocks/search`）
+  - 買進日期 date picker（預設最近交易日，不可用 `toISOString().slice(0,10)`，要用 Asia/Taipei）
+  - 均價數字輸入
+- **清單展開頁**（`/watchlist`）：
+  - 每檔持股一張卡片，顯示股票代號 / 名稱、買進日期、均價、今日股價、未實現損益 %
+  - **右下角「交易分析」按鈕** → 呼叫 `/api/analysis/trade-quality`，`stock_id` / `buy_date` / `avg_price` 從卡片帶入
+- 即時股價用 `/api/realtime/quotes`（上限 50 檔；清單超過必須分 batch）
+- 未實現損益 % = `(今日股價 - avg_price) / avg_price * 100`，正綠負紅
