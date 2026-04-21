@@ -10,11 +10,11 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.auth import hash_password
+from app.auth import ensure_admin_user, hash_password
 from app.database import get_db
 from app.main import app
 from app.models import Base, User, UserSession
-from app.settings import get_session_cookie_name
+from app.settings import get_admin_email, get_admin_password, get_session_cookie_name
 
 
 @pytest.fixture
@@ -219,3 +219,20 @@ def test_invalid_email_format_rejected(api):
         json={"email": "not-an-email", "password": "passw0rd!"},
     )
     assert res.status_code == 422
+
+
+def test_admin_seeder_default_email_passes_pydantic_emailstr(api):
+    """
+    Regression: 預設 ADMIN_EMAIL 必須含 TLD，否則 /api/auth/login 的 Pydantic EmailStr 會直接 422 拒絕，
+    即使 seeder 已經把 admin 寫進 DB，也永遠登不進來。
+    """
+    client, db = api
+    admin = ensure_admin_user(db)
+    assert admin.is_admin is True
+
+    res = client.post(
+        "/api/auth/login",
+        json={"email": get_admin_email(), "password": get_admin_password()},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["is_admin"] is True

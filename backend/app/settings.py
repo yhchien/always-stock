@@ -21,7 +21,8 @@ def get_openai_model() -> str:
 
 
 def get_admin_email() -> str:
-    return os.getenv("ADMIN_EMAIL", "admin@local").strip().lower()
+    # 必須是 email-validator 接受的真實 TLD；.local / .test / .localhost 等 RFC 2606 保留名會被拒。
+    return os.getenv("ADMIN_EMAIL", "admin@always-stock.dev").strip().lower()
 
 
 def get_admin_password() -> str:
