@@ -9,9 +9,9 @@ on:
         description: '目標結束日期 (YYYY-MM-DD)，預設為昨天'
         required: false
       batch_days:
-        description: '每批交易日數 (預設 15)'
+        description: '每批交易日數 (預設 3，受限於 FinMind 6000 req/hr；1 日 ≈ 1588 req)'
         required: false
-        default: '15'
+        default: '3'
       min_backfill_date:
         description: 'backfill 最早日期 (YYYY-MM-DD)，預設 2022-01-01'
         required: false
@@ -38,7 +38,7 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           END_DATE_INPUT: ${{ github.event.inputs.end_date }}
-          BATCH_DAYS: ${{ github.event.inputs.batch_days || '15' }}
+          BATCH_DAYS: ${{ github.event.inputs.batch_days || '3' }}
           MIN_BACKFILL_DATE: ${{ github.event.inputs.min_backfill_date || '2022-01-01' }}
         run: |
           python3 - <<'EOF'
@@ -57,7 +57,7 @@ jobs:
               target_end = date.today() - timedelta(days=1)
 
           min_backfill_date = date.fromisoformat(os.environ["MIN_BACKFILL_DATE"])
-          batch_days = int(os.environ.get("BATCH_DAYS", "15"))
+          batch_days = int(os.environ.get("BATCH_DAYS", "3"))
 
           with engine.connect() as conn:
               # 建立 checkpoint 表（若不存在）— 僅作為 monitoring，不再驅動 start 計算
