@@ -89,6 +89,7 @@
 - M11: 回測程式（DSL + AI mapping + equity curve + 策略建議；2026-04 擴充 4 欄位改版 + 9 K棒型態 + 6 技術型態 + 報酬率%回撤圖）
 - M16: AI 盤前摘要（Daily Brief，2026-04-20 起改由 Telegram Bot `/brief` 提供）
 - M17: 交易質量 AI 分析（Trade Quality Analysis，5 階評級 + 四象限 + 目標價）
+- M18: 使用者註冊系統（Email/password + server-side session + RequireAuth；M17 公開但分層 rate limit；admin@local/forwork）
 
 ### 進行中
 - M13 關鍵券商分點：ETL 模組與 `broker_trade_agg` backfill 已完成；L2 券商面板在 2026-04-19 主動隱藏（產品優先序下調），未來視需要復活
@@ -97,7 +98,6 @@
 - M12 自然語言策略
 - M14 輿情分析
 - M15 Telegram 電子報
-- M18 使用者註冊系統（Gmail OAuth + admin local auth，未登入僅開放 M17）
 - M19 關注買進清單（L0 側邊欄 + 持股卡片 + M17 交易分析整合）
 - M20 交易分析擴充（預期 45% 報酬率加碼建議 + 風報比 1:1.75）
 - M21 Trade Quality Context 資料管線（industry/chip/peer_rank/fundamental/price_structure 預聚合，餵結論層給 LLM）
@@ -632,3 +632,51 @@
   - peer_rank 用 `PERCENT_RANK() OVER (PARTITION BY industry_name)` 即時算（同產業小集合速度可接受）
   - 連續買超 N 日建議 Python loop 從最新日往回數（SQL `SUM(CASE WHEN) OVER` 可讀性差）
   - Lookback 一律以**交易日**為單位（`ORDER BY trade_date DESC LIMIT N`），非 calendar days
+
+## M18 使用者註冊系統完成（2026-04-21）
+
+### 最終範圍（與原規劃差異）
+- **Auth**：Email/password 單純註冊登入（**無** Gmail OAuth、無 email 驗證、無密碼重設）。未來要加 OAuth 只需在 `users` 加 `provider` 欄位 + 新 callback
+- **Session**：Server-side session（UUID token in httpOnly cookie，30 天過期，可 revoke）；非 JWT、非 localStorage
+- **Telegram 綁定**：整個 drop，不做 `user_telegram_bindings`
+- **Admin 預設帳號**：`admin@local` / `forwork`（可用 `ADMIN_EMAIL` / `ADMIN_PASSWORD` env 覆寫）
+
+### DB Schema
+- `users`：`id / email (unique) / password_hash (bcrypt) / name / is_admin / is_active / created_at / last_login_at`
+- `user_sessions`：`session_id (UUID) / user_id / created_at / expires_at / last_seen_at / user_agent / ip_address / revoked_at`
+- Migration：`backend/migrate_add_users.py`（`Base.metadata.create_all()`，idempotent）
+
+### API
+- `POST /api/auth/register`（password ≥ 8 碼，自動登入）
+- `POST /api/auth/login`（uniform 401 避免 email 枚舉）
+- `POST /api/auth/logout`
+- `GET /api/auth/me`
+
+### Gating 範圍
+
+#### 後端 `Depends(require_user)`
+- `/api/backtest/interpret` / `run` / `advice`（L3 回測全部需登入）
+
+#### 後端分層 rate limit（`/api/analysis/trade-quality` 維持公開）
+- 未登入：**3/day** by IP
+- 已登入：**30/day** by `user:{id}`
+- 實作：`backend/app/rate_limit.py` 的 `trade_quality_limit_value(key: str)` 依 key prefix 決定限額（**slowapi dynamic limit signature 必須吃 `key: str`，不是 `Request`**）
+- Storage: in-memory（夠用；未來多機部署再換 Redis）
+
+#### 前端 `<RequireAuth>` 包住的路由
+- `/industries/[industryName]`
+- `/stocks/[stockId]`
+- `/stocks/[stockId]/backtest`
+
+#### 前端公開路由
+- `/`（首頁，含 `<TradeQualityAnalysis />`）
+- `/login`
+
+### 關鍵 Gotcha
+- `get_optional_user` 必須寫 `request.state.auth_user_id = user.id`，否則 rate limit key 無法辨識使用者
+- FastAPI 測試用 `app.dependency_overrides[require_user] = lambda: test_user` 繞過認證
+- slowapi counter 跨測試累加，fixture 需要 `limiter.reset()`
+- Pydantic `EmailStr` 需安裝 `email-validator` 套件
+- 前端所有 API 呼叫改用 `apiFetch`（`credentials: "include"` wrapper），否則 cookie 不會帶
+- CORS middleware 必須 `allow_credentials=True`
+- 密碼雜湊用 bcrypt（`backend/app/auth.py::hash_password` / `verify_password`）
