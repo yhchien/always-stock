@@ -3,9 +3,13 @@
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 
+import { useAuth } from "@/lib/auth"
+
 export default function Navbar() {
   const pathname = usePathname()
   const isHome = pathname === "/"
+  const isLoginPage = pathname === "/login"
+  const { user, status, logout } = useAuth()
 
   return (
     <header className="sticky top-0 z-50 border-b border-slate-700/40 bg-slate-900/90 backdrop-blur-sm">
@@ -19,15 +23,46 @@ export default function Navbar() {
           always-stock
         </Link>
 
-        {/* Right: 回首頁（非首頁才顯示）*/}
-        {!isHome && (
-          <Link
-            href="/"
-            className="text-xs text-slate-500 hover:text-slate-200 transition-colors border border-slate-700/40 hover:border-slate-500 rounded-md px-3 py-1"
-          >
-            回首頁
-          </Link>
-        )}
+        <div className="flex items-center gap-3">
+          {/* 非首頁才顯示「回首頁」*/}
+          {!isHome && (
+            <Link
+              href="/"
+              className="text-xs text-slate-500 hover:text-slate-200 transition-colors border border-slate-700/40 hover:border-slate-500 rounded-md px-3 py-1"
+            >
+              回首頁
+            </Link>
+          )}
+
+          {/* Auth 狀態 */}
+          {status === "loading" ? (
+            <span className="text-xs text-slate-500">…</span>
+          ) : user ? (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-slate-400">
+                {user.name ?? user.email}
+                {user.is_admin ? (
+                  <span className="ml-1 rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-amber-300">
+                    admin
+                  </span>
+                ) : null}
+              </span>
+              <button
+                onClick={logout}
+                className="text-xs text-slate-500 hover:text-slate-200 transition-colors border border-slate-700/40 hover:border-slate-500 rounded-md px-3 py-1"
+              >
+                登出
+              </button>
+            </div>
+          ) : isLoginPage ? null : (
+            <Link
+              href="/login"
+              className="text-xs text-slate-200 bg-sky-600 hover:bg-sky-500 transition-colors rounded-md px-3 py-1"
+            >
+              登入 / 註冊
+            </Link>
+          )}
+        </div>
       </div>
     </header>
   )

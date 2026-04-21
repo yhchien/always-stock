@@ -3,6 +3,14 @@ const REALTIME_BATCH_SIZE = 50
 const BROKER_FETCH_RETRIES = 1
 const BROKER_FETCH_RETRY_DELAY_MS = 400
 
+/**
+ * 統一的 fetch wrapper，帶上 session cookie（M18）。
+ * 後端的 httpOnly session cookie 需要 credentials: 'include' 才會被帶上。
+ */
+export function apiFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  return fetch(input, { ...init, credentials: "include" })
+}
+
 export interface IndustryFlowItem {
   industry_name: string
   total_net_amount: number
@@ -239,7 +247,7 @@ export function toDisplayError(error: unknown, fallback = "載入失敗"): strin
 }
 
 export async function fetchIndustries(date: string, options?: FetchOptions): Promise<IndustryFlowItem[]> {
-  const res = await fetch(`${API_BASE}/api/industries?date=${date}`, { signal: options?.signal })
+  const res = await apiFetch(`${API_BASE}/api/industries?date=${date}`, { signal: options?.signal })
   if (!res.ok) throw new Error(`Failed to fetch industries: ${res.status}`)
   return res.json()
 }
@@ -249,7 +257,7 @@ export async function fetchIndustryStocks(
   date: string,
   options?: FetchOptions,
 ): Promise<StockFlowItem[]> {
-  const res = await fetch(
+  const res = await apiFetch(
     `${API_BASE}/api/industries/${encodeURIComponent(industryName)}/stocks?date=${date}`,
     { signal: options?.signal },
   )
@@ -262,7 +270,7 @@ export async function fetchSubIndustrySummary(
   date: string,
   options?: FetchOptions,
 ): Promise<SubIndustrySummaryItem[]> {
-  const res = await fetch(
+  const res = await apiFetch(
     `${API_BASE}/api/industries/${encodeURIComponent(industryName)}/summary?date=${date}`,
     { signal: options?.signal },
   )
@@ -279,7 +287,7 @@ export async function fetchStockHistory(
   const params = new URLSearchParams({ days: String(days) })
   if (endDate) params.set("end_date", endDate)
   if (options?.startDate) params.set("start_date", options.startDate)
-  const res = await fetch(`${API_BASE}/api/stocks/${stockId}/history?${params}`, {
+  const res = await apiFetch(`${API_BASE}/api/stocks/${stockId}/history?${params}`, {
     signal: options?.signal,
   })
   if (!res.ok) throw new Error(await buildErrorMessage(res, "Failed to fetch history"))
@@ -287,7 +295,7 @@ export async function fetchStockHistory(
 }
 
 export async function fetchBacktestTemplates(options?: FetchOptions): Promise<BacktestTemplate[]> {
-  const res = await fetch(`${API_BASE}/api/backtest/templates`, {
+  const res = await apiFetch(`${API_BASE}/api/backtest/templates`, {
     signal: options?.signal,
   })
   if (!res.ok) throw new Error(await buildErrorMessage(res, "Failed to fetch backtest templates"))
@@ -295,7 +303,7 @@ export async function fetchBacktestTemplates(options?: FetchOptions): Promise<Ba
 }
 
 export async function fetchBacktestCapabilities(options?: FetchOptions): Promise<BacktestCapabilityCatalog> {
-  const res = await fetch(`${API_BASE}/api/backtest/capabilities`, {
+  const res = await apiFetch(`${API_BASE}/api/backtest/capabilities`, {
     signal: options?.signal,
   })
   if (!res.ok) throw new Error(await buildErrorMessage(res, "Failed to fetch backtest capabilities"))
@@ -306,7 +314,7 @@ export async function interpretBacktest(
   payload: BacktestRunRequest,
   options?: FetchOptions,
 ): Promise<BacktestInterpretResponse> {
-  const res = await fetch(`${API_BASE}/api/backtest/interpret`, {
+  const res = await apiFetch(`${API_BASE}/api/backtest/interpret`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -322,7 +330,7 @@ export async function runBacktest(
   payload: BacktestRunRequest,
   options?: FetchOptions,
 ): Promise<BacktestRunResponse> {
-  const res = await fetch(`${API_BASE}/api/backtest/run`, {
+  const res = await apiFetch(`${API_BASE}/api/backtest/run`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -338,7 +346,7 @@ export async function fetchBacktestAdvice(
   payload: BacktestAdviceRequest,
   options?: FetchOptions,
 ): Promise<BacktestAdviceResponse> {
-  const res = await fetch(`${API_BASE}/api/backtest/advice`, {
+  const res = await apiFetch(`${API_BASE}/api/backtest/advice`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -374,7 +382,7 @@ export async function fetchRealtimeQuotes(stockIds: string[]): Promise<RealtimeQ
   const responses = await Promise.all(
     batches.map(async (batch) => {
       const ids = batch.join(",")
-      const res = await fetch(`${API_BASE}/api/realtime/quotes?stock_ids=${ids}`)
+      const res = await apiFetch(`${API_BASE}/api/realtime/quotes?stock_ids=${ids}`)
       if (!res.ok) return []
       return res.json() as Promise<RealtimeQuote[]>
     })
@@ -453,7 +461,7 @@ export async function fetchBrokerHistory(
   options?: FetchOptions,
 ): Promise<BrokerHistoryResponse> {
   const params = new URLSearchParams({ start: startDate, end: endDate })
-  const res = await fetch(
+  const res = await apiFetch(
     `${API_BASE}/api/stocks/${stockId}/brokers/${encodeURIComponent(brokerId)}/history?${params}`,
     { signal: options?.signal },
   )
@@ -469,7 +477,7 @@ export async function fetchBrokerRanked(
 ): Promise<BrokerRankedResponse> {
   const params = new URLSearchParams({ days: String(days) })
   if (date) params.set("date", date)
-  const res = await fetch(`${API_BASE}/api/stocks/${stockId}/brokers/ranked?${params}`, {
+  const res = await apiFetch(`${API_BASE}/api/stocks/${stockId}/brokers/ranked?${params}`, {
     signal: options?.signal,
   })
   if (!res.ok) throw new Error(`Failed to fetch broker ranked: ${res.status}`)
@@ -489,7 +497,7 @@ export async function fetchBrokerTrades(
 
   for (let attempt = 0; attempt <= BROKER_FETCH_RETRIES; attempt += 1) {
     try {
-      const res = await fetch(`${API_BASE}/api/stocks/${stockId}/brokers?${params}`, {
+      const res = await apiFetch(`${API_BASE}/api/stocks/${stockId}/brokers?${params}`, {
         signal: options?.signal,
       })
       if (!res.ok) throw new Error(`Failed to fetch broker trades: ${res.status}`)
@@ -588,7 +596,7 @@ export async function fetchValuation(
   const params = new URLSearchParams()
   if (startDate) params.set("start_date", startDate)
   if (endDate) params.set("end_date", endDate)
-  const res = await fetch(`${API_BASE}/api/stocks/${stockId}/valuation?${params}`, {
+  const res = await apiFetch(`${API_BASE}/api/stocks/${stockId}/valuation?${params}`, {
     signal: options?.signal,
   })
   if (!res.ok) throw new Error(await buildErrorMessage(res, "估值資料載入失敗"))
@@ -600,7 +608,7 @@ export async function fetchRevenue(
   months = 24,
   options?: FetchOptions,
 ): Promise<RevenueResponse> {
-  const res = await fetch(`${API_BASE}/api/stocks/${stockId}/revenue?months=${months}`, {
+  const res = await apiFetch(`${API_BASE}/api/stocks/${stockId}/revenue?months=${months}`, {
     signal: options?.signal,
   })
   if (!res.ok) throw new Error(await buildErrorMessage(res, "月營收載入失敗"))
@@ -615,7 +623,7 @@ export async function fetchFinancials(
 ): Promise<FinancialResponse> {
   const params = new URLSearchParams({ quarters: String(quarters) })
   if (itemNames) params.set("item_names", itemNames)
-  const res = await fetch(`${API_BASE}/api/stocks/${stockId}/financials?${params}`, {
+  const res = await apiFetch(`${API_BASE}/api/stocks/${stockId}/financials?${params}`, {
     signal: options?.signal,
   })
   if (!res.ok) throw new Error(await buildErrorMessage(res, "財報資料載入失敗"))
@@ -631,7 +639,7 @@ export interface DailyBriefResponse {
 }
 
 export async function fetchDailyBrief(date: string, options?: FetchOptions): Promise<DailyBriefResponse> {
-  const res = await fetch(`${API_BASE}/api/market/daily-brief?date=${date}`, {
+  const res = await apiFetch(`${API_BASE}/api/market/daily-brief?date=${date}`, {
     signal: options?.signal,
   })
   if (!res.ok) throw new Error(await buildErrorMessage(res, "盤前摘要載入失敗"))
@@ -648,7 +656,7 @@ export interface StockSearchItem {
 
 export async function searchStocks(q: string, options?: FetchOptions): Promise<StockSearchItem[]> {
   const params = new URLSearchParams({ q, limit: "20" })
-  const res = await fetch(`${API_BASE}/api/stocks/search?${params}`, {
+  const res = await apiFetch(`${API_BASE}/api/stocks/search?${params}`, {
     signal: options?.signal,
   })
   if (!res.ok) throw new Error(await buildErrorMessage(res, "股票搜尋失敗"))
@@ -656,7 +664,7 @@ export async function searchStocks(q: string, options?: FetchOptions): Promise<S
 }
 
 export async function fetchLatestTradeDate(options?: FetchOptions): Promise<string | null> {
-  const res = await fetch(`${API_BASE}/api/market/latest-trade-date`, {
+  const res = await apiFetch(`${API_BASE}/api/market/latest-trade-date`, {
     signal: options?.signal,
   })
   if (!res.ok) throw new Error(await buildErrorMessage(res, "最新交易日載入失敗"))
@@ -697,7 +705,7 @@ export async function analyzeTradeQuality(
 ): Promise<TradeQualityResponse> {
   const body: Record<string, unknown> = { stock_id: payload.stock_id }
   if (payload.buy_date) body.buy_date = payload.buy_date
-  const res = await fetch(`${API_BASE}/api/analysis/trade-quality`, {
+  const res = await apiFetch(`${API_BASE}/api/analysis/trade-quality`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -705,4 +713,62 @@ export async function analyzeTradeQuality(
   })
   if (!res.ok) throw new Error(await buildErrorMessage(res, "交易質量分析失敗"))
   return res.json()
+}
+
+// ── Auth (M18) ──────────────────────────────────────────────────────────────
+
+export interface AuthUser {
+  id: number
+  email: string
+  name: string | null
+  is_admin: boolean
+}
+
+async function parseAuthError(res: Response, fallback: string): Promise<string> {
+  try {
+    const data = await res.json()
+    if (typeof data?.detail === "string") return data.detail
+  } catch {
+    // ignore
+  }
+  return fallback
+}
+
+export async function fetchCurrentUser(options?: FetchOptions): Promise<AuthUser | null> {
+  const res = await apiFetch(`${API_BASE}/api/auth/me`, { signal: options?.signal })
+  if (res.status === 401) return null
+  if (!res.ok) throw new Error(await parseAuthError(res, "無法取得使用者資訊"))
+  return res.json()
+}
+
+export async function registerUser(payload: {
+  email: string
+  password: string
+  name?: string
+}): Promise<AuthUser> {
+  const res = await apiFetch(`${API_BASE}/api/auth/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) throw new Error(await parseAuthError(res, "註冊失敗"))
+  return res.json()
+}
+
+export async function loginUser(payload: {
+  email: string
+  password: string
+}): Promise<AuthUser> {
+  const res = await apiFetch(`${API_BASE}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) throw new Error(await parseAuthError(res, "登入失敗"))
+  return res.json()
+}
+
+export async function logoutUser(): Promise<void> {
+  const res = await apiFetch(`${API_BASE}/api/auth/logout`, { method: "POST" })
+  if (!res.ok) throw new Error(await parseAuthError(res, "登出失敗"))
 }
