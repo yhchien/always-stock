@@ -1,7 +1,7 @@
 name: Broker Trade Backfill
 
 on:
-  # schedule 暫時停用（2026-04-21 14:00 Taipei 關閉，待 17:00 Taipei 手動恢復）
+  # schedule 暫時停用（2026-04-21 14:00 Taipei 關閉，待 20:00 Taipei 手動恢復）
   # schedule:
   #   - cron: '5 * * * *'   # 每小時第 5 分鐘執行，避免整點擁塞
   workflow_dispatch:
