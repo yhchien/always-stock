@@ -681,3 +681,23 @@
 - 前端所有 API 呼叫改用 `apiFetch`（`credentials: "include"` wrapper），否則 cookie 不會帶
 - CORS middleware 必須 `allow_credentials=True`
 - 密碼雜湊用 bcrypt（`backend/app/auth.py::hash_password` / `verify_password`）
+
+## FinMind inst_flow amount_est 漏寫 bug 修復（2026-04-22）
+
+### 問題現象
+- L0 / L1 產業卡片在切到 FinMind 後，近期日期可能顯示「法人買賣超 +0.0 億」
+- 單日 `inst_stock_flow` 有 `buy_shares / sell_shares`，但 `buy_amount_est / sell_amount_est / net_amount_est` 為 `NULL`
+
+### 根因
+- `backend/etl/finmind_inst_flow_sdk.py` 只寫 shares，漏掉 `*_amount_est`
+- `backend/etl/aggregate_industry_flow.py` 聚合讀的是 `*_amount_est`，所以 `industry_daily_flow` 會被聚合成 0.0
+
+### 修法
+1. `backend/etl/finmind_inst_flow_sdk.py` 在 groupby 後 join `daily_price.close_price`，寫入 `*_amount_est = shares * close_price`
+2. 新增 `backend/scripts/backfill_inst_flow_amount_est.py`，回填既有 `source='finmind'` 且 `*_amount_est IS NULL` 的資料
+3. 回填後重跑 `python backend/rebuild_industry_flow.py --from 2026-04-10 --skip-master`
+4. 補跑中斷日期的 `run_finmind_etl_sdk.py`
+
+### Gotcha
+- 金額單位是元，前端再自行除以 `1e8` 轉億
+- 若個別 `(trade_date, stock_id)` 缺 `daily_price.close_price`，amount fallback 為 `0.0`

@@ -76,9 +76,50 @@ def fetch_and_upsert_inst_flow_finmind_sdk(
             .agg(buy_shares=("buy", "sum"), sell_shares=("sell", "sum"))
         )
         agg["net_shares"] = agg["buy_shares"] - agg["sell_shares"]
+        
+        price_rows = db.execute(
+            text(
+                """
+                SELECT trade_date, stock_id, close_price
+                FROM daily_price
+                WHERE trade_date BETWEEN :start_date AND :end_date
+                """
+            ),
+            {"start_date": start_date, "end_date": end_date},
+        ).fetchall()
 
-        records = agg[["trade_date", "stock_id", "inst_type",
-                        "buy_shares", "sell_shares", "net_shares"]].to_dict("records")
+        if price_rows:
+            price_df = pd.DataFrame(
+                [(row[0], row[1], row[2]) for row in price_rows],
+                columns=["trade_date", "stock_id", "close_price"],
+            )
+            price_df["trade_date"] = pd.to_datetime(price_df["trade_date"]).dt.date
+            price_df["stock_id"] = price_df["stock_id"].astype(str).str.strip()
+            price_df["close_price"] = pd.to_numeric(
+                price_df["close_price"], errors="coerce"
+            ).fillna(0.0)
+            agg = agg.merge(price_df, on=["trade_date", "stock_id"], how="left")
+        else:
+            agg["close_price"] = 0.0
+
+        agg["close_price"] = agg["close_price"].fillna(0.0).clip(lower=0.0)
+        agg["buy_amount_est"] = agg["buy_shares"] * agg["close_price"]
+        agg["sell_amount_est"] = agg["sell_shares"] * agg["close_price"]
+        agg["net_amount_est"] = agg["buy_amount_est"] - agg["sell_amount_est"]
+
+        records = agg[
+            [
+                "trade_date",
+                "stock_id",
+                "inst_type",
+                "buy_shares",
+                "sell_shares",
+                "net_shares",
+                "buy_amount_est",
+                "sell_amount_est",
+                "net_amount_est",
+            ]
+        ].to_dict("records")
 
         # Bulk upsert（分批）
         for i in range(0, len(records), BULK_BATCH_SIZE):
@@ -86,16 +127,23 @@ def fetch_and_upsert_inst_flow_finmind_sdk(
             db.execute(text("""
                 INSERT INTO inst_stock_flow
                     (trade_date, stock_id, inst_type,
-                     buy_shares, sell_shares, net_shares, source, ingested_at)
+                     buy_shares, sell_shares, net_shares,
+                     buy_amount_est, sell_amount_est, net_amount_est,
+                     source, ingested_at)
                 VALUES
                     (:trade_date, :stock_id, :inst_type,
-                     :buy_shares, :sell_shares, :net_shares, 'finmind', CURRENT_TIMESTAMP)
+                     :buy_shares, :sell_shares, :net_shares,
+                     :buy_amount_est, :sell_amount_est, :net_amount_est,
+                     'finmind', CURRENT_TIMESTAMP)
                 ON CONFLICT (trade_date, stock_id, inst_type) DO UPDATE SET
-                    buy_shares  = EXCLUDED.buy_shares,
-                    sell_shares = EXCLUDED.sell_shares,
-                    net_shares  = EXCLUDED.net_shares,
-                    source      = 'finmind',
-                    ingested_at = CURRENT_TIMESTAMP
+                    buy_shares      = EXCLUDED.buy_shares,
+                    sell_shares     = EXCLUDED.sell_shares,
+                    net_shares      = EXCLUDED.net_shares,
+                    buy_amount_est  = EXCLUDED.buy_amount_est,
+                    sell_amount_est = EXCLUDED.sell_amount_est,
+                    net_amount_est  = EXCLUDED.net_amount_est,
+                    source          = 'finmind',
+                    ingested_at     = CURRENT_TIMESTAMP
             """), batch)
             db.commit()
             result["upserted"] += len(batch)
