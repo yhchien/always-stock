@@ -4,6 +4,7 @@ import { Suspense, use, useEffect, useMemo, useState } from "react"
 import dynamic from "next/dynamic"
 import Link from "next/link"
 import { useSearchParams } from "next/navigation"
+import RequireAuth from "@/components/RequireAuth"
 import { Skeleton } from "@/components/ui/skeleton"
 
 const FINANCIALS_TOGGLE_STORAGE_KEY = "always-stock:show-financials-panel"
@@ -182,8 +183,10 @@ export default function StockDetailPage({
   const { stockId } = use(params)
 
   return (
-    <Suspense>
-      <StockContent stockId={stockId} />
-    </Suspense>
+    <RequireAuth>
+      <Suspense>
+        <StockContent stockId={stockId} />
+      </Suspense>
+    </RequireAuth>
   )
 }

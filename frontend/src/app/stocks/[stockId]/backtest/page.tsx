@@ -3,6 +3,7 @@
 import { Suspense, use, useCallback, useState } from "react"
 import { useSearchParams, useRouter } from "next/navigation"
 import dynamic from "next/dynamic"
+import RequireAuth from "@/components/RequireAuth"
 import { Skeleton } from "@/components/ui/skeleton"
 import BacktestPanel from "@/components/BacktestPanel"
 
@@ -78,8 +79,10 @@ export default function BacktestPage({
   const { stockId } = use(params)
 
   return (
-    <Suspense>
-      <BacktestContent stockId={stockId} />
-    </Suspense>
+    <RequireAuth>
+      <Suspense>
+        <BacktestContent stockId={stockId} />
+      </Suspense>
+    </RequireAuth>
   )
 }

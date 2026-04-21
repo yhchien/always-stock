@@ -2,6 +2,7 @@
 
 import { Suspense, use } from "react"
 import { useSearchParams } from "next/navigation"
+import RequireAuth from "@/components/RequireAuth"
 import StockList from "@/components/StockList"
 import { todayInTaipei } from "@/lib/utils"
 
@@ -26,8 +27,10 @@ export default function IndustryStocksPage({
   const { industryName } = use(params)
 
   return (
-    <Suspense>
-      <IndustryContent industryName={industryName} />
-    </Suspense>
+    <RequireAuth>
+      <Suspense>
+        <IndustryContent industryName={industryName} />
+      </Suspense>
+    </RequireAuth>
   )
 }
