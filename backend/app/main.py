@@ -6,9 +6,23 @@ from typing import Optional
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import analysis, backtest, brokers, financials, industries, market, realtime, stocks
+from app.routers import analysis, auth as auth_router, backtest, brokers, financials, industries, market, realtime, stocks
 
 logger = logging.getLogger(__name__)
+
+
+def _seed_admin_user() -> None:
+    """啟動時確保 admin 帳號存在（M18）。失敗不阻擋 app 啟動。"""
+    from app.auth import ensure_admin_user
+    from app.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        ensure_admin_user(db)
+    except Exception:
+        logger.exception("Failed to ensure admin user at startup")
+    finally:
+        db.close()
 
 
 @asynccontextmanager
@@ -18,6 +32,8 @@ async def lifespan(app: FastAPI):
     web service also hosts the bot (no separate worker needed). Skips silently
     when TELEGRAM_BOT_TOKEN is absent so local dev without a token still runs.
     """
+    _seed_admin_user()
+
     app.state.bot_app = None
 
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
@@ -83,8 +99,10 @@ app.add_middleware(
     allow_origins=_allowed_origins,
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_credentials=True,
 )
 
+app.include_router(auth_router.router, prefix="/api")
 app.include_router(industries.router, prefix="/api")
 app.include_router(market.router, prefix="/api")
 app.include_router(stocks.router, prefix="/api")
