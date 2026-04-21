@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.industry_flow_service import (
+    get_latest_industry_trade_date,
     get_recent_industry_trade_dates,
     load_industry_flow_rows,
     load_industry_flow_rows_for_dates,
@@ -131,6 +132,34 @@ def _load_stocks_by_industry_name(db: Session, industry_name: str) -> List[Stock
     )
 
 
+def _resolve_market_trade_date(db: Session, requested_date: date) -> Optional[date]:
+    return _run_with_lock_retry(
+        db,
+        lambda: get_latest_industry_trade_date(db, requested_date),
+    )
+
+
+def _resolve_stock_trade_date(
+    db: Session,
+    requested_date: date,
+    stock_ids: List[str],
+) -> Optional[date]:
+    if not stock_ids:
+        return None
+
+    return _run_with_lock_retry(
+        db,
+        lambda: (
+            db.query(func.max(InstStockFlow.trade_date))
+            .filter(
+                InstStockFlow.trade_date <= requested_date,
+                InstStockFlow.stock_id.in_(stock_ids),
+            )
+            .scalar()
+        ),
+    )
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.get("/industries", response_model=List[IndustryFlowItem])
@@ -141,22 +170,31 @@ def get_industries(
     """
     L0: Return all industries for the given date with streak info.
     """
-    logger.info("GET /industries date=%s", date)
+    try:
+        resolved_date = _resolve_market_trade_date(db, date)
+    except OperationalError as error:
+        _raise_busy_if_locked(error)
+
+    logger.info("GET /industries requested=%s resolved=%s", date, resolved_date)
+    if resolved_date is None:
+        logger.warning("No industry flow data on or before %s", date)
+        raise HTTPException(status_code=404, detail=f"No data for {date}")
+
     try:
         rows = _run_with_lock_retry(
             db,
-            lambda: load_industry_flow_rows(db, date),
+            lambda: load_industry_flow_rows(db, resolved_date),
         )
     except OperationalError as error:
         _raise_busy_if_locked(error)
     if not rows:
-        logger.warning("No industry flow data for %s", date)
+        logger.warning("No industry flow data for requested=%s resolved=%s", date, resolved_date)
         raise HTTPException(status_code=404, detail=f"No data for {date}")
 
     # Compute streaks: load last 31 trading dates per industry (enough to detect 30+ streak)
     industry_names = [r.industry_name for r in rows]
     try:
-        recent_dates = get_recent_industry_trade_dates(db, date, limit=31)
+        recent_dates = get_recent_industry_trade_dates(db, resolved_date, limit=31)
         history = _run_with_lock_retry(
             db,
             lambda: load_industry_flow_rows_for_dates(db, recent_dates, industry_names),
@@ -181,7 +219,7 @@ def get_industries(
             streak=compute_streak(streak_data.get(r.industry_name, [])),
         ))
 
-    logger.debug("Returning %d industries for %s", len(result), date)
+    logger.debug("Returning %d industries for requested=%s resolved=%s", len(result), date, resolved_date)
     return result
 
 
@@ -195,7 +233,7 @@ def get_industry_sub_summary(
     L1 summary: Return sub_industry level aggregation for a given industry,
     with streak info.
     """
-    logger.info("GET /industries/%s/summary date=%s", industry_name, date)
+    logger.info("GET /industries/%s/summary requested=%s", industry_name, date)
 
     try:
         stocks = _load_stocks_by_industry_name(db, industry_name)
@@ -205,6 +243,13 @@ def get_industry_sub_summary(
         raise HTTPException(status_code=404, detail=f"Industry not found: {industry_name}")
 
     stock_ids = [s.stock_id for s in stocks]
+    try:
+        resolved_date = _resolve_stock_trade_date(db, date, stock_ids)
+    except OperationalError as error:
+        _raise_busy_if_locked(error)
+    if resolved_date is None:
+        raise HTTPException(status_code=404, detail=f"No data for {date}")
+
     stock_sub = {
         s.stock_id: s.sub_industry or s.industry_name
         for s in stocks
@@ -217,7 +262,7 @@ def get_industry_sub_summary(
             db,
             lambda: (
                 db.query(InstStockFlow)
-                .filter(InstStockFlow.trade_date == date, InstStockFlow.stock_id.in_(stock_ids))
+                .filter(InstStockFlow.trade_date == resolved_date, InstStockFlow.stock_id.in_(stock_ids))
                 .all()
             ),
         )
@@ -243,7 +288,7 @@ def get_industry_sub_summary(
     # No need to load full history — streak only cares about consecutive days.
     recent_dates = (
         db.query(InstStockFlow.trade_date)
-        .filter(InstStockFlow.trade_date <= date, InstStockFlow.stock_id.in_(stock_ids))
+        .filter(InstStockFlow.trade_date <= resolved_date, InstStockFlow.stock_id.in_(stock_ids))
         .distinct()
         .order_by(InstStockFlow.trade_date.desc())
         .limit(31)
@@ -290,7 +335,10 @@ def get_industry_sub_summary(
         ))
 
     result.sort(key=lambda x: x.total_net_amount, reverse=True)
-    logger.debug("Returning %d sub-industry summaries for '%s' on %s", len(result), industry_name, date)
+    logger.debug(
+        "Returning %d sub-industry summaries for '%s' requested=%s resolved=%s",
+        len(result), industry_name, date, resolved_date,
+    )
     return result
 
 
@@ -304,7 +352,7 @@ def get_industry_stocks(
     L1: Return all stocks in the given industry for the given date, sorted by total net flow descending.
     industry_name matches stocks_master.industry_name (Fugle broad category).
     """
-    logger.info("GET /industries/%s/stocks date=%s", industry_name, date)
+    logger.info("GET /industries/%s/stocks requested=%s", industry_name, date)
 
     try:
         stocks = _load_stocks_by_industry_name(db, industry_name)
@@ -316,6 +364,13 @@ def get_industry_stocks(
 
     stock_ids = [s.stock_id for s in stocks]
     stock_map = {s.stock_id: s for s in stocks}
+    try:
+        resolved_date = _resolve_stock_trade_date(db, date, stock_ids)
+    except OperationalError as error:
+        _raise_busy_if_locked(error)
+    if resolved_date is None:
+        raise HTTPException(status_code=404, detail=f"No data for {date}")
+
     logger.debug("Found %d stocks in industry '%s'", len(stock_ids), industry_name)
 
     # Load closing prices for the target date
@@ -324,7 +379,7 @@ def get_industry_stocks(
             db,
             lambda: (
                 db.query(DailyPrice)
-                .filter(DailyPrice.trade_date == date, DailyPrice.stock_id.in_(stock_ids))
+                .filter(DailyPrice.trade_date == resolved_date, DailyPrice.stock_id.in_(stock_ids))
                 .all()
             ),
         )
@@ -339,7 +394,7 @@ def get_industry_stocks(
             DailyPrice.stock_id,
             func.max(DailyPrice.trade_date).label("prev_date"),
         )
-        .filter(DailyPrice.trade_date < date, DailyPrice.stock_id.in_(stock_ids))
+        .filter(DailyPrice.trade_date < resolved_date, DailyPrice.stock_id.in_(stock_ids))
         .group_by(DailyPrice.stock_id)
         .subquery()
     )
@@ -368,7 +423,7 @@ def get_industry_stocks(
             db,
             lambda: (
                 db.query(InstStockFlow)
-                .filter(InstStockFlow.trade_date == date, InstStockFlow.stock_id.in_(stock_ids))
+                .filter(InstStockFlow.trade_date == resolved_date, InstStockFlow.stock_id.in_(stock_ids))
                 .all()
             ),
         )
@@ -421,5 +476,8 @@ def get_industry_stocks(
         key=lambda x: x.foreign_net_amount + x.trust_net_amount + x.dealer_net_amount,
         reverse=True,
     )
-    logger.debug("Returning %d stocks for industry '%s' on %s", len(result), industry_name, date)
+    logger.debug(
+        "Returning %d stocks for industry '%s' requested=%s resolved=%s",
+        len(result), industry_name, date, resolved_date,
+    )
     return result

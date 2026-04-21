@@ -701,3 +701,11 @@
 ### Gotcha
 - 金額單位是元，前端再自行除以 `1e8` 轉億
 - 若個別 `(trade_date, stock_id)` 缺 `daily_price.close_price`，amount fallback 為 `0.0`
+
+## Industry date fallback + admin login gotcha（2026-04-22）
+
+- `IndustryDashboard` / `StockList` 對應的 `/api/industries*` 路由現在應比照 `/market`：
+  若使用者選到非交易日，後端自動 resolve 到 `<= requested_date` 的最近交易日，而不是直接 404
+- 首頁點產業時，必須帶 **目前 component state 的 date**，不能帶外層舊的 query param date，否則會出現 UI 選了 `3/4`、實際跳頁卻還是舊日期的 race condition
+- `/login` 前端不能對 login mode 一律套 `minLength=8` / `password.length < 8` 驗證，否則預設 admin 帳號 `admin@always-stock.dev / forwork`（7 碼）永遠送不到後端
+- 註冊仍維持最少 8 碼；只有登入要允許短於 8 碼的既有帳號

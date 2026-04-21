@@ -93,7 +93,21 @@ describe("IndustryDashboard", () => {
     await waitFor(() => screen.getByText("半導體"))
 
     fireEvent.click(screen.getByText("半導體"))
-    expect(onSelect).toHaveBeenCalledWith("半導體")
+    expect(onSelect).toHaveBeenCalledWith("半導體", "2026-04-01")
+  })
+
+  it("passes the latest selected date when a row is clicked", async () => {
+    jest.spyOn(api, "fetchIndustries").mockResolvedValue(MOCK_ROWS)
+    const onSelect = jest.fn()
+
+    render(<IndustryDashboard defaultDate="2026-04-01" onSelectIndustry={onSelect} />)
+    await waitFor(() => screen.getByText("半導體"))
+
+    fireEvent.change(screen.getByDisplayValue("2026-04-01"), { target: { value: "2026-03-04" } })
+    await waitFor(() => expect(screen.getByDisplayValue("2026-03-04")).toBeInTheDocument())
+
+    fireEvent.click(screen.getByText("半導體"))
+    expect(onSelect).toHaveBeenCalledWith("半導體", "2026-03-04")
   })
 
   it("displays amounts in 億 with correct sign colors", async () => {

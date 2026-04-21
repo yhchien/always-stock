@@ -103,6 +103,26 @@ class TestGetIndustries:
         resp = client.get("/api/industries?date=2000-01-01")
         assert resp.status_code == 404
 
+    def test_resolves_to_previous_trade_date_when_requested_date_has_no_rows(self, api):
+        client, db = api
+        db.add(IndustryDailyFlow(
+            trade_date=date(2025, 3, 31),
+            industry_name="半導體",
+            total_net_amount=1000,
+            total_buy_amount=2000,
+            total_sell_amount=1000,
+            foreign_net_amount=700,
+            trust_net_amount=200,
+            dealer_net_amount=100,
+        ))
+        db.commit()
+
+        resp = client.get("/api/industries?date=2025-04-01")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["industry_name"] == "半導體"
+
     def test_falls_back_to_inst_flow_when_agg_table_is_missing(self, api):
         client, db = api
         seed_stock(db, "2330", "台積電", "半導體")
@@ -213,6 +233,34 @@ class TestGetIndustryStocks:
         assert resp.status_code == 200
         assert resp.json()[0]["stock_id"] == "2454"
 
+    def test_stocks_resolve_to_previous_trade_date_when_requested_date_has_no_rows(self, api):
+        client, db = api
+        seed_stock(db, "2330", "台積電", "半導體", sub_industry="晶圓代工")
+        db.add(DailyPrice(
+            trade_date=date(2025, 3, 31),
+            stock_id="2330",
+            close_price=990.0,
+            volume=1000000,
+            turnover=990000000,
+            avg_price=990.0,
+        ))
+        db.add(InstStockFlow(
+            trade_date=date(2025, 3, 31),
+            stock_id="2330",
+            inst_type="foreign",
+            buy_shares=500,
+            sell_shares=0,
+            net_shares=500,
+            buy_amount_est=495000,
+            sell_amount_est=0,
+            net_amount_est=495000,
+        ))
+        db.commit()
+
+        resp = client.get("/api/industries/半導體/stocks?date=2025-04-01")
+        assert resp.status_code == 200
+        assert resp.json()[0]["stock_id"] == "2330"
+
 
 class TestGetSubIndustrySummary:
     def test_returns_sub_industry_summary(self, api):
@@ -252,3 +300,22 @@ class TestGetSubIndustrySummary:
         resp = client.get(f"/api/industries/不存在的產業/summary?date={TRADE_DATE}")
         assert resp.status_code == 404
 
+    def test_summary_resolves_to_previous_trade_date_when_requested_date_has_no_rows(self, api):
+        client, db = api
+        seed_stock(db, "2330", "台積電", "半導體", sub_industry="晶圓製造")
+        db.add(InstStockFlow(
+            trade_date=date(2025, 3, 31),
+            stock_id="2330",
+            inst_type="foreign",
+            buy_shares=500,
+            sell_shares=0,
+            net_shares=500,
+            buy_amount_est=500000,
+            sell_amount_est=0,
+            net_amount_est=500000,
+        ))
+        db.commit()
+
+        resp = client.get("/api/industries/半導體/summary?date=2025-04-01")
+        assert resp.status_code == 200
+        assert resp.json()[0]["sub_industry"] == "晶圓製造"

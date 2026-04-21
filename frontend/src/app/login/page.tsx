@@ -34,7 +34,7 @@ function LoginForm() {
       setError("請輸入 Email")
       return
     }
-    if (password.length < 8) {
+    if (mode === "register" && password.length < 8) {
       setError("密碼至少 8 碼")
       return
     }
@@ -117,7 +117,7 @@ function LoginForm() {
         )}
 
         <label className="flex flex-col gap-1 text-xs text-slate-400">
-          密碼（至少 8 碼）
+          {mode === "register" ? "密碼（至少 8 碼）" : "密碼"}
           <input
             type="password"
             autoComplete={mode === "login" ? "current-password" : "new-password"}
@@ -125,7 +125,7 @@ function LoginForm() {
             onChange={(e) => setPassword(e.target.value)}
             className="rounded-md border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
             required
-            minLength={8}
+            minLength={mode === "register" ? 8 : 1}
           />
         </label>
 

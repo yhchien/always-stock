@@ -19,8 +19,8 @@ function HomeContent() {
       <IndustryDashboard
         defaultDate={date}
         onDateChange={(d) => router.replace(`/?date=${d}`, { scroll: false })}
-        onSelectIndustry={(name) =>
-          router.push(`/industries/${encodeURIComponent(name)}?date=${date}`)
+        onSelectIndustry={(name, selectedDate) =>
+          router.push(`/industries/${encodeURIComponent(name)}?date=${selectedDate}`)
         }
       />
     </main>

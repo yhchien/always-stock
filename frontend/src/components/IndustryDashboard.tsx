@@ -60,7 +60,7 @@ function StreakCell({ value }: { value: number }) {
 interface Props {
   defaultDate: string
   onDateChange?: (date: string) => void
-  onSelectIndustry?: (name: string) => void
+  onSelectIndustry?: (name: string, date: string) => void
 }
 
 export default function IndustryDashboard({ defaultDate, onDateChange, onSelectIndustry }: Props) {
@@ -103,6 +103,10 @@ export default function IndustryDashboard({ defaultDate, onDateChange, onSelectI
       cleanup?.()
     }
   }, [date, load])
+
+  useEffect(() => {
+    setDate(defaultDate)
+  }, [defaultDate])
 
   // Sync tab → sortKey when tab changes
   const handleTabChange = (t: Tab) => {
@@ -244,7 +248,7 @@ export default function IndustryDashboard({ defaultDate, onDateChange, onSelectI
                 <TableRow
                   key={row.industry_name}
                   className="border-slate-600 hover:bg-slate-800/60 cursor-pointer"
-                  onClick={() => onSelectIndustry?.(row.industry_name)}
+                  onClick={() => onSelectIndustry?.(row.industry_name, date)}
                 >
                   <TableCell className="text-slate-600 text-xs">{i + 1}</TableCell>
                   <TableCell className="font-medium text-sm">{row.industry_name}</TableCell>
