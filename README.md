@@ -156,7 +156,6 @@ npm run dev
 | 資料表 | 說明 | 狀態 |
 |--------|------|------|
 | `broker_trade_raw` | 分點逐筆原始資料（未來用） | ⬜ 待實作 |
-| `industry_mapping` | 產業分類對照（Fugle ↔ FinMind） | ⬜ 待實作 |
 
 > **注意**：`daily_valuation`、`monthly_revenue`、`financial_statement` 資料在 Render PostgreSQL，本地 SQLite 尚無資料。
 

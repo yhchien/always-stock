@@ -245,7 +245,7 @@ Vercel
 | 變數 | 用途 |
 |------|------|
 | `DATABASE_URL` | PostgreSQL 連線字串 |
-| `FINMIND_API_TOKEN` | FinMind API（可選，免費 tier 夠用） |
+| `FINMIND_TOKEN` | FinMind API（Sponsor 建議，每日 ETL 需要） |
 | `TZ` | `Asia/Taipei` |
 
 ### 前端（Vercel）

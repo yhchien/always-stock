@@ -23,7 +23,7 @@
 - `DATABASE_URL`
 - `OPENAI_API_KEY`
 - `TELEGRAM_BOT_TOKEN`
-- `FINMIND_API_TOKEN`
+- `FINMIND_TOKEN`
 
 ### Backend API
 
@@ -35,7 +35,7 @@
 
 視功能需要：
 
-- `FINMIND_API_TOKEN`
+- `FINMIND_TOKEN`
 
 原則：
 
@@ -52,7 +52,7 @@
 
 視功能需要：
 
-- `FINMIND_API_TOKEN`
+- `FINMIND_TOKEN`
 
 ### ETL / Cron Job
 
@@ -63,7 +63,7 @@
 
 視資料源需要：
 
-- `FINMIND_API_TOKEN`
+- `FINMIND_TOKEN`
 
 ## 建議環境變數清單
 
@@ -87,7 +87,7 @@
 
 ### ETL
 
-- `FINMIND_API_TOKEN`
+- `FINMIND_TOKEN`
 
 ## 權限建議
 

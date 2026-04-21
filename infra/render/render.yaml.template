@@ -39,7 +39,7 @@ services:
     envVars:
       - key: DATABASE_URL
         sync: false
-      - key: FINMIND_API_TOKEN
+      - key: FINMIND_TOKEN
         sync: false
       - key: TZ
         value: Asia/Taipei
