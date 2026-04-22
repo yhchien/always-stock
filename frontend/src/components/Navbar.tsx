@@ -34,10 +34,9 @@ export default function Navbar() {
             </Link>
           )}
 
-          {/* Auth 狀態 */}
-          {status === "loading" ? (
-            <span className="text-xs text-slate-500">…</span>
-          ) : user ? (
+          {/* Auth 狀態：loading 期間也顯示登入按鈕（半透明 + pulse dot），
+              避免冷啟動時 /api/auth/me 慢回導致按鈕長時間卡在「…」看不見 */}
+          {user ? (
             <div className="flex items-center gap-2">
               <span className="text-xs text-slate-400">
                 {user.name ?? user.email}
@@ -57,8 +56,14 @@ export default function Navbar() {
           ) : isLoginPage ? null : (
             <Link
               href="/login"
-              className="text-xs text-slate-200 bg-sky-600 hover:bg-sky-500 transition-colors rounded-md px-3 py-1"
+              className={`text-xs text-slate-200 bg-sky-600 hover:bg-sky-500 transition-colors rounded-md px-3 py-1 inline-flex items-center gap-1.5 ${
+                status === "loading" ? "opacity-70" : ""
+              }`}
+              aria-busy={status === "loading"}
             >
+              {status === "loading" && (
+                <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-slate-100/80" />
+              )}
               登入 / 註冊
             </Link>
           )}
