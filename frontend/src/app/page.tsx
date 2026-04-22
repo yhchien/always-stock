@@ -8,6 +8,7 @@ import { fetchLatestTradeDate } from "@/lib/api"
 import { todayInTaipei } from "@/lib/utils"
 
 const TradeQualityAnalysis = dynamic(() => import("@/components/TradeQualityAnalysis"), { ssr: false })
+const HotMoneyList = dynamic(() => import("@/components/HotMoneyList"), { ssr: false })
 
 function HomeContent() {
   const router = useRouter()
@@ -15,14 +16,15 @@ function HomeContent() {
   const queryDate = searchParams.get("date")
   // 預設用台北今天，但立刻嘗試改成 DB 最近交易日（前一個有資料的交易日），
   // 避免 ETL 未跑的日期顯示空資料。有 query param 時尊重使用者選擇。
-  const [defaultDate, setDefaultDate] = useState<string>(queryDate ?? todayInTaipei())
+  const [latestTradeDate, setLatestTradeDate] = useState<string | null>(null)
+  const defaultDate = queryDate ?? latestTradeDate ?? todayInTaipei()
 
   useEffect(() => {
     if (queryDate) return
     let cancelled = false
     fetchLatestTradeDate()
       .then((d) => {
-        if (!cancelled && d) setDefaultDate(d)
+        if (!cancelled && d) setLatestTradeDate(d)
       })
       .catch(() => {
         // fallback 已經是 todayInTaipei()
@@ -42,6 +44,7 @@ function HomeContent() {
           router.push(`/industries/${encodeURIComponent(name)}?date=${selectedDate}`)
         }
       />
+      <HotMoneyList date={defaultDate} days={3} limit={20} />
     </main>
   )
 }

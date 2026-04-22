@@ -20,6 +20,11 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.hot_money_service import (
+    HotMoneyResponse,
+    compute_hot_money,
+    serialize_hot_money_result,
+)
 from app.industry_flow_service import (
     get_latest_industry_trade_date,
     get_recent_industry_trade_dates,
@@ -674,3 +679,20 @@ def get_daily_brief(
         return build_daily_brief(db, date)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.get("/market/hot-money", response_model=HotMoneyResponse)
+def get_market_hot_money(
+    date: Optional[date] = Query(default=None, description="trade date YYYY-MM-DD; defaults to latest available"),
+    days: int = Query(default=3, ge=1, le=20, description="window size in trading days"),
+    limit: int = Query(default=20, ge=1, le=50, description="max items to return"),
+    db: Session = Depends(get_db),
+):
+    """
+    M22: 全市場近 N 日三大法人累計淨買超 Top K（L0 首頁底部用，公開）。
+    """
+    resolved = _resolve_trade_date(db, date)
+    if resolved is None:
+        return HotMoneyResponse(start_date=None, end_date=None, trade_dates=[], items=[])
+    result = compute_hot_money(db, end_date=resolved, days=days, limit=limit)
+    return serialize_hot_money_result(result)
