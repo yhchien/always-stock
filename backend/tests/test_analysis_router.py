@@ -425,3 +425,77 @@ def test_trade_quality_prompt_can_be_loaded():
     prompt = _load_system_prompt()
     assert "buy-side research analyst" in prompt
     assert "時空隔離" in prompt
+
+
+@pytest.mark.parametrize(
+    "raw_rating,expected_rating,expected_label",
+    [
+        ("STRONG_BUY", "STRONG_BUY", "強烈推薦"),
+        ("BUY", "BUY", "推薦"),
+        ("NEUTRAL", "NEUTRAL", "中立"),
+        ("WATCH", "WATCH", "再看看"),
+        ("RUN", "RUN", "快跑"),
+        ("strong_buy", "STRONG_BUY", "強烈推薦"),  # 小寫也要吃
+        ("S", "NEUTRAL", "中立"),  # 誤把產業熱錢等級灌進 rating → fallback
+        ("A+", "NEUTRAL", "中立"),
+        ("", "NEUTRAL", "中立"),
+    ],
+)
+def test_trade_quality_rating_maps_to_5_tier_labels(api, raw_rating, expected_rating, expected_label):
+    client, db = api
+    _seed_full_context(db)
+
+    fake_payload = {
+        "rating": raw_rating,
+        "classification": "A",
+        "summary": "test",
+        "report_markdown": "report",
+    }
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = MagicMock(
+        choices=[MagicMock(message=MagicMock(content=json.dumps(fake_payload)))]
+    )
+
+    with patch("app.routers.analysis.get_openai_api_key", return_value="k"), \
+         patch("app.routers.analysis.OpenAI", return_value=mock_client):
+        resp = client.post(
+            "/api/analysis/trade-quality",
+            json={"stock_id": "2330", "buy_date": "2024-01-11"},
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["rating"] == expected_rating
+    assert data["rating_label"] == expected_label
+
+
+def test_trade_quality_user_message_documents_rating_value_domain(api):
+    """User message 必須明講 rating 值域 + classification 不接受 S，避免產業熱錢等級污染。"""
+    client, db = api
+    _seed_full_context(db)
+
+    captured = {}
+
+    def fake_create(*args, **kwargs):
+        captured["user_msg"] = kwargs["messages"][1]["content"]
+        return MagicMock(choices=[MagicMock(message=MagicMock(
+            content=json.dumps({"rating": "NEUTRAL", "summary": "x", "report_markdown": "y"})
+        ))])
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.side_effect = fake_create
+
+    with patch("app.routers.analysis.get_openai_api_key", return_value="k"), \
+         patch("app.routers.analysis.OpenAI", return_value=mock_client):
+        client.post(
+            "/api/analysis/trade-quality",
+            json={"stock_id": "2330", "buy_date": "2024-01-11"},
+        )
+
+    msg = captured["user_msg"]
+    # 5-tier 必列出
+    for token in ("STRONG_BUY", "BUY", "NEUTRAL", "WATCH", "RUN"):
+        assert token in msg
+    # 明講 classification 不接受 S
+    assert "classification" in msg
+    assert "產業熱錢等級" in msg

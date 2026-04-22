@@ -341,6 +341,13 @@ rating 對應規則（由你依分析強度自行判斷，不依死板 A/B/C 映
   - 總長盡量控制在 800~1200 個中文字內
   - 不要重複 JSON 已經表達過的欄位
 - classification 與 rating 邏輯需一致（C 不可對應 STRONG_BUY）
+
+⚠️ 輸出值域（強制，避免與系統 prompt 內部分類混淆）：
+- `classification` 僅能是 `A` / `B` / `C` —— 這是「個股整體交易質量」分類。
+  系統 prompt 的「產業熱錢等級（S/A/B/C）」是分析過程中的中間判斷，
+  不可填入本欄位；產業熱錢等級若要提及，請寫在 `core_logic` 或 `report_markdown`。
+- `rating` 僅能是 `STRONG_BUY` / `BUY` / `NEUTRAL` / `WATCH` / `RUN` 五個值之一。
+  任何其他字串都會被後端視為 `NEUTRAL`。
 """
 
 
