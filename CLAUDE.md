@@ -684,9 +684,14 @@
 
 ## FinMind inst_flow amount_est 漏寫 bug 修復（2026-04-22）
 
+> **狀態（2026-04-22 更新）**：Code 層已於 commit `6deefae` 修復並 push（`finmind_inst_flow_sdk.py` 修法 + `backfill_inst_flow_amount_est.py` + 單元測試），但 **prod DB backfill 尚未執行**，所以 4/10~4/15 的 `inst_stock_flow.buy_amount_est` 仍為 0.0、`industry_daily_flow` 法人金額仍為 0。要完全落地還需執行：
+> 1. `python backend/scripts/backfill_inst_flow_amount_est.py`（對 prod 連線）
+> 2. `python backend/rebuild_industry_flow.py --from 2026-04-10 --skip-master`
+> 3. 補跑 4/20 / 4/21 因配額中斷的 `valuation / monthly_revenue / financial_statement`
+
 ### 問題現象
 - L0 / L1 產業卡片在切到 FinMind 後，近期日期可能顯示「法人買賣超 +0.0 億」
-- 單日 `inst_stock_flow` 有 `buy_shares / sell_shares`，但 `buy_amount_est / sell_amount_est / net_amount_est` 為 `NULL`
+- 單日 `inst_stock_flow` 有 `buy_shares / sell_shares`，但 `buy_amount_est / sell_amount_est / net_amount_est` 為 `NULL`（或預設 0）
 
 ### 根因
 - `backend/etl/finmind_inst_flow_sdk.py` 只寫 shares，漏掉 `*_amount_est`

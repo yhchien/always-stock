@@ -20,13 +20,14 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from app.database import SessionLocal
 
 
-def build_where_clause(from_date: Optional[str]) -> tuple[str, dict]:
+def build_where_clause(from_date: Optional[str], to_date: Optional[str]) -> tuple[str, dict]:
     clauses = [
         "f.source = 'finmind'",
         "("
-        "f.buy_amount_est IS NULL OR "
-        "f.sell_amount_est IS NULL OR "
-        "f.net_amount_est IS NULL"
+        "f.buy_amount_est IS NULL OR f.sell_amount_est IS NULL OR f.net_amount_est IS NULL "
+        "OR (COALESCE(f.buy_shares, 0) <> 0 AND COALESCE(f.buy_amount_est, 0) = 0) "
+        "OR (COALESCE(f.sell_shares, 0) <> 0 AND COALESCE(f.sell_amount_est, 0) = 0) "
+        "OR (COALESCE(f.net_shares, 0) <> 0 AND COALESCE(f.net_amount_est, 0) = 0)"
         ")",
     ]
     params = {}
@@ -35,16 +36,21 @@ def build_where_clause(from_date: Optional[str]) -> tuple[str, dict]:
         clauses.append("f.trade_date >= :from_date")
         params["from_date"] = from_date
 
+    if to_date:
+        clauses.append("f.trade_date <= :to_date")
+        params["to_date"] = to_date
+
     return " AND ".join(clauses), params
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Backfill inst_stock_flow amount_est from daily_price")
     parser.add_argument("--from", dest="from_date", help="只回填此日期起的資料（YYYY-MM-DD）")
+    parser.add_argument("--to", dest="to_date", help="只回填到此日期為止的資料（YYYY-MM-DD，含）")
     parser.add_argument("--dry-run", action="store_true", help="只顯示待更新筆數，不寫入 DB")
     args = parser.parse_args()
 
-    where_clause, params = build_where_clause(args.from_date)
+    where_clause, params = build_where_clause(args.from_date, args.to_date)
 
     db = SessionLocal()
     try:
