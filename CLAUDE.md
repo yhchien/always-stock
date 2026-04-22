@@ -539,6 +539,43 @@
   - CRITICAL step `no_data` 最終仍 no_data → error
   - 非 CRITICAL step `no_data` → ok
 
+## Daily ETL 配額重試 + 假日自動跳過（2026-04-22）
+
+### 背景
+- 2026-04-22 00:15（台北）的排程又卡配額（6362/6000），workflow 因 `insufficient_quota` 被當成 pass 但其實全沒跑
+- 假日（國定假日）cron 不會排除，ETL 會一路跑每個 step 才發現空資料，浪費時間與配額
+
+### 改動
+1. **`backend/etl/finmind_daily_price_sdk.py`**
+   - `daily_price` 回空資料時依 `client.quota_info` 判斷：
+     - 配額健康（`ok` / `warning`）→ `status: "holiday"`（非交易日）
+     - 配額 `critical` → `status: "no_data"`（交給既有 CRITICAL retry）
+   - 原本會回 `error`，現在區分假日 vs FinMind 慢同步
+
+2. **`backend/run_finmind_etl_sdk.py`**
+   - `daily_price` 回 `holiday` → 直接短路，後續 5 個 step 全標 `skipped_holiday`
+   - `RESUMEABLE_STEP_STATUSES` 加入 `holiday` / `skipped_holiday`
+   - `determine_overall_status()`：daily_price holiday → 整體 `holiday`
+   - `main()` 新增 **exit code 5 = holiday**（workflow 視為 pass、不 retry）
+   - `_run_critical_step_with_retry()` 維持原邏輯：只對 `no_data` retry
+
+3. **`.github/workflows/daily_etl_update.yml`**
+   - `timeout-minutes: 75 → 240`（首次 75 + sleep 90 + 重試 75 + buffer）
+   - 三段 step：`etl1` →（僅在 exit 2 時）`sleep 5400` → `etl2`
+   - 最終狀態評估：`etl2.etl_exit || etl1.etl_exit`
+   - exit `0 / 1 / 5` → pass；`2 / 3` → fail
+   - `insufficient_quota` 不再被當成靜默 pass；1.5h 後重試一次；假日自動跳過不 retry
+
+4. **`backend/tests/test_run_finmind_etl_sdk.py`** 新增 3 案例：
+   - `daily_price holiday` → 整體 `holiday`
+   - CRITICAL step 回 `holiday` 不觸發 `no_data` retry
+   - `skipped_holiday` 為 resumeable status
+
+### Gotcha
+- Holiday 偵測用「配額健康」當 signal；配額 critical 時即使 daily_price 空，也退回 `no_data` 走原 retry 路徑
+- 若真實交易日遇到 FinMind 10+h 延遲導致 23:00 還沒資料，會誤判為假日 → 可接受的 trade-off
+- workflow exit code 語義：`0 ok / 1 partial / 2 quota / 3 error / 5 holiday`
+
 ## 產業分類全面切換至 FinMind（2026-04-21）
 
 ### 背景

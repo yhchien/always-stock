@@ -57,8 +57,24 @@ def fetch_and_upsert_daily_price_finmind_sdk(
         )
 
         if df is None or df.empty:
-            logger.warning("No data returned from FinMind")
-            result["status"] = "error"
+            # 區分「假日（非交易日）」vs「FinMind 尚未同步完成」：
+            # - 配額健康 → 判定為 holiday，ETL 應短路並視為 pass
+            # - 配額 critical → 退回 no_data，交由 orchestrator 的 CRITICAL retry 處理
+            quota_info = getattr(client, "quota_info", None) or {}
+            quota_status = quota_info.get("status")
+            if quota_status in ("ok", "warning"):
+                logger.info(
+                    "No data returned from FinMind with healthy quota (%s) — "
+                    "assuming non-trading day",
+                    quota_status,
+                )
+                result["status"] = "holiday"
+            else:
+                logger.warning(
+                    "No data returned from FinMind (quota: %s)",
+                    quota_status,
+                )
+                result["status"] = "no_data"
             return result
 
         result["total_records"] = len(df)

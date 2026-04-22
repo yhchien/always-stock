@@ -4,7 +4,7 @@ on:
   schedule:
     # 台北 23:00（週一到週五）= UTC 15:00
     # GitHub Actions cron 只吃 UTC，無法直接指定 Asia/Taipei
-    # 推遲到 23:00 是為了對齊 FinMind 慢同步 dataset（inst_flow / daily_valuation）
+    # 23:00 是為了對齊 FinMind 慢同步 dataset（inst_flow / daily_valuation）
     - cron: '0 15 * * 1-5'
   workflow_dispatch:
     inputs:
@@ -15,8 +15,8 @@ on:
 jobs:
   run_etl:
     runs-on: ubuntu-latest
-    # 45（原本 ETL）+ 30（critical step no_data retry 最多 10+20 分鐘）= 75 分鐘
-    timeout-minutes: 75
+    # 首次 75 min + sleep 90 min + 重試 75 min = 240 min（含 buffer）
+    timeout-minutes: 240
 
     env:
       TZ: Asia/Taipei
@@ -45,8 +45,8 @@ jobs:
           echo "target_date=$TARGET_DATE" >> "$GITHUB_OUTPUT"
           echo "Target date (Taipei): $TARGET_DATE"
 
-      - name: Run full FinMind ETL
-        id: etl
+      - name: Run FinMind ETL (attempt 1)
+        id: etl1
         working-directory: backend
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -56,22 +56,49 @@ jobs:
           python3 run_finmind_etl_sdk.py --date ${{ steps.resolve.outputs.target_date }}
           ETL_EXIT=$?
           echo "etl_exit=$ETL_EXIT" >> "$GITHUB_OUTPUT"
-          # 0=ok, 1=partial, 2=insufficient_quota, 3=error
-          # 只有 error (3) 視為失敗；partial / quota 仍讓 workflow pass
-          if [ "$ETL_EXIT" -eq 3 ]; then
-            exit 1
-          fi
+          echo "ETL attempt 1 exit code: $ETL_EXIT"
           exit 0
 
-      - name: Report result
+      - name: Sleep 1.5h before retry (quota recovery)
+        if: steps.etl1.outputs.etl_exit == '2'
+        run: |
+          echo "Attempt 1 hit insufficient_quota; sleeping 5400s (1.5h) before retry..."
+          sleep 5400
+
+      - name: Run FinMind ETL (attempt 2, retry)
+        id: etl2
+        if: steps.etl1.outputs.etl_exit == '2'
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
+        run: |
+          set +e
+          python3 run_finmind_etl_sdk.py --date ${{ steps.resolve.outputs.target_date }}
+          ETL_EXIT=$?
+          echo "etl_exit=$ETL_EXIT" >> "$GITHUB_OUTPUT"
+          echo "ETL attempt 2 exit code: $ETL_EXIT"
+          exit 0
+
+      - name: Evaluate final status
         if: always()
         run: |
+          FINAL_EXIT="${{ steps.etl2.outputs.etl_exit || steps.etl1.outputs.etl_exit }}"
           echo "Target date: ${{ steps.resolve.outputs.target_date }}"
-          echo "ETL exit code: ${{ steps.etl.outputs.etl_exit }}"
-          case "${{ steps.etl.outputs.etl_exit }}" in
+          echo "Attempt 1 exit: ${{ steps.etl1.outputs.etl_exit }}"
+          echo "Attempt 2 exit: ${{ steps.etl2.outputs.etl_exit || 'N/A' }}"
+          echo "Final ETL exit code: $FINAL_EXIT"
+          case "$FINAL_EXIT" in
             0) echo "Status: ok" ;;
             1) echo "Status: partial" ;;
-            2) echo "Status: insufficient_quota" ;;
+            2) echo "Status: insufficient_quota (FAIL, retry exhausted)" ;;
             3) echo "Status: error" ;;
-            *) echo "Status: unknown" ;;
+            5) echo "Status: holiday (non-trading day, skipped)" ;;
+            *) echo "Status: unknown (exit=$FINAL_EXIT)" ;;
+          esac
+          # 0=ok / 1=partial / 5=holiday → workflow pass
+          # 2=quota / 3=error → workflow fail
+          case "$FINAL_EXIT" in
+            0|1|5) exit 0 ;;
+            *) exit 1 ;;
           esac

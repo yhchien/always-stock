@@ -25,7 +25,11 @@ BACKEND_DIR = Path(__file__).resolve().parent
 
 CRITICAL_STEPS = {"daily_price", "inst_flow"}
 # no_data 視為可延續狀態（非 critical step 的空資料是正常情境，例如月營收只有每月 10 日才有新值）
-RESUMEABLE_STEP_STATUSES = {"ok", "partial", "skipped", "empty", "no_data"}
+# holiday / skipped_holiday 代表假日短路，非失敗
+RESUMEABLE_STEP_STATUSES = {
+    "ok", "partial", "skipped", "skipped_holiday",
+    "empty", "no_data", "holiday",
+}
 
 # CRITICAL step 遇到 no_data 時的重試間隔（秒），對齊 FinMind 慢同步 dataset
 NO_DATA_RETRY_SCHEDULE = [600, 1200]  # 10 min, 20 min
@@ -38,6 +42,11 @@ def determine_overall_status(step_results: Dict[str, Any]) -> str:
         for step_result in step_results.values()
     ):
         return "insufficient_quota"
+
+    # daily_price 判定為 holiday（非交易日）→ 整包 holiday，視為 pass 不重試
+    daily_price_result = step_results.get("daily_price") or {}
+    if daily_price_result.get("status") == "holiday":
+        return "holiday"
 
     # CRITICAL step 若為 error 或最終仍 no_data（retry 用盡）→ 整包 error
     if any(
@@ -242,6 +251,7 @@ class FinMindETLOrchestratorSDK:
                 return result
 
             # 1. 每日股價（一次 batch fetch，CRITICAL → no_data 時重試）
+            holiday_detected = False
             if "daily_price" in active_steps:
                 logger.info("\n[1/7] Fetching daily prices (SDK batch)...")
                 price_result = _run_critical_step_with_retry(
@@ -252,12 +262,18 @@ class FinMindETLOrchestratorSDK:
                 )
                 result["results"]["daily_price"] = price_result
                 logger.info(f"✓ Daily prices: {price_result['status']}")
+                if price_result.get("status") == "holiday":
+                    holiday_detected = True
+                    logger.info(
+                        "Non-trading day detected (daily_price empty, quota healthy); "
+                        "short-circuiting remaining ETL steps"
+                    )
             else:
                 logger.info("\n[1/7] Daily prices: skipped")
                 result["results"]["daily_price"] = {"status": "skipped"}
 
             # 2. 三大法人買賣超（一次 batch fetch，CRITICAL → no_data 時重試）
-            if "inst_flow" in active_steps:
+            if "inst_flow" in active_steps and not holiday_detected:
                 logger.info("\n[2/7] Fetching institutional flows (SDK batch)...")
                 inst_result = _run_critical_step_with_retry(
                     "inst_flow",
@@ -267,12 +283,15 @@ class FinMindETLOrchestratorSDK:
                 )
                 result["results"]["inst_flow"] = inst_result
                 logger.info(f"✓ Institutional flows: {inst_result['status']}")
+            elif "inst_flow" in active_steps:
+                logger.info("\n[2/7] Institutional flows: skipped (non-trading day)")
+                result["results"]["inst_flow"] = {"status": "skipped_holiday"}
             else:
                 logger.info("\n[2/7] Institutional flows: skipped")
                 result["results"]["inst_flow"] = {"status": "skipped"}
 
             # 3. 日常估值（一次 batch fetch）
-            if "daily_valuation" in active_steps:
+            if "daily_valuation" in active_steps and not holiday_detected:
                 logger.info("\n[3/7] Fetching daily valuation (SDK batch)...")
                 try:
                     valuation_result = fetch_and_upsert_daily_valuation_finmind_sdk(
@@ -283,12 +302,15 @@ class FinMindETLOrchestratorSDK:
                 except Exception as e:
                     logger.error(f"✗ Daily valuation ETL failed: {e}")
                     result["results"]["daily_valuation"] = {"status": "error", "error": str(e)}
+            elif "daily_valuation" in active_steps:
+                logger.info("\n[3/7] Daily valuation: skipped (non-trading day)")
+                result["results"]["daily_valuation"] = {"status": "skipped_holiday"}
             else:
                 logger.info("\n[3/7] Daily valuation: skipped")
                 result["results"]["daily_valuation"] = {"status": "skipped"}
 
             # 4. 月營收
-            if "monthly_revenue" in active_steps:
+            if "monthly_revenue" in active_steps and not holiday_detected:
                 logger.info("\n[4/7] Fetching monthly revenue (SDK batch)...")
                 try:
                     rev_result = fetch_and_upsert_monthly_revenue_sdk(
@@ -299,12 +321,15 @@ class FinMindETLOrchestratorSDK:
                 except Exception as e:
                     logger.error(f"✗ Monthly revenue ETL failed: {e}")
                     result["results"]["monthly_revenue"] = {"status": "error", "error": str(e)}
+            elif "monthly_revenue" in active_steps:
+                logger.info("\n[4/7] Monthly revenue: skipped (non-trading day)")
+                result["results"]["monthly_revenue"] = {"status": "skipped_holiday"}
             else:
                 logger.info("\n[4/7] Monthly revenue: skipped")
                 result["results"]["monthly_revenue"] = {"status": "skipped"}
 
             # 5. 財報（季報）
-            if "financial_statement" in active_steps:
+            if "financial_statement" in active_steps and not holiday_detected:
                 logger.info("\n[5/7] Fetching financial statements (SDK batch)...")
                 try:
                     fs_result = fetch_and_upsert_financial_statement_sdk(
@@ -315,12 +340,15 @@ class FinMindETLOrchestratorSDK:
                 except Exception as e:
                     logger.error(f"✗ Financial statement ETL failed: {e}")
                     result["results"]["financial_statement"] = {"status": "error", "error": str(e)}
+            elif "financial_statement" in active_steps:
+                logger.info("\n[5/7] Financial statements: skipped (non-trading day)")
+                result["results"]["financial_statement"] = {"status": "skipped_holiday"}
             else:
                 logger.info("\n[5/7] Financial statements: skipped")
                 result["results"]["financial_statement"] = {"status": "skipped"}
 
             # 6. 券商分點聚合（Sponsor，起點 2021-06-30）
-            if "broker_trade_agg" in active_steps:
+            if "broker_trade_agg" in active_steps and not holiday_detected:
                 logger.info("\n[6/7] Fetching broker trade agg (Sponsor, from 2021-06-30)...")
                 try:
                     broker_result = fetch_and_upsert_broker_trade_agg_sdk(
@@ -331,6 +359,9 @@ class FinMindETLOrchestratorSDK:
                 except Exception as e:
                     logger.error(f"✗ Broker trade agg ETL failed: {e}")
                     result["results"]["broker_trade_agg"] = {"status": "error", "error": str(e)}
+            elif "broker_trade_agg" in active_steps:
+                logger.info("\n[6/7] Broker trade agg: skipped (non-trading day)")
+                result["results"]["broker_trade_agg"] = {"status": "skipped_holiday"}
             else:
                 logger.info("\n[6/7] Broker trade agg: skipped")
                 result["results"]["broker_trade_agg"] = {"status": "skipped"}
@@ -473,13 +504,15 @@ def main():
         orchestrator.save_etl_log(result)
 
     # 回傳狀態碼
-    # 0 = ok, 1 = partial, 2 = insufficient_quota, 3 = error
+    # 0 = ok, 1 = partial, 2 = insufficient_quota, 3 = error, 5 = holiday
     if result["status"] == "ok":
         return 0
     elif result["status"] == "partial":
         return 1
     elif result["status"] == "insufficient_quota":
         return 2
+    elif result["status"] == "holiday":
+        return 5
     else:
         return 3
 
