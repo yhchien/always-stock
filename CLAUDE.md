@@ -709,3 +709,27 @@
 - 首頁點產業時，必須帶 **目前 component state 的 date**，不能帶外層舊的 query param date，否則會出現 UI 選了 `3/4`、實際跳頁卻還是舊日期的 race condition
 - `/login` 前端不能對 login mode 一律套 `minLength=8` / `password.length < 8` 驗證，否則預設 admin 帳號 `admin@always-stock.dev / forwork`（7 碼）永遠送不到後端
 - 註冊仍維持最少 8 碼；只有登入要允許短於 8 碼的既有帳號
+
+## Render production M18 表沒建起來修復（2026-04-22）
+
+### 問題
+- Render 後端 log 顯示 `psycopg.errors.UndefinedTable: relation "users" does not exist`
+- 啟動 `_seed_admin_user` 失敗被 `except Exception` 吃掉；`POST /api/auth/login` 500 → 前端看到 `Failed to fetch`
+- 根因：`backend/migrate_add_users.py` 從未在 Render 上手動跑過
+
+### 修法（backend/app/main.py）
+- `_seed_admin_user` 改成啟動時先 `Base.metadata.create_all(bind=engine, tables=[User.__table__, UserSession.__table__])` 再 seed admin
+- `create_all` 是 `CREATE TABLE IF NOT EXISTS`，對既有資料 no-op；不會 DROP / ALTER
+- 未來 Render 重啟或新機器部署都會自動 idempotent 建表，不需要人工進 shell 跑 migration
+- schema 演進（加欄位、改型別）仍需另外寫 migration，`create_all` 管不了
+
+## 首頁 UX 修復（2026-04-22）
+
+### Navbar 登入按鈕 loading 卡住
+- 問題：`AuthProvider` 在 mount 時打 `/api/auth/me`，Navbar 在 `status === "loading"` 只顯示 `…`；Render 冷啟動慢時按鈕長時間看不見
+- 修法：[frontend/src/components/Navbar.tsx](frontend/src/components/Navbar.tsx) 把 loading 狀態也顯示「登入/註冊」按鈕，加上 `opacity-70` + `animate-pulse` 小圓點提示仍在載入
+- 已登入使用者若誤點，`/login` 頁本身的 `useAuth` 會自動 `router.replace(next)` 跳回首頁，不影響流程
+
+### 產業法人流向預設日期
+- 問題：首頁預設 `todayInTaipei()`，台灣白天打開時當日 ETL 還沒跑，顯示空或 resolve 到昨天造成 UI 日期與資料不一致
+- 修法：[frontend/src/app/page.tsx](frontend/src/app/page.tsx) 改成先用 `todayInTaipei()` 當 initial state，mount 後打 `fetchLatestTradeDate()`（`GET /api/market/latest-trade-date`）拿 DB 最近有資料的交易日並覆寫；有 `?date=` query param 時尊重使用者選擇，不覆寫
