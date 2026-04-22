@@ -11,6 +11,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.hot_money_service import compute_hot_money
 from app.industry_flow_service import (
     get_latest_industry_trade_date,
     get_recent_industry_trade_dates,
@@ -18,6 +19,7 @@ from app.industry_flow_service import (
     load_industry_flow_rows_for_dates,
 )
 from app.models import InstStockFlow, StockMaster, DailyPrice
+from app.routers.market import HotMoneyResponse, serialize_hot_money_result
 
 logger = logging.getLogger(__name__)
 
@@ -481,3 +483,56 @@ def get_industry_stocks(
         len(result), industry_name, date, resolved_date,
     )
     return result
+
+
+@router.get("/industries/{industry_name}/hot-money", response_model=HotMoneyResponse)
+def get_industry_hot_money(
+    industry_name: str,
+    date: Optional[date] = Query(default=None, description="trade date YYYY-MM-DD; defaults to latest available"),
+    days: int = Query(default=3, ge=1, le=20, description="window size in trading days"),
+    limit: int = Query(default=10, ge=1, le=50, description="max items to return"),
+    sub_industry: Optional[str] = Query(default=None, description="optional sub_industry filter"),
+    db: Session = Depends(get_db),
+):
+    """
+    M22: 單一產業近 N 日三大法人累計淨買超 Top K（L1 產業頁頂部用）。
+    帶 `sub_industry` 時只篩該子產業個股。
+    """
+    logger.info(
+        "GET /industries/%s/hot-money requested=%s days=%s sub=%s",
+        industry_name, date, days, sub_industry,
+    )
+
+    try:
+        stocks = _load_stocks_by_industry_name(db, industry_name)
+    except OperationalError as error:
+        _raise_busy_if_locked(error)
+    if not stocks:
+        raise HTTPException(status_code=404, detail=f"Industry not found: {industry_name}")
+
+    if sub_industry:
+        stocks = [s for s in stocks if (s.sub_industry or s.industry_name) == sub_industry]
+    stock_ids = [s.stock_id for s in stocks]
+
+    try:
+        resolved_date = _resolve_stock_trade_date(db, date, stock_ids) if date else None
+    except OperationalError as error:
+        _raise_busy_if_locked(error)
+
+    if resolved_date is None:
+        try:
+            resolved_date = _resolve_market_trade_date(db, date) if date else get_latest_industry_trade_date(db)
+        except OperationalError as error:
+            _raise_busy_if_locked(error)
+
+    if resolved_date is None or not stock_ids:
+        return HotMoneyResponse(start_date=None, end_date=None, trade_dates=[], items=[])
+
+    result = compute_hot_money(
+        db,
+        end_date=resolved_date,
+        days=days,
+        limit=limit,
+        stock_ids=stock_ids,
+    )
+    return serialize_hot_money_result(result)

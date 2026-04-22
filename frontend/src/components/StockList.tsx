@@ -23,6 +23,7 @@ import {
   type SubIndustrySummaryItem,
 } from "@/lib/api"
 import { useRealtimeQuotes } from "@/lib/useRealtimeQuotes"
+import HotMoneyList from "@/components/HotMoneyList"
 
 // ── Sub-industry summary table ────────────────────────────────────────────────
 
@@ -257,6 +258,15 @@ export default function StockList({ industryName, defaultDate, defaultSubFilter 
           className="rounded-md border border-slate-600 bg-slate-800/50 px-3 py-1.5 text-sm text-slate-100 focus:outline-none focus:ring-1 focus:ring-slate-400"
         />
       </div>
+
+      {/* M22: 產業近 3 日三大法人累計買超 Top 10（子產業 filter 生效時只篩該子產業） */}
+      <HotMoneyList
+        industryName={industryName}
+        subIndustry={subFilter}
+        date={date}
+        days={3}
+        limit={10}
+      />
 
       {/* Status */}
       {loading && (

@@ -772,3 +772,65 @@ export async function logoutUser(): Promise<void> {
   const res = await apiFetch(`${API_BASE}/api/auth/logout`, { method: "POST" })
   if (!res.ok) throw new Error(await parseAuthError(res, "登出失敗"))
 }
+
+// ── Hot money (M22) ────────────────────────────────────────────────────────
+
+export interface HotMoneyStockItem {
+  rank: number
+  stock_id: string
+  stock_name: string
+  industry_name: string
+  sub_industry: string | null
+  start_close_price: number | null
+  end_close_price: number | null
+  price_change_pct: number | null
+  foreign_net_amount: number
+  trust_net_amount: number
+  dealer_net_amount: number
+  total_net_amount: number
+}
+
+export interface HotMoneyResponse {
+  start_date: string | null
+  end_date: string | null
+  trade_dates: string[]
+  items: HotMoneyStockItem[]
+}
+
+export async function fetchMarketHotMoney(
+  date: string,
+  days = 3,
+  limit = 20,
+  options?: FetchOptions,
+): Promise<HotMoneyResponse> {
+  const params = new URLSearchParams({
+    date,
+    days: String(days),
+    limit: String(limit),
+  })
+  const res = await apiFetch(`${API_BASE}/api/market/hot-money?${params}`, {
+    signal: options?.signal,
+  })
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "熱錢排行載入失敗"))
+  return res.json()
+}
+
+export async function fetchIndustryHotMoney(
+  industryName: string,
+  date: string,
+  opts: { days?: number; limit?: number; subIndustry?: string | null } = {},
+  fetchOptions?: FetchOptions,
+): Promise<HotMoneyResponse> {
+  const params = new URLSearchParams({
+    date,
+    days: String(opts.days ?? 3),
+    limit: String(opts.limit ?? 10),
+  })
+  if (opts.subIndustry) params.set("sub_industry", opts.subIndustry)
+  const res = await apiFetch(
+    `${API_BASE}/api/industries/${encodeURIComponent(industryName)}/hot-money?${params}`,
+    { signal: fetchOptions?.signal },
+  )
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "熱錢排行載入失敗"))
+  return res.json()
+}

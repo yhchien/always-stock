@@ -90,6 +90,7 @@
 - M16: AI 盤前摘要（Daily Brief，2026-04-20 起改由 Telegram Bot `/brief` 提供）
 - M17: 交易質量 AI 分析（Trade Quality Analysis，5 階評級 + 四象限 + 目標價）
 - M18: 使用者註冊系統（Email/password + server-side session + RequireAuth；M17 公開但分層 rate limit；admin@always-stock.dev / forwork）
+- M22: 熱錢湧入個股排行（L0 底部 Top 20 / L1 頂部 Top 10，近 N 日三大法人累計買超；spec 在 [docs/plans/hot_money_list_spec.md](docs/plans/hot_money_list_spec.md)）
 
 ### 進行中
 - M13 關鍵券商分點：ETL 模組與 `broker_trade_agg` backfill 已完成；L2 券商面板在 2026-04-19 主動隱藏（產品優先序下調），未來視需要復活
@@ -775,3 +776,30 @@
 ### 產業法人流向預設日期
 - 問題：首頁預設 `todayInTaipei()`，台灣白天打開時當日 ETL 還沒跑，顯示空或 resolve 到昨天造成 UI 日期與資料不一致
 - 修法：[frontend/src/app/page.tsx](frontend/src/app/page.tsx) 改成先用 `todayInTaipei()` 當 initial state，mount 後打 `fetchLatestTradeDate()`（`GET /api/market/latest-trade-date`）拿 DB 最近有資料的交易日並覆寫；有 `?date=` query param 時尊重使用者選擇，不覆寫
+
+## M22 熱錢湧入個股排行完成（2026-04-22）
+
+### 後端
+- [backend/app/hot_money_service.py](backend/app/hot_money_service.py) — L0/L1 共用服務
+  - `get_recent_trade_dates(db, end_date, days, stock_ids=None)`：以 `inst_stock_flow.trade_date DESC LIMIT N` 取 N 個交易日（非曆日）
+  - `compute_hot_money(db, end_date, days, limit, stock_ids=None) -> HotMoneyResult`：聚合 `inst_stock_flow.net_amount_est`，SQL 層 `inst_type.in_(("foreign","trust","dealer"))` 過濾非三大法人
+  - `price_change_pct`：窗口尾日 `close_price` / 窗口首日前一交易日 `close_price` - 1；任一端缺值回傳 `None`
+- API endpoints：
+  - `GET /api/market/hot-money?date=&days=3&limit=20` — L0 全市場
+  - `GET /api/industries/{industry_name}/hot-money?date=&days=3&limit=10&sub_industry=` — L1 單產業
+- 共用 pydantic schema：[backend/app/routers/market.py](backend/app/routers/market.py) 的 `HotMoneyResponse` + `serialize_hot_money_result`，由 industries router import 重用避免 duplication
+- 測試：[backend/tests/test_hot_money_service.py](backend/tests/test_hot_money_service.py)（9 案例）+ [backend/tests/test_hot_money_router.py](backend/tests/test_hot_money_router.py)（10 案例）全部 pass
+
+### 前端
+- [frontend/src/components/HotMoneyList.tsx](frontend/src/components/HotMoneyList.tsx) — 共用元件，props `{ industryName?, subIndustry?, date, days?, limit?, title? }`
+  - `industryName` 有值 → 呼叫 L1 endpoint，預設 `limit=10`；無值 → L0，預設 `limit=20`
+  - 點列跳 `/stocks/{id}?date={date}`
+  - useEffect dependency `[industryName, subIndustry, date, days, effectiveLimit]` → **日期改變自動重新 fetch**
+- L0 放 [frontend/src/app/page.tsx](frontend/src/app/page.tsx) 最下方（`IndustryDashboard` 下）
+- L1 放 [frontend/src/components/StockList.tsx](frontend/src/components/StockList.tsx) 最上方（header 下、主表格上）
+
+### Gotcha（L0 日期同步 bug 修正）
+- 初版 page.tsx 的 `defaultDate` 是 `useState` initial value，只在 mount 時讀一次 `queryDate`
+- 當使用者透過 `IndustryDashboard` 的 date picker 換日期 → `onDateChange` 把 URL 改成 `?date=X` → `queryDate` 更新，但 `defaultDate` 不會 re-sync，導致 `HotMoneyList` 停在舊日期
+- 修法：把 `defaultDate` 改成 **derived value** `queryDate ?? latestTradeDate ?? todayInTaipei()`，`latestTradeDate` 才是 state；任何一邊變動都會讓 `defaultDate` 重算
+- L1 的 StockList 內部管自己的 `date` state，靠 `setDate` 更新，HotMoneyList 直接收 prop 無此問題

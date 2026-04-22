@@ -5,6 +5,7 @@
 首頁目前提供兩個 AI 輔助模組：
 - `Daily Brief`：依指定交易日產出盤前市場摘要
 - `Trade Quality Analysis`：輸入股票與買進日，還原當時可觀察資訊後給出 5 階交易質量評級
+- `Hot Money List`：首頁底部與 L1 產業頁頂部呈現「近 N 日三大法人累計淨買超」個股排行（L0 Top 20 / L1 Top 10）
 
 ## 專案目的
 
@@ -208,6 +209,7 @@ npm run dev
 | M19 | 關注買進清單（L0 側邊欄 + 持股卡片 + 綁 M17 交易分析） | ⬜ 規劃中（M18 完成後） |
 | M20 | 交易分析擴充（預期 45% 報酬率加碼建議 + 風報比 1:1.75） | ⬜ 規劃中（M19 完成後） |
 | M21 | Trade Quality Context 資料管線（industry/chip/peer_rank/fundamental/price_structure 預聚合，餵結論層給 LLM） | ⬜ 規劃中 |
+| M22 | 熱錢湧入個股排行（L0 底部 Top 20 / L1 頂部 Top 10，近 N 日三大法人累計買超） | ✅ |
 
 ---
 

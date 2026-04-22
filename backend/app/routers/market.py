@@ -20,6 +20,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.hot_money_service import HotMoneyResult, compute_hot_money
 from app.industry_flow_service import (
     get_latest_industry_trade_date,
     get_recent_industry_trade_dates,
@@ -249,6 +250,54 @@ class DailyBriefResponse(BaseModel):
 
 class LatestTradeDateResponse(BaseModel):
     trade_date: Optional[str]
+
+
+class HotMoneyStockItemOut(BaseModel):
+    rank: int
+    stock_id: str
+    stock_name: str
+    industry_name: str
+    sub_industry: Optional[str]
+    start_close_price: Optional[float]
+    end_close_price: Optional[float]
+    price_change_pct: Optional[float]
+    foreign_net_amount: float
+    trust_net_amount: float
+    dealer_net_amount: float
+    total_net_amount: float
+
+
+class HotMoneyResponse(BaseModel):
+    start_date: Optional[str]
+    end_date: Optional[str]
+    trade_dates: list[str]
+    items: list[HotMoneyStockItemOut]
+
+
+def serialize_hot_money_result(result: HotMoneyResult) -> HotMoneyResponse:
+    """M22: 將 dataclass 轉 pydantic response（L0/L1 共用）。"""
+    return HotMoneyResponse(
+        start_date=str(result.start_date) if result.start_date else None,
+        end_date=str(result.end_date) if result.end_date else None,
+        trade_dates=[str(d) for d in result.trade_dates],
+        items=[
+            HotMoneyStockItemOut(
+                rank=item.rank,
+                stock_id=item.stock_id,
+                stock_name=item.stock_name,
+                industry_name=item.industry_name,
+                sub_industry=item.sub_industry,
+                start_close_price=item.start_close_price,
+                end_close_price=item.end_close_price,
+                price_change_pct=item.price_change_pct,
+                foreign_net_amount=item.foreign_net_amount,
+                trust_net_amount=item.trust_net_amount,
+                dealer_net_amount=item.dealer_net_amount,
+                total_net_amount=item.total_net_amount,
+            )
+            for item in result.items
+        ],
+    )
 
 
 # ── Yahoo Finance helper ─────────────────────────────────────────────────────
@@ -674,3 +723,20 @@ def get_daily_brief(
         return build_daily_brief(db, date)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.get("/market/hot-money", response_model=HotMoneyResponse)
+def get_market_hot_money(
+    date: Optional[date] = Query(default=None, description="trade date YYYY-MM-DD; defaults to latest available"),
+    days: int = Query(default=3, ge=1, le=20, description="window size in trading days"),
+    limit: int = Query(default=20, ge=1, le=50, description="max items to return"),
+    db: Session = Depends(get_db),
+):
+    """
+    M22: 全市場近 N 日三大法人累計淨買超 Top K（L0 首頁底部用，公開）。
+    """
+    resolved = _resolve_trade_date(db, date)
+    if resolved is None:
+        return HotMoneyResponse(start_date=None, end_date=None, trade_dates=[], items=[])
+    result = compute_hot_money(db, end_date=resolved, days=days, limit=limit)
+    return serialize_hot_money_result(result)
