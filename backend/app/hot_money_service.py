@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Dict, List, Optional, Sequence
 
+from pydantic import BaseModel
 from sqlalchemy import and_, func
 from sqlalchemy.orm import Session
 
@@ -47,6 +48,54 @@ class HotMoneyResult:
     end_date: Optional[date]
     trade_dates: List[date]
     items: List[HotMoneyStockItem]
+
+
+class HotMoneyStockItemOut(BaseModel):
+    rank: int
+    stock_id: str
+    stock_name: str
+    industry_name: str
+    sub_industry: Optional[str]
+    start_close_price: Optional[float]
+    end_close_price: Optional[float]
+    price_change_pct: Optional[float]
+    foreign_net_amount: float
+    trust_net_amount: float
+    dealer_net_amount: float
+    total_net_amount: float
+
+
+class HotMoneyResponse(BaseModel):
+    start_date: Optional[str]
+    end_date: Optional[str]
+    trade_dates: list[str]
+    items: list[HotMoneyStockItemOut]
+
+
+def serialize_hot_money_result(result: HotMoneyResult) -> HotMoneyResponse:
+    """M22: 將 dataclass 轉 pydantic response（L0/L1 共用）。"""
+    return HotMoneyResponse(
+        start_date=str(result.start_date) if result.start_date else None,
+        end_date=str(result.end_date) if result.end_date else None,
+        trade_dates=[str(d) for d in result.trade_dates],
+        items=[
+            HotMoneyStockItemOut(
+                rank=item.rank,
+                stock_id=item.stock_id,
+                stock_name=item.stock_name,
+                industry_name=item.industry_name,
+                sub_industry=item.sub_industry,
+                start_close_price=item.start_close_price,
+                end_close_price=item.end_close_price,
+                price_change_pct=item.price_change_pct,
+                foreign_net_amount=item.foreign_net_amount,
+                trust_net_amount=item.trust_net_amount,
+                dealer_net_amount=item.dealer_net_amount,
+                total_net_amount=item.total_net_amount,
+            )
+            for item in result.items
+        ],
+    )
 
 
 def get_recent_trade_dates(

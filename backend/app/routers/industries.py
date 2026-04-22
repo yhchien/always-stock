@@ -11,7 +11,11 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.hot_money_service import compute_hot_money
+from app.hot_money_service import (
+    HotMoneyResponse,
+    compute_hot_money,
+    serialize_hot_money_result,
+)
 from app.industry_flow_service import (
     get_latest_industry_trade_date,
     get_recent_industry_trade_dates,
@@ -19,7 +23,6 @@ from app.industry_flow_service import (
     load_industry_flow_rows_for_dates,
 )
 from app.models import InstStockFlow, StockMaster, DailyPrice
-from app.routers.market import HotMoneyResponse, serialize_hot_money_result
 
 logger = logging.getLogger(__name__)
 
