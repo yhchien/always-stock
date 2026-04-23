@@ -833,9 +833,17 @@
 
 ### Gotcha
 - **`useSearchParams` 在 Next 16 必須包 `<Suspense>`**：`frontend/src/app/page.tsx` 的 `HomeContent` 已在 Suspense 內；TradeQualityAnalysis 直接在其中使用即可
-- **URL prefill 一次性 ref 守門**：用 `useRef(false)` + 在 URL 解析成功後設 `true`，避免 suggestions state 觸發重跑
+- **URL prefill 用 key-based ref**：`lastPrefillKeyRef.current = "sid|bd"`，與上次比對；確保同一個 mounted component 下連點多檔不同股票會重新 prefill（不能用布林 one-shot 守門）
 - **Prefill 後延後呼叫 analyze**：先 set `selected`，再用 `pendingAnalyze` flag + 第二個 effect 等 state commit 後才呼叫 `handleAnalyze`，避免用 stale `selected=null`
 - **UI 不採 shadcn CLI**：專案 dep 只裝 `shadcn` 本體但**所有 UI primitive 都是 base-ui**（`select.tsx` 已採 `SelectPrimitive from "@base-ui/react/select"`）；新 dialog 也用 `@base-ui/react/dialog`，別跑 `npx shadcn@latest add dialog` 污染
 - **apiFetch 必帶 `credentials: "include"`**：watchlist API 全走 session cookie；若直接 `fetch` 會變匿名呼叫 → 401
 - **刪除他人 entry 回 404 不是 403**：避免枚舉攻擊（existence oracle）
 - **卡片停靠按鈕 bubble**：`WatchlistAddButton` / 清單 ✕ 按鈕皆需 `e.stopPropagation()`，否則會觸發 HotMoneyList / StockList row 的 `router.push` 跳到個股頁
+
+### Code review 後補強（2026-04-23）
+- `UserWatchlist.user_id` 加上 `ForeignKey("users.id", ondelete="CASCADE")`：未來刪帳號時 watchlist 自動清除，不留孤兒列
+- POST 加 `buy_date > _today_taipei()` guard（400 `買進日期不能是未來`），避免 M20 context 被未來日期汙染
+- **`_today_taipei()` 以 `Asia/Taipei` 為準**（follow `analysis.py:42` 既有 `TAIPEI_TZ = ZoneInfo("Asia/Taipei")` pattern）：Render server 跑 UTC，若用 `date.today()` 會在台北 00:00~08:00 把使用者選的「今天」誤判為未來；測試用 `monkeypatch.setattr(watchlist_module, "_today_taipei", lambda: date(...))` freeze 時間驗證
+- `avg_price` **暫留 Float**（與 `daily_price.close_price` 一致）；M20 加碼建議納入 avg_price 精確運算時一併換 `Numeric(12, 4)`（model column + migration）
+- `router/watchlist.py` 檔頭註記：20 檔 cap 為 best-effort，雙 tab 並發可能插到第 21 筆（機率極低、無正確性影響）
+- `api.ts` 移除死判斷：`204` 已屬 `res.ok=true`，`&& res.status !== 204` 不會 evaluate，改為單純 `if (!res.ok)`

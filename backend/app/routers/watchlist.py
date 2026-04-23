@@ -7,13 +7,21 @@
 - DELETE /api/watchlist            → 清空整個清單
 
 所有端點需要登入（Depends(require_user)）。
+
+Cap enforcement 注意：
+POST 的 20 檔上限由 COUNT(*) → INSERT 兩步完成，並未在 transaction 內上鎖。
+同一使用者從兩個 tab 幾乎同時加入時，理論上有 race，可能插到第 21 筆；
+實務觸發機率極低，且最壞結果僅是資料多 1 筆，不影響正確性。
+若未來要徹底保證，可改用 SELECT ... FOR UPDATE 鎖定該使用者的子集，
+或由上層改成「事務 + 重試」。目前設計為 best-effort。
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, datetime
 from typing import List, Optional
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -29,6 +37,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/watchlist", tags=["watchlist"])
 
 WATCHLIST_MAX_ENTRIES = 20
+
+TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+
+
+def _today_taipei() -> date:
+    # Render server 跑 UTC；未來日期判斷必須以 Asia/Taipei 為準，
+    # 否則台北時間 00:00~08:00 時使用者選「今天」會被 server 誤判為未來日期。
+    return datetime.now(TAIPEI_TZ).date()
 
 
 class WatchlistCreateRequest(BaseModel):
@@ -153,6 +169,9 @@ def add_to_watchlist(
     stock_id = payload.stock_id.strip()
     if not stock_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="stock_id 不能為空")
+
+    if payload.buy_date > _today_taipei():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="買進日期不能是未來")
 
     master = db.query(StockMaster).filter(StockMaster.stock_id == stock_id).first()
     if master is None:

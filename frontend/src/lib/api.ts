@@ -862,12 +862,12 @@ export async function addWatchlistEntry(payload: WatchlistCreateRequest): Promis
 
 export async function removeWatchlistEntry(entryId: number): Promise<void> {
   const res = await apiFetch(`${API_BASE}/api/watchlist/${entryId}`, { method: "DELETE" })
-  if (!res.ok && res.status !== 204) throw new Error(await buildErrorMessage(res, "移除失敗"))
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "移除失敗"))
 }
 
 export async function clearWatchlistEntries(): Promise<void> {
   const res = await apiFetch(`${API_BASE}/api/watchlist`, { method: "DELETE" })
-  if (!res.ok && res.status !== 204) throw new Error(await buildErrorMessage(res, "清空清單失敗"))
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "清空清單失敗"))
 }
 
 export async function fetchIndustryHotMoney(

@@ -49,7 +49,7 @@ export default function TradeQualityAnalysis() {
   const [pendingAnalyze, setPendingAnalyze] = useState(false)
 
   const containerRef = useRef<HTMLDivElement>(null)
-  const prefillRef = useRef(false)
+  const lastPrefillKeyRef = useRef<string>("")
 
   // Load latest trade date once on mount
   useEffect(() => {
@@ -160,13 +160,16 @@ export default function TradeQualityAnalysis() {
     }
   }, [selected, query, suggestions, useCustomDate, buyDate])
 
-  // URL prefill: when navigated with ?stock_id=XXX&buy_date=YYYY-MM-DD, auto populate + analyze once
+  // URL prefill: when navigated with ?stock_id=XXX&buy_date=YYYY-MM-DD, auto populate + analyze.
+  // Uses a key-based ref (sid|bd) so consecutive clicks with different params on the same
+  // mounted component re-trigger prefill instead of being ignored.
   useEffect(() => {
-    if (prefillRef.current) return
     const sid = searchParams.get("stock_id")
     const bd = searchParams.get("buy_date")
     if (!sid) return
-    prefillRef.current = true
+    const key = `${sid}|${bd ?? ""}`
+    if (lastPrefillKeyRef.current === key) return
+    lastPrefillKeyRef.current = key
     const ctrl = new AbortController()
     searchStocks(sid, { signal: ctrl.signal })
       .then((items) => {
@@ -179,6 +182,9 @@ export default function TradeQualityAnalysis() {
         if (bd) {
           setUseCustomDate(true)
           setBuyDate(bd)
+        } else {
+          setUseCustomDate(false)
+          setBuyDate("")
         }
         setPendingAnalyze(true)
       })

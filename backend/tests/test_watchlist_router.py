@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -299,3 +299,46 @@ def test_add_validates_avg_price_positive(api):
         json={"stock_id": "2330", "buy_date": "2026-04-01", "avg_price": 0.0},
     )
     assert res.status_code == 422
+
+
+def test_add_rejects_future_buy_date(api):
+    client, db = api
+    _seed_stock(db, "2330", "台積電")
+    _register_and_login(client)
+
+    future = (date.today() + timedelta(days=1)).isoformat()
+    res = client.post(
+        "/api/watchlist",
+        json={"stock_id": "2330", "buy_date": future, "avg_price": 900.0},
+    )
+    assert res.status_code == 400
+    assert "未來" in res.json()["detail"]
+
+
+def test_add_buy_date_uses_taipei_timezone(api, monkeypatch):
+    """Render server 跑 UTC；未來日期判斷必須以 Asia/Taipei 為準。
+    模擬 UTC 深夜（台北已是新的一天）時，使用者選「台北今天」應 201 而不是 400。"""
+    from app.routers import watchlist as watchlist_module
+
+    client, db = api
+    _seed_stock(db, "2330", "台積電")
+    _seed_stock(db, "2303", "聯電")
+    _register_and_login(client)
+
+    # Freeze 台北今天為固定日期，切斷本機時區依賴
+    monkeypatch.setattr(watchlist_module, "_today_taipei", lambda: date(2026, 4, 23))
+
+    # 台北今天應可加入
+    res_today = client.post(
+        "/api/watchlist",
+        json={"stock_id": "2330", "buy_date": "2026-04-23", "avg_price": 900.0},
+    )
+    assert res_today.status_code == 201, res_today.text
+
+    # 台北明天仍應拒絕
+    res_future = client.post(
+        "/api/watchlist",
+        json={"stock_id": "2303", "buy_date": "2026-04-24", "avg_price": 50.0},
+    )
+    assert res_future.status_code == 400
+    assert "未來" in res_future.json()["detail"]
