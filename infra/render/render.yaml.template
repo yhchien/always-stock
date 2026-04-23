@@ -10,6 +10,10 @@ services:
         sync: false
       - key: CORS_ORIGINS
         value: https://always-stock-staging.vercel.app,http://localhost:3000
+      - key: COOKIE_SECURE
+        # production 跨站（Vercel ↔ Render）必須 true，後端才會把 session cookie
+        # 改成 SameSite=None+Secure，瀏覽器才會帶 cookie 到跨站 fetch。
+        value: "true"
       - key: TZ
         value: Asia/Taipei
 

@@ -136,7 +136,7 @@ export default function HotMoneyList({
                 <TableHead className="text-slate-300 text-right hidden md:table-cell">投信</TableHead>
                 <TableHead className="text-slate-300 text-right hidden lg:table-cell">自營</TableHead>
                 <TableHead className="text-slate-300 text-right">合計</TableHead>
-                <TableHead className="text-slate-300 w-24 text-right">清單</TableHead>
+                <TableHead className="text-slate-300 w-28 text-right">清單</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -166,7 +166,11 @@ export default function HotMoneyList({
                   <TableCell className="text-right hidden md:table-cell"><AmountCell value={item.trust_net_amount} /></TableCell>
                   <TableCell className="text-right hidden lg:table-cell"><AmountCell value={item.dealer_net_amount} /></TableCell>
                   <TableCell className="text-right"><AmountCell value={item.total_net_amount} /></TableCell>
-                  <TableCell className="text-right">
+                  {/* 整格 stopPropagation：避免點到 cell 邊緣 / padding 觸發 row 導航到個股頁 */}
+                  <TableCell
+                    className="text-right"
+                    onClick={(e) => e.stopPropagation()}
+                  >
                     <WatchlistAddButton
                       stockId={item.stock_id}
                       stockName={item.stock_name}

@@ -847,3 +847,24 @@
 - `avg_price` **暫留 Float**（與 `daily_price.close_price` 一致）；M20 加碼建議納入 avg_price 精確運算時一併換 `Numeric(12, 4)`（model column + migration）
 - `router/watchlist.py` 檔頭註記：20 檔 cap 為 best-effort，雙 tab 並發可能插到第 21 筆（機率極低、無正確性影響）
 - `api.ts` 移除死判斷：`204` 已屬 `res.ok=true`，`&& res.status !== 204` 不會 evaluate，改為單純 `if (!res.ok)`
+
+### M19 上線後 bug 修復（2026-04-23）
+M19 merge 之後使用者回報四個問題，一次修掉：
+
+1. **登入後加入清單仍 401「未登入或登入階段已失效」（跨站 cookie）**
+   - 根因：[backend/app/auth.py](backend/app/auth.py) 的 `set_session_cookie` 把 `samesite` 寫死 `"lax"`。Production 部署是 Vercel（前端）↔ Render（後端）跨站，Lax cookie 不會被瀏覽器帶到跨站 `fetch()`（即使 `credentials: "include"`），`/api/watchlist` POST 拿不到 session → 401
+   - 修法：`samesite = "none" if is_cookie_secure() else "lax"`；production 設 `COOKIE_SECURE=true` 自動切 None，本地 dev（兩端都是 localhost，same-site）繼續 Lax
+   - 為何不直接永遠 None：Chrome 拒絕 `SameSite=None` 但 `Secure=false` 的 cookie，本地 dev http:// 會破
+   - Regression test：[backend/tests/test_auth_router.py](backend/tests/test_auth_router.py) `test_session_cookie_samesite_follows_secure_flag`
+
+2. **L0 點「加入清單」整列跳到個股頁（click 冒泡）**
+   - 根因：[frontend/src/components/HotMoneyList.tsx](frontend/src/components/HotMoneyList.tsx) `<TableRow onClick>` 包整列，`WatchlistAddButton` 內的 `e.stopPropagation()` 只擋按鈕本體；點到 `<TableCell>` 邊緣 / padding 時事件仍會冒泡到 row
+   - 修法：在「清單」那格 `<TableCell>` 直接加 `onClick={(e) => e.stopPropagation()}`，整格都是安全區
+   - 通則：**有 `onClick` 的 row 裡若放互動元素，包住元素的 cell 也要 stopPropagation**
+
+3. **L0 加入清單按鈕太小看不到**
+   - 根因：[frontend/src/components/WatchlistAddButton.tsx](frontend/src/components/WatchlistAddButton.tsx) compact variant 原本 `px-2 py-0.5 text-xs`，在深色表格對比太弱
+   - 修法：compact 統一改 `inline-flex ... px-3 py-1 text-xs font-medium`；可加入狀態填 sky-600 + 白字強對比；表格欄寬 `w-24 → w-28`
+
+4. **L0 版位重排**
+   - [frontend/src/app/page.tsx](frontend/src/app/page.tsx) 順序改為：交易分析 → 熱錢排行 Top 20 → 產業流向
