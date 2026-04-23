@@ -236,3 +236,42 @@ def test_admin_seeder_default_email_passes_pydantic_emailstr(api):
     )
     assert res.status_code == 200, res.text
     assert res.json()["is_admin"] is True
+
+
+def test_session_cookie_samesite_follows_secure_flag(api, monkeypatch):
+    """
+    Regression: 跨站部署（Vercel ↔ Render）必須 SameSite=None + Secure，
+    否則瀏覽器不會把 session cookie 帶到跨站 fetch，登入後打 /api/watchlist 會 401。
+    本地 dev (secure=False) 仍用 Lax，避免 Chrome 拒絕 Secure=False+SameSite=None。
+    """
+    from app import auth as auth_module
+
+    # 1) Secure 模式：SameSite 必須是 None
+    monkeypatch.setattr(auth_module, "is_cookie_secure", lambda: True)
+    client, db = api
+    db.add(
+        User(
+            email="cross@example.com",
+            password_hash=hash_password("passw0rd!"),
+            is_active=True,
+        )
+    )
+    db.commit()
+    res = client.post(
+        "/api/auth/login",
+        json={"email": "cross@example.com", "password": "passw0rd!"},
+    )
+    assert res.status_code == 200
+    set_cookie = res.headers.get("set-cookie", "").lower()
+    assert "samesite=none" in set_cookie
+    assert "secure" in set_cookie
+
+    # 2) 非 Secure（本地 dev）：維持 Lax
+    monkeypatch.setattr(auth_module, "is_cookie_secure", lambda: False)
+    res2 = client.post(
+        "/api/auth/login",
+        json={"email": "cross@example.com", "password": "passw0rd!"},
+    )
+    assert res2.status_code == 200
+    set_cookie2 = res2.headers.get("set-cookie", "")
+    assert "samesite=lax" in set_cookie2.lower()

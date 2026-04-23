@@ -125,13 +125,17 @@ def _lookup_active_user(db: Session, session_id: Optional[str]) -> Optional[User
 # ---------------------------------------------------------------------------
 
 def set_session_cookie(response: Response, session_id: str) -> None:
+    # 跨站部署（Vercel 前端 + Render 後端）需要 SameSite=None + Secure，
+    # 否則瀏覽器不會把 session cookie 帶到跨站 fetch，登入狀態在 /api/watchlist 等端點就會失效。
+    # 本地 dev 兩端同為 localhost（same-site）時用 Lax 即可。
+    secure = is_cookie_secure()
     response.set_cookie(
         key=get_session_cookie_name(),
         value=session_id,
         max_age=get_session_ttl_days() * 24 * 60 * 60,
         httponly=True,
-        secure=is_cookie_secure(),
-        samesite="lax",
+        secure=secure,
+        samesite="none" if secure else "lax",
         domain=get_cookie_domain(),
         path="/",
     )

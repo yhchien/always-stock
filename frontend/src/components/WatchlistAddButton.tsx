@@ -35,17 +35,19 @@ export default function WatchlistAddButton({
   const atCap = total >= capacity
   const isLoggedIn = status === "authenticated"
 
+  // compact（列表欄位）故意比以前大：之前 px-2 py-0.5 text-xs 在深色表格幾乎看不見；
+  // 現在用 inline-flex + 固定 min-width，確保四個字不被擠掉且點擊區夠大。
   const baseClass =
     variant === "compact"
-      ? "rounded border px-2 py-0.5 text-xs transition-colors"
-      : "rounded-md border px-3 py-1 text-xs transition-colors"
+      ? "inline-flex items-center justify-center whitespace-nowrap rounded-md border px-3 py-1 text-xs font-medium transition-colors"
+      : "inline-flex items-center justify-center whitespace-nowrap rounded-md border px-3 py-1 text-xs font-medium transition-colors"
 
   if (!isLoggedIn) {
     return (
       <Link
         href="/login"
         onClick={(e) => e.stopPropagation()}
-        className={`${baseClass} border-slate-700 text-slate-500 hover:border-sky-600 hover:text-sky-300 ${className ?? ""}`}
+        className={`${baseClass} border-sky-700/60 bg-sky-900/30 text-sky-200 hover:border-sky-500 hover:bg-sky-900/50 ${className ?? ""}`}
         title="登入後即可加入清單"
       >
         加入清單
@@ -55,7 +57,7 @@ export default function WatchlistAddButton({
 
   if (!isReady) {
     return (
-      <span className={`${baseClass} border-slate-800 text-slate-600 ${className ?? ""}`}>
+      <span className={`${baseClass} border-slate-700 text-slate-500 ${className ?? ""}`}>
         …
       </span>
     )
@@ -64,7 +66,7 @@ export default function WatchlistAddButton({
   if (inList) {
     return (
       <span
-        className={`${baseClass} border-emerald-700/60 bg-emerald-900/30 text-emerald-300 ${className ?? ""}`}
+        className={`${baseClass} border-emerald-600/70 bg-emerald-900/40 text-emerald-200 ${className ?? ""}`}
       >
         已加入
       </span>
@@ -76,7 +78,7 @@ export default function WatchlistAddButton({
       <Link
         href="/watchlist"
         onClick={(e) => e.stopPropagation()}
-        className={`${baseClass} border-amber-700/60 bg-amber-900/20 text-amber-300 ${className ?? ""}`}
+        className={`${baseClass} border-amber-600/70 bg-amber-900/30 text-amber-200 ${className ?? ""}`}
         title={`清單已達上限 ${capacity} 檔，前往管理`}
       >
         已滿 {capacity}/{capacity}
@@ -92,7 +94,7 @@ export default function WatchlistAddButton({
           e.stopPropagation()
           setOpen(true)
         }}
-        className={`${baseClass} border-sky-700/60 bg-sky-900/20 text-sky-200 hover:border-sky-500 hover:bg-sky-900/40 ${className ?? ""}`}
+        className={`${baseClass} border-sky-500/70 bg-sky-600 text-white hover:bg-sky-500 ${className ?? ""}`}
       >
         加入清單
       </button>

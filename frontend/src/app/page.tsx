@@ -37,6 +37,7 @@ function HomeContent() {
   return (
     <main className="mx-auto w-full max-w-5xl px-4 py-8 flex flex-col gap-6">
       <TradeQualityAnalysis />
+      <HotMoneyList date={defaultDate} days={3} limit={20} />
       <IndustryDashboard
         defaultDate={defaultDate}
         onDateChange={(d) => router.replace(`/?date=${d}`, { scroll: false })}
@@ -44,7 +45,6 @@ function HomeContent() {
           router.push(`/industries/${encodeURIComponent(name)}?date=${selectedDate}`)
         }
       />
-      <HotMoneyList date={defaultDate} days={3} limit={20} />
     </main>
   )
 }
