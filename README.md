@@ -2,16 +2,19 @@
 
 台股產業別三大法人資金流向分析儀表板。
 
-首頁目前提供兩個 AI 輔助模組：
-- `Daily Brief`：依指定交易日產出盤前市場摘要
-- `Trade Quality Analysis`：輸入股票與買進日，還原當時可觀察資訊後給出 5 階交易質量評級
+首頁目前提供以下模組：
+- `Trade Quality Analysis`：輸入股票與買進日，還原當時可觀察資訊後給出 5 階交易質量評級（不需登入即可使用，分層 rate limit）
+- `Industry Dashboard`：產業別三大法人資金流向排行
 - `Hot Money List`：首頁底部與 L1 產業頁頂部呈現「近 N 日三大法人累計淨買超」個股排行（L0 Top 20 / L1 Top 10）
+- `Watchlist`：登入後可建立關注買進清單（單一清單上限 20 檔，含未實現損益與一鍵跳 M17 交易分析）
+
+> Daily Brief（盤前摘要）已從首頁移到 Telegram Bot `/brief` 指令。
 
 ## 專案目的
 
 追蹤 TWSE 上市股票的三大法人（外資、投信、自營商）每日買賣超，
-以 Fugle 自定義子產業分類為基礎，呈現產業層級的資金流向排行榜，
-並支援 drill-down 到個股法人明細與走勢圖，協助制定交易策略。
+以 FinMind `TaiwanStockIndustryChain` 細分類（約 53 個產業）為基礎，呈現產業層級的資金流向排行榜，
+並支援 drill-down 到個股法人明細、K 線圖、財報面板與 AI 交易質量分析，協助制定交易策略。
 
 ---
 
@@ -126,30 +129,39 @@ npm run dev
 
 ## 資料表
 
-### 現有資料（2026-04-17 現況）
+### 主要資料表（2026-04-23 現況；FinMind 切換已完成）
 
-| 資料表 | 說明 | 資料狀態 | 日期範圍 | 資料源 |
-|--------|------|----------|----------|--------|
-| `stocks_master` | 股票基本資料（含 industry / market） | ✅ 1,588 檔 | — | Fugle / FinMind |
-| `daily_price` | 每日 OHLC、成交量、成交金額 | ✅ ~195 萬筆 | 2019-01-02 ~ 2026-04-08 | TWSE（待切 FinMind） |
-| `inst_stock_flow` | 個股三大法人買賣超（foreign / trust / dealer） | ✅ ~6,194 萬筆 | 2019-01-02 ~ 2026-04-08 | TWSE（待切 FinMind） |
-| `industry_daily_flow` | 產業別每日法人資金流向彙整 | ✅ ~8.5 萬筆 | 2019-01-02 ~ 2026-04-08 | 從 inst_stock_flow 聚合 |
-| `broker_trade` | 分點買賣明細（TWSE BSR 舊版快取） | ⚠️ 679 筆 | 2026-04-09 only | TWSE BSR |
+| 資料表 | 說明 | 日期範圍 | 資料源 |
+|--------|------|----------|--------|
+| `stocks_master` | 股票基本資料（industry / sub_industry） | — | FinMind `TaiwanStockInfo` + `TaiwanStockIndustryChain` |
+| `daily_price` | 每日 OHLC、成交量、成交金額 | 2019-01 ~ today | FinMind `TaiwanStockPrice` |
+| `inst_stock_flow` | 個股三大法人買賣超（foreign / trust / dealer，含 amount_est） | 2019-01 ~ today | FinMind `TaiwanStockInstitutionalInvestorsBuySell` |
+| `industry_daily_flow` | 產業別每日法人資金流向彙整（FinMind 細分類 ~53 產業，~8.8 萬筆） | 2019-01 ~ today | 從 `inst_stock_flow` 聚合（`rebuild_industry_flow.py`） |
+| `daily_valuation` | 每日 P/E、P/B、殖利率 | 2019-01 ~ today | FinMind `TaiwanStockPER` |
+| `monthly_revenue` | 每月營收 + YoY/MoM | 2019-01 ~ 上個月 | FinMind `TaiwanStockMonthRevenue` |
+| `financial_statement` | 季財報各科目（EPS、營益率等） | 2019-Q1 ~ 最新一季 | FinMind 財報資料集 |
+| `broker_trade_agg` | 分點買賣超聚合 | 2024-01 ~ today（GitHub Actions 每小時推進） | FinMind `TaiwanStockTradingDailyReportSecIdAgg` |
 
-### 新增資料（FinMind 全面切換中）
+### M18 / M19 資料表（使用者系統）
 
-| 資料表 | 說明 | 資料狀態 | 說明 |
-|--------|------|----------|------|
-| `daily_valuation` | 每日 P/E、P/B、殖利率 | ✅ ~173 萬筆 | FinMind `TaiwanStockPER`，2019-01 ~ 2026-04 |
-| `monthly_revenue` | 每月營收 + YoY/MoM | ✅ ~7.4 萬筆 | FinMind `TaiwanStockMonthRevenue`，2019-01 ~ 2026-03 |
-| `financial_statement` | 季財報各科目（EPS、營益率等） | ✅ ~45 萬筆 | FinMind 財報資料集，2019-03 ~ 2026-03 |
-| `broker_trade_agg` | 分點買賣超聚合（取代舊 broker_trade） | 🔄 backfill 進行中 | FinMind `TaiwanStockTradingDailyReport`，2024-01 補到中（GitHub Actions 每小時自動跑） |
+| 資料表 | 說明 |
+|--------|------|
+| `users` | 使用者帳號（email / password_hash / is_admin） |
+| `user_sessions` | Server-side session（UUID token、httpOnly cookie、30 天過期） |
+| `user_watchlist` | 關注買進清單（user_id / stock_id / buy_date / avg_price，UNIQUE (user_id, stock_id)，單一清單上限 20 檔） |
+
+### Deprecated
+
+| 資料表 | 說明 |
+|--------|------|
+| `broker_trade` | TWSE BSR 舊版快取（L2 券商面板已隱藏，後續若復活改吃 `broker_trade_agg`） |
+| `chain` 欄位 | Fugle 上中下游分類；2026-04-21 隨 FinMind 切換永久捨棄（`stocks_master.chain` 保留欄位但永遠 NULL） |
 
 ### 自動化排程（GitHub Actions）
 
 | Workflow | 排程 | 說明 |
 |----------|------|------|
-| `.github/workflows/daily_etl_update.yml` | 週一~五 21:00（台北） | 每個交易日收盤後全量刷新 Render PostgreSQL（6 個 FinMind 模組：daily_price / inst_flow / daily_valuation / monthly_revenue / financial_statement / broker_trade_agg） |
+| `.github/workflows/daily_etl_update.yml` | 週一~五 23:00（台北） | 每個交易日收盤後全量刷新 Render PostgreSQL（6 個 FinMind 模組：daily_price / inst_flow / daily_valuation / monthly_revenue / financial_statement / broker_trade_agg）。配額耗盡時 1.5h 後自動 retry 一次；假日由 daily_price 空資料 + 配額健康判定自動短路 |
 | `.github/workflows/broker_trade_backfill.yml` | 每小時第 5 分 | 分點買賣超歷史 backfill，以交易日為單位逐批推進 |
 
 ### 待實作資料表
@@ -158,7 +170,7 @@ npm run dev
 |--------|------|------|
 | `broker_trade_raw` | 分點逐筆原始資料（未來用） | ⬜ 待實作 |
 
-> **注意**：`daily_valuation`、`monthly_revenue`、`financial_statement` 資料在 Render PostgreSQL，本地 SQLite 尚無資料。
+> **注意**：`daily_valuation`、`monthly_revenue`、`financial_statement`、`broker_trade_agg` 資料在 Render PostgreSQL，本地 SQLite 尚無資料。
 
 ## API Endpoints
 
@@ -177,13 +189,23 @@ npm run dev
 | GET | `/api/stocks/{id}/brokers/ranked?date=&days=` | L2：券商買進/賣出 Top10 |
 | GET | `/api/stocks/{id}/brokers/{broker_id}/history?start=&end=` | L2：券商逐日買賣超走勢 |
 | GET | `/api/stocks/search?q=...` | 股票 autocomplete 搜尋 |
-| GET | `/api/market/daily-brief` | 首頁 AI 盤前摘要 |
+| GET | `/api/market/daily-brief` | AI 盤前摘要（Telegram `/brief` 共用） |
 | GET | `/api/market/latest-trade-date` | 取得 DB 最新交易日 |
-| POST | `/api/analysis/trade-quality` | 首頁 AI 交易質量分析 |
-| POST | `/api/backtest/run` | L3：回測執行 |
-| POST | `/api/backtest/interpret` | L3：策略文字解析 |
-| POST | `/api/backtest/advice` | L3：策略建議 |
+| GET | `/api/market/hot-money?date=&days=3&limit=20` | L0：熱錢湧入個股排行 Top N（M22） |
+| GET | `/api/industries/{name}/hot-money?date=&days=3&limit=10&sub_industry=` | L1：單產業熱錢排行（M22） |
+| POST | `/api/analysis/trade-quality` | 首頁 AI 交易質量分析（公開；未登入 3/day、已登入 30/day） |
+| POST | `/api/backtest/run` | L3：回測執行（需登入） |
+| POST | `/api/backtest/interpret` | L3：策略文字解析（需登入） |
+| POST | `/api/backtest/advice` | L3：策略建議（需登入） |
 | GET | `/api/backtest/templates` | L3：策略模板清單 |
+| POST | `/api/auth/register` | M18：Email/password 註冊（自動登入） |
+| POST | `/api/auth/login` | M18：Email/password 登入（httpOnly cookie session） |
+| POST | `/api/auth/logout` | M18：登出 |
+| GET | `/api/auth/me` | M18：取得當前登入使用者 |
+| GET | `/api/watchlist` | M19：取回關注清單（含未實現損益） |
+| POST | `/api/watchlist` | M19：新增持股（`stock_id` / `buy_date` / `avg_price`，上限 20 檔） |
+| DELETE | `/api/watchlist/{entry_id}` | M19：移除單筆持股 |
+| DELETE | `/api/watchlist` | M19：清空整份清單 |
 
 ---
 
@@ -206,7 +228,7 @@ npm run dev
 | M16 | 首頁 AI 盤前摘要（Daily Brief） | ✅ |
 | M17 | 交易質量 AI 分析（Trade Quality Analysis，5 階評級 + 四象限 + 目標價） | ✅ |
 | M18 | 使用者註冊系統（Email/password + server-side session + RequireAuth；M17 公開但 3/day/30/day 分層 rate limit） | ✅ |
-| M19 | 關注買進清單（L0 側邊欄 + 持股卡片 + 綁 M17 交易分析） | ⬜ 規劃中（M18 完成後） |
+| M19 | 關注買進清單（單一清單上限 20 檔、加入 popup 填買進日/均價、`/watchlist` 卡片含未實現損益 + M17 深連結、Navbar「我的清單 N/20」） | ✅ |
 | M20 | 交易分析擴充（預期 45% 報酬率加碼建議 + 風報比 1:1.75） | ⬜ 規劃中（M19 完成後） |
 | M21 | Trade Quality Context 資料管線（industry/chip/peer_rank/fundamental/price_structure 預聚合，餵結論層給 LLM） | ⬜ 規劃中 |
 | M22 | 熱錢湧入個股排行（L0 底部 Top 20 / L1 頂部 Top 10，近 N 日三大法人累計買超） | ✅ |
@@ -239,11 +261,10 @@ npm run dev
 
 | 資料 | 來源 | 所需權限 |
 |------|------|----------|
-| 股票基本資料 + 產業別 | FinMind `TaiwanStockInfo` / `TaiwanStockIndustryChain` | Free / Sponsor |
-| 每日收盤價 OHLC | FinMind `TaiwanStockPrice`（目標）/ TWSE（現行） | Backer+ / 公開 |
-| 三大法人買賣超 | FinMind `TaiwanStockInstitutionalInvestors`（目標）/ TWSE（現行） | Backer+ / 公開 |
+| 股票基本資料 + 產業別 | FinMind `TaiwanStockInfo` / `TaiwanStockIndustryChain` | Backer+ |
+| 每日收盤價 OHLC | FinMind `TaiwanStockPrice` | Backer+ |
+| 三大法人買賣超 | FinMind `TaiwanStockInstitutionalInvestorsBuySell` | Backer+ |
 | 每日 P/E、P/B、殖利率 | FinMind `TaiwanStockPER` | Backer+ |
 | 月營收 | FinMind `TaiwanStockMonthRevenue` | Backer+ |
 | 季財報 | FinMind 財報資料集 | Backer+ |
-| 分點買賣超 | FinMind `TaiwanStockTradingDailyReport` | **Sponsor** |
-| 子產業分類（舊） | Fugle（自定義爬取） | 本地 CSV |
+| 分點買賣超（聚合） | FinMind `TaiwanStockTradingDailyReportSecIdAgg` | **Sponsor** |
