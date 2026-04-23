@@ -37,10 +37,14 @@ jobs:
         env:
           INPUT_DATE: ${{ github.event.inputs.target_date }}
         run: |
+          # cron 排程在台北 23:00，但 GitHub Actions cron 常延遲 10~90 分鐘，
+          # 延遲到台北 00:xx 就會跨到次日，date +%F 給出「明天」→ 抓空資料 → 被誤判 holiday。
+          # 往前推 4 小時確保永遠落在 cron 預期的當日（23:00 跑 → 19:00 offset、
+          # 00:30 延遲 → 20:30 offset，都仍是當日）。手動觸發時若有填 INPUT_DATE 則尊重之。
           if [ -n "$INPUT_DATE" ]; then
             TARGET_DATE="$INPUT_DATE"
           else
-            TARGET_DATE=$(date +%F)
+            TARGET_DATE=$(date -d '4 hours ago' +%F)
           fi
           echo "target_date=$TARGET_DATE" >> "$GITHUB_OUTPUT"
           echo "Target date (Taipei): $TARGET_DATE"

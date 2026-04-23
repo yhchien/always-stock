@@ -848,6 +848,26 @@
 - `router/watchlist.py` 檔頭註記：20 檔 cap 為 best-effort，雙 tab 並發可能插到第 21 筆（機率極低、無正確性影響）
 - `api.ts` 移除死判斷：`204` 已屬 `res.ok=true`，`&& res.status !== 204` 不會 evaluate，改為單純 `if (!res.ok)`
 
+### Daily ETL target date 跨日 bug 修復（2026-04-23）
+
+**問題**：2026-04-22 的排程跑起來 DB 完全沒新資料，卡在 4/21 → 4/23 之間整天空白。
+
+**根因**：
+- `.github/workflows/daily_etl_update.yml` cron `0 15 * * 1-5`（UTC 15:00 = 台北 23:00）
+- GitHub Actions cron 常延遲 10~90 分鐘，4/22 實際 UTC 16:12（台北次日 00:12）才 run
+- `TARGET_DATE=$(date +%F)` 在 `TZ=Asia/Taipei` 下給**次日**（4/23，尚未開盤）
+- FinMind 回空資料 → 新的 holiday short-circuit（2026-04-22 引入）判定為假日 → 7 個 step 全 skip
+- 4/22 的資料根本沒被抓過
+
+**修法**：
+- `Resolve target date` 改成 `TARGET_DATE=$(date -d '4 hours ago' +%F)`
+- 即使 cron 延誤到台北 00:30，往前推 4 小時仍落在當日 20:30 → `date +%F` 給正確的當日
+- 手動觸發（`workflow_dispatch`）填 `target_date` input 時尊重之，不受 offset 影響
+
+**Backfill 4/22**：`gh workflow run daily_etl_update.yml --ref main -f target_date=2026-04-22`（run 24828955408）
+
+**Gotcha**：GitHub Actions cron 延遲是常態；任何「跑當日」的 workflow 都要內建足夠 offset buffer，避免邊界日跨天
+
 ### M19 上線後 bug 修復（2026-04-23）
 M19 merge 之後使用者回報四個問題，一次修掉：
 
