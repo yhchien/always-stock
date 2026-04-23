@@ -9,7 +9,7 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from app.rate_limit import limiter
-from app.routers import analysis, auth as auth_router, backtest, brokers, financials, industries, market, realtime, stocks
+from app.routers import analysis, auth as auth_router, backtest, brokers, financials, industries, market, realtime, stocks, watchlist
 
 logger = logging.getLogger(__name__)
 
@@ -18,17 +18,17 @@ def _seed_admin_user() -> None:
     """啟動時確保 M18 auth 表存在 + admin 帳號存在。失敗不阻擋 app 啟動。"""
     from app.auth import ensure_admin_user
     from app.database import Base, SessionLocal, engine
-    from app.models import User, UserSession  # noqa: F401 — 觸發 metadata 註冊
+    from app.models import User, UserSession, UserWatchlist  # noqa: F401 — 觸發 metadata 註冊
 
     # create_all 是 CREATE TABLE IF NOT EXISTS，對既有資料 no-op。
     # 原本靠手動跑 backend/migrate_add_users.py 建表，改成 lifespan 自動 idempotent 建。
     try:
         Base.metadata.create_all(
             bind=engine,
-            tables=[User.__table__, UserSession.__table__],
+            tables=[User.__table__, UserSession.__table__, UserWatchlist.__table__],
         )
     except Exception:
-        logger.exception("Failed to create M18 auth tables at startup")
+        logger.exception("Failed to create M18/M19 auth tables at startup")
         return
 
     db = SessionLocal()
@@ -129,6 +129,7 @@ app.include_router(brokers.router, prefix="/api")
 app.include_router(backtest.router, prefix="/api")
 app.include_router(financials.router, prefix="/api")
 app.include_router(analysis.router, prefix="/api")
+app.include_router(watchlist.router, prefix="/api")
 
 logger.info("always-stock API initialized")
 

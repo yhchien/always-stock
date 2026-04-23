@@ -256,6 +256,25 @@ class UserSession(Base):
     revoked_at = Column(DateTime, nullable=True)
 
 
+class UserWatchlist(Base):
+    """
+    使用者關注買進清單（M19）
+    每個使用者一個清單，上限 20 檔（由 API 層強制）
+    """
+    __tablename__ = "user_watchlist"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    stock_id = Column(String, nullable=False)
+    buy_date = Column(Date, nullable=False)
+    avg_price = Column(Float, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "stock_id", name="uq_watchlist_user_stock"),
+    )
+
+
 class IndustryMapping(Base):
     """
     產業分類對照表（雙軌驗證用）

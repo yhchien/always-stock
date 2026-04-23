@@ -4,12 +4,15 @@ import Link from "next/link"
 import { usePathname } from "next/navigation"
 
 import { useAuth } from "@/lib/auth"
+import { useWatchlist } from "@/lib/watchlist"
 
 export default function Navbar() {
   const pathname = usePathname()
   const isHome = pathname === "/"
   const isLoginPage = pathname === "/login"
+  const isWatchlistPage = pathname === "/watchlist"
   const { user, status, logout } = useAuth()
+  const { total, capacity } = useWatchlist()
 
   return (
     <header className="sticky top-0 z-50 border-b border-slate-700/40 bg-slate-900/90 backdrop-blur-sm">
@@ -38,6 +41,17 @@ export default function Navbar() {
               避免冷啟動時 /api/auth/me 慢回導致按鈕長時間卡在「…」看不見 */}
           {user ? (
             <div className="flex items-center gap-2">
+              {!isWatchlistPage && (
+                <Link
+                  href="/watchlist"
+                  className="text-xs text-slate-300 hover:text-white transition-colors border border-slate-700/40 hover:border-slate-500 rounded-md px-3 py-1"
+                >
+                  我的清單
+                  <span className="ml-1 font-mono text-slate-500">
+                    {total}/{capacity}
+                  </span>
+                </Link>
+              )}
               <span className="text-xs text-slate-400">
                 {user.name ?? user.email}
                 {user.is_admin ? (

@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useRef, useState } from "react"
+import { useSearchParams } from "next/navigation"
 import {
   analyzeTradeQuality,
   fetchLatestTradeDate,
@@ -31,6 +32,7 @@ function formatPriceRange(low?: number | null, high?: number | null): string | n
 }
 
 export default function TradeQualityAnalysis() {
+  const searchParams = useSearchParams()
   const [query, setQuery] = useState("")
   const [selected, setSelected] = useState<StockSearchItem | null>(null)
   const [suggestions, setSuggestions] = useState<StockSearchItem[]>([])
@@ -44,8 +46,10 @@ export default function TradeQualityAnalysis() {
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<TradeQualityResponse | null>(null)
   const [showDetail, setShowDetail] = useState(false)
+  const [pendingAnalyze, setPendingAnalyze] = useState(false)
 
   const containerRef = useRef<HTMLDivElement>(null)
+  const prefillRef = useRef(false)
 
   // Load latest trade date once on mount
   useEffect(() => {
@@ -156,6 +160,40 @@ export default function TradeQualityAnalysis() {
     }
   }, [selected, query, suggestions, useCustomDate, buyDate])
 
+  // URL prefill: when navigated with ?stock_id=XXX&buy_date=YYYY-MM-DD, auto populate + analyze once
+  useEffect(() => {
+    if (prefillRef.current) return
+    const sid = searchParams.get("stock_id")
+    const bd = searchParams.get("buy_date")
+    if (!sid) return
+    prefillRef.current = true
+    const ctrl = new AbortController()
+    searchStocks(sid, { signal: ctrl.signal })
+      .then((items) => {
+        const exact = items.find((i) => i.stock_id === sid)
+        if (!exact) return
+        setSelected(exact)
+        setQuery(`${exact.stock_id} ${exact.stock_name}`)
+        setSuggestions(items)
+        setShowSuggest(false)
+        if (bd) {
+          setUseCustomDate(true)
+          setBuyDate(bd)
+        }
+        setPendingAnalyze(true)
+      })
+      .catch(() => {})
+    return () => ctrl.abort()
+  }, [searchParams])
+
+  // Fire handleAnalyze after state from URL prefill has settled
+  useEffect(() => {
+    if (!pendingAnalyze) return
+    if (!selected) return
+    setPendingAnalyze(false)
+    handleAnalyze()
+  }, [pendingAnalyze, selected, handleAnalyze])
+
   const ratingStyle = result ? RATING_STYLE[result.rating] : null
   const targetRange = result
     ? formatPriceRange(result.target_price_low, result.target_price_high)
@@ -165,7 +203,7 @@ export default function TradeQualityAnalysis() {
     : null
 
   return (
-    <div className="rounded-xl border border-slate-600 bg-slate-800/40 overflow-hidden">
+    <div id="trade-quality" className="rounded-xl border border-slate-600 bg-slate-800/40 overflow-hidden scroll-mt-16">
       {/* Header */}
       <div className="px-4 py-3 border-b border-slate-700/40">
         <span className="text-sm font-semibold text-slate-100">交易質量分析</span>

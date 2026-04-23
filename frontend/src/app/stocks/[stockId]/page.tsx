@@ -5,6 +5,7 @@ import dynamic from "next/dynamic"
 import Link from "next/link"
 import { useSearchParams } from "next/navigation"
 import RequireAuth from "@/components/RequireAuth"
+import WatchlistAddButton from "@/components/WatchlistAddButton"
 import { Skeleton } from "@/components/ui/skeleton"
 
 const FINANCIALS_TOGGLE_STORAGE_KEY = "always-stock:show-financials-panel"
@@ -158,6 +159,13 @@ function StockContent({ stockId }: { stockId: string }) {
       {/* Main content — offset by sidebar width */}
       <main className="ml-12">
         <div className="mx-auto w-full max-w-5xl px-4 py-8 flex flex-col gap-6">
+          <div className="flex items-center justify-between">
+            <h1 className="text-xl font-semibold tracking-tight text-slate-100">
+              <span className="font-mono text-slate-400 mr-2">{stockId}</span>
+            </h1>
+            <WatchlistAddButton stockId={stockId} defaultDate={date} />
+          </div>
+
           <StockChart
             stockId={stockId}
             defaultDate={date}
