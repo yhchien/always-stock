@@ -24,6 +24,7 @@ import {
 } from "@/lib/api"
 import { useRealtimeQuotes } from "@/lib/useRealtimeQuotes"
 import HotMoneyList from "@/components/HotMoneyList"
+import WatchlistAddButton from "@/components/WatchlistAddButton"
 
 // ── Sub-industry summary table ────────────────────────────────────────────────
 
@@ -371,6 +372,17 @@ export default function StockList({ industryName, defaultDate, defaultSubFilter 
                       }`}>
                         {fmtAmount(stock.foreign_net_amount + stock.trust_net_amount + stock.dealer_net_amount)}
                       </span>
+                    </div>
+
+                    {/* Watchlist action — 右下角 */}
+                    <div className="mt-3 flex justify-end">
+                      <WatchlistAddButton
+                        stockId={stock.stock_id}
+                        stockName={stock.stock_name}
+                        defaultDate={date}
+                        defaultAvgPrice={displayPrice ?? null}
+                        variant="compact"
+                      />
                     </div>
                   </div>
                   )

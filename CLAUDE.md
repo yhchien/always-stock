@@ -90,6 +90,7 @@
 - M16: AI 盤前摘要（Daily Brief，2026-04-20 起改由 Telegram Bot `/brief` 提供）
 - M17: 交易質量 AI 分析（Trade Quality Analysis，5 階評級 + 四象限 + 目標價）
 - M18: 使用者註冊系統（Email/password + server-side session + RequireAuth；M17 公開但分層 rate limit；admin@always-stock.dev / forwork）
+- M19: 關注買進清單（單一清單上限 20 檔，加入 popup 填買進日/均價；L0 HotMoneyList、L1 StockList、L2 個股頁右下「加入清單」；Navbar「我的清單」；/watchlist 卡片含未實現損益 + 交易分析深連結 M17；資料綁 user_id）
 - M22: 熱錢湧入個股排行（L0 底部 Top 20 / L1 頂部 Top 10，近 N 日三大法人累計買超；spec 在 [docs/plans/hot_money_list_spec.md](docs/plans/hot_money_list_spec.md)）
 
 ### 進行中
@@ -99,11 +100,10 @@
 - M12 自然語言策略
 - M14 輿情分析
 - M15 Telegram 電子報
-- M19 關注買進清單（L0 側邊欄 + 持股卡片 + M17 交易分析整合）
 - M20 交易分析擴充（預期 45% 報酬率加碼建議 + 風報比 1:1.75）
 - M21 Trade Quality Context 資料管線（industry/chip/peer_rank/fundamental/price_structure 預聚合，餵結論層給 LLM）
 
-> M18 → M19 → M20 依序執行。M19 需 M18 註冊系統落地，M20 擴充建立在 M19 卡片帶入 context 之上。
+> M18 → M19 → M20 依序執行。M19 已完工（2026-04-23），M20 擴充建立在 M19 卡片帶入 context 之上。
 > M21 與 M20 平行但互補：M20 改 prompt、M21 改 backend context 組裝，兩者合起來才能讓 M17 分析真正精準。
 
 ## 開發注意事項
@@ -803,3 +803,47 @@
 - 當使用者透過 `IndustryDashboard` 的 date picker 換日期 → `onDateChange` 把 URL 改成 `?date=X` → `queryDate` 更新，但 `defaultDate` 不會 re-sync，導致 `HotMoneyList` 停在舊日期
 - 修法：把 `defaultDate` 改成 **derived value** `queryDate ?? latestTradeDate ?? todayInTaipei()`，`latestTradeDate` 才是 state；任何一邊變動都會讓 `defaultDate` 重算
 - L1 的 StockList 內部管自己的 `date` state，靠 `setDate` 更新，HotMoneyList 直接收 prop 無此問題
+
+## M19 關注買進清單完成（2026-04-23）
+
+### 後端
+- [backend/app/models.py](backend/app/models.py) — 新增 `UserWatchlist` model：`(user_id, stock_id, buy_date, avg_price)` + UNIQUE `(user_id, stock_id)`
+- [backend/app/main.py](backend/app/main.py) — lifespan `Base.metadata.create_all` 自動建表（idempotent，避免 Render 手動 migration）
+- [backend/app/routers/watchlist.py](backend/app/routers/watchlist.py) — 4 個 CRUD endpoints（全部 `Depends(require_user)`）：
+  - `GET /api/watchlist` → `{ items, total, capacity }`（join `stocks_master` + 最近 `daily_price.close_price`，回傳 `unrealized_pct`）
+  - `POST /api/watchlist` → 201；`404` unknown stock / `409` duplicate / `409` at cap（20）
+  - `DELETE /api/watchlist/{entry_id}` → 204；僅能刪自己 entry（他人 entry 回 `404`，不洩漏存在性）
+  - `DELETE /api/watchlist` → 204 bulk clear
+- [backend/tests/test_watchlist_router.py](backend/tests/test_watchlist_router.py) — 14 案例 pass（空清單、auth 缺、add/dup/404/at cap、delete own/other/unknown、clear own only、null price、invalid avg_price）
+- 常數 `WATCHLIST_MAX_ENTRIES = 20`
+
+### 前端
+- [frontend/src/lib/api.ts](frontend/src/lib/api.ts) — `WatchlistItem` / `WatchlistResponse` 型別 + 4 個 API function；`fetchWatchlist` 於 401 回空 response（匿名時靜默）
+- [frontend/src/lib/watchlist.tsx](frontend/src/lib/watchlist.tsx) — `WatchlistProvider` context（mirror `AuthProvider`），exposes `items/total/capacity/has/entryIdOf/add/remove/clear/refresh/isReady`；auth status 變化時自動 refresh
+- [frontend/src/components/AppProviders.tsx](frontend/src/components/AppProviders.tsx) — `<AuthProvider><WatchlistProvider>{children}</WatchlistProvider></AuthProvider>` 雙層包裝
+- [frontend/src/components/WatchlistAddDialog.tsx](frontend/src/components/WatchlistAddDialog.tsx) — base-ui `@base-ui/react/dialog`（**不是 shadcn CLI**；專案既有 base-ui primitives）；輸入 buy_date（預設台北今天）+ avg_price
+- [frontend/src/components/WatchlistAddButton.tsx](frontend/src/components/WatchlistAddButton.tsx) — 共用按鈕，5 狀態：未登入（→ /login）/ 載入中 / 已加入（綠 disabled）/ 已滿 20/20（琥珀，→ /watchlist）/ 可加入（天藍，開 dialog）；`e.stopPropagation()` 防止觸發父層 row 導航
+- 入口整合：
+  - [frontend/src/components/HotMoneyList.tsx](frontend/src/components/HotMoneyList.tsx) — 表格新增「清單」欄（compact variant）
+  - [frontend/src/components/StockList.tsx](frontend/src/components/StockList.tsx) — 每張個股卡片右下角（compact variant）
+  - [frontend/src/app/stocks/[stockId]/page.tsx](frontend/src/app/stocks/[stockId]/page.tsx) — 個股頁 header 右側（default variant）
+- [frontend/src/app/watchlist/page.tsx](frontend/src/app/watchlist/page.tsx) — 新路由（`<RequireAuth>`）：持股卡片顯示買進日/均價/最新收盤/未實現損益 %；右上角 ✕ 單檔移除；頂部「清空清單」→「確定清空？」兩段式確認；每張卡片「交易分析 →」按鈕 `router.push("/?stock_id=XXX&buy_date=YYYY-MM-DD#trade-quality")`
+- [frontend/src/components/TradeQualityAnalysis.tsx](frontend/src/components/TradeQualityAnalysis.tsx) — URL prefill：讀 `useSearchParams()`，有 `stock_id`+`buy_date` 時 one-shot 呼叫 `searchStocks` 解析後觸發 `handleAnalyze`；外層 `id="trade-quality" scroll-mt-16` 支援 hash anchor
+- [frontend/src/components/Navbar.tsx](frontend/src/components/Navbar.tsx) — 已登入且不在 `/watchlist` 時顯示「我的清單 N/20」
+
+### Gotcha
+- **`useSearchParams` 在 Next 16 必須包 `<Suspense>`**：`frontend/src/app/page.tsx` 的 `HomeContent` 已在 Suspense 內；TradeQualityAnalysis 直接在其中使用即可
+- **URL prefill 用 key-based ref**：`lastPrefillKeyRef.current = "sid|bd"`，與上次比對；確保同一個 mounted component 下連點多檔不同股票會重新 prefill（不能用布林 one-shot 守門）
+- **Prefill 後延後呼叫 analyze**：先 set `selected`，再用 `pendingAnalyze` flag + 第二個 effect 等 state commit 後才呼叫 `handleAnalyze`，避免用 stale `selected=null`
+- **UI 不採 shadcn CLI**：專案 dep 只裝 `shadcn` 本體但**所有 UI primitive 都是 base-ui**（`select.tsx` 已採 `SelectPrimitive from "@base-ui/react/select"`）；新 dialog 也用 `@base-ui/react/dialog`，別跑 `npx shadcn@latest add dialog` 污染
+- **apiFetch 必帶 `credentials: "include"`**：watchlist API 全走 session cookie；若直接 `fetch` 會變匿名呼叫 → 401
+- **刪除他人 entry 回 404 不是 403**：避免枚舉攻擊（existence oracle）
+- **卡片停靠按鈕 bubble**：`WatchlistAddButton` / 清單 ✕ 按鈕皆需 `e.stopPropagation()`，否則會觸發 HotMoneyList / StockList row 的 `router.push` 跳到個股頁
+
+### Code review 後補強（2026-04-23）
+- `UserWatchlist.user_id` 加上 `ForeignKey("users.id", ondelete="CASCADE")`：未來刪帳號時 watchlist 自動清除，不留孤兒列
+- POST 加 `buy_date > _today_taipei()` guard（400 `買進日期不能是未來`），避免 M20 context 被未來日期汙染
+- **`_today_taipei()` 以 `Asia/Taipei` 為準**（follow `analysis.py:42` 既有 `TAIPEI_TZ = ZoneInfo("Asia/Taipei")` pattern）：Render server 跑 UTC，若用 `date.today()` 會在台北 00:00~08:00 把使用者選的「今天」誤判為未來；測試用 `monkeypatch.setattr(watchlist_module, "_today_taipei", lambda: date(...))` freeze 時間驗證
+- `avg_price` **暫留 Float**（與 `daily_price.close_price` 一致）；M20 加碼建議納入 avg_price 精確運算時一併換 `Numeric(12, 4)`（model column + migration）
+- `router/watchlist.py` 檔頭註記：20 檔 cap 為 best-effort，雙 tab 並發可能插到第 21 筆（機率極低、無正確性影響）
+- `api.ts` 移除死判斷：`204` 已屬 `res.ok=true`，`&& res.status !== 204` 不會 evaluate，改為單純 `if (!res.ok)`

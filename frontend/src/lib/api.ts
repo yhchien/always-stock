@@ -815,6 +815,61 @@ export async function fetchMarketHotMoney(
   return res.json()
 }
 
+// ── Watchlist (M19) ────────────────────────────────────────────────────────
+
+export interface WatchlistItem {
+  id: number
+  stock_id: string
+  stock_name: string
+  industry_name: string | null
+  buy_date: string
+  avg_price: number
+  latest_close: number | null
+  latest_trade_date: string | null
+  unrealized_pct: number | null
+}
+
+export interface WatchlistResponse {
+  items: WatchlistItem[]
+  total: number
+  capacity: number
+}
+
+export interface WatchlistCreateRequest {
+  stock_id: string
+  buy_date: string
+  avg_price: number
+}
+
+export async function fetchWatchlist(options?: FetchOptions): Promise<WatchlistResponse> {
+  const res = await apiFetch(`${API_BASE}/api/watchlist`, { signal: options?.signal })
+  if (res.status === 401) {
+    return { items: [], total: 0, capacity: 20 }
+  }
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "清單載入失敗"))
+  return res.json()
+}
+
+export async function addWatchlistEntry(payload: WatchlistCreateRequest): Promise<WatchlistItem> {
+  const res = await apiFetch(`${API_BASE}/api/watchlist`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "加入清單失敗"))
+  return res.json()
+}
+
+export async function removeWatchlistEntry(entryId: number): Promise<void> {
+  const res = await apiFetch(`${API_BASE}/api/watchlist/${entryId}`, { method: "DELETE" })
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "移除失敗"))
+}
+
+export async function clearWatchlistEntries(): Promise<void> {
+  const res = await apiFetch(`${API_BASE}/api/watchlist`, { method: "DELETE" })
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "清空清單失敗"))
+}
+
 export async function fetchIndustryHotMoney(
   industryName: string,
   date: string,

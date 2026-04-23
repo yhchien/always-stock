@@ -11,6 +11,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Skeleton } from "@/components/ui/skeleton"
+import WatchlistAddButton from "@/components/WatchlistAddButton"
 import {
   fetchIndustryHotMoney,
   fetchMarketHotMoney,
@@ -135,6 +136,7 @@ export default function HotMoneyList({
                 <TableHead className="text-slate-300 text-right hidden md:table-cell">投信</TableHead>
                 <TableHead className="text-slate-300 text-right hidden lg:table-cell">自營</TableHead>
                 <TableHead className="text-slate-300 text-right">合計</TableHead>
+                <TableHead className="text-slate-300 w-24 text-right">清單</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -164,6 +166,15 @@ export default function HotMoneyList({
                   <TableCell className="text-right hidden md:table-cell"><AmountCell value={item.trust_net_amount} /></TableCell>
                   <TableCell className="text-right hidden lg:table-cell"><AmountCell value={item.dealer_net_amount} /></TableCell>
                   <TableCell className="text-right"><AmountCell value={item.total_net_amount} /></TableCell>
+                  <TableCell className="text-right">
+                    <WatchlistAddButton
+                      stockId={item.stock_id}
+                      stockName={item.stock_name}
+                      defaultDate={date}
+                      defaultAvgPrice={item.end_close_price}
+                      variant="compact"
+                    />
+                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>
