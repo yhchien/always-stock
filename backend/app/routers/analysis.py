@@ -205,33 +205,34 @@ def _collect_context(
     if not stock:
         raise HTTPException(status_code=404, detail=f"Stock not found: {stock_id}")
 
-    start_10d = buy_date - timedelta(days=21)  # 10 trading days ≈ 14~21 calendar days
+    # M21 Phase B：raw OHLC / flows 僅保留 5 日供 AI 對照，結論層訊號由 build_trade_quality_context 提供
+    start_raw = buy_date - timedelta(days=14)  # 5 交易日 ≈ 7~14 曆日
     prices = (
         db.query(DailyPrice)
         .filter(
             DailyPrice.stock_id == stock_id,
             DailyPrice.trade_date <= buy_date,
-            DailyPrice.trade_date >= start_10d,
+            DailyPrice.trade_date >= start_raw,
         )
         .order_by(DailyPrice.trade_date)
         .all()
     )
-    prices = prices[-10:]
+    prices = prices[-5:]
     if not prices:
-        warnings.append("無近 10 交易日股價資料")
+        warnings.append("無近 5 交易日股價資料")
 
     flows = (
         db.query(InstStockFlow)
         .filter(
             InstStockFlow.stock_id == stock_id,
             InstStockFlow.trade_date <= buy_date,
-            InstStockFlow.trade_date >= start_10d,
+            InstStockFlow.trade_date >= start_raw,
         )
         .order_by(InstStockFlow.trade_date)
         .all()
     )
     if not flows:
-        warnings.append("無近 10 交易日三大法人資料")
+        warnings.append("無近 5 交易日三大法人資料")
 
     revenue_rows = (
         db.query(MonthlyRevenue)
@@ -263,7 +264,23 @@ def _collect_context(
     return stock, context, warnings
 
 
-def _build_user_message(context: dict, warnings: list[str]) -> str:
+def _build_deterministic_context(
+    db: Session, stock_id: str, buy_date: date, warnings: list[str]
+) -> Optional[dict]:
+    try:
+        return build_trade_quality_context(db, stock_id, buy_date)
+    except ValueError:
+        # stock 找不到的情況已在 _collect_context 擋下；其他 ValueError 不預期
+        raise
+    except Exception:
+        logger.exception("M21 context pipeline failed; falling back to raw-only context")
+        warnings.append("deterministic 訊號管線暫時不可用，僅以原始資料判斷")
+        return None
+
+
+def _build_user_message(
+    context: dict, m21_context: Optional[dict], warnings: list[str]
+) -> str:
     news_note = (
         "本次分析無 10 天內新聞資料可供佐證；"
         "請依系統 prompt 規則 15 處理 —— 若你認為缺新聞導致無法建立有效交易判斷，"
@@ -273,6 +290,20 @@ def _build_user_message(context: dict, warnings: list[str]) -> str:
     warning_block = ""
     if warnings:
         warning_block = "\n[資料警告]\n- " + "\n- ".join(warnings)
+
+    if m21_context is not None:
+        m21_block = (
+            "[M21 預聚合訊號（deterministic，結論層）]\n"
+            "說明：以下 6 個 section 已用純規則從 DB 預聚合完成；\n"
+            "請**直接消費結論**，不要重新從 raw 數據推算相同訊號。\n"
+            "欄位語義詳見 docs/plans/trade_quality_context_spec.md。\n"
+            "下方 raw OHLC / 法人僅保留 5 日供你交叉驗證，不是主要推論依據。\n\n"
+            "```json\n"
+            f"{json.dumps(m21_context, ensure_ascii=False, indent=2)}\n"
+            "```\n"
+        )
+    else:
+        m21_block = "[M21 預聚合訊號]\n（不可用：請以下方原始資料自行推論）\n"
 
     return f"""[INPUT]
 {{"stock": "{context['stock_name']} ({context['stock_id']})", "buy_date": "{context['buy_date']}"}}
@@ -284,10 +315,11 @@ def _build_user_message(context: dict, warnings: list[str]) -> str:
 - 細產業：{context['sub_industry'] or '—'}
 - 買進日收盤價：{_fmt(context['latest_close'])}
 
-[近 10 交易日 OHLC / 成交量 / 漲跌%]
+{m21_block}
+[近 5 交易日 OHLC / 成交量 / 漲跌%（僅供對照）]
 {context['prices_text']}
 
-[近 10 交易日三大法人淨買賣（張）]
+[近 5 交易日三大法人淨買賣（張，僅供對照）]
 {context['flows_text']}
 
 [最近 3 個月月營收 + YoY/MoM]
@@ -490,12 +522,13 @@ def analyze_trade_quality(
         raise HTTPException(status_code=404, detail="資料庫無交易日資料")
 
     stock, context, warnings = _collect_context(db, req.stock_id, resolved)
+    m21_context = _build_deterministic_context(db, req.stock_id, resolved, warnings)
 
     system_prompt = _load_system_prompt()
     if not system_prompt:
         raise HTTPException(status_code=500, detail="分析 prompt 檔案缺失")
 
-    user_msg = _build_user_message(context, warnings)
+    user_msg = _build_user_message(context, m21_context, warnings)
     payload = _call_openai(system_prompt, user_msg)
 
     if payload is None:

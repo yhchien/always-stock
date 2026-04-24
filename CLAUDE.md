@@ -1068,3 +1068,29 @@ M19 merge 之後使用者回報四個問題，一次修掉：
   - `peer_rank.py`：`_peer_returns` / `_peer_volume_ratios` / `_peer_institution_intensity` / `_peer_breakouts`
 - **P2 順手處理**：`chip_signals._classify_price_trend` 的 `max_single_day_pct` 加註解說明是雙向絕對值（tests 所有 72 案例 pass）
 - **為何用交易日反推而非 calendar offset**：春節長假 calendar offset 會切過頭；trading-day reversal 保證永遠剛好 N 筆資料，不受休市影響
+
+## M21 Phase B：M17 prompt 吃 context pipeline（2026-04-24）
+
+### 改法
+- [backend/app/routers/analysis.py](backend/app/routers/analysis.py)：`analyze_trade_quality` 在 `_collect_context` 後新增 `_build_deterministic_context()`，呼叫 `build_trade_quality_context(db, stock_id, buy_date)` 取得 6 section JSON
+- `_build_user_message(context, m21_context, warnings)` 新增 `[M21 預聚合訊號（deterministic，結論層）]` 區塊，`json.dumps(..., ensure_ascii=False, indent=2)` 直接序列化 6 section 到 user message
+- raw OHLC / 法人從 10 日縮到 **5 日**，前綴「僅供對照」—— 讓 AI 以 M21 結論為主，raw 只做 sanity check；revenue 維持 3 個月
+- [backend/app/prompts/trade_quality.md](backend/app/prompts/trade_quality.md) + [docs/trade_quality_prompt.md](docs/trade_quality_prompt.md) 頂部加「輸入格式（M21 預聚合訊號）」說明，明列 7 個 section 語義 + 直接對應 prompt 內「產業熱錢等級 S/A/B/C」「籌碼集中度」「Leader/Follower」等強制規則
+- `rating` / `classification` / JSON contract 完全不動，前端不需改
+
+### Fallback 設計
+- `build_trade_quality_context` 丟非預期例外（`RuntimeError` 等非 `ValueError`）→ logger.exception + `warnings.append("deterministic 訊號管線暫時不可用...")`，user message 顯示「（不可用：請以下方原始資料自行推論）」
+- `ValueError`（stock not found）仍依既有路徑回 404（`_collect_context` 先擋）
+- 不阻斷 OpenAI 呼叫，確保 context pipeline 掛掉時 M17 仍能以 raw-only 模式工作
+
+### 測試
+- [backend/tests/test_analysis_router.py](backend/tests/test_analysis_router.py) 新增 2 案例：
+  - `test_trade_quality_user_message_includes_m21_deterministic_block`：斷言 6 section 關鍵字出現在 user message
+  - `test_trade_quality_falls_back_to_raw_when_m21_context_fails`：mock `build_trade_quality_context` 丟 `RuntimeError`，仍應回 200 + warnings 含提示
+- 全 tests 結果：44 pass（analysis router + context router + context builder），整 backend suite 370 pass（唯一 fail 是 `test_engine_connects`，worktree 無 sqlite 檔，與本改動無關）
+
+### Gotcha
+- **不要在 `_collect_context` 內呼叫 build_trade_quality_context**：兩個 function 有不同錯誤處理契約（raw context 缺資料 → warnings；deterministic pipeline 掛掉 → warning + fallback）；分開才能讓 router 層決定如何 fallback
+- **M21 JSON 用 `ensure_ascii=False`**：保留中文產業名稱（`AI 伺服器` 等）避免轉 `\u...` 浪費 token 且失去可讀性
+- **`rating` / `classification` 契約不能動**：M19 卡片「交易分析」深連結與前端 Rating 色塊已硬依賴 5 階 + A/B/C，改 prompt 時也禁止變動這兩欄值域
+- **raw OHLC 從 10 縮到 5 日**是 Phase B 的刻意設計：M21 已經把價格結構（trend / breakout / consolidation / accelerating）結論化了，raw 只需保留到 AI 能驗證「這 5 天真的在上漲」即可，節省 token 讓更多預算分給 M21 JSON

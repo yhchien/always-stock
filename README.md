@@ -227,7 +227,7 @@ npm run dev
 | M14 | LLM 輿情分析 | ⬜ |
 | M15 | Telegram 電子報 | ⬜ |
 | M16 | 首頁 AI 盤前摘要（Daily Brief） | ✅ |
-| M17 | 交易質量 AI 分析（Trade Quality Analysis，5 階評級 + 四象限 + 目標價） | ✅ |
+| M17 | 交易質量 AI 分析（Trade Quality Analysis，5 階評級 + 四象限 + 目標價；**2026-04-24** 起吃 M21 deterministic 預聚合訊號） | ✅ |
 | M18 | 使用者註冊系統（Email/password + server-side session + RequireAuth；M17 公開但 3/day/30/day 分層 rate limit） | ✅ |
 | M19 | 關注買進清單（單一清單上限 20 檔、加入 popup 填買進日/均價、`/watchlist` 卡片含未實現損益 + M17 深連結、Navbar「我的清單 N/20」） | ✅ |
 | M20 | 交易分析擴充（預期 45% 報酬率加碼建議 + 風報比 1:1.75） | ⬜ 規劃中（M19 完成後） |

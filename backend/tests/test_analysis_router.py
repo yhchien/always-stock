@@ -499,3 +499,76 @@ def test_trade_quality_user_message_documents_rating_value_domain(api):
     # 明講 classification 不接受 S
     assert "classification" in msg
     assert "產業熱錢等級" in msg
+
+
+def test_trade_quality_user_message_includes_m21_deterministic_block(api):
+    """M21 Phase B：user message 必須包含預聚合訊號 JSON，AI 不用自己推產業熱度/籌碼/同儕。"""
+    client, db = api
+    _seed_full_context(db)
+
+    captured = {}
+
+    def fake_create(*args, **kwargs):
+        captured["user_msg"] = kwargs["messages"][1]["content"]
+        return MagicMock(choices=[MagicMock(message=MagicMock(
+            content=json.dumps({"rating": "NEUTRAL", "summary": "x", "report_markdown": "y"})
+        ))])
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.side_effect = fake_create
+
+    with patch("app.routers.analysis.get_openai_api_key", return_value="k"), \
+         patch("app.routers.analysis.OpenAI", return_value=mock_client):
+        client.post(
+            "/api/analysis/trade-quality",
+            json={"stock_id": "2330", "buy_date": "2024-01-11"},
+        )
+
+    msg = captured["user_msg"]
+    assert "[M21 預聚合訊號" in msg
+    # 6 section 關鍵字都要出現在序列化 JSON 裡
+    for section in (
+        "industry_summary",
+        "chip_summary",
+        "peer_rank",
+        "fundamental",
+        "price_structure",
+        "news_input_stub",
+        "data_quality_notes",
+    ):
+        assert section in msg
+
+
+def test_trade_quality_falls_back_to_raw_when_m21_context_fails(api):
+    """若 build_trade_quality_context 丟非預期例外，M17 分析仍應完成（以 raw-only 為後備）。"""
+    client, db = api
+    _seed_full_context(db)
+
+    captured = {}
+
+    def fake_create(*args, **kwargs):
+        captured["user_msg"] = kwargs["messages"][1]["content"]
+        return MagicMock(choices=[MagicMock(message=MagicMock(
+            content=json.dumps({"rating": "NEUTRAL", "summary": "fallback", "report_markdown": "r"})
+        ))])
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.side_effect = fake_create
+
+    with patch("app.routers.analysis.get_openai_api_key", return_value="k"), \
+         patch("app.routers.analysis.OpenAI", return_value=mock_client), \
+         patch(
+             "app.routers.analysis.build_trade_quality_context",
+             side_effect=RuntimeError("context-down"),
+         ):
+        resp = client.post(
+            "/api/analysis/trade-quality",
+            json={"stock_id": "2330", "buy_date": "2024-01-11"},
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["source"] == "openai"
+    assert "deterministic 訊號管線暫時不可用，僅以原始資料判斷" in data["warnings"]
+    # 既使 fallback 仍要給 AI raw 區塊
+    assert "近 5 交易日" in captured["user_msg"]
