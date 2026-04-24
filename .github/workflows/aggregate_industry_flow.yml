@@ -1,0 +1,50 @@
+name: Aggregate Industry Flow
+
+# 手動觸發：單獨聚合 industry_daily_flow，不打 FinMind（純本地 DB 計算）
+# 用途：
+#   - 若 daily_etl_update 在 inst_flow 後斷掉（quota exhausted / timeout）→ 補聚合
+#   - 歷史資料被 backfill 後需重算 industry 層
+on:
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: '起始日期 (YYYY-MM-DD)'
+        required: true
+      end_date:
+        description: '結束日期 (YYYY-MM-DD)，預設同 start_date（單日）'
+        required: false
+
+jobs:
+  aggregate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      TZ: Asia/Taipei
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --quiet -r backend/requirements.txt
+
+      - name: Run industry_flow aggregation
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
+          START_DATE: ${{ github.event.inputs.start_date }}
+          END_DATE: ${{ github.event.inputs.end_date }}
+        run: |
+          END="${END_DATE:-$START_DATE}"
+          echo "Aggregating industry_daily_flow for $START_DATE ~ $END"
+          python3 run_finmind_etl_sdk.py \
+            --start-date "$START_DATE" \
+            --end-date "$END" \
+            --steps industry_flow \
+            --skip-log

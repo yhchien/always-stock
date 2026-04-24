@@ -191,6 +191,7 @@ class FinMindETLOrchestratorSDK:
         from etl.finmind_monthly_revenue_sdk import fetch_and_upsert_monthly_revenue_sdk
         from etl.finmind_financial_statement_sdk import fetch_and_upsert_financial_statement_sdk
         from etl.finmind_broker_trade_sdk import fetch_and_upsert_broker_trade_agg_sdk
+        from etl.aggregate_industry_flow import aggregate_industry_flow
 
         if db is None:
             db = SessionLocal()
@@ -199,8 +200,9 @@ class FinMindETLOrchestratorSDK:
             close_db = False
 
         # 決定要執行的步驟（None 代表全部）
-        ALL_STEPS = ["stocks_master", "daily_price", "inst_flow", "daily_valuation",
-                     "monthly_revenue", "financial_statement", "broker_trade_agg"]
+        ALL_STEPS = ["stocks_master", "daily_price", "inst_flow", "industry_flow",
+                     "daily_valuation", "monthly_revenue", "financial_statement",
+                     "broker_trade_agg"]
         active_steps = set(steps) if steps else set(ALL_STEPS)
 
         start_time = datetime.utcnow()
@@ -289,6 +291,35 @@ class FinMindETLOrchestratorSDK:
             else:
                 logger.info("\n[2/7] Institutional flows: skipped")
                 result["results"]["inst_flow"] = {"status": "skipped"}
+
+            # 2.5 聚合 industry_daily_flow（L0 產業儀表板資料來源）
+            #     純本地計算，不吃 FinMind 配額；需 inst_stock_flow 先寫入
+            if "industry_flow" in active_steps and not holiday_detected:
+                logger.info("\n[2.5/7] Aggregating industry_daily_flow (local)...")
+                try:
+                    total_rows = 0
+                    current = start_date
+                    while current <= end_date:
+                        n = aggregate_industry_flow(db, current)
+                        total_rows += n
+                        current += timedelta(days=1)
+                    result["results"]["industry_flow"] = {
+                        "status": "ok",
+                        "count": total_rows,
+                    }
+                    logger.info(f"✓ Industry flow: ok ({total_rows} rows)")
+                except Exception as e:
+                    logger.error(f"✗ Industry flow aggregation failed: {e}")
+                    result["results"]["industry_flow"] = {
+                        "status": "error",
+                        "error": str(e),
+                    }
+            elif "industry_flow" in active_steps:
+                logger.info("\n[2.5/7] Industry flow: skipped (non-trading day)")
+                result["results"]["industry_flow"] = {"status": "skipped_holiday"}
+            else:
+                logger.info("\n[2.5/7] Industry flow: skipped")
+                result["results"]["industry_flow"] = {"status": "skipped"}
 
             # 3. 日常估值（一次 batch fetch）
             if "daily_valuation" in active_steps and not holiday_detected:
@@ -437,8 +468,8 @@ def main():
         default=None,
         help=(
             "只執行指定步驟，逗號分隔（預設全部）。"
-            "可選：stocks_master,daily_price,inst_flow,daily_valuation,"
-            "monthly_revenue,financial_statement,broker_trade_agg"
+            "可選：stocks_master,daily_price,inst_flow,industry_flow,"
+            "daily_valuation,monthly_revenue,financial_statement,broker_trade_agg"
         )
     )
     parser.add_argument(
