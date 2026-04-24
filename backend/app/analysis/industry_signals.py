@@ -24,6 +24,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from sqlalchemy.orm import Session
 
+from app.analysis._helpers import fetch_active_peer_ids, resolve_query_start_date
 from app.analysis.context_thresholds import (
     FALSE_HOT_SPIKE_DAYS,
     HOT_LEVEL_A_MIN,
@@ -40,7 +41,7 @@ from app.analysis.context_thresholds import (
     INDUSTRY_VOLUME_INTERMITTENT_PCT,
     INDUSTRY_VOLUME_RECENT_DAYS,
 )
-from app.models import DailyPrice, InstStockFlow, StockMaster
+from app.models import DailyPrice, InstStockFlow
 
 _INST_TYPES = ("foreign", "trust", "dealer")
 
@@ -50,25 +51,31 @@ def compute_industry_signals(
     stock_id: str,  # noqa: ARG001 — 產業層不需個股 id，保留統一簽章
     buy_date: date,
     industry_name: str,
+    peer_ids: Optional[List[str]] = None,
+    query_start_date: Optional[date] = None,
 ) -> Tuple[dict, List[str]]:
     notes: List[str] = []
 
-    peer_ids = _active_peer_ids(db, industry_name)
+    if peer_ids is None:
+        peer_ids = fetch_active_peer_ids(db, industry_name)
+    if query_start_date is None:
+        query_start_date = resolve_query_start_date(db, buy_date)
+
     if len(peer_ids) < INDUSTRY_PRICE_MEDIUM_POSITIVE_STOCKS:
         notes.append(
             f"industry signals degraded because industry '{industry_name}' has only "
             f"{len(peer_ids)} active peers"
         )
 
-    price_strength = _industry_price_strength(db, peer_ids, buy_date)
-    volume_trend = _industry_volume_trend(db, peer_ids, buy_date)
-    institution_flow = _industry_institution_flow(db, peer_ids, buy_date)
+    price_strength = _industry_price_strength(db, peer_ids, buy_date, query_start_date)
+    volume_trend = _industry_volume_trend(db, peer_ids, buy_date, query_start_date)
+    institution_flow = _industry_institution_flow(db, peer_ids, buy_date, query_start_date)
 
     hot_score = _hot_score(price_strength, volume_trend, institution_flow)
     hot_level = _hot_level(hot_score) if hot_score is not None else None
     capital_type = _capital_type(price_strength, volume_trend, institution_flow)
     is_false_hot = _is_false_hot(
-        db, peer_ids, buy_date, price_strength, institution_flow
+        db, peer_ids, buy_date, query_start_date, price_strength, institution_flow
     )
 
     return (
@@ -92,17 +99,8 @@ def compute_industry_signals(
 # ---------------------------------------------------------------------------
 
 
-def _active_peer_ids(db: Session, industry_name: str) -> List[str]:
-    rows = (
-        db.query(StockMaster.stock_id)
-        .filter(StockMaster.industry_name == industry_name, StockMaster.is_active.is_(True))
-        .all()
-    )
-    return [r.stock_id for r in rows]
-
-
 def _industry_price_strength(
-    db: Session, peer_ids: Sequence[str], buy_date: date
+    db: Session, peer_ids: Sequence[str], buy_date: date, query_start_date: date
 ) -> Optional[str]:
     if not peer_ids:
         return None
@@ -112,6 +110,7 @@ def _industry_price_strength(
         db.query(DailyPrice.stock_id, DailyPrice.trade_date, DailyPrice.close_price)
         .filter(
             DailyPrice.stock_id.in_(peer_ids),
+            DailyPrice.trade_date >= query_start_date,
             DailyPrice.trade_date <= buy_date,
             DailyPrice.close_price.isnot(None),
         )
@@ -149,7 +148,7 @@ def _industry_price_strength(
 
 
 def _industry_volume_trend(
-    db: Session, peer_ids: Sequence[str], buy_date: date
+    db: Session, peer_ids: Sequence[str], buy_date: date, query_start_date: date
 ) -> Optional[str]:
     """產業整體成交值（turnover 優先，缺則用 volume）近 3d vs 前 5d。"""
     if not peer_ids:
@@ -161,6 +160,7 @@ def _industry_volume_trend(
         db.query(DailyPrice.trade_date, DailyPrice.turnover, DailyPrice.volume)
         .filter(
             DailyPrice.stock_id.in_(peer_ids),
+            DailyPrice.trade_date >= query_start_date,
             DailyPrice.trade_date <= buy_date,
         )
         .all()
@@ -194,13 +194,15 @@ def _industry_volume_trend(
 
 
 def _industry_institution_flow(
-    db: Session, peer_ids: Sequence[str], buy_date: date
+    db: Session, peer_ids: Sequence[str], buy_date: date, query_start_date: date
 ) -> Optional[str]:
     """近 N 日裡，同產業有 >=2 日法人淨買的股票家數 → 分三檔。"""
     if not peer_ids:
         return None
 
-    recent_dates = _recent_flow_dates(db, peer_ids, buy_date, INDUSTRY_INSTITUTION_LOOKBACK_DAYS)
+    recent_dates = _recent_flow_dates(
+        db, peer_ids, buy_date, query_start_date, INDUSTRY_INSTITUTION_LOOKBACK_DAYS
+    )
     if not recent_dates:
         # 無任何法人資料 → 視為「無明顯法人參與」而非 unknown
         return "none"
@@ -242,12 +244,17 @@ def _industry_institution_flow(
 
 
 def _recent_flow_dates(
-    db: Session, peer_ids: Sequence[str], buy_date: date, n: int
+    db: Session,
+    peer_ids: Sequence[str],
+    buy_date: date,
+    query_start_date: date,
+    n: int,
 ) -> List[date]:
     rows = (
         db.query(InstStockFlow.trade_date)
         .filter(
             InstStockFlow.stock_id.in_(peer_ids),
+            InstStockFlow.trade_date >= query_start_date,
             InstStockFlow.trade_date <= buy_date,
         )
         .distinct()
@@ -312,6 +319,7 @@ def _is_false_hot(
     db: Session,
     peer_ids: Sequence[str],
     buy_date: date,
+    query_start_date: date,
     price_strength: Optional[str],
     institution_flow: Optional[str],
 ) -> Optional[bool]:
@@ -325,7 +333,7 @@ def _is_false_hot(
     if institution_flow is None or price_strength is None:
         return None
 
-    spike_days = _count_spike_days(db, peer_ids, buy_date)
+    spike_days = _count_spike_days(db, peer_ids, buy_date, query_start_date)
     if not (1 <= spike_days <= FALSE_HOT_SPIKE_DAYS):
         return False
 
@@ -338,7 +346,7 @@ def _is_false_hot(
 
 
 def _count_spike_days(
-    db: Session, peer_ids: Sequence[str], buy_date: date
+    db: Session, peer_ids: Sequence[str], buy_date: date, query_start_date: date
 ) -> int:
     """找產業 turnover 近 N 日是否只有 1-2 日異常高（相對前期）。"""
     required = INDUSTRY_VOLUME_RECENT_DAYS + INDUSTRY_VOLUME_BASELINE_DAYS
@@ -346,6 +354,7 @@ def _count_spike_days(
         db.query(DailyPrice.trade_date, DailyPrice.turnover, DailyPrice.volume)
         .filter(
             DailyPrice.stock_id.in_(peer_ids),
+            DailyPrice.trade_date >= query_start_date,
             DailyPrice.trade_date <= buy_date,
         )
         .all()

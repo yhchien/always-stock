@@ -1056,3 +1056,15 @@ M19 merge 之後使用者回報四個問題，一次修掉：
 ### 落地計畫與 spec
 - 實作計畫：[docs/plans/m21_context_pipeline_implementation.md](docs/plans/m21_context_pipeline_implementation.md)
 - 輸出 schema + 門檻說明：[docs/plans/trade_quality_context_spec.md](docs/plans/trade_quality_context_spec.md)
+
+### Review P1 修正：peer_ids 查詢加下界（2026-04-24）
+- **問題**：8 個 `stock_id IN (peer_ids) AND trade_date <= buy_date` 查詢缺下界，大產業（半導體 60+ 檔 × 2500+ 交易日 × 8 queries）會搬 10+ 萬列進 Python
+- **修法**：新增 [backend/app/analysis/_helpers.py](backend/app/analysis/_helpers.py) 兩個 helper：
+  - `fetch_active_peer_ids(db, industry_name)` — 取代 industry_signals / peer_rank 裡各自實作的 `_active_peer_ids`
+  - `resolve_query_start_date(db, buy_date)` — 以 `SELECT DISTINCT trade_date FROM daily_price ORDER BY DESC OFFSET (N-1) LIMIT 1` 反推交易日下界（N = max lookback 21 日），自動跳過週末 / 春節長假
+- **架構**：`context_builder` 預先算 `peer_ids` + `query_start_date` 各一次，往下傳給 `compute_industry_signals` / `compute_peer_rank`；兩個 entry function 都保留 optional kwargs 預設 None（未提供時自行 compute），向後相容測試
+- **8 個加下界的查詢**：
+  - `industry_signals.py`：`_industry_price_strength` / `_industry_volume_trend` / `_recent_flow_dates` / `_count_spike_days`
+  - `peer_rank.py`：`_peer_returns` / `_peer_volume_ratios` / `_peer_institution_intensity` / `_peer_breakouts`
+- **P2 順手處理**：`chip_signals._classify_price_trend` 的 `max_single_day_pct` 加註解說明是雙向絕對值（tests 所有 72 案例 pass）
+- **為何用交易日反推而非 calendar offset**：春節長假 calendar offset 會切過頭；trading-day reversal 保證永遠剛好 N 筆資料，不受休市影響

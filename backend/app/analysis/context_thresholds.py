@@ -46,6 +46,12 @@ PRICE_TREND_UPTREND_SLOPE = 0.02      # 10 日 close 線性斜率 / 起點 >= 2%
 PRICE_TREND_DOWNTREND_SLOPE = -0.02
 PRICE_ACCELERATING_RATIO = 1.5        # 近 5 日斜率 / 前 5 日斜率 >= 1.5 算 accelerating
 
+# === Query 下界推導 ===
+# `resolve_query_start_date` 從 daily_price 實際交易日反推所需歷史深度，
+# 避免 peer_ids 全歷史掃描。這裡的常數只是該函式要用的安全 buffer，
+# 不是直接 filter 值；實際 start_date 仍以 DB 的交易日為準（自動跳過春節等長假）。
+QUERY_LOOKBACK_SAFETY_MULTIPLIER = 1  # 不加額外 buffer — 各 section lookback 本身已是上界
+
 # === Hot level 分數對應 ===
 HOT_LEVEL_S_MIN = 7  # 7~8 -> S
 HOT_LEVEL_A_MIN = 5  # 5~6 -> A

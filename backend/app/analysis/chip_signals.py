@@ -158,7 +158,11 @@ def _classify_volume_trend(db: Session, stock_id: str, buy_date: date) -> Option
 def _classify_price_trend(
     db: Session, stock_id: str, buy_date: date, lookback: int
 ) -> Tuple[Optional[str], Optional[float]]:
-    """Returns (trend_label, max_single_day_pct)。單日漲跌%取 |high-prev_close|/prev_close 近似，這裡用 close 間差。"""
+    """Returns (trend_label, max_single_day_pct)。單日漲跌%取 |high-prev_close|/prev_close 近似，這裡用 close 間差。
+
+    `max_single_day_pct` 是**雙向絕對值**（max of |close_t - close_{t-1}| / close_{t-1}），
+    所以 -6% 跌停也會被視為「單日過大」而排除 gradual accumulation；命名保留以對齊 spec。
+    """
     rows = (
         db.query(DailyPrice.trade_date, DailyPrice.close_price)
         .filter(

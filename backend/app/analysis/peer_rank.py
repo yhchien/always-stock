@@ -18,6 +18,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from sqlalchemy.orm import Session
 
+from app.analysis._helpers import fetch_active_peer_ids, resolve_query_start_date
 from app.analysis.context_thresholds import (
     INDUSTRY_PRICE_LOOKBACK_DAYS,
     INDUSTRY_VOLUME_BASELINE_DAYS,
@@ -27,7 +28,7 @@ from app.analysis.context_thresholds import (
     PEER_RANK_MIN_PEERS,
     PRICE_BREAKOUT_BASELINE_DAYS,
 )
-from app.models import DailyPrice, InstStockFlow, StockMaster
+from app.models import DailyPrice, InstStockFlow
 
 _INST_TYPES = ("foreign", "trust", "dealer")
 
@@ -37,6 +38,8 @@ def compute_peer_rank(
     stock_id: str,
     buy_date: date,
     industry_name: str,
+    peer_ids: Optional[List[str]] = None,
+    query_start_date: Optional[date] = None,
 ) -> Tuple[dict, List[str]]:
     notes: List[str] = []
     empty_result = {
@@ -47,7 +50,11 @@ def compute_peer_rank(
         "leader_or_follower": None,
     }
 
-    peer_ids = _active_peer_ids(db, industry_name)
+    if peer_ids is None:
+        peer_ids = fetch_active_peer_ids(db, industry_name)
+    if query_start_date is None:
+        query_start_date = resolve_query_start_date(db, buy_date)
+
     if len(peer_ids) < PEER_RANK_MIN_PEERS or stock_id not in peer_ids:
         if len(peer_ids) < PEER_RANK_MIN_PEERS:
             notes.append(
@@ -60,10 +67,10 @@ def compute_peer_rank(
             )
         return empty_result, notes
 
-    returns = _peer_returns(db, peer_ids, buy_date)
-    volume_ratios = _peer_volume_ratios(db, peer_ids, buy_date)
-    inst_intensities = _peer_institution_intensity(db, peer_ids, buy_date)
-    breakouts = _peer_breakouts(db, peer_ids, buy_date)
+    returns = _peer_returns(db, peer_ids, buy_date, query_start_date)
+    volume_ratios = _peer_volume_ratios(db, peer_ids, buy_date, query_start_date)
+    inst_intensities = _peer_institution_intensity(db, peer_ids, buy_date, query_start_date)
+    breakouts = _peer_breakouts(db, peer_ids, buy_date, query_start_date)
 
     return_pct = _top_percentile(returns, stock_id)
     volume_pct = _top_percentile(volume_ratios, stock_id)
@@ -94,23 +101,15 @@ def compute_peer_rank(
 # ---------------------------------------------------------------------------
 
 
-def _active_peer_ids(db: Session, industry_name: str) -> List[str]:
-    rows = (
-        db.query(StockMaster.stock_id)
-        .filter(StockMaster.industry_name == industry_name, StockMaster.is_active.is_(True))
-        .all()
-    )
-    return [r.stock_id for r in rows]
-
-
 def _peer_returns(
-    db: Session, peer_ids: Sequence[str], buy_date: date
+    db: Session, peer_ids: Sequence[str], buy_date: date, query_start_date: date
 ) -> Dict[str, float]:
     """每檔 5 日收盤報酬；資料不足的檔剔除。"""
     rows = (
         db.query(DailyPrice.stock_id, DailyPrice.trade_date, DailyPrice.close_price)
         .filter(
             DailyPrice.stock_id.in_(peer_ids),
+            DailyPrice.trade_date >= query_start_date,
             DailyPrice.trade_date <= buy_date,
             DailyPrice.close_price.isnot(None),
         )
@@ -134,7 +133,7 @@ def _peer_returns(
 
 
 def _peer_volume_ratios(
-    db: Session, peer_ids: Sequence[str], buy_date: date
+    db: Session, peer_ids: Sequence[str], buy_date: date, query_start_date: date
 ) -> Dict[str, float]:
     """每檔的 (近 3d avg / 前 5d avg) ratio。"""
     required = INDUSTRY_VOLUME_RECENT_DAYS + INDUSTRY_VOLUME_BASELINE_DAYS
@@ -142,6 +141,7 @@ def _peer_volume_ratios(
         db.query(DailyPrice.stock_id, DailyPrice.trade_date, DailyPrice.volume, DailyPrice.turnover)
         .filter(
             DailyPrice.stock_id.in_(peer_ids),
+            DailyPrice.trade_date >= query_start_date,
             DailyPrice.trade_date <= buy_date,
         )
         .order_by(DailyPrice.stock_id, DailyPrice.trade_date.desc())
@@ -169,7 +169,7 @@ def _peer_volume_ratios(
 
 
 def _peer_institution_intensity(
-    db: Session, peer_ids: Sequence[str], buy_date: date
+    db: Session, peer_ids: Sequence[str], buy_date: date, query_start_date: date
 ) -> Dict[str, float]:
     """每檔近 N 日三大法人合計 net_shares（強度指標）。"""
     lookback = INDUSTRY_PRICE_LOOKBACK_DAYS  # 沿用 5 日視窗
@@ -181,6 +181,7 @@ def _peer_institution_intensity(
         )
         .filter(
             InstStockFlow.stock_id.in_(peer_ids),
+            InstStockFlow.trade_date >= query_start_date,
             InstStockFlow.trade_date <= buy_date,
             InstStockFlow.inst_type.in_(_INST_TYPES),
         )
@@ -203,7 +204,7 @@ def _peer_institution_intensity(
 
 
 def _peer_breakouts(
-    db: Session, peer_ids: Sequence[str], buy_date: date
+    db: Session, peer_ids: Sequence[str], buy_date: date, query_start_date: date
 ) -> Dict[str, bool]:
     """每檔是否在 buy_date 當日處於 breakout（latest close > 前 N 交易日最高 close）。"""
     required = PRICE_BREAKOUT_BASELINE_DAYS + 1
@@ -211,6 +212,7 @@ def _peer_breakouts(
         db.query(DailyPrice.stock_id, DailyPrice.trade_date, DailyPrice.close_price)
         .filter(
             DailyPrice.stock_id.in_(peer_ids),
+            DailyPrice.trade_date >= query_start_date,
             DailyPrice.trade_date <= buy_date,
             DailyPrice.close_price.isnot(None),
         )

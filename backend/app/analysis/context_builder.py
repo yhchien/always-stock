@@ -14,6 +14,7 @@ from typing import Dict, List
 
 from sqlalchemy.orm import Session
 
+from app.analysis._helpers import fetch_active_peer_ids, resolve_query_start_date
 from app.analysis.chip_signals import compute_chip_signals
 from app.analysis.fundamental_signals import compute_fundamental
 from app.analysis.industry_signals import compute_industry_signals
@@ -48,11 +49,28 @@ def build_trade_quality_context(
 
     notes: List[str] = []
 
+    # 預先算 peer_ids / query_start_date 並向下傳遞（industry & peer 兩 section 共用），
+    # 避免每 section 重複 query stocks_master，且所有 peer-IN 查詢都有下界。
+    peer_ids = fetch_active_peer_ids(db, industry_name) if industry_name else []
+    query_start_date = resolve_query_start_date(db, buy_date)
+
     industry_summary, industry_notes = compute_industry_signals(
-        db, stock_id, buy_date, industry_name
+        db,
+        stock_id,
+        buy_date,
+        industry_name,
+        peer_ids=peer_ids,
+        query_start_date=query_start_date,
     )
     chip_summary, chip_notes = compute_chip_signals(db, stock_id, buy_date, industry_name)
-    peer_rank, peer_notes = compute_peer_rank(db, stock_id, buy_date, industry_name)
+    peer_rank, peer_notes = compute_peer_rank(
+        db,
+        stock_id,
+        buy_date,
+        industry_name,
+        peer_ids=peer_ids,
+        query_start_date=query_start_date,
+    )
     fundamental, fundamental_notes = compute_fundamental(
         db, stock_id, buy_date, industry_name
     )
