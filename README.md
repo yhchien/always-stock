@@ -232,8 +232,8 @@ npm run dev
 | M20 | 交易分析擴充（預期 45% 報酬率加碼建議 + 風報比 1:1.75） | ⬜ 規劃中（M19 完成後） |
 | M21 | Trade Quality Context 資料管線（industry/chip/peer_rank/fundamental/price_structure 預聚合，餵結論層給 LLM） | ⬜ 規劃中 |
 | M22 | 熱錢湧入個股排行（L0 底部 Top 20 / L1 頂部 Top 10，近 N 日三大法人累計買超） | ✅ |
-| M23 | 每日異常訊號清單（07:00 台北排程，deterministic filter：籌碼連買 / 融資異常 / 技術突破 / 產業熱度；不預測報酬、無 LLM） | ⬜ 規劃中 |
-| M24 | 自訂進出場策略回測（M11 擴充；使用者自設分層進場 / 追價加碼 / 攤平 / 停損停利，系統用歷史資料回測驗證 edge） | ⬜ 規劃中 |
+| M23 | 每日異常訊號清單（07:00 台北排程；deterministic filter 篩股 + LLM 解釋層中文註解；不預測報酬、不排推薦度） | ⬜ 規劃中 |
+| M24 | 自訂進出場策略回測（M11 擴充；使用者自設規則 + 歷史回測驗證 edge + LLM 在 trigger 當下給「適合執行」現場判斷） | ⬜ 規劃中 |
 
 ---
 
