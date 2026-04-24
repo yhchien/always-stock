@@ -102,9 +102,13 @@
 - M15 Telegram 電子報
 - M20 交易分析擴充（預期 45% 報酬率加碼建議 + 風報比 1:1.75）
 - M21 Trade Quality Context 資料管線（industry/chip/peer_rank/fundamental/price_structure 預聚合，餵結論層給 LLM）
+- M23 每日異常訊號清單（07:00 台北排程，filter-based：籌碼連買 / 融資異常 / 技術突破 / 產業熱度；不做預測、不用 LLM 推薦，只呈現符合條件的股票清單）
+- M24 自訂進出場策略回測（M11 擴充；使用者自設分層進場 / 追價 / 攤平 / 停損停利規則，系統用歷史資料回測勝率、最大回撤、實際報酬，回答「我這套規則有沒有 edge」）
 
 > M18 → M19 → M20 依序執行。M19 已完工（2026-04-23），M20 擴充建立在 M19 卡片帶入 context 之上。
 > M21 與 M20 平行但互補：M20 改 prompt、M21 改 backend context 組裝，兩者合起來才能讓 M17 分析真正精準。
+> M23 定位是「整理資料把符合 filter 的股票呈現出來」，不是 AI 明牌；誠實不承諾報酬。
+> M24 定位是「讓使用者驗證自己的操作規則有沒有 edge」，是 M11 回測引擎的延伸，不是 LLM 出操作手冊。
 
 ## 開發注意事項
 - 優先考慮資料正確性與 TWSE API rate limiting
@@ -670,6 +674,59 @@
   - peer_rank 用 `PERCENT_RANK() OVER (PARTITION BY industry_name)` 即時算（同產業小集合速度可接受）
   - 連續買超 N 日建議 Python loop 從最新日往回數（SQL `SUM(CASE WHEN) OVER` 可讀性差）
   - Lookback 一律以**交易日**為單位（`ORDER BY trade_date DESC LIMIT N`），非 calendar days
+
+## Phase 4：異常訊號 + 自訂策略回測（規劃中，2026-04-23 啟動）
+
+兩個獨立 milestone，共同核心：**不做 LLM 預測、不產明牌**，讓軟體回到「整理乾淨資料 + 幫使用者驗證自己的策略 edge」。
+
+### 設計原則（前次 LLM 推薦 + 操作手冊版本廢棄的原因）
+- 60 天 +45% 等於年化 ~800%，目標本身不現實；LLM 只會把 input signals 重新敘事，不產 alpha
+- LLM 自動生「攤平 / 加碼」操作手冊有兩個風險：(1) 攤平本身就是經典 blow-up 策略，下跌通常是基本面/籌碼惡化、(2) LLM 出規則容易 overfit 歷史，使用者拿到「AI 規則」反而比自己想的更難違背
+- 改採：**deterministic filter 篩股 + 使用者自設規則 + 歷史回測驗證 edge**
+
+### M23 每日異常訊號清單
+- **定位**：把符合 filter 的股票每天整理成清單，**不承諾報酬、不說「會漲 X%」**；取代原規劃的「AI 推薦 60 天 +45%」
+- **排程**：台北 07:00（GitHub Actions 或 Render Cron）
+- **前置工作（獨立小任務）**：新增 `margin_trade` 資料表 + `etl/finmind_margin_trade_sdk.py`，資料源 FinMind `TaiwanStockMarginPurchaseShortSale`(併入 `run_finmind_etl_sdk.py`)
+- **訊號分組（deterministic 規則，零 LLM）**：
+  - `chip_bullish`：三大法人近 3 日連買 + 產業熱度轉正
+  - `margin_rotation`：融資減少但主力法人連買（合意籌碼由散戶轉法人）
+  - `technical_breakout`：突破 20 日均線 + 量能 > 5 日均量 1.5x
+  - `industry_leader`：當日產業熱錢 Top 3 + 股票在該產業 rank 靠前
+- **輸出**：每組 Top 5~10 檔，顯示觸發條件的量化指標（例：「外資近 3 日累計 +2.5 億、近 20 日成交量突破 5 日均量 1.8x」）
+- **不輸出**：目標價、停損價、「預期報酬」、任何主觀排序或敘事
+- **DB**：`daily_signal_snapshot(snapshot_date, group_name, rank, stock_id, signals_json)` — 存歷史便於事後評估 filter 好不好
+- **API**：`GET /api/signals/daily?date=&group=`（公開）
+- **UI**：首頁新區塊「今日異常訊號」或 `/signals` 獨立路由；每組 tab 切換；每檔點擊跳 L2
+- **可選後續**：用 LLM 對單一檔加「中文註解」（純描述觸發訊號，不預測未來）；第一版不做
+
+### M24 自訂進出場策略回測（M11 擴充）
+- **定位**：**M11 回測引擎的延伸**，讓使用者針對單一持股設計「分層進場 / 追價加碼 / 攤平 / 停損停利」規則，系統用歷史資料回測；取代原規劃的「LLM 出操作手冊」
+- **入口**：
+  - `/watchlist/[entry_id]/strategy`（從 watchlist 卡片點「回測操作策略」進入）
+  - L2 個股頁新 tab「操作策略回測」（沒持股也能玩）
+- **使用者輸入（四區塊 form）**：
+  - **分層進場**：基準買進價 + 下跌加碼階梯（跌 -X1% 加碼 Y1%、跌 -X2% 加 Y2%、…）
+  - **追價加碼**：漲 +A1% 加碼 B1%、漲 +A2% 加 B2%、…
+  - **停損**：絕對價 / 基準 -X% / 跌破 N 日均線（三選一或多）
+  - **停利**：目標價 / 漲幅 +X% / 跌破 N 日均線確認
+- **回測引擎擴充**：現有 `backend/app/backtest_engine.py` 為 long-only + 單一進場點，需新增：
+  - 多層分批進場 / 加碼（position sizing）
+  - 每層獨立成交價 + 累計持倉追蹤
+  - 停損停利擴充支援絕對價 / 均線條件（既有 `stop_loss_pct` / `take_profit_pct` 為基礎延伸）
+- **輸出（在現有 quick metrics 之外新增）**：
+  - 每層進場 / 加碼實際成交價 + 日期
+  - 過程中最大帳面虧損
+  - 累計投入資金曲線
+  - 「這組規則在該股近 3 年遇到 N 次買點，勝率多少、最大回撤多少」
+- **API**：`POST /api/backtest/custom-strategy`(繼承 M11 既有回測輸出格式 + 新欄位)
+- **UI**：新元件 `CustomStrategyPanel`(沿用 `BacktestEquityChart`)，四區塊 form + equity curve + 分層成交標記
+- **目標參數不寫死**：使用者自己輸入目標報酬 / 可容忍回撤，回測結果顯示是否達成（不預設 25% / 10%；前次規劃寫死的數字捨棄）
+- **與 M17 / M19 的銜接**：從 watchlist 卡片進入時 `buy_price` 自動填入 avg_price；若使用者還沒買，從 /stocks/{id} 進入是空白 form
+
+### 取消的原 Phase 4 規劃
+- ~~每日 AI 推薦 3 檔 60 天 +45%~~ — 目標不現實、LLM 不產 alpha，改為 M23 deterministic filter
+- ~~LLM 買進後操作手冊~~ — 攤平 + LLM overfit 風險，改為 M24 使用者自設 + 歷史回測
 
 ## M18 使用者註冊系統完成（2026-04-21）
 
