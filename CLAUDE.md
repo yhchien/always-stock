@@ -92,6 +92,7 @@
 - M18: 使用者註冊系統（Email/password + server-side session + RequireAuth；M17 公開但分層 rate limit；admin@always-stock.dev / forwork）
 - M19: 關注買進清單（單一清單上限 20 檔，加入 popup 填買進日/均價；L0 HotMoneyList、L1 StockList、L2 個股頁右下「加入清單」；Navbar「我的清單」；/watchlist 卡片含未實現損益 + 交易分析深連結 M17；資料綁 user_id）
 - M22: 熱錢湧入個股排行（L0 底部 Top 20 / L1 頂部 Top 10，近 N 日三大法人累計買超；spec 在 [docs/plans/hot_money_list_spec.md](docs/plans/hot_money_list_spec.md)）
+- M21: Trade Quality Context 資料管線（6 個 section 預聚合 JSON：industry/chip/peer_rank/fundamental/price_structure/news_stub；deterministic + no hindsight；入口 `build_trade_quality_context(db, stock_id, buy_date)`；`GET /api/analysis/context` 需登入；實作 [docs/plans/m21_context_pipeline_implementation.md](docs/plans/m21_context_pipeline_implementation.md)）
 
 ### 進行中
 - M13 關鍵券商分點：ETL 模組與 `broker_trade_agg` backfill 已完成；L2 券商面板在 2026-04-19 主動隱藏（產品優先序下調），未來視需要復活
@@ -101,7 +102,6 @@
 - M14 輿情分析
 - M15 Telegram 電子報
 - M20 交易分析擴充（預期 45% 報酬率加碼建議 + 風報比 1:1.75）
-- M21 Trade Quality Context 資料管線（industry/chip/peer_rank/fundamental/price_structure 預聚合，餵結論層給 LLM）
 - M23 每日異常訊號清單（07:00 台北排程；deterministic filter 篩出符合條件的股票分四組；LLM 為解釋層，把訊號翻成中文白話註解，不預測、不排推薦度）
 - M24 自訂進出場策略回測（M11 擴充；使用者自設分層進場 / 追價 / 攤平 / 停損停利規則，引擎回測 edge；LLM 為現場判斷層，trigger 觸發時依當下籌碼/產業/技術給「適合執行 yes/no」提示，不替使用者寫規則）
 
@@ -1009,3 +1009,50 @@ M19 merge 之後使用者回報四個問題，一次修掉：
 
 4. **L0 版位重排**
    - [frontend/src/app/page.tsx](frontend/src/app/page.tsx) 順序改為：交易分析 → 熱錢排行 Top 20 → 產業流向
+
+## M21 Trade Quality Context 資料管線完成（2026-04-24）
+
+### Scope
+- Phase A：純 context layer + API endpoint + 測試；**不動 M17 既有 prompt / router / 前端**
+- 輸出：6 個 section 的結構化 JSON，deterministic + no-hindsight
+- 後續 Phase B（獨立任務）才會修 M17 prompt 讓 AI 消費這份 context
+
+### 檔案結構（[backend/app/analysis/](backend/app/analysis/)）
+- `context_thresholds.py` — 所有 lookback / threshold 常數（module-level，**無 env override**）
+- `industry_signals.py` — PART 1（hot_score / hot_level / price_strength / volume_trend / institution_flow / capital_type / is_false_hot）
+- `chip_signals.py` — PART 2（foreign/trust/dealer_buy_days / volume_trend / price_trend / is_accumulation / chip_strength）
+- `peer_rank.py` — PART 3（return/volume/institution 三個 top-percentile + leader_or_follower 四條件投票）
+- `fundamental_signals.py` — PART 4（revenue_yoy / revenue_mom from `monthly_revenue`；`guidance` 永遠 null）
+- `price_structure.py` — PART 5（slope trend / is_breakout 20d / is_consolidation 10d / is_accelerating）
+- `news_stub.py` — PART 6（純字串組合，query_stock / query_industry / date_end；**不 query DB**）
+- `context_builder.py` — 主入口 `build_trade_quality_context(db, stock_id, buy_date) -> dict`
+
+### 對外 API
+- `GET /api/analysis/context?stock_id=<id>&buy_date=<YYYY-MM-DD>` (`backend/app/routers/analysis.py`)
+- 認證：`Depends(require_user)`（初版需登入，與 M17 前端入口一致；未來視需要放寬）
+- `buy_date` 行為（決策 3b）：未指定時 fallback `get_latest_industry_trade_date(db)`，與 M17 一致
+- Raises：
+  - `404` unknown stock（`ValueError` from `build_trade_quality_context` → HTTPException）
+  - `404` 資料庫無交易日資料（`_resolve_buy_date` 回 None）
+  - `401` 未登入
+
+### 關鍵 gotcha
+- **Python 3.9 相容**：型別註記不能用 `list[float] | None`，要用 `Optional[List[float]]`（`from typing import List, Optional`）
+- **institution_flow 空資料**：回 `"none"` 字串（代表無參與），**不是** `None`（保留 `None` 給 unknown 語義）；否則 `_compute_hot_score` 會把所有 weight 算成 0 而不是正確 flag 為 null
+- **is_false_hot 輸入是 price_strength，不是 volume_trend**：spike 檢測（`max(recent_3d) >= baseline × 1.5`）與 volume_trend 分類（3d avg vs baseline）是兩個 orthogonal signals；單一大量的日子會把 3d avg 推進 `expanding_3d`，但不代表不該被標為 false hot
+- **no-hindsight**：所有 section 都用 `trade_date <= buy_date`；lookback 皆以**交易日**計（`ORDER BY trade_date DESC LIMIT N`），**非曆日**
+- **data_quality_notes 政策**：永遠 null 的欄位（`industry_news_heat` / `guidance`）**不**寫入 notes（決策 4b，避免每次 response 都有噪音）；notes 只在動態缺料（peer 不足、price history < 21 天、monthly_revenue 缺）時才加
+- **peer_rank top-percentile convention**：`0.0 = 最強` / `1.0 = 最弱`（產業排名第 1 回 0.0）；leader 判定 4 條件滿足 >= 2 條
+- **chip 連續買超日數**：從最新日往前走，碰到非正值 net_shares 就停；無資料時該欄位回 0，不 raise
+
+### 測試覆蓋
+- `tests/test_industry_signals.py`（17 案例）
+- `tests/test_chip_signals.py`（18 案例）
+- `tests/test_peer_rank.py`（8 案例）
+- `tests/test_price_structure.py`（13 案例）
+- `tests/test_context_builder.py`（11 案例：schema shape / unknown stock raise / notes 組合 / fundamental null / news stub / happy snapshot / deterministic）
+- `tests/test_analysis_context_router.py`（5 案例：401 / 200 happy / buy_date fallback / 404 no trade dates / 404 unknown stock）
+
+### 落地計畫與 spec
+- 實作計畫：[docs/plans/m21_context_pipeline_implementation.md](docs/plans/m21_context_pipeline_implementation.md)
+- 輸出 schema + 門檻說明：[docs/plans/trade_quality_context_spec.md](docs/plans/trade_quality_context_spec.md)

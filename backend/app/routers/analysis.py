@@ -24,7 +24,8 @@ from openai import OpenAI
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.auth import get_optional_user
+from app.analysis import build_trade_quality_context
+from app.auth import get_optional_user, require_user
 from app.database import get_db
 from app.industry_flow_service import get_latest_industry_trade_date
 from app.models import (
@@ -512,3 +513,26 @@ def analyze_trade_quality(
         )
 
     return _normalize_response(payload, stock, resolved, warnings, source="openai")
+
+
+# ── Context endpoint（M21）──────────────────────────────────────────────────
+#
+# GET /api/analysis/context
+#   Pre-aggregated 6-section JSON for trade quality AI.
+#   Deterministic, no hindsight, 需要登入。
+#   spec: docs/plans/trade_quality_context_spec.md
+#   impl: docs/plans/m21_context_pipeline_implementation.md
+@router.get("/analysis/context")
+def get_trade_quality_context(
+    stock_id: str,
+    buy_date: Optional[date] = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+):
+    resolved = _resolve_buy_date(db, buy_date)
+    if resolved is None:
+        raise HTTPException(status_code=404, detail="資料庫無交易日資料")
+    try:
+        return build_trade_quality_context(db, stock_id, resolved)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))

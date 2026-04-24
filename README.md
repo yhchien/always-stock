@@ -194,6 +194,7 @@ npm run dev
 | GET | `/api/market/hot-money?date=&days=3&limit=20` | L0：熱錢湧入個股排行 Top N（M22） |
 | GET | `/api/industries/{name}/hot-money?date=&days=3&limit=10&sub_industry=` | L1：單產業熱錢排行（M22） |
 | POST | `/api/analysis/trade-quality` | 首頁 AI 交易質量分析（公開；未登入 3/day、已登入 30/day） |
+| GET | `/api/analysis/context` | M21：Trade Quality Context 6 section 預聚合 JSON（需登入；deterministic + no-hindsight） |
 | POST | `/api/backtest/run` | L3：回測執行（需登入） |
 | POST | `/api/backtest/interpret` | L3：策略文字解析（需登入） |
 | POST | `/api/backtest/advice` | L3：策略建議（需登入） |
@@ -230,7 +231,7 @@ npm run dev
 | M18 | 使用者註冊系統（Email/password + server-side session + RequireAuth；M17 公開但 3/day/30/day 分層 rate limit） | ✅ |
 | M19 | 關注買進清單（單一清單上限 20 檔、加入 popup 填買進日/均價、`/watchlist` 卡片含未實現損益 + M17 深連結、Navbar「我的清單 N/20」） | ✅ |
 | M20 | 交易分析擴充（預期 45% 報酬率加碼建議 + 風報比 1:1.75） | ⬜ 規劃中（M19 完成後） |
-| M21 | Trade Quality Context 資料管線（industry/chip/peer_rank/fundamental/price_structure 預聚合，餵結論層給 LLM） | ⬜ 規劃中 |
+| M21 | Trade Quality Context 資料管線（6 section 預聚合 JSON + `GET /api/analysis/context`；deterministic + no-hindsight） | ✅ |
 | M22 | 熱錢湧入個股排行（L0 底部 Top 20 / L1 頂部 Top 10，近 N 日三大法人累計買超） | ✅ |
 | M23 | 每日異常訊號清單（07:00 台北排程；deterministic filter 篩股 + LLM 解釋層中文註解；不預測報酬、不排推薦度） | ⬜ 規劃中 |
 | M24 | 自訂進出場策略回測（M11 擴充；使用者自設規則 + 歷史回測驗證 edge + LLM 在 trigger 當下給「適合執行」現場判斷） | ⬜ 規劃中 |
