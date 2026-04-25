@@ -736,8 +736,10 @@ export async function streamTradeQuality(
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ""
-  let lastDonePayload: TradeQualityResponse | null = null
-  let lastError: { detail: string } | null = null
+  // 注意：TS CFA 不追 closure 內的 mutation，若用 `let x: T | null = null` 然後在
+  // `handleLine` 內賦值，迴圈外 TS 會把它收斂成 `never`。`as` 顯式留住 union 型別。
+  let lastDonePayload = null as TradeQualityResponse | null
+  let lastError = null as { detail: string } | null
 
   const handleLine = (line: string) => {
     if (!line.trim()) return
