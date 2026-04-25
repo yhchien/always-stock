@@ -699,20 +699,78 @@ export interface TradeQualityResponse {
   source: "openai" | "unavailable" | "market_not_open"
 }
 
-export async function analyzeTradeQuality(
+export type TradeQualityStreamStage =
+  | "collect_raw"
+  | "build_context"
+  | "openai_call"
+  | "done"
+  | "error"
+
+export interface TradeQualityStreamEvent {
+  stage: TradeQualityStreamStage
+  label: string
+  payload?: TradeQualityResponse | { detail: string }
+}
+
+/**
+ * Stream trade-quality analysis as NDJSON。每行是一個 event。
+ * onEvent 會被依序呼叫；最後一個 event 一定是 stage="done"（成功）或 "error"（失敗）。
+ * 成功時 done event 的 payload 為 TradeQualityResponse；失敗時為 { detail: string }。
+ */
+export async function streamTradeQuality(
   payload: { stock_id: string; buy_date?: string | null },
+  onEvent: (event: TradeQualityStreamEvent) => void,
   options?: FetchOptions,
 ): Promise<TradeQualityResponse> {
   const body: Record<string, unknown> = { stock_id: payload.stock_id }
   if (payload.buy_date) body.buy_date = payload.buy_date
-  const res = await apiFetch(`${API_BASE}/api/analysis/trade-quality`, {
+  const res = await apiFetch(`${API_BASE}/api/analysis/trade-quality/stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
     signal: options?.signal,
   })
   if (!res.ok) throw new Error(await buildErrorMessage(res, "交易質量分析失敗"))
-  return res.json()
+  if (!res.body) throw new Error("交易質量分析回傳缺少 body")
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ""
+  let lastDonePayload: TradeQualityResponse | null = null
+  let lastError: { detail: string } | null = null
+
+  const handleLine = (line: string) => {
+    if (!line.trim()) return
+    let event: TradeQualityStreamEvent
+    try {
+      event = JSON.parse(line) as TradeQualityStreamEvent
+    } catch {
+      return
+    }
+    onEvent(event)
+    if (event.stage === "done" && event.payload && "stock_id" in event.payload) {
+      lastDonePayload = event.payload as TradeQualityResponse
+    } else if (event.stage === "error") {
+      lastError = (event.payload as { detail: string } | undefined) ?? {
+        detail: event.label || "分析過程發生錯誤",
+      }
+    }
+  }
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split("\n")
+    buffer = lines.pop() ?? ""
+    for (const line of lines) handleLine(line)
+  }
+  // flush 最後一段（若 stream 沒以 \n 結尾）
+  if (buffer.trim()) handleLine(buffer)
+
+  if (lastError) throw new Error(lastError.detail)
+  if (!lastDonePayload) throw new Error("交易質量分析未回傳結果")
+  return lastDonePayload
 }
 
 // ── Auth (M18) ──────────────────────────────────────────────────────────────

@@ -20,6 +20,8 @@ from typing import Any, List, Optional
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import StreamingResponse
 from openai import OpenAI
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -546,6 +548,108 @@ def analyze_trade_quality(
         )
 
     return _normalize_response(payload, stock, resolved, warnings, source="openai")
+
+
+# ── Streaming endpoint（progress bar 用）─────────────────────────────────────
+#
+# POST /api/analysis/trade-quality/stream
+#   與 /analysis/trade-quality 同樣輸入，但回傳 NDJSON（line-delimited JSON）。
+#   前端可邊讀邊更新進度條。整體流程約 5~30 秒，stage 分四段：
+#     1. collect_raw   — 從 DB 撈 raw OHLC / 法人 / 月營收
+#     2. build_context — 跑 M21 deterministic context pipeline
+#     3. openai_call   — 呼叫 OpenAI 等回應（最慢的一段）
+#     4. done          — 完成，payload 為完整 TradeQualityResponse
+#   失敗時最後 emit error event；HTTP 仍回 200（streaming 已 commit header）。
+#   Pre-flight 檢查（stock 找不到 / prompt 缺檔）在 stream 開始前 raise，仍走 4xx/5xx。
+
+
+def _emit(stage: str, label: str, payload: Optional[dict] = None) -> str:
+    event: dict[str, Any] = {"stage": stage, "label": label}
+    if payload is not None:
+        event["payload"] = payload
+    return json.dumps(event, ensure_ascii=False) + "\n"
+
+
+@router.post("/analysis/trade-quality/stream")
+@limiter.limit(trade_quality_limit_value)
+def analyze_trade_quality_stream(
+    request: Request,
+    req: TradeQualityRequest,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_optional_user),
+):
+    logger.info(
+        "POST /analysis/trade-quality/stream stock=%s buy_date=%s",
+        req.stock_id,
+        req.buy_date,
+    )
+
+    # Pre-flight：market 未開盤直接走單一 event stream（與非 stream 行為一致）
+    if req.buy_date and _is_market_not_open_yet(req.buy_date):
+        stock = db.get(StockMaster, req.stock_id)
+        if not stock:
+            raise HTTPException(status_code=404, detail=f"Stock not found: {req.stock_id}")
+        early_response = _build_market_not_open_response(stock, req.buy_date)
+
+        def market_closed_stream():
+            yield _emit("done", "完成", payload=jsonable_encoder(early_response))
+
+        return StreamingResponse(market_closed_stream(), media_type="application/x-ndjson")
+
+    resolved = _resolve_buy_date(db, req.buy_date)
+    if not resolved:
+        raise HTTPException(status_code=404, detail="資料庫無交易日資料")
+
+    # Pre-flight：stock 找不到 / prompt 缺檔，raise 走 HTTP 4xx/5xx，前端可正確錯誤處理
+    stock_check = db.get(StockMaster, req.stock_id)
+    if not stock_check:
+        raise HTTPException(status_code=404, detail=f"Stock not found: {req.stock_id}")
+
+    system_prompt = _load_system_prompt()
+    if not system_prompt:
+        raise HTTPException(status_code=500, detail="分析 prompt 檔案缺失")
+
+    def generate():
+        try:
+            yield _emit("collect_raw", "正在跟後台要資料")
+            stock, context, warnings = _collect_context(db, req.stock_id, resolved)
+
+            yield _emit("build_context", "組建分析訊號中")
+            m21_context = _build_deterministic_context(db, req.stock_id, resolved, warnings)
+
+            yield _emit("openai_call", "AI 分析中（依 prompt 推論評級與目標價）")
+            user_msg = _build_user_message(context, m21_context, warnings)
+            payload = _call_openai(system_prompt, user_msg)
+
+            if payload is None:
+                fallback = TradeQualityResponse(
+                    stock_id=stock.stock_id,
+                    stock_name=stock.stock_name,
+                    buy_date=str(resolved),
+                    rating="WATCH",
+                    rating_label=RATING_LABELS["WATCH"],
+                    summary="AI 分析服務目前不可用（OpenAI 未設定或呼叫失敗），無法建立有效交易判斷。",
+                    report_markdown="⚠️ 無法連線 AI 分析服務，請稍後再試或檢查 OpenAI 設定。",
+                    warnings=warnings + ["OpenAI 服務不可用"],
+                    source="unavailable",
+                )
+                yield _emit("done", "完成", payload=jsonable_encoder(fallback))
+                return
+
+            response = _normalize_response(payload, stock, resolved, warnings, source="openai")
+            yield _emit("done", "完成", payload=jsonable_encoder(response))
+        except HTTPException:
+            # 已在 pre-flight 處理過；generator 內若仍 raise 視為例外路徑
+            raise
+        except Exception:
+            logger.exception("trade-quality stream failed during generation")
+            yield _emit(
+                "error",
+                "分析過程發生錯誤",
+                payload={"detail": "分析過程發生錯誤，請稍後再試"},
+            )
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson")
 
 
 # ── Context endpoint（M21）──────────────────────────────────────────────────

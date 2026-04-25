@@ -1094,3 +1094,28 @@ M19 merge 之後使用者回報四個問題，一次修掉：
 - **M21 JSON 用 `ensure_ascii=False`**：保留中文產業名稱（`AI 伺服器` 等）避免轉 `\u...` 浪費 token 且失去可讀性
 - **`rating` / `classification` 契約不能動**：M19 卡片「交易分析」深連結與前端 Rating 色塊已硬依賴 5 階 + A/B/C，改 prompt 時也禁止變動這兩欄值域
 - **raw OHLC 從 10 縮到 5 日**是 Phase B 的刻意設計：M21 已經把價格結構（trend / breakout / consolidation / accelerating）結論化了，raw 只需保留到 AI 能驗證「這 5 天真的在上漲」即可，節省 token 讓更多預算分給 M21 JSON
+
+## M17 SSE 進度條（2026-04-24）
+
+### 背景
+- `POST /api/analysis/trade-quality` 整體耗時 5~30 秒（OpenAI 占 80%+），前端僅顯示 spinner + 「系統正在還原當天市場情境…」固定文字，使用者無法知道目前在等什麼。
+
+### 改法
+- 後端新增 `POST /api/analysis/trade-quality/stream`：與原 endpoint 同輸入，回 `application/x-ndjson`（line-delimited JSON）
+  - 共用 `_collect_context` / `_build_deterministic_context` / `_build_user_message` / `_call_openai` / `_normalize_response`，邏輯零分叉
+  - Pre-flight（stock 不存在 / prompt 缺檔 / 未開盤）在 stream 開始前 raise `HTTPException`，讓 4xx/5xx 走正常 HTTP 錯誤通道
+  - Generator 依序 yield：`collect_raw` → `build_context` → `openai_call` → `done(payload=jsonable_encoder(TradeQualityResponse))`
+  - OpenAI 不可用 → 仍以 `done` event 完成，payload `source="unavailable"`
+  - Generator 內部例外 → yield `error` event；前端 throw 對應 `Error`
+- 原 `POST /api/analysis/trade-quality` **保留**（M19 watchlist 深連結走的是非 stream 版，不需要進度條）
+- 前端 [frontend/src/lib/api.ts](frontend/src/lib/api.ts) 新增 `streamTradeQuality(payload, onEvent, options)`：用 `fetch().body.getReader()` + `TextDecoder` 解析 NDJSON；最終 throw 或回 `TradeQualityResponse`
+  - 同檔案的舊 `analyzeTradeQuality` 已無 caller → 一併刪除
+- 前端 [frontend/src/components/TradeQualityAnalysis.tsx](frontend/src/components/TradeQualityAnalysis.tsx) 把 `analyzeTradeQuality` 換成 `streamTradeQuality`：
+  - 新增 `progressStage` / `progressLabel` state，每收到一個 event 就更新
+  - Loading UI 從 spinner + Skeleton 改為「label + 百分比 + emerald 進度條」；stage→% 對照：collect_raw 15 / build_context 35 / openai_call 60 / done 100
+
+### Gotcha
+- **NDJSON 不是 SSE**：用 `application/x-ndjson` 而非 `text/event-stream`，因為前端只需要單向收 event，不需要 EventSource 的 reconnect / event-name 機制；NDJSON 解析簡單、TestClient 也能直接 split lines 驗證
+- **`jsonable_encoder` 取代 `.dict()`**：Pydantic v1/v2 序列化方法不同；`jsonable_encoder` 是 FastAPI 通用安全做法，避免 `date` / `datetime` 序列化坑
+- **Pre-flight vs in-stream 例外**：stock 找不到一定要在 stream 開始前 raise，否則 HTTP 200 + done event with error payload 在前端 fetch 邏輯比較難區分
+- **進度百分比是視覺提示，不是真實進度**：OpenAI call 60% 一段會「卡」最久（5~25 秒），最後一口氣跳到 100%；這是刻意設計（avoid fake animated progress），label 同步更新即可

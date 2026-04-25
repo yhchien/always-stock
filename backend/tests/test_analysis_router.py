@@ -539,6 +539,109 @@ def test_trade_quality_user_message_includes_m21_deterministic_block(api):
         assert section in msg
 
 
+# ── /api/analysis/trade-quality/stream（progress bar 用 NDJSON）─────────────
+
+
+def _parse_ndjson(text: str) -> list[dict]:
+    return [json.loads(line) for line in text.splitlines() if line.strip()]
+
+
+def test_trade_quality_stream_emits_4_stages_in_order(api):
+    client, db = api
+    _seed_full_context(db)
+
+    fake_payload = {
+        "rating": "BUY",
+        "classification": "A",
+        "summary": "stream ok",
+        "report_markdown": "## stream",
+        "target_price_low": 650,
+        "target_price_high": 700,
+    }
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = MagicMock(
+        choices=[MagicMock(message=MagicMock(content=json.dumps(fake_payload)))]
+    )
+
+    with patch("app.routers.analysis.get_openai_api_key", return_value="k"), \
+         patch("app.routers.analysis.OpenAI", return_value=mock_client):
+        resp = client.post(
+            "/api/analysis/trade-quality/stream",
+            json={"stock_id": "2330", "buy_date": "2024-01-11"},
+        )
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("application/x-ndjson")
+    events = _parse_ndjson(resp.text)
+    stages = [e["stage"] for e in events]
+    assert stages == ["collect_raw", "build_context", "openai_call", "done"]
+
+    done = events[-1]
+    assert "payload" in done
+    payload = done["payload"]
+    assert payload["stock_id"] == "2330"
+    assert payload["stock_name"] == "台積電"
+    assert payload["rating"] == "BUY"
+    assert payload["rating_label"] == "推薦"
+    assert payload["target_price_low"] == 650
+    assert payload["source"] == "openai"
+
+
+def test_trade_quality_stream_returns_404_for_unknown_stock(api):
+    """Pre-flight：stock 不存在應該以 HTTP 404 回，不應該開 stream。"""
+    client, db = api
+    _seed_industry_flow(db, date(2024, 1, 5), "半導體")
+    db.commit()
+
+    with patch("app.routers.analysis.get_openai_api_key", return_value="k"):
+        resp = client.post(
+            "/api/analysis/trade-quality/stream",
+            json={"stock_id": "9999", "buy_date": "2024-01-05"},
+        )
+
+    assert resp.status_code == 404
+
+
+def test_trade_quality_stream_market_not_open_returns_single_done_event(api):
+    """未開盤情境：仍走 stream 但只 emit 一個 done event，前端 progress bar 直接跳完。"""
+    client, db = api
+    _seed_stock(db, "2330", "台積電")
+    db.commit()
+
+    fake_now = datetime(2026, 4, 21, 8, 30)
+
+    with patch("app.routers.analysis._get_taipei_now", return_value=fake_now):
+        resp = client.post(
+            "/api/analysis/trade-quality/stream",
+            json={"stock_id": "2330", "buy_date": "2026-04-21"},
+        )
+
+    assert resp.status_code == 200
+    events = _parse_ndjson(resp.text)
+    assert len(events) == 1
+    assert events[0]["stage"] == "done"
+    assert events[0]["payload"]["source"] == "market_not_open"
+
+
+def test_trade_quality_stream_emits_error_event_when_openai_unavailable(api):
+    """OpenAI 不可用走 fallback path：仍以 done event 完成，payload.source = unavailable。"""
+    client, db = api
+    _seed_full_context(db)
+
+    with patch("app.routers.analysis.get_openai_api_key", return_value=""):
+        resp = client.post(
+            "/api/analysis/trade-quality/stream",
+            json={"stock_id": "2330", "buy_date": "2024-01-11"},
+        )
+
+    assert resp.status_code == 200
+    events = _parse_ndjson(resp.text)
+    stages = [e["stage"] for e in events]
+    assert stages[-1] == "done"
+    assert events[-1]["payload"]["source"] == "unavailable"
+    assert events[-1]["payload"]["rating"] == "WATCH"
+
+
 def test_trade_quality_falls_back_to_raw_when_m21_context_fails(api):
     """若 build_trade_quality_context 丟非預期例外，M17 分析仍應完成（以 raw-only 為後備）。"""
     client, db = api

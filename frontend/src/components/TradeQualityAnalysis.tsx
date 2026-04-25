@@ -3,15 +3,23 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useSearchParams } from "next/navigation"
 import {
-  analyzeTradeQuality,
   fetchLatestTradeDate,
   searchStocks,
+  streamTradeQuality,
   toDisplayError,
   type StockSearchItem,
   type TradeQualityRating,
   type TradeQualityResponse,
+  type TradeQualityStreamStage,
 } from "@/lib/api"
-import { Skeleton } from "@/components/ui/skeleton"
+
+const STAGE_PERCENT: Record<TradeQualityStreamStage, number> = {
+  collect_raw: 15,
+  build_context: 35,
+  openai_call: 60,
+  done: 100,
+  error: 100,
+}
 
 const RATING_STYLE: Record<TradeQualityRating, { bg: string; text: string; border: string; label: string }> = {
   STRONG_BUY: { bg: "bg-emerald-600", text: "text-white", border: "border-emerald-400", label: "強烈推薦" },
@@ -47,6 +55,8 @@ export default function TradeQualityAnalysis() {
   const [result, setResult] = useState<TradeQualityResponse | null>(null)
   const [showDetail, setShowDetail] = useState(false)
   const [pendingAnalyze, setPendingAnalyze] = useState(false)
+  const [progressStage, setProgressStage] = useState<TradeQualityStreamStage | null>(null)
+  const [progressLabel, setProgressLabel] = useState<string>("")
 
   const containerRef = useRef<HTMLDivElement>(null)
   const lastPrefillKeyRef = useRef<string>("")
@@ -147,16 +157,26 @@ export default function TradeQualityAnalysis() {
     setError(null)
     setResult(null)
     setShowDetail(false)
+    setProgressStage("collect_raw")
+    setProgressLabel("正在跟後台要資料")
     try {
-      const res = await analyzeTradeQuality({
-        stock_id: resolved.stock_id,
-        buy_date: useCustomDate ? (buyDate || null) : null,
-      })
+      const res = await streamTradeQuality(
+        {
+          stock_id: resolved.stock_id,
+          buy_date: useCustomDate ? (buyDate || null) : null,
+        },
+        (event) => {
+          setProgressStage(event.stage)
+          setProgressLabel(event.label)
+        },
+      )
       setResult(res)
     } catch (e) {
       setError(toDisplayError(e, "執行失敗"))
     } finally {
       setLoading(false)
+      setProgressStage(null)
+      setProgressLabel("")
     }
   }, [selected, query, suggestions, useCustomDate, buyDate])
 
@@ -296,14 +316,29 @@ export default function TradeQualityAnalysis() {
 
       {/* Body */}
       {loading && (
-        <div className="border-t border-slate-700/40 p-4 flex flex-col gap-2">
-          <div className="flex items-center gap-2">
-            <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-slate-500 border-t-slate-200" />
-            <span className="text-xs text-slate-400">系統正在還原當天市場情境…</span>
+        <div className="border-t border-slate-700/40 p-4 flex flex-col gap-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-slate-500 border-t-slate-200" />
+              <span className="text-xs text-slate-300 truncate">
+                {progressLabel || "正在跟後台要資料"}
+              </span>
+            </div>
+            <span className="text-xs font-mono text-slate-500 shrink-0">
+              {progressStage ? STAGE_PERCENT[progressStage] : 0}%
+            </span>
           </div>
-          <Skeleton className="h-5 w-40" />
-          <Skeleton className="h-4 w-full" />
-          <Skeleton className="h-4 w-5/6" />
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+            <div
+              className="h-full rounded-full bg-emerald-500 transition-all duration-500 ease-out"
+              style={{
+                width: `${progressStage ? STAGE_PERCENT[progressStage] : 0}%`,
+              }}
+            />
+          </div>
+          <p className="text-[11px] text-slate-500">
+            分析過程包含資料蒐集、訊號組裝、AI 推論三段；OpenAI 回應通常 5~30 秒。
+          </p>
         </div>
       )}
 
