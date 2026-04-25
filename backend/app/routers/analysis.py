@@ -20,11 +20,14 @@ from typing import Any, List, Optional
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import StreamingResponse
 from openai import OpenAI
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.auth import get_optional_user
+from app.analysis import build_trade_quality_context
+from app.auth import get_optional_user, require_user
 from app.database import get_db
 from app.industry_flow_service import get_latest_industry_trade_date
 from app.models import (
@@ -204,33 +207,34 @@ def _collect_context(
     if not stock:
         raise HTTPException(status_code=404, detail=f"Stock not found: {stock_id}")
 
-    start_10d = buy_date - timedelta(days=21)  # 10 trading days ≈ 14~21 calendar days
+    # M21 Phase B：raw OHLC / flows 僅保留 5 日供 AI 對照，結論層訊號由 build_trade_quality_context 提供
+    start_raw = buy_date - timedelta(days=14)  # 5 交易日 ≈ 7~14 曆日
     prices = (
         db.query(DailyPrice)
         .filter(
             DailyPrice.stock_id == stock_id,
             DailyPrice.trade_date <= buy_date,
-            DailyPrice.trade_date >= start_10d,
+            DailyPrice.trade_date >= start_raw,
         )
         .order_by(DailyPrice.trade_date)
         .all()
     )
-    prices = prices[-10:]
+    prices = prices[-5:]
     if not prices:
-        warnings.append("無近 10 交易日股價資料")
+        warnings.append("無近 5 交易日股價資料")
 
     flows = (
         db.query(InstStockFlow)
         .filter(
             InstStockFlow.stock_id == stock_id,
             InstStockFlow.trade_date <= buy_date,
-            InstStockFlow.trade_date >= start_10d,
+            InstStockFlow.trade_date >= start_raw,
         )
         .order_by(InstStockFlow.trade_date)
         .all()
     )
     if not flows:
-        warnings.append("無近 10 交易日三大法人資料")
+        warnings.append("無近 5 交易日三大法人資料")
 
     revenue_rows = (
         db.query(MonthlyRevenue)
@@ -262,7 +266,23 @@ def _collect_context(
     return stock, context, warnings
 
 
-def _build_user_message(context: dict, warnings: list[str]) -> str:
+def _build_deterministic_context(
+    db: Session, stock_id: str, buy_date: date, warnings: list[str]
+) -> Optional[dict]:
+    try:
+        return build_trade_quality_context(db, stock_id, buy_date)
+    except ValueError:
+        # stock 找不到的情況已在 _collect_context 擋下；其他 ValueError 不預期
+        raise
+    except Exception:
+        logger.exception("M21 context pipeline failed; falling back to raw-only context")
+        warnings.append("deterministic 訊號管線暫時不可用，僅以原始資料判斷")
+        return None
+
+
+def _build_user_message(
+    context: dict, m21_context: Optional[dict], warnings: list[str]
+) -> str:
     news_note = (
         "本次分析無 10 天內新聞資料可供佐證；"
         "請依系統 prompt 規則 15 處理 —— 若你認為缺新聞導致無法建立有效交易判斷，"
@@ -272,6 +292,20 @@ def _build_user_message(context: dict, warnings: list[str]) -> str:
     warning_block = ""
     if warnings:
         warning_block = "\n[資料警告]\n- " + "\n- ".join(warnings)
+
+    if m21_context is not None:
+        m21_block = (
+            "[M21 預聚合訊號（deterministic，結論層）]\n"
+            "說明：以下 6 個 section 已用純規則從 DB 預聚合完成；\n"
+            "請**直接消費結論**，不要重新從 raw 數據推算相同訊號。\n"
+            "欄位語義詳見 docs/plans/trade_quality_context_spec.md。\n"
+            "下方 raw OHLC / 法人僅保留 5 日供你交叉驗證，不是主要推論依據。\n\n"
+            "```json\n"
+            f"{json.dumps(m21_context, ensure_ascii=False, indent=2)}\n"
+            "```\n"
+        )
+    else:
+        m21_block = "[M21 預聚合訊號]\n（不可用：請以下方原始資料自行推論）\n"
 
     return f"""[INPUT]
 {{"stock": "{context['stock_name']} ({context['stock_id']})", "buy_date": "{context['buy_date']}"}}
@@ -283,10 +317,11 @@ def _build_user_message(context: dict, warnings: list[str]) -> str:
 - 細產業：{context['sub_industry'] or '—'}
 - 買進日收盤價：{_fmt(context['latest_close'])}
 
-[近 10 交易日 OHLC / 成交量 / 漲跌%]
+{m21_block}
+[近 5 交易日 OHLC / 成交量 / 漲跌%（僅供對照）]
 {context['prices_text']}
 
-[近 10 交易日三大法人淨買賣（張）]
+[近 5 交易日三大法人淨買賣（張，僅供對照）]
 {context['flows_text']}
 
 [最近 3 個月月營收 + YoY/MoM]
@@ -489,12 +524,13 @@ def analyze_trade_quality(
         raise HTTPException(status_code=404, detail="資料庫無交易日資料")
 
     stock, context, warnings = _collect_context(db, req.stock_id, resolved)
+    m21_context = _build_deterministic_context(db, req.stock_id, resolved, warnings)
 
     system_prompt = _load_system_prompt()
     if not system_prompt:
         raise HTTPException(status_code=500, detail="分析 prompt 檔案缺失")
 
-    user_msg = _build_user_message(context, warnings)
+    user_msg = _build_user_message(context, m21_context, warnings)
     payload = _call_openai(system_prompt, user_msg)
 
     if payload is None:
@@ -512,3 +548,144 @@ def analyze_trade_quality(
         )
 
     return _normalize_response(payload, stock, resolved, warnings, source="openai")
+
+
+# ── Streaming endpoint（progress bar 用）─────────────────────────────────────
+#
+# POST /api/analysis/trade-quality/stream
+#   與 /analysis/trade-quality 同樣輸入，但回傳 NDJSON（line-delimited JSON）。
+#   前端可邊讀邊更新進度條。整體流程約 5~30 秒，stage 分四段：
+#     1. collect_raw   — 從 DB 撈 raw OHLC / 法人 / 月營收
+#     2. build_context — 跑 M21 deterministic context pipeline
+#     3. openai_call   — 呼叫 OpenAI 等回應（最慢的一段）
+#     4. done          — 完成，payload 為完整 TradeQualityResponse
+#   失敗時最後 emit error event；HTTP 仍回 200（streaming 已 commit header）。
+#   Pre-flight 檢查（stock 找不到 / prompt 缺檔）在 stream 開始前 raise，仍走 4xx/5xx。
+
+# Vercel / Render / nginx 中間 reverse proxy 若 buffer 整段 response，NDJSON 進度
+# 會被攢一起送 → progress bar 跳一下就到 done，UX 等同沒做。X-Accel-Buffering 是
+# nginx 的關閉 buffer header；Cache-Control 防中間 cache。
+_STREAM_HEADERS = {
+    "X-Accel-Buffering": "no",
+    "Cache-Control": "no-cache",
+}
+
+
+def _emit(stage: str, label: str, payload: Optional[dict] = None) -> str:
+    event: dict[str, Any] = {"stage": stage, "label": label}
+    if payload is not None:
+        event["payload"] = payload
+    return json.dumps(event, ensure_ascii=False) + "\n"
+
+
+@router.post("/analysis/trade-quality/stream")
+@limiter.limit(trade_quality_limit_value)
+def analyze_trade_quality_stream(
+    request: Request,
+    req: TradeQualityRequest,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_optional_user),
+):
+    logger.info(
+        "POST /analysis/trade-quality/stream stock=%s buy_date=%s",
+        req.stock_id,
+        req.buy_date,
+    )
+
+    # Pre-flight：market 未開盤直接走單一 event stream（與非 stream 行為一致）
+    if req.buy_date and _is_market_not_open_yet(req.buy_date):
+        stock = db.get(StockMaster, req.stock_id)
+        if not stock:
+            raise HTTPException(status_code=404, detail=f"Stock not found: {req.stock_id}")
+        early_response = _build_market_not_open_response(stock, req.buy_date)
+
+        def market_closed_stream():
+            yield _emit("done", "完成", payload=jsonable_encoder(early_response))
+
+        return StreamingResponse(
+            market_closed_stream(),
+            media_type="application/x-ndjson",
+            headers=_STREAM_HEADERS,
+        )
+
+    resolved = _resolve_buy_date(db, req.buy_date)
+    if not resolved:
+        raise HTTPException(status_code=404, detail="資料庫無交易日資料")
+
+    # Pre-flight：stock 找不到 / prompt 缺檔，raise 走 HTTP 4xx/5xx，前端可正確錯誤處理
+    stock_check = db.get(StockMaster, req.stock_id)
+    if not stock_check:
+        raise HTTPException(status_code=404, detail=f"Stock not found: {req.stock_id}")
+
+    system_prompt = _load_system_prompt()
+    if not system_prompt:
+        raise HTTPException(status_code=500, detail="分析 prompt 檔案缺失")
+
+    def generate():
+        try:
+            yield _emit("collect_raw", "正在跟後台要資料")
+            stock, context, warnings = _collect_context(db, req.stock_id, resolved)
+
+            yield _emit("build_context", "組建分析訊號中")
+            m21_context = _build_deterministic_context(db, req.stock_id, resolved, warnings)
+
+            yield _emit("openai_call", "AI 分析中（依 prompt 推論評級與目標價）")
+            user_msg = _build_user_message(context, m21_context, warnings)
+            payload = _call_openai(system_prompt, user_msg)
+
+            if payload is None:
+                fallback = TradeQualityResponse(
+                    stock_id=stock.stock_id,
+                    stock_name=stock.stock_name,
+                    buy_date=str(resolved),
+                    rating="WATCH",
+                    rating_label=RATING_LABELS["WATCH"],
+                    summary="AI 分析服務目前不可用（OpenAI 未設定或呼叫失敗），無法建立有效交易判斷。",
+                    report_markdown="⚠️ 無法連線 AI 分析服務，請稍後再試或檢查 OpenAI 設定。",
+                    warnings=warnings + ["OpenAI 服務不可用"],
+                    source="unavailable",
+                )
+                yield _emit("done", "完成", payload=jsonable_encoder(fallback))
+                return
+
+            response = _normalize_response(payload, stock, resolved, warnings, source="openai")
+            yield _emit("done", "完成", payload=jsonable_encoder(response))
+        except Exception:
+            # 注意：headers 已 commit，此處 raise HTTPException 不會變 4xx，會變成
+            # broken stream（前端 reader 看到 EOF）。所有預期 4xx 路徑必須在 pre-flight
+            # 檔下；若真有 HTTPException 漏到這裡，也只能改用 error event 通知前端。
+            logger.exception("trade-quality stream failed during generation")
+            yield _emit(
+                "error",
+                "分析過程發生錯誤",
+                payload={"detail": "分析過程發生錯誤，請稍後再試"},
+            )
+
+    return StreamingResponse(
+        generate(),
+        media_type="application/x-ndjson",
+        headers=_STREAM_HEADERS,
+    )
+
+
+# ── Context endpoint（M21）──────────────────────────────────────────────────
+#
+# GET /api/analysis/context
+#   Pre-aggregated 6-section JSON for trade quality AI.
+#   Deterministic, no hindsight, 需要登入。
+#   spec: docs/plans/trade_quality_context_spec.md
+#   impl: docs/plans/m21_context_pipeline_implementation.md
+@router.get("/analysis/context")
+def get_trade_quality_context(
+    stock_id: str,
+    buy_date: Optional[date] = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+):
+    resolved = _resolve_buy_date(db, buy_date)
+    if resolved is None:
+        raise HTTPException(status_code=404, detail="資料庫無交易日資料")
+    try:
+        return build_trade_quality_context(db, stock_id, resolved)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))

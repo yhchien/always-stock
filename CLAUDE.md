@@ -92,6 +92,7 @@
 - M18: 使用者註冊系統（Email/password + server-side session + RequireAuth；M17 公開但分層 rate limit；admin@always-stock.dev / forwork）
 - M19: 關注買進清單（單一清單上限 20 檔，加入 popup 填買進日/均價；L0 HotMoneyList、L1 StockList、L2 個股頁右下「加入清單」；Navbar「我的清單」；/watchlist 卡片含未實現損益 + 交易分析深連結 M17；資料綁 user_id）
 - M22: 熱錢湧入個股排行（L0 底部 Top 20 / L1 頂部 Top 10，近 N 日三大法人累計買超；spec 在 [docs/plans/hot_money_list_spec.md](docs/plans/hot_money_list_spec.md)）
+- M21: Trade Quality Context 資料管線（6 個 section 預聚合 JSON：industry/chip/peer_rank/fundamental/price_structure/news_stub；deterministic + no hindsight；入口 `build_trade_quality_context(db, stock_id, buy_date)`；`GET /api/analysis/context` 需登入；實作 [docs/plans/m21_context_pipeline_implementation.md](docs/plans/m21_context_pipeline_implementation.md)）
 
 ### 進行中
 - M13 關鍵券商分點：ETL 模組與 `broker_trade_agg` backfill 已完成；L2 券商面板在 2026-04-19 主動隱藏（產品優先序下調），未來視需要復活
@@ -101,7 +102,6 @@
 - M14 輿情分析
 - M15 Telegram 電子報
 - M20 交易分析擴充（預期 45% 報酬率加碼建議 + 風報比 1:1.75）
-- M21 Trade Quality Context 資料管線（industry/chip/peer_rank/fundamental/price_structure 預聚合，餵結論層給 LLM）
 - M23 每日異常訊號清單（07:00 台北排程；deterministic filter 篩出符合條件的股票分四組；LLM 為解釋層，把訊號翻成中文白話註解，不預測、不排推薦度）
 - M24 自訂進出場策略回測（M11 擴充；使用者自設分層進場 / 追價 / 攤平 / 停損停利規則，引擎回測 edge；LLM 為現場判斷層，trigger 觸發時依當下籌碼/產業/技術給「適合執行 yes/no」提示，不替使用者寫規則）
 
@@ -1009,3 +1009,115 @@ M19 merge 之後使用者回報四個問題，一次修掉：
 
 4. **L0 版位重排**
    - [frontend/src/app/page.tsx](frontend/src/app/page.tsx) 順序改為：交易分析 → 熱錢排行 Top 20 → 產業流向
+
+## M21 Trade Quality Context 資料管線完成（2026-04-24）
+
+### Scope
+- Phase A：純 context layer + API endpoint + 測試；**不動 M17 既有 prompt / router / 前端**
+- 輸出：6 個 section 的結構化 JSON，deterministic + no-hindsight
+- 後續 Phase B（獨立任務）才會修 M17 prompt 讓 AI 消費這份 context
+
+### 檔案結構（[backend/app/analysis/](backend/app/analysis/)）
+- `context_thresholds.py` — 所有 lookback / threshold 常數（module-level，**無 env override**）
+- `industry_signals.py` — PART 1（hot_score / hot_level / price_strength / volume_trend / institution_flow / capital_type / is_false_hot）
+- `chip_signals.py` — PART 2（foreign/trust/dealer_buy_days / volume_trend / price_trend / is_accumulation / chip_strength）
+- `peer_rank.py` — PART 3（return/volume/institution 三個 top-percentile + leader_or_follower 四條件投票）
+- `fundamental_signals.py` — PART 4（revenue_yoy / revenue_mom from `monthly_revenue`；`guidance` 永遠 null）
+- `price_structure.py` — PART 5（slope trend / is_breakout 20d / is_consolidation 10d / is_accelerating）
+- `news_stub.py` — PART 6（純字串組合，query_stock / query_industry / date_end；**不 query DB**）
+- `context_builder.py` — 主入口 `build_trade_quality_context(db, stock_id, buy_date) -> dict`
+
+### 對外 API
+- `GET /api/analysis/context?stock_id=<id>&buy_date=<YYYY-MM-DD>` (`backend/app/routers/analysis.py`)
+- 認證：`Depends(require_user)`（初版需登入，與 M17 前端入口一致；未來視需要放寬）
+- `buy_date` 行為（決策 3b）：未指定時 fallback `get_latest_industry_trade_date(db)`，與 M17 一致
+- Raises：
+  - `404` unknown stock（`ValueError` from `build_trade_quality_context` → HTTPException）
+  - `404` 資料庫無交易日資料（`_resolve_buy_date` 回 None）
+  - `401` 未登入
+
+### 關鍵 gotcha
+- **Python 3.9 相容**：型別註記不能用 `list[float] | None`，要用 `Optional[List[float]]`（`from typing import List, Optional`）
+- **institution_flow 空資料**：回 `"none"` 字串（代表無參與），**不是** `None`（保留 `None` 給 unknown 語義）；否則 `_compute_hot_score` 會把所有 weight 算成 0 而不是正確 flag 為 null
+- **is_false_hot 輸入是 price_strength，不是 volume_trend**：spike 檢測（`max(recent_3d) >= baseline × 1.5`）與 volume_trend 分類（3d avg vs baseline）是兩個 orthogonal signals；單一大量的日子會把 3d avg 推進 `expanding_3d`，但不代表不該被標為 false hot
+- **no-hindsight**：所有 section 都用 `trade_date <= buy_date`；lookback 皆以**交易日**計（`ORDER BY trade_date DESC LIMIT N`），**非曆日**
+- **data_quality_notes 政策**：永遠 null 的欄位（`industry_news_heat` / `guidance`）**不**寫入 notes（決策 4b，避免每次 response 都有噪音）；notes 只在動態缺料（peer 不足、price history < 21 天、monthly_revenue 缺）時才加
+- **peer_rank top-percentile convention**：`0.0 = 最強` / `1.0 = 最弱`（產業排名第 1 回 0.0）；leader 判定 4 條件滿足 >= 2 條
+- **chip 連續買超日數**：從最新日往前走，碰到非正值 net_shares 就停；無資料時該欄位回 0，不 raise
+
+### 測試覆蓋
+- `tests/test_industry_signals.py`（17 案例）
+- `tests/test_chip_signals.py`（18 案例）
+- `tests/test_peer_rank.py`（8 案例）
+- `tests/test_price_structure.py`（13 案例）
+- `tests/test_context_builder.py`（11 案例：schema shape / unknown stock raise / notes 組合 / fundamental null / news stub / happy snapshot / deterministic）
+- `tests/test_analysis_context_router.py`（5 案例：401 / 200 happy / buy_date fallback / 404 no trade dates / 404 unknown stock）
+
+### 落地計畫與 spec
+- 實作計畫：[docs/plans/m21_context_pipeline_implementation.md](docs/plans/m21_context_pipeline_implementation.md)
+- 輸出 schema + 門檻說明：[docs/plans/trade_quality_context_spec.md](docs/plans/trade_quality_context_spec.md)
+
+### Review P1 修正：peer_ids 查詢加下界（2026-04-24）
+- **問題**：8 個 `stock_id IN (peer_ids) AND trade_date <= buy_date` 查詢缺下界，大產業（半導體 60+ 檔 × 2500+ 交易日 × 8 queries）會搬 10+ 萬列進 Python
+- **修法**：新增 [backend/app/analysis/_helpers.py](backend/app/analysis/_helpers.py) 兩個 helper：
+  - `fetch_active_peer_ids(db, industry_name)` — 取代 industry_signals / peer_rank 裡各自實作的 `_active_peer_ids`
+  - `resolve_query_start_date(db, buy_date)` — 以 `SELECT DISTINCT trade_date FROM daily_price ORDER BY DESC OFFSET (N-1) LIMIT 1` 反推交易日下界（N = max lookback 21 日），自動跳過週末 / 春節長假
+- **架構**：`context_builder` 預先算 `peer_ids` + `query_start_date` 各一次，往下傳給 `compute_industry_signals` / `compute_peer_rank`；兩個 entry function 都保留 optional kwargs 預設 None（未提供時自行 compute），向後相容測試
+- **8 個加下界的查詢**：
+  - `industry_signals.py`：`_industry_price_strength` / `_industry_volume_trend` / `_recent_flow_dates` / `_count_spike_days`
+  - `peer_rank.py`：`_peer_returns` / `_peer_volume_ratios` / `_peer_institution_intensity` / `_peer_breakouts`
+- **P2 順手處理**：`chip_signals._classify_price_trend` 的 `max_single_day_pct` 加註解說明是雙向絕對值（tests 所有 72 案例 pass）
+- **為何用交易日反推而非 calendar offset**：春節長假 calendar offset 會切過頭；trading-day reversal 保證永遠剛好 N 筆資料，不受休市影響
+
+## M21 Phase B：M17 prompt 吃 context pipeline（2026-04-24）
+
+### 改法
+- [backend/app/routers/analysis.py](backend/app/routers/analysis.py)：`analyze_trade_quality` 在 `_collect_context` 後新增 `_build_deterministic_context()`，呼叫 `build_trade_quality_context(db, stock_id, buy_date)` 取得 6 section JSON
+- `_build_user_message(context, m21_context, warnings)` 新增 `[M21 預聚合訊號（deterministic，結論層）]` 區塊，`json.dumps(..., ensure_ascii=False, indent=2)` 直接序列化 6 section 到 user message
+- raw OHLC / 法人從 10 日縮到 **5 日**，前綴「僅供對照」—— 讓 AI 以 M21 結論為主，raw 只做 sanity check；revenue 維持 3 個月
+- [backend/app/prompts/trade_quality.md](backend/app/prompts/trade_quality.md) + [docs/trade_quality_prompt.md](docs/trade_quality_prompt.md) 頂部加「輸入格式（M21 預聚合訊號）」說明，明列 7 個 section 語義 + 直接對應 prompt 內「產業熱錢等級 S/A/B/C」「籌碼集中度」「Leader/Follower」等強制規則
+- `rating` / `classification` / JSON contract 完全不動，前端不需改
+
+### Fallback 設計
+- `build_trade_quality_context` 丟非預期例外（`RuntimeError` 等非 `ValueError`）→ logger.exception + `warnings.append("deterministic 訊號管線暫時不可用...")`，user message 顯示「（不可用：請以下方原始資料自行推論）」
+- `ValueError`（stock not found）仍依既有路徑回 404（`_collect_context` 先擋）
+- 不阻斷 OpenAI 呼叫，確保 context pipeline 掛掉時 M17 仍能以 raw-only 模式工作
+
+### 測試
+- [backend/tests/test_analysis_router.py](backend/tests/test_analysis_router.py) 新增 2 案例：
+  - `test_trade_quality_user_message_includes_m21_deterministic_block`：斷言 6 section 關鍵字出現在 user message
+  - `test_trade_quality_falls_back_to_raw_when_m21_context_fails`：mock `build_trade_quality_context` 丟 `RuntimeError`，仍應回 200 + warnings 含提示
+- 全 tests 結果：44 pass（analysis router + context router + context builder），整 backend suite 370 pass（唯一 fail 是 `test_engine_connects`，worktree 無 sqlite 檔，與本改動無關）
+
+### Gotcha
+- **不要在 `_collect_context` 內呼叫 build_trade_quality_context**：兩個 function 有不同錯誤處理契約（raw context 缺資料 → warnings；deterministic pipeline 掛掉 → warning + fallback）；分開才能讓 router 層決定如何 fallback
+- **M21 JSON 用 `ensure_ascii=False`**：保留中文產業名稱（`AI 伺服器` 等）避免轉 `\u...` 浪費 token 且失去可讀性
+- **`rating` / `classification` 契約不能動**：M19 卡片「交易分析」深連結與前端 Rating 色塊已硬依賴 5 階 + A/B/C，改 prompt 時也禁止變動這兩欄值域
+- **raw OHLC 從 10 縮到 5 日**是 Phase B 的刻意設計：M21 已經把價格結構（trend / breakout / consolidation / accelerating）結論化了，raw 只需保留到 AI 能驗證「這 5 天真的在上漲」即可，節省 token 讓更多預算分給 M21 JSON
+
+## M17 SSE 進度條（2026-04-24）
+
+### 背景
+- `POST /api/analysis/trade-quality` 整體耗時 5~30 秒（OpenAI 占 80%+），前端僅顯示 spinner + 「系統正在還原當天市場情境…」固定文字，使用者無法知道目前在等什麼。
+
+### 改法
+- 後端新增 `POST /api/analysis/trade-quality/stream`：與原 endpoint 同輸入，回 `application/x-ndjson`（line-delimited JSON）
+  - 共用 `_collect_context` / `_build_deterministic_context` / `_build_user_message` / `_call_openai` / `_normalize_response`，邏輯零分叉
+  - Pre-flight（stock 不存在 / prompt 缺檔 / 未開盤）在 stream 開始前 raise `HTTPException`，讓 4xx/5xx 走正常 HTTP 錯誤通道
+  - Generator 依序 yield：`collect_raw` → `build_context` → `openai_call` → `done(payload=jsonable_encoder(TradeQualityResponse))`
+  - OpenAI 不可用 → 仍以 `done` event 完成，payload `source="unavailable"`
+  - Generator 內部例外 → yield `error` event；前端 throw 對應 `Error`
+- 原 `POST /api/analysis/trade-quality` **保留**（M19 watchlist 深連結走的是非 stream 版，不需要進度條）
+- 前端 [frontend/src/lib/api.ts](frontend/src/lib/api.ts) 新增 `streamTradeQuality(payload, onEvent, options)`：用 `fetch().body.getReader()` + `TextDecoder` 解析 NDJSON；最終 throw 或回 `TradeQualityResponse`
+  - 同檔案的舊 `analyzeTradeQuality` 已無 caller → 一併刪除
+- 前端 [frontend/src/components/TradeQualityAnalysis.tsx](frontend/src/components/TradeQualityAnalysis.tsx) 把 `analyzeTradeQuality` 換成 `streamTradeQuality`：
+  - 新增 `progressStage` / `progressLabel` state，每收到一個 event 就更新
+  - Loading UI 從 spinner + Skeleton 改為「label + 百分比 + emerald 進度條」；stage→% 對照：collect_raw 15 / build_context 35 / openai_call 60 / done 100
+
+### Gotcha
+- **NDJSON 不是 SSE**：用 `application/x-ndjson` 而非 `text/event-stream`，因為前端只需要單向收 event，不需要 EventSource 的 reconnect / event-name 機制；NDJSON 解析簡單、TestClient 也能直接 split lines 驗證
+- **`jsonable_encoder` 取代 `.dict()`**：Pydantic v1/v2 序列化方法不同；`jsonable_encoder` 是 FastAPI 通用安全做法，避免 `date` / `datetime` 序列化坑
+- **Pre-flight vs in-stream 例外**：stock 找不到一定要在 stream 開始前 raise，否則 HTTP 200 + done event with error payload 在前端 fetch 邏輯比較難區分
+- **`_STREAM_HEADERS` 必加**（`X-Accel-Buffering: no` + `Cache-Control: no-cache`）：Vercel ↔ Render 中間 nginx 預設會 buffer 整段 response，NDJSON 進度會被攢一起送 → progress bar 跳一下就到 done，UX 等於沒做。本地 dev 不會察覺差異，prod 才看得出來。兩個 `StreamingResponse`（market_closed_stream + main generate）都要加
+- **Generator 內不可 raise HTTPException**：headers 已 commit，raise 不會變 4xx，只會變成 broken stream（前端 reader 看到 EOF 而不是錯誤訊息）。所有預期 4xx 路徑必須在 pre-flight 檔下；generator 內的 `except` 統一 emit `error` event 給前端
+- **進度百分比是視覺提示，不是真實進度**：OpenAI call 60% 一段會「卡」最久（5~25 秒），最後一口氣跳到 100%；這是刻意設計（avoid fake animated progress），label 同步更新即可
