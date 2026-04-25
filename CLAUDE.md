@@ -1118,4 +1118,6 @@ M19 merge 之後使用者回報四個問題，一次修掉：
 - **NDJSON 不是 SSE**：用 `application/x-ndjson` 而非 `text/event-stream`，因為前端只需要單向收 event，不需要 EventSource 的 reconnect / event-name 機制；NDJSON 解析簡單、TestClient 也能直接 split lines 驗證
 - **`jsonable_encoder` 取代 `.dict()`**：Pydantic v1/v2 序列化方法不同；`jsonable_encoder` 是 FastAPI 通用安全做法，避免 `date` / `datetime` 序列化坑
 - **Pre-flight vs in-stream 例外**：stock 找不到一定要在 stream 開始前 raise，否則 HTTP 200 + done event with error payload 在前端 fetch 邏輯比較難區分
+- **`_STREAM_HEADERS` 必加**（`X-Accel-Buffering: no` + `Cache-Control: no-cache`）：Vercel ↔ Render 中間 nginx 預設會 buffer 整段 response，NDJSON 進度會被攢一起送 → progress bar 跳一下就到 done，UX 等於沒做。本地 dev 不會察覺差異，prod 才看得出來。兩個 `StreamingResponse`（market_closed_stream + main generate）都要加
+- **Generator 內不可 raise HTTPException**：headers 已 commit，raise 不會變 4xx，只會變成 broken stream（前端 reader 看到 EOF 而不是錯誤訊息）。所有預期 4xx 路徑必須在 pre-flight 檔下；generator 內的 `except` 統一 emit `error` event 給前端
 - **進度百分比是視覺提示，不是真實進度**：OpenAI call 60% 一段會「卡」最久（5~25 秒），最後一口氣跳到 100%；這是刻意設計（avoid fake animated progress），label 同步更新即可

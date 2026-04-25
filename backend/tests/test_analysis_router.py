@@ -587,6 +587,29 @@ def test_trade_quality_stream_emits_4_stages_in_order(api):
     assert payload["source"] == "openai"
 
 
+def test_trade_quality_stream_sets_proxy_no_buffer_headers(api):
+    """Vercel/Render 中間 reverse proxy 不能 buffer NDJSON，否則 progress UX 會被抵消。"""
+    client, db = api
+    _seed_full_context(db)
+
+    fake_payload = {"rating": "NEUTRAL", "summary": "x", "report_markdown": "y"}
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = MagicMock(
+        choices=[MagicMock(message=MagicMock(content=json.dumps(fake_payload)))]
+    )
+
+    with patch("app.routers.analysis.get_openai_api_key", return_value="k"), \
+         patch("app.routers.analysis.OpenAI", return_value=mock_client):
+        resp = client.post(
+            "/api/analysis/trade-quality/stream",
+            json={"stock_id": "2330", "buy_date": "2024-01-11"},
+        )
+
+    assert resp.status_code == 200
+    assert resp.headers.get("x-accel-buffering") == "no"
+    assert resp.headers.get("cache-control") == "no-cache"
+
+
 def test_trade_quality_stream_returns_404_for_unknown_stock(api):
     """Pre-flight：stock 不存在應該以 HTTP 404 回，不應該開 stream。"""
     client, db = api

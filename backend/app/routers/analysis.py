@@ -562,6 +562,14 @@ def analyze_trade_quality(
 #   失敗時最後 emit error event；HTTP 仍回 200（streaming 已 commit header）。
 #   Pre-flight 檢查（stock 找不到 / prompt 缺檔）在 stream 開始前 raise，仍走 4xx/5xx。
 
+# Vercel / Render / nginx 中間 reverse proxy 若 buffer 整段 response，NDJSON 進度
+# 會被攢一起送 → progress bar 跳一下就到 done，UX 等同沒做。X-Accel-Buffering 是
+# nginx 的關閉 buffer header；Cache-Control 防中間 cache。
+_STREAM_HEADERS = {
+    "X-Accel-Buffering": "no",
+    "Cache-Control": "no-cache",
+}
+
 
 def _emit(stage: str, label: str, payload: Optional[dict] = None) -> str:
     event: dict[str, Any] = {"stage": stage, "label": label}
@@ -594,7 +602,11 @@ def analyze_trade_quality_stream(
         def market_closed_stream():
             yield _emit("done", "完成", payload=jsonable_encoder(early_response))
 
-        return StreamingResponse(market_closed_stream(), media_type="application/x-ndjson")
+        return StreamingResponse(
+            market_closed_stream(),
+            media_type="application/x-ndjson",
+            headers=_STREAM_HEADERS,
+        )
 
     resolved = _resolve_buy_date(db, req.buy_date)
     if not resolved:
@@ -638,10 +650,10 @@ def analyze_trade_quality_stream(
 
             response = _normalize_response(payload, stock, resolved, warnings, source="openai")
             yield _emit("done", "完成", payload=jsonable_encoder(response))
-        except HTTPException:
-            # 已在 pre-flight 處理過；generator 內若仍 raise 視為例外路徑
-            raise
         except Exception:
+            # 注意：headers 已 commit，此處 raise HTTPException 不會變 4xx，會變成
+            # broken stream（前端 reader 看到 EOF）。所有預期 4xx 路徑必須在 pre-flight
+            # 檔下；若真有 HTTPException 漏到這裡，也只能改用 error event 通知前端。
             logger.exception("trade-quality stream failed during generation")
             yield _emit(
                 "error",
@@ -649,7 +661,11 @@ def analyze_trade_quality_stream(
                 payload={"detail": "分析過程發生錯誤，請稍後再試"},
             )
 
-    return StreamingResponse(generate(), media_type="application/x-ndjson")
+    return StreamingResponse(
+        generate(),
+        media_type="application/x-ndjson",
+        headers=_STREAM_HEADERS,
+    )
 
 
 # ── Context endpoint（M21）──────────────────────────────────────────────────
