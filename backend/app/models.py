@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, Float, Date, DateTime, Boolean, UniqueConstraint, ForeignKey
+from sqlalchemy import Column, String, Integer, BigInteger, Float, Date, DateTime, Boolean, UniqueConstraint, ForeignKey
 from datetime import datetime
 from .database import Base
 
@@ -274,6 +274,25 @@ class UserWatchlist(Base):
     __table_args__ = (
         UniqueConstraint("user_id", "stock_id", name="uq_watchlist_user_stock"),
     )
+
+
+class MarginTrade(Base):
+    """
+    融資融券每日餘額（M23 訊號管線使用）
+    資料來源：FinMind TaiwanStockMarginPurchaseShortSale
+    更新頻率：每日
+    M23 用途：判斷散戶融資追高 vs 法人吸貨對沖
+    """
+    __tablename__ = "margin_trade"
+
+    trade_date = Column(Date, primary_key=True)
+    stock_id = Column(String(16), primary_key=True)
+    margin_balance = Column(BigInteger, nullable=True)   # 融資餘額（張，當日收盤）
+    margin_change = Column(BigInteger, nullable=True)    # 當日融資餘額變化（today - yesterday）
+    short_balance = Column(BigInteger, nullable=True)    # 融券餘額（張，當日收盤）
+    short_change = Column(BigInteger, nullable=True)     # 當日融券餘額變化（today - yesterday）
+    source = Column(String(16), default="finmind")
+    ingested_at = Column(DateTime, default=datetime.utcnow)
 
 
 class IndustryMapping(Base):

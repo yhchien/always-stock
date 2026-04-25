@@ -719,7 +719,7 @@
 - 一檔一檔不行（cost 高），**5~10 檔 batch 一次 prompt**
 
 **前置工作**：
-- 新增 `margin_trade` 表 + `etl/finmind_margin_trade_sdk.py`（FinMind `TaiwanStockMarginPurchaseShortSale`，併入 `run_finmind_etl_sdk.py`，3 年 backfill）
+- ✅ 新增 `margin_trade` 表 + `etl/finmind_margin_trade_sdk.py`（FinMind `TaiwanStockMarginPurchaseShortSale`；併入 `run_finmind_etl_sdk.py` 為 step 7，non-CRITICAL；2026-04-25 完成。Backfill 待 prod 配額充足時執行）
 - 新增 `signal_snapshots` 表（一日一筆 UPSERT；存完整 LLM JSON + cost tracking）
 - 新增 `signal_generation_jobs` 表（job_id / status / progress_pct / current_stage；給前端進度條 polling）
 
