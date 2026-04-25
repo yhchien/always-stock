@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, BigInteger, Float, Date, DateTime, Boolean, UniqueConstraint, ForeignKey
+from sqlalchemy import Column, String, Integer, BigInteger, Float, Date, DateTime, Boolean, Text, JSON, UniqueConstraint, ForeignKey
 from datetime import datetime
 from .database import Base
 
@@ -293,6 +293,51 @@ class MarginTrade(Base):
     short_change = Column(BigInteger, nullable=True)     # 當日融券餘額變化（today - yesterday）
     source = Column(String(16), default="finmind")
     ingested_at = Column(DateTime, default=datetime.utcnow)
+
+
+class SignalGenerationJob(Base):
+    """
+    M23 訊號管線 job 追蹤
+    每次觸發（cron / 使用者 / admin）建一筆，前端 polling 進度條讀此表
+    """
+    __tablename__ = "signal_generation_jobs"
+
+    job_id = Column(String(36), primary_key=True)              # uuid4
+    snapshot_date = Column(Date, nullable=False, index=True)
+    triggered_by = Column(String(64), nullable=False)          # "cron" | "user:{id}" | "admin:{id}"
+    status = Column(String(16), nullable=False, index=True)    # pending | running | done | failed
+    current_stage = Column(String(64), nullable=True)          # ingest | rank | candidate | filter | llm_research | llm_explain | persist
+    progress_pct = Column(Integer, default=0, nullable=False)  # 0~100
+    progress_label = Column(String(255), nullable=True)        # "正在分析第 12 / 45 檔"
+    error_message = Column(Text, nullable=True)                # 失敗時填 traceback 摘要
+    started_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    finished_at = Column(DateTime, nullable=True)
+
+
+class SignalSnapshot(Base):
+    """
+    M23 每日訊號快照
+    一天一筆（snapshot_date unique），重新產生則 UPSERT 覆蓋
+    歷史保留所有日期，給未來評估 filter 與 LLM 註解品質
+    """
+    __tablename__ = "signal_snapshots"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    snapshot_date = Column(Date, nullable=False, unique=True, index=True)
+    market_context = Column(JSON, nullable=False)              # market_state / VIX / 加權 etc.
+    watchlist = Column(JSON, nullable=False)                   # List[StockSignal]
+    removed = Column(JSON, nullable=False)                     # List[RemovedItem]
+    summary = Column(JSON, nullable=False)                     # leader_count / follower_count / etc.
+    candidate_pool_size = Column(Integer, nullable=True)       # filter 前候選數
+    final_watchlist_size = Column(Integer, nullable=True)      # filter 後 WATCH 數
+    llm_model = Column(String(64), nullable=True)              # e.g. gpt-4o-search-preview
+    llm_total_tokens = Column(Integer, nullable=True)          # cost tracking
+    generated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    job_id = Column(
+        String(36),
+        ForeignKey("signal_generation_jobs.job_id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
 
 class IndustryMapping(Base):
