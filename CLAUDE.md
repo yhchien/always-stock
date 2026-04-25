@@ -1144,3 +1144,57 @@ M19 merge 之後使用者回報四個問題，一次修掉：
 - **`_STREAM_HEADERS` 必加**（`X-Accel-Buffering: no` + `Cache-Control: no-cache`）：Vercel ↔ Render 中間 nginx 預設會 buffer 整段 response，NDJSON 進度會被攢一起送 → progress bar 跳一下就到 done，UX 等於沒做。本地 dev 不會察覺差異，prod 才看得出來。兩個 `StreamingResponse`（market_closed_stream + main generate）都要加
 - **Generator 內不可 raise HTTPException**：headers 已 commit，raise 不會變 4xx，只會變成 broken stream（前端 reader 看到 EOF 而不是錯誤訊息）。所有預期 4xx 路徑必須在 pre-flight 檔下；generator 內的 `except` 統一 emit `error` event 給前端
 - **進度百分比是視覺提示，不是真實進度**：OpenAI call 60% 一段會「卡」最久（5~25 秒），最後一口氣跳到 100%；這是刻意設計（avoid fake animated progress），label 同步更新即可
+
+## M23 slice 4：signals/ 模組骨架完成（2026-04-25）
+
+### Scope（10 切片中的第 4 片）
+- 對應 spec §14：建立 `backend/app/signals/` 7 個模組的「契約面」（簽章 + docstring + stub）
+- 兩個模組**完整實作**：`exclusions.py`（純規則）+ `pipeline.py`（status 流轉 / progress / UPSERT）
+- 四個模組**簽章 + stub**：`candidate_pool.py` / `classification.py` / `filters.py` / `llm_caller.py`（slice 5/6 各自填）
+- 一個資料檔：`group_stocks.json`（5 大集團白名單）
+
+### 落地檔案
+- [backend/app/signals/__init__.py](backend/app/signals/__init__.py) — 模組總覽 + 對應 spec 章節 + re-export `run_signal_pipeline_sync`
+- [backend/app/signals/exclusions.py](backend/app/signals/exclusions.py)（**完整**）：
+  - 8 個 helper：`is_etf` / `is_financial` / `is_blacklisted` / `should_exclude` / `load_group_stocks` / `find_group_for_stock` / `get_group_members` / `get_group_leader`
+  - ETF 規則 `^00\d{2,}$` 或名字含 `ETF / 指數型基金 / 指數股票型`；金融規則 `industry_name` 含 `金融 / 銀行 / 保險 / 證券`
+  - `EXCLUSION_BLACKLIST: Set[str] = set()`（手動黑名單，第一版空）
+  - `_GROUP_STOCKS_CACHE` module-level 快取，`load_group_stocks(force_reload=True)` 可強制重讀
+  - `_meta` 開頭的 key 自動過濾（不會出現在 group dict）
+- [backend/app/signals/group_stocks.json](backend/app/signals/group_stocks.json) — 5 大集團（鴻海 / 台塑 / 國巨 / 聯電 / 聯發科），每組 `leader` + `members`，`leader` 必須在 `members` 內
+- [backend/app/signals/candidate_pool.py](backend/app/signals/candidate_pool.py)（stub）：3 個函式 `ingest_data` / `compute_rankings` / `build_candidate_pool`，slice 5 填
+- [backend/app/signals/classification.py](backend/app/signals/classification.py)（stub）：`PRELIM_TYPE_LEADER/FOLLOWER/LAGGARD_CANDIDATE` 常數 + `classify_stocks`，slice 5 填
+- [backend/app/signals/filters.py](backend/app/signals/filters.py)（stub）：4 個 `HINT_*` 常數 + `apply_hard_exclusions` / `apply_soft_filters`，slice 5 填
+- [backend/app/signals/llm_caller.py](backend/app/signals/llm_caller.py)（stub）：`DEFAULT_BATCH_SIZE = 8` / `DEFAULT_MODEL = "gpt-4o-search-preview"` + 4 個函式 `run_research_batch` / `run_explanation_batch` / `assemble_market_context` / `assemble_final_output`，slice 6 填
+- [backend/app/signals/pipeline.py](backend/app/signals/pipeline.py)（**完整**）：
+  - 7 stage 常數對齊 `models.SignalGenerationJob.current_stage` enum：`STAGE_INGEST/RANK/CANDIDATE/FILTER/LLM_RESEARCH/LLM_EXPLAIN/PERSIST`
+  - `run_signal_pipeline_sync(job_id, target_date, *, session_factory=None)` — cron / BackgroundTasks 共用入口
+  - `_set_progress(db, job, *, status, stage, pct, label)` — 每 stage 結束 commit 一次（前端 polling 即時看到）
+  - `_mark_done` / `_mark_failed`（先 `db.rollback()` 清 session error state，再 re-fetch job 寫狀態）
+  - `_persist_snapshot` — `(snapshot_date)` UPSERT：existing 則 setattr 覆蓋 + 更新 `generated_at`，無則 `db.add(SignalSnapshot(...))`
+  - LLM Research stage 為 batched loop（spec §5 Step 7：「一次 prompt 處理 5~10 檔」），每 batch commit 一次 progress
+  - try/except 包整段：失敗時 `_mark_failed` 寫 traceback[:2000] 後 **re-raise**（讓 caller 紀錄；測試也能 `pytest.raises`）
+
+### 測試
+- [backend/tests/test_signals_exclusions.py](backend/tests/test_signals_exclusions.py)：19 案例
+  - autouse fixture `_reset_group_stocks_cache` 清 module cache，避免測試殘留
+  - ETF / 金融 / 黑名單 / `should_exclude` 整合 / `group_stocks.json` 載入正確性 / leader-member 一致性
+- [backend/tests/test_signals_pipeline.py](backend/tests/test_signals_pipeline.py)：6 案例
+  - `session_factory` fixture 用 in-memory SQLite + `Base.metadata.create_all` per test
+  - `_stub_all_stages_noop(monkeypatch)` 把全部 stage function 換成 noop（happy path）
+  - 失敗路徑：第一個 stage 拋 `NotImplementedError`、filter stage 拋 `RuntimeError` 中間掛掉、`job_id` 不存在 `ValueError`
+  - Happy path：status=done + progress_pct=100、payload 欄位寫入 SignalSnapshot、同日重跑 UPSERT 不違反 unique
+- 全 backend suite：413 pass，1 pre-existing fail（`test_engine_connects` worktree 沒 sqlite 檔）+ 5 pre-existing errors（`test_finmind_sdk_integration` 需 API token），與 slice 4 無關
+
+### Gotcha
+- **`monkeypatch.setattr(module, "name", value)` 預設 `raising=True`**：被 patch 的 attribute 必須先存在於 module，否則 `AttributeError`。所以 `llm_caller.assemble_final_output` 雖然 slice 6 才實作，slice 4 也**必須先放 stub**（簽章對齊 pipeline 的呼叫）才能讓測試 monkeypatch 成功
+- **`_mark_failed` 必須先 `db.rollback()`**：上一個 stage 拋例外後 session 處於 error state，不 rollback 直接 commit 會把整個 transaction 噴掉；rollback 後再 `db.get(SignalGenerationJob, job_id)` re-fetch（不能用例外前抓的 ORM instance，已經 detached）
+- **stage progress commit 在 stage 開始前**：前端 polling 看到 `current_stage=filter / pct=30` 表示「正在跑 filter」；若 filter 拋例外，DB 仍保留這個進度（test_pipeline_marks_failed_when_filter_stage_raises 驗證）讓使用者看得到失敗點
+- **pipeline 不能用 request session**：spec §11.5 明確要求；本實作預設 `SessionLocal` 從 `app.database` import，測試傳 `session_factory=in_memory_factory`
+- **`_persist_snapshot` 用 `(snapshot_date)` 當 key UPSERT 不是 `(snapshot_date, job_id)`**：spec 設計每天一份 snapshot，重跑會覆蓋；測試 `test_pipeline_upserts_existing_snapshot_on_rerun` 驗證重跑後 `job_id` 已更新為最後一次
+- **stage function 全 raise NotImplementedError**：slice 4 跑真實 pipeline 會在 stage 1 ingest 即 failed，這是預期行為；測試靠 monkeypatch 替換為 noop 才能覆蓋 happy path
+
+### 下一步（slice 5）
+- 填 `candidate_pool.py` / `classification.py` / `filters.py` 的 deterministic 規則
+- 接 `daily_price` / `inst_stock_flow` / `industry_daily_flow` / `margin_trade` / `daily_valuation` / `monthly_revenue` 算 hot_score / 法人連買日 / soft hint 等
+- slice 6 才接 OpenAI（`llm_caller`）
