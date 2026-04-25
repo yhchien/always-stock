@@ -1,8 +1,18 @@
 import type { Metadata } from "next"
+import { Suspense } from "react"
 import { Geist, Geist_Mono } from "next/font/google"
 import "./globals.css"
 import AppProviders from "@/components/AppProviders"
 import Navbar from "@/components/Navbar"
+
+// Navbar 內用 useSearchParams() 讀 ?date= 帶到個股頁；Next 16 prerender
+// (含 /_not-found) 會 bail out 除非包在 Suspense 裡。fallback 用同高 header
+// 骨架避免 CLS。
+function NavbarFallback() {
+  return (
+    <header className="sticky top-0 z-50 h-[44px] border-b border-slate-700/40 bg-slate-900/90 backdrop-blur-sm" />
+  )
+}
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -28,7 +38,9 @@ export default function RootLayout({
     <html lang="zh-TW" className={`${geistSans.variable} ${geistMono.variable} dark h-full antialiased`}>
       <body className="min-h-full bg-slate-900 text-slate-100 flex flex-col">
         <AppProviders>
-          <Navbar />
+          <Suspense fallback={<NavbarFallback />}>
+            <Navbar />
+          </Suspense>
           <div className="flex-1">{children}</div>
         </AppProviders>
       </body>
