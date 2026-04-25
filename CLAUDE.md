@@ -102,7 +102,7 @@
 - M14 輿情分析
 - M15 Telegram 電子報
 - M20 交易分析擴充（預期 45% 報酬率加碼建議 + 風報比 1:1.75）
-- M23 每日異常訊號清單（07:00 台北排程；deterministic filter 篩出符合條件的股票分四組；LLM 為解釋層，把訊號翻成中文白話註解，不預測、不排推薦度）
+- M23 每日異常訊號清單（**03:00 台北排程**；deterministic filter 建候選池 + LLM 上網查公司業務／集團／龍頭；輸出 LEADER / FOLLOWER / LAGGARD 三類；L0 tab bar + pulse 通知 + 多工背景重新產生 + 進度條；不預測報酬、不出買賣建議；spec [docs/plans/m23_daily_signals_spec.md](docs/plans/m23_daily_signals_spec.md)）
 - M24 自訂進出場策略回測（M11 擴充；使用者自設分層進場 / 追價 / 攤平 / 停損停利規則，引擎回測 edge；LLM 為現場判斷層，trigger 觸發時依當下籌碼/產業/技術給「適合執行 yes/no」提示，不替使用者寫規則）
 
 > M18 → M19 → M20 依序執行。M19 已完工（2026-04-23），M20 擴充建立在 M19 卡片帶入 context 之上。
@@ -691,40 +691,62 @@
 
 ---
 
-### M23 每日異常訊號清單
+### M23 每日異常訊號清單（2026-04-25 改版）
 
-**你想解決的問題**：每天開盤前想要一份「今天值得看一下」的清單，不用自己翻產業排行 + 法人 + 融資融券一檔一檔比對。
+> **Canonical spec**：[docs/plans/m23_daily_signals_spec.md](docs/plans/m23_daily_signals_spec.md)
+> LLM prompt：[backend/app/prompts/watch-list-stock.md](backend/app/prompts/watch-list-stock.md)
 
-**三個訊號來源**：
-- 產業熱錢趨勢（哪個產業在吸金）
-- USD/TWD 匯率（資金面環境）
-- 個股融資融券多方狀況（散戶在追、法人在吸）
+**你想解決的問題**：每天早上需要一份「今天值得看一下」的清單，不用自己翻產業排行 + 法人 + 融資融券一檔一檔比對；並且要找出「熱錢主線正在擴散到哪裡」（不只是已經漲的）。
 
-**第一階段：deterministic filter（核心）**
-- 排程：台北 07:00（GitHub Actions 或 Render Cron）
-- 前置工作：新增 `margin_trade` 資料表 + `etl/finmind_margin_trade_sdk.py`，資料源 FinMind `TaiwanStockMarginPurchaseShortSale`（併入 `run_finmind_etl_sdk.py`）
-- 訊號分組（純規則）：
-  - `chip_bullish`：三大法人近 3 日連買 + 該產業熱度近 3 日轉正
-  - `margin_rotation`：融資減少 + 主力法人連買（散戶在賣、法人在接）
-  - `technical_breakout`：突破 20 日均線 + 量能 > 5 日均量 1.5x
-  - `industry_leader`：當日產業熱錢 Top 3 + 個股在該產業 rank 靠前
-- 每組吐 5~10 檔，附觸發條件量化指標（例：「外資近 3 日累計 +2.5 億、半導體產業排行第 1」）
+**輸出三類股票**（無預測 / 無目標價 / 無 BUY-SELL，僅 WATCH / REMOVE）：
+- **LEADER**：產業中最早上漲、漲幅領先、資金排名靠前、法人連買、量能放大、題材明確
+- **FOLLOWER**：與 LEADER 同產業 / 同供應鏈、已同步上漲但漲幅不如 LEADER、籌碼仍支持
+- **LAGGARD**：同產業 LEADER 已漲、該股漲幅落後、業務題材高度相關、法人/量能開始轉強、技術 early_turn
 
-**第二階段：LLM 解釋層（輔助）**
-- 對每檔股票生成「中文白話註解」，例：「2330 觸發 chip_bullish + industry_leader，但融資 5 日累計 +12% 在追高。法人雖連買但散戶也跟風，需注意散戶過熱風險」
-- LLM 做：把已經算出的數字翻成決策語言
-- LLM 不做：預測股價、排「推薦度」、出目標價
+每檔附 **500–1000 字繁體中文 reason**（13 點強制要點，見 prompt「reason 寫作規則」）。
 
-**DB / API / UI**
-- DB：`daily_signal_snapshot(snapshot_date, group_name, rank, stock_id, signals_json, llm_note)` — 存歷史便於事後評估 filter / LLM 註解品質
-- API：`GET /api/signals/daily?date=&group=`（公開）
-- UI：首頁新區塊「今日異常訊號」或 `/signals` 路由，每組 tab 切換，每檔點擊跳 L2
+**Pipeline（10 步）**：data ingestion → industry rank → stock rank → candidate pool → peer/group expand → deterministic filter → LLM research → LLM explanation → persist snapshot → update job status。詳見 spec §2 / §5。
 
-**使用流程**
-1. 每天早上打開首頁 → 看「今日異常訊號」掃一眼
-2. 點某組（例如 `margin_rotation`）→ 看完整 5~10 檔 + LLM 註解
-3. 對某檔有興趣 → 點進 L2 個股頁深入研究
-4. 決定要不要進場由使用者判斷
+**Deterministic 部分（DB + 程式）**：
+- 候選池：top_stocks_3d 40 + top_industries_3d 10 成分股 + 熱門產業龍頭 + 同供應鏈 + 集團股（spec §6，目標 60–120 檔）
+- LEADER / FOLLOWER / LAGGARD candidate 預分類（spec §7）
+- Hard exclusions：ETF、金融股、流動性不足、近 3 日漲超 15%（spec §9.1）
+- Soft filters：retail_overheated / distribution / range_bound（spec §9.2）
+
+**LLM 部分**（**支援 web search 的模型**，例如 `gpt-4o-search-preview`）：
+- 上網查 market_state（VIX / 美股 / 台指期 / USD-TWD）→ STRONG_BULL / STRUCTURAL_BULL / RANGE / WEAK
+- 上網查公司業務、產業鏈位置、題材延續性（≥ 1Q 才合格）、龍頭股 / 集團股表現
+- 一檔一檔不行（cost 高），**5~10 檔 batch 一次 prompt**
+
+**前置工作**：
+- 新增 `margin_trade` 表 + `etl/finmind_margin_trade_sdk.py`（FinMind `TaiwanStockMarginPurchaseShortSale`，併入 `run_finmind_etl_sdk.py`，3 年 backfill）
+- 新增 `signal_snapshots` 表（一日一筆 UPSERT；存完整 LLM JSON + cost tracking）
+- 新增 `signal_generation_jobs` 表（job_id / status / progress_pct / current_stage；給前端進度條 polling）
+
+**API**：
+- `GET /api/signals/latest`（公開）
+- `GET /api/signals/snapshot/{date}`（公開）
+- `GET /api/signals/jobs/latest`（公開，前端 polling 用）
+- `POST /api/signals/regenerate`（登入即可，但同日全站 5 次上限 + 每 user 1 次上限 + 同日 running job 拒絕並發）
+
+**排程：台北 03:00**（從原規劃的 07:00 改）
+- `.github/workflows/daily_signals.yml`：cron `0 19 * * 1-5`（UTC = 台北次日 03:00 週二~週六）
+- 4h offset 抓「昨日」當 target_date（沿用 daily_etl_update.yml pattern 防 cron 延遲跨日）
+- 03:00 跑時昨日 ETL 已在 23:00 完成 → 給足 4 小時 buffer
+
+**前端 L0 tab bar UX**（`<DailySignalsPanel />`）：
+- 版位：L0 首頁 TradeQualityAnalysis 之後、HotMoneyList 之前
+- 4 個 tab：LEADER / FOLLOWER / LAGGARD / REMOVED（顯示各組 count）
+- **跳跳跳通知**：localStorage 存 `last_seen_snapshot_date`，比對最新 snapshot 有更新 → header 旁顯示綠色 `animate-ping` 點 + 「新」字；點任一 tab 後寫回 localStorage 取消通知
+- **多工背景產生**：點「重新產生」→ POST `/api/signals/regenerate` → 回 202 + job_id → server BackgroundTasks 跑 → 使用者可以離開頁面繼續用其他功能
+- **進度條**：留在頁面時 polling `/api/signals/jobs/latest` 每 3 秒一次；顯示 `progress_pct` 與 `progress_label`（例：「正在分析第 28 / 45 檔」）
+- 離開頁面再回來：mount 時 polling 自動接上最新進度（不依賴 long-lived connection）
+
+**使用流程**：
+1. 早上開首頁 → tab bar 旁有跳跳跳綠點 → 知道有新報告
+2. 點 tab 看 LEADER / FOLLOWER / LAGGARD 各組 → reason 一目了然
+3. 對某檔有興趣 → 點卡片跳 L2 深入研究
+4. 也可以隨時點「重新產生」觸發新一輪分析（背景跑、不擋使用者操作）
 
 ---
 
@@ -785,7 +807,7 @@ LLM 不做：替使用者寫規則、告訴使用者「該買哪檔」、取代�
 
 | 角色 | 做什麼 | **不**做什麼 |
 |------|--------|-----------|
-| **解釋層**（M23） | 把 deterministic 訊號翻成中文白話 | 不預測股價、不排推薦度 |
+| **解釋層**（M23） | 翻譯 deterministic 訊號 + 上網查公司業務／集團／龍頭比對；判斷 market_state；產 LEADER/FOLLOWER/LAGGARD 三類 reason | 不預測股價、不出目標價、不排推薦度、不發 BUY/SELL |
 | **現場判斷層**（M24） | 在 trigger 觸發當下給 yes/no 提醒 | 不替使用者寫規則、不取代歷史回測 |
 
 決策權永遠在使用者手上：
