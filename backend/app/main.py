@@ -9,7 +9,19 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from app.rate_limit import limiter
-from app.routers import analysis, auth as auth_router, backtest, brokers, financials, industries, market, realtime, stocks, watchlist
+from app.routers import (
+    analysis,
+    auth as auth_router,
+    backtest,
+    brokers,
+    financials,
+    industries,
+    market,
+    realtime,
+    signals,
+    stocks,
+    watchlist,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -158,6 +170,7 @@ app.include_router(backtest.router, prefix="/api")
 app.include_router(financials.router, prefix="/api")
 app.include_router(analysis.router, prefix="/api")
 app.include_router(watchlist.router, prefix="/api")
+app.include_router(signals.router, prefix="/api")
 
 logger.info("always-stock API initialized")
 
