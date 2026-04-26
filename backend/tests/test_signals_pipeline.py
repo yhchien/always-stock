@@ -93,8 +93,18 @@ def _stub_all_stages_noop(monkeypatch):
 # ---------- failure paths ----------
 
 
-def test_pipeline_marks_failed_when_first_stage_raises_not_implemented(session_factory):
-    """slice 4 預設行為：所有 stage 為 stub，第一個 ingest 即 NotImplementedError。"""
+def test_pipeline_marks_failed_when_ingest_stage_raises(session_factory, monkeypatch):
+    """ingest stage 拋例外 → status=failed + error_message + finished_at 寫入。
+
+    Slice 5 之後 ingest_data 已是實作（不再 NotImplementedError），這裡用 monkeypatch
+    模擬 ingest 突發失敗（例如 DB 連線中斷）來驗證最早期的失敗路徑仍被正確記錄。
+    """
+
+    def _boom(*args, **kwargs):
+        raise NotImplementedError("ingest blew up")
+
+    monkeypatch.setattr(candidate_pool, "ingest_data", _boom)
+
     job_id = str(uuid.uuid4())
     _seed_pending_job(session_factory, job_id)
 

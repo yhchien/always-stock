@@ -1240,3 +1240,50 @@ M19 merge 之後使用者回報四個問題，一次修掉：
 - 填 `llm_caller.py`：`run_research_batch` / `run_explanation_batch` / `assemble_market_context` / `assemble_final_output`
 - 接 OpenAI `gpt-4o-search-preview`（spec §5 step 7-8）
 - batch 5~10 檔一次 prompt（成本控制）
+
+## M23 slice 6：llm_caller.py 完整實作（2026-04-26）
+
+### Scope（10 切片中的第 6 片）
+- `llm_caller.py` 從 stub 換成完整實作；接 OpenAI `gpt-4o-search-preview`（支援 web search）
+- 對應 spec §3.2 / §5 step 0+7+8+9 / §10 LLM I/O contract
+- 全 mock 單元測試覆蓋（不打真實網路、不依賴 API key）
+
+### 落地檔案
+- [backend/app/prompts/watch-list-stock.md](backend/app/prompts/watch-list-stock.md) — 525 行 buy-side 分析師 prompt 從 main 專案複製進 worktree（spec §10 全文 I/O contract + 13 點 reason 寫作規則）
+- [backend/app/signals/llm_caller.py](backend/app/signals/llm_caller.py)（~470 行）：
+  - 4 個 public function 簽章與 pipeline.py 對齊（slice 4 預先放 stub 才能讓測試 monkeypatch 成功）
+  - `assemble_market_context(db_market_snapshot, *, model)` — Step 0：判斷 STRONG_BULL / STRUCTURAL_BULL / RANGE / WEAK
+  - `run_research_batch(stocks_batch, market_context, *, model)` — Step 7：上網查公司業務 / 產業鏈 / 題材 / 集團 / 龍頭，輸出 `type` + `business_summary` + `theme` + `group_info` + `leader_check`
+  - `run_explanation_batch(research_results, market_context, *, model)` — Step 8：依 market_state gating → `signals` + `decision` (WATCH/REMOVE) + 500–1000 字 reason；caller 不需自己分 batch（內部依 `DEFAULT_BATCH_SIZE` 拆 chunk）
+  - `assemble_final_output(market_context, explanation, *, candidate_pool_size, model, total_tokens)` — Step 9：拆 watchlist / removed、計算 `summary` 4 欄、組裝 spec §10.2 完整 schema
+  - `_call_llm_json(system_prompt, user_msg, *, model)` 內部統一入口；`_extract_json` 容錯解析（去 ` ```json ... ``` ` markdown fence）；4 個 fallback function 對應 4 種失敗路徑
+
+### 常數
+- `DEFAULT_BATCH_SIZE = 8`（spec §5 Step 7「5~10 檔/批」中位數）
+- `DEFAULT_MODEL = "gpt-4o-search-preview"`
+- `_MAX_OUTPUT_TOKENS = 8000`（reason 500-1000 字 × 8 檔 batch 預留充足）
+- `_PROMPT_PATH = backend/app/prompts/watch-list-stock.md`
+
+### 測試
+- [backend/tests/test_signals_llm_caller.py](backend/tests/test_signals_llm_caller.py)：26 案例
+  - `_extract_json` 6 案例（plain JSON / fence with lang / fence without lang / garbage / empty / whitespace）
+  - `assemble_market_context` 5 案例（happy / fence / api_key 缺 / invalid JSON / OpenAI 例外）
+  - `run_research_batch` 5 案例（empty / 對齊 / 缺檔 fallback / 整體失敗 / 缺 research key）
+  - `run_explanation_batch` 5 案例（empty / decision+reason / chunk 分批 / 整體失敗 / 缺檔 fallback）
+  - `assemble_final_output` 5 案例（split / summary count / total_tokens / empty / unknown decision treated as remove）
+- 全 backend suite：496 pass（slice 5 470 + slice 6 26）、1 pre-existing fail（`test_engine_connects` worktree 沒 sqlite 檔）
+
+### Gotcha
+- **`gpt-4o-search-preview` 不支援 `temperature` 與 `response_format=json_object`**：跟 M17 `_call_openai` 用法不一樣；本實作 `_call_llm_json` 只傳 `model / messages / max_completion_tokens`，靠 prompt instruction 「JSON only, no markdown fence」+ `_extract_json` 防禦性解析
+- **fallback 預設 `decision=REMOVE`**（保守）：LLM 不可用時不該誤標 WATCH；fallback dict 標 `_unavailable: True` 給 traceability
+- **stock alignment by `stock_id` / `stock` key**：LLM 回應順序可能與輸入不同，缺檔需走 fallback 補齊；用 `by_id` dict 對齊
+- **`run_explanation_batch` 內部分批**：caller 可一口氣傳 60+ 檔進來，不用自己 chunk；測試 `test_run_explanation_batch_chunks_by_default_batch_size` 用 `monkeypatch.setattr(llm_caller, "DEFAULT_BATCH_SIZE", 4)` + 13 檔驗證 4 次 LLM call
+- **System prompt 每次 LLM call 都重新 `_load_system_prompt()`**：方便編輯 prompt 不用重啟 server；FAQ 性能：FS read 一次成本可接受、且第一版 prompt 525 行不大
+- **markdown fence 移除 logic**：`_extract_json` 先 `strip`、startswith `\`\`\`` 時找第一個 `\n` 切掉開頭、endswith `\`\`\`` 切結尾；防 LLM 偶發加 ` ```json ... ``` ` 包裝；無 fence 時直接 `json.loads`
+- **slice 4 pipeline 測試需更新**：`test_pipeline_marks_failed_when_first_stage_raises_not_implemented` 名稱不再準確（slice 5 ingest_data 已實作；slice 6 llm_caller 也不再 raise NotImplementedError），改為 `test_pipeline_marks_failed_when_ingest_stage_raises` 並用 monkeypatch 注入 `_boom`，驗證一樣的失敗路徑契約
+
+### 下一步（slice 7~10）
+- slice 7：`run_signal_pipeline_async` BackgroundTasks wrapper + `/api/signals/regenerate` rate limit + concurrency guard
+- slice 8：`/api/signals/latest` / `/api/signals/snapshot/{date}` / `/api/signals/jobs/latest` 三個公開 GET endpoint
+- slice 9：`.github/workflows/daily_signals.yml` cron 03:00 台北 + smoke test
+- slice 10：前端 `<DailySignalsPanel />` L0 tab bar UX + pulse 通知 + 進度條 polling
