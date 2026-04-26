@@ -1337,3 +1337,47 @@ M19 merge 之後使用者回報四個問題，一次修掉：
 - slice 8：前端 `<DailySignalsPanel />` L0 tab bar UX + pulse 通知 + 進度條 polling
 - slice 9：`.github/workflows/daily_signals.yml` cron 03:00 台北 + smoke test
 - slice 10：手動觸發驗證 prod，沒問題後等 cron 03:00 自動跑
+
+## M23 slice 8 + 9：前端 panel + GitHub Actions workflow（2026-04-26）
+
+落在 branch `claude/angry-cerf-8755da`，與 slice 7 同 branch（slice 7~9 一起 merge 上 main 才能讓 cron 跑得起來）。
+
+**Why**：spec §13 前端 L0 tab bar UX + spec §12 GitHub Actions 排程；前者是 user-facing 入口、後者是每日自動產生 snapshot 的觸發器。slice 7 完成後對外有 API 但「沒有人會去打」、cron 也沒接 → 必須 8/9 同時上線才算可用閉環。
+
+**How to apply**：
+- 修進度條樣式 / pulse 動畫 → 動 `frontend/src/components/DailySignalsPanel.tsx`（單一檔案、無拆分子元件）
+- 修 polling 間隔 → 動 `frontend/src/lib/useSignalJobPolling.ts` 頂部 `POLL_INTERVAL_MS = 3000`；錯誤 backoff 是 `* 2`（6 秒）
+- 改 cron 時間 → 動 `.github/workflows/daily_signals.yml` `cron: '0 19 * * 1-5'`（UTC，= 台北 03:00 週二~週六）
+- 改 retry 邏輯 → 不要學 `daily_etl_update.yml` 加 `sleep 5400` retry，因為 LLM 失敗用 retry 通常還是會掛（不像 quota 重試會解）；signal pipeline 失敗（exit 2/3）直接 fail workflow，靠 user 點「重新產生」處理
+
+**前端結構**（`DailySignalsPanel.tsx`）：
+- header：折疊鈕（▸/▾，預設 collapse）+「今日異常訊號清單」+ pulse badge（有新訊號時）+ snapshot_date / generated_at
+- 進度條：`useSignalJobPolling()` 回傳 `job` 為 `pending`/`running` 時顯示，progress_pct + progress_label
+- 4 tabs（base-ui）：LEADER / FOLLOWER / LAGGARD / REMOVED，每個 tab 顯示對應 count
+- SignalCard：股票連結 + decision badge（LEADER 綠 / FOLLOWER 藍 / LAGGARD 琥珀）+ 產業/子產業 + 主題 + 訊號 chips（資金/籌碼/融資券/技術）+ reason 中文白話
+- RemovedCard：紅色 REMOVED 徽章 + 排除原因
+- 「重新產生」按鈕 5 狀態（spec §13.5）：未登入 disabled「重新產生（需登入）」/ running disabled「產生中…」/ 送出中「送出中…」/ 載入中 disabled / 可觸發 enabled「重新產生」
+- 點任何 tab 或展開 panel → 寫入 `always-stock:signals:last_seen_snapshot_date` → 清掉 pulse
+- 折疊狀態存 `always-stock:signals:collapsed`（預設 collapse）
+
+**GitHub Actions workflow**（`daily_signals.yml`）：
+- 觸發：cron `0 19 * * 1-5`（UTC = 台北 03:00 週二~週六）+ workflow_dispatch（吃 `target_date` input）
+- target_date：吃 input 優先；沒帶則 `date -d '4 hours ago' +%F`（同 daily_etl_update.yml 防 cron 跨日）
+- timeout 90 min（LLM 60~120 檔 × ~20s/檔 ≈ 30~60 min）
+- env：`DATABASE_URL` + `OPENAI_API_KEY` + `OPENAI_MODEL`（fallback `gpt-4o-search-preview`）
+- exit code 對應：0/1 → workflow pass（1 = no_data 為合理結果，週末或無候選池）；2/3 → workflow fail（LLM / DB 錯誤需人工介入）
+- 不做 `daily_etl_update.yml` 的 sleep+retry：FinMind quota 等 1.5h 會解、OpenAI 失敗多半是模型/prompt 問題 retry 沒用
+
+**Gotcha**：
+- **無 `node_modules` 在 worktree**：本切片 frontend 改動沒跑 `npx tsc --noEmit` / `next build`；type 錯誤靠 PR CI / vercel preview 抓。Component 用的型別都是 `frontend/src/lib/api.ts` 既有 export，型別契合度應該高
+- **base-ui Tabs.Panel `value` prop**：base-ui 用 `value` 比對 `Tabs.Root` 的 `value` 決定哪個 panel 顯示；不是 shadcn `data-state="active"`。`TabsContent` (= `TabsPrimitive.Panel`) 接 `value` 自動切換
+- **`fetchLatestSignalSnapshot` 404 → null**：M23 slice 7 的 endpoint 第一次 deploy 時 DB 無 snapshot，前端不能 throw、要顯示「目前尚無訊號清單」；`api.ts` 的 helper 已實作 404 → null
+- **localStorage 永遠包 try/catch**：SSR + 隱私模式 + iframe 都可能噴；用 `try { window.localStorage.getItem(...) } catch { /* ignore */ }`
+- **Polling cleanup**：`useSignalJobPolling` 用 `cancelledRef` + `clearTimeout(timer)`，unmount / `bumpKey` 變動時都會中斷；點「重新產生」後 `setBumpKey((k) => k + 1)` 觸發 effect 重啟（沒有 long-lived connection）
+- **`job.progress_pct` 可能 > 100 / < 0**：前端用 `Math.min(100, Math.max(0, x))` clamp；後端 pipeline 寫入時雖然應該 0~100 但 UI 不能假設
+
+**slice 10（最後一片）**：
+- 部署後手動 `gh workflow run daily_signals.yml --ref main -f target_date=2026-04-25` 觸發一次
+- 觀察 Render log + DB 寫入 `signal_snapshots` / `signal_generation_jobs`
+- 開首頁 `https://...vercel.app/`（已登入帳號）→ 看 panel 是否能展開、訊號是否顯示、pulse 動畫是否運作
+- 沒問題就等 cron 03:00 自動跑（週二~週六）
