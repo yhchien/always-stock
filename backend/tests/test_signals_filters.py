@@ -1,0 +1,248 @@
+"""M23 slice 5：filters.py hard / soft 規則測試（spec §9）。"""
+from datetime import date
+
+from app.signals.classification import (
+    PRELIM_TYPE_LAGGARD_CANDIDATE,
+    PRELIM_TYPE_LEADER,
+)
+from app.signals.filters import (
+    HINT_DISTRIBUTION,
+    HINT_RANGE_BOUND,
+    HINT_RETAIL_OVERHEATED,
+    HINT_WEAKENING,
+    apply_hard_exclusions,
+    apply_soft_filters,
+)
+
+
+# ---------- helpers ----------
+
+
+def _candidate(**overrides):
+    """產生「全部過 hard exclusion」的乾淨候選 dict。"""
+    base = {
+        "stock_id": "2330",
+        "name": "台積電",
+        "industry": "半導體業",
+        "prelim_type": PRELIM_TYPE_LEADER,
+        "price_change_3d": 5.0,
+        "total_institution_flow_5d": 1.0e8,
+        "avg_turnover_5d": 5.0e8,
+        # soft filter 預設都不命中
+        "total_institution_flow_3d": 5.0e7,
+        "total_institution_flow_1d": 1.0e7,
+        "margin_change_3d": 0.0,
+        "volume_1d_to_60d_ratio": 1.0,
+        "price_change_1d": 0.5,
+        "high_1d": 100.0,
+        "low_1d": 98.0,
+        "open_1d": 99.0,
+        "close_1d": 99.5,
+        "high_10d": 105.0,
+        "low_10d": 95.0,
+    }
+    base.update(overrides)
+    return base
+
+
+# ---------- §9.1 Hard Exclusions ----------
+
+
+def test_hard_exclusions_drops_etf():
+    pool = [_candidate(stock_id="0050", name="元大台灣 50")]
+    out = apply_hard_exclusions(None, date(2026, 4, 25), pool)
+    assert out == []
+
+
+def test_hard_exclusions_drops_financial():
+    pool = [_candidate(stock_id="2880", name="華南金", industry="金融保險業")]
+    out = apply_hard_exclusions(None, date(2026, 4, 25), pool)
+    assert out == []
+
+
+def test_hard_exclusions_drops_negative_5d_flow_for_non_laggard():
+    pool = [_candidate(total_institution_flow_5d=-1.0e8)]
+    out = apply_hard_exclusions(None, date(2026, 4, 25), pool)
+    assert out == []
+
+
+def test_hard_exclusions_keeps_negative_5d_flow_for_laggard():
+    pool = [
+        _candidate(
+            total_institution_flow_5d=-1.0e8,
+            prelim_type=PRELIM_TYPE_LAGGARD_CANDIDATE,
+        )
+    ]
+    out = apply_hard_exclusions(None, date(2026, 4, 25), pool)
+    assert len(out) == 1
+    assert out[0]["prelim_type"] == PRELIM_TYPE_LAGGARD_CANDIDATE
+
+
+def test_hard_exclusions_drops_overheated_3d_change():
+    pool = [_candidate(price_change_3d=15.5)]
+    out = apply_hard_exclusions(None, date(2026, 4, 25), pool)
+    assert out == []
+
+
+def test_hard_exclusions_keeps_at_threshold_15_pct():
+    """15.0% 不嚴格大於 → 應保留。"""
+    pool = [_candidate(price_change_3d=15.0)]
+    out = apply_hard_exclusions(None, date(2026, 4, 25), pool)
+    assert len(out) == 1
+
+
+def test_hard_exclusions_drops_low_liquidity():
+    pool = [_candidate(avg_turnover_5d=4.0e7)]  # < 5e7
+    out = apply_hard_exclusions(None, date(2026, 4, 25), pool)
+    assert out == []
+
+
+def test_hard_exclusions_keeps_when_avg_turnover_unknown():
+    """avg_turnover_5d=None → 不剔除（資料缺）。"""
+    pool = [_candidate(avg_turnover_5d=None)]
+    out = apply_hard_exclusions(None, date(2026, 4, 25), pool)
+    assert len(out) == 1
+
+
+def test_hard_exclusions_keeps_when_5d_flow_unknown():
+    pool = [_candidate(total_institution_flow_5d=None)]
+    out = apply_hard_exclusions(None, date(2026, 4, 25), pool)
+    assert len(out) == 1
+
+
+def test_hard_exclusions_handles_empty_pool():
+    assert apply_hard_exclusions(None, date(2026, 4, 25), []) == []
+
+
+# ---------- §9.2 Soft Filters ----------
+
+
+def test_soft_filter_no_hints_for_clean_candidate():
+    pool = [_candidate()]
+    out = apply_soft_filters(None, date(2026, 4, 25), pool)
+    assert out[0]["soft_hints"] == []
+
+
+def test_soft_filter_weakening_when_3d_positive_1d_large_sell():
+    pool = [
+        _candidate(
+            total_institution_flow_3d=1.0e8,
+            total_institution_flow_1d=-6.0e7,  # < -1e8 × 0.5
+        )
+    ]
+    out = apply_soft_filters(None, date(2026, 4, 25), pool)
+    assert HINT_WEAKENING in out[0]["soft_hints"]
+
+
+def test_soft_filter_weakening_not_triggered_when_1d_only_slightly_negative():
+    pool = [
+        _candidate(
+            total_institution_flow_3d=1.0e8,
+            total_institution_flow_1d=-3.0e7,  # > -5e7（不夠大）
+        )
+    ]
+    out = apply_soft_filters(None, date(2026, 4, 25), pool)
+    assert HINT_WEAKENING not in out[0]["soft_hints"]
+
+
+def test_soft_filter_retail_overheated_when_margin_up_inst_flat():
+    pool = [
+        _candidate(
+            margin_change_3d=0.07,  # +7%
+            total_institution_flow_3d=0.0,  # 法人未買
+        )
+    ]
+    out = apply_soft_filters(None, date(2026, 4, 25), pool)
+    assert HINT_RETAIL_OVERHEATED in out[0]["soft_hints"]
+
+
+def test_soft_filter_retail_overheated_not_triggered_when_inst_buying():
+    pool = [
+        _candidate(
+            margin_change_3d=0.10,
+            total_institution_flow_3d=1.0e8,  # 法人在買
+        )
+    ]
+    out = apply_soft_filters(None, date(2026, 4, 25), pool)
+    assert HINT_RETAIL_OVERHEATED not in out[0]["soft_hints"]
+
+
+def test_soft_filter_distribution_volume_no_rise():
+    pool = [
+        _candidate(
+            volume_1d_to_60d_ratio=2.5,  # > 2
+            price_change_1d=-1.0,        # 不漲
+        )
+    ]
+    out = apply_soft_filters(None, date(2026, 4, 25), pool)
+    assert HINT_DISTRIBUTION in out[0]["soft_hints"]
+
+
+def test_soft_filter_distribution_upper_shadow():
+    """high=110, open=99, close=100 → upper_shadow=10, body=1, ratio=10>2;
+    close/high = 100/110 = 0.909 < 0.97 → distribution。"""
+    pool = [
+        _candidate(
+            high_1d=110.0,
+            open_1d=99.0,
+            close_1d=100.0,
+        )
+    ]
+    out = apply_soft_filters(None, date(2026, 4, 25), pool)
+    assert HINT_DISTRIBUTION in out[0]["soft_hints"]
+
+
+def test_soft_filter_distribution_not_triggered_when_close_near_high():
+    """close=109/110=0.99 > 0.97 → 不算長上影。"""
+    pool = [
+        _candidate(
+            high_1d=110.0,
+            open_1d=99.0,
+            close_1d=109.0,
+            volume_1d_to_60d_ratio=1.0,
+        )
+    ]
+    out = apply_soft_filters(None, date(2026, 4, 25), pool)
+    assert HINT_DISTRIBUTION not in out[0]["soft_hints"]
+
+
+def test_soft_filter_range_bound_when_10d_volatility_below_5pct():
+    pool = [_candidate(high_10d=100.0, low_10d=97.0)]  # (100-97)/97 ≈ 3.09%
+    out = apply_soft_filters(None, date(2026, 4, 25), pool)
+    assert HINT_RANGE_BOUND in out[0]["soft_hints"]
+
+
+def test_soft_filter_range_bound_not_triggered_when_volatility_above_5pct():
+    pool = [_candidate(high_10d=110.0, low_10d=95.0)]  # ≈15.8%
+    out = apply_soft_filters(None, date(2026, 4, 25), pool)
+    assert HINT_RANGE_BOUND not in out[0]["soft_hints"]
+
+
+def test_soft_filter_can_emit_multiple_hints():
+    pool = [
+        _candidate(
+            total_institution_flow_3d=1.0e8,
+            total_institution_flow_1d=-6.0e7,    # weakening
+            margin_change_3d=0.10,                # 但 inst 在買 → retail 不觸發
+            volume_1d_to_60d_ratio=2.5,           # distribution (vol)
+            price_change_1d=-0.5,
+            high_10d=100.0,
+            low_10d=97.0,                         # range_bound
+        )
+    ]
+    out = apply_soft_filters(None, date(2026, 4, 25), pool)
+    hints = set(out[0]["soft_hints"])
+    assert HINT_WEAKENING in hints
+    assert HINT_DISTRIBUTION in hints
+    assert HINT_RANGE_BOUND in hints
+    assert HINT_RETAIL_OVERHEATED not in hints
+
+
+def test_soft_filter_does_not_mutate_input():
+    cand = _candidate()
+    apply_soft_filters(None, date(2026, 4, 25), [cand])
+    assert "soft_hints" not in cand
+
+
+def test_soft_filter_handles_empty_pool():
+    assert apply_soft_filters(None, date(2026, 4, 25), []) == []

@@ -1198,3 +1198,45 @@ M19 merge 之後使用者回報四個問題，一次修掉：
 - 填 `candidate_pool.py` / `classification.py` / `filters.py` 的 deterministic 規則
 - 接 `daily_price` / `inst_stock_flow` / `industry_daily_flow` / `margin_trade` / `daily_valuation` / `monthly_revenue` 算 hot_score / 法人連買日 / soft hint 等
 - slice 6 才接 OpenAI（`llm_caller`）
+
+## M23 slice 5：deterministic filter 三層完成（2026-04-26）
+
+### Scope（10 切片中的第 5 片）
+- `candidate_pool.py` / `classification.py` / `filters.py` 三模組從 stub 換成完整實作
+- 對應 spec §6（候選池）/ §7（LEADER/FOLLOWER/LAGGARD 預分類）/ §9（hard exclusions + soft filters）
+- 全 deterministic、純規則；slice 6 才接 OpenAI（LLM research / explanation）
+
+### 落地檔案（覆蓋 stub）
+- [backend/app/signals/candidate_pool.py](backend/app/signals/candidate_pool.py)（~600 行）：
+  - 三函式 `ingest_data` / `compute_rankings` / `build_candidate_pool`，依 spec §5 step 1-4 串接
+  - 候選池來源 union：top_stocks_3d 40 + top_industries_3d 10 成分股 + 熱門產業龍頭 + 同產業同 sub_industry 擴散 + 集團股（`exclusions.load_group_stocks`）
+  - 每檔股票算 `industry_count` / `industry_rank_5d` / `industry_rank_net_3d` / `consecutive_buy_days_3d` / `volume_5d_to_60d_ratio` / `price_change_3d/5d/1d` / `total_institution_flow_1d/3d/5d` / `margin_change_3d` / MA5 / MA10 / OHLC / volume ratios（給 §7 §9 用）
+  - 常數：`TOP_INDUSTRIES_LIMIT=10`、`TOP_STOCKS_LIMIT=40`、`TOP_STOCKS_INNER=10`、`POOL_SOFT_TRIGGER=150`、`POOL_HARD_LIMIT=120`
+  - 軟上限超過 → 依「LEADER candidate（rank 高） > FOLLOWER candidate > 其他」截斷至 hard limit
+- [backend/app/signals/classification.py](backend/app/signals/classification.py)（~200 行）：
+  - LEADER：`industry_rank_5d` 前 30%（`ceil(count * 0.3)`）+ `industry_rank_net_3d` 前 20% + `consecutive_buy_days_3d >= 2` + `volume_5d_to_60d_ratio >= 1.5`
+  - FOLLOWER：同產業已有 LEADER + `0 < price_change_5d < leader_gain × 0.7` + `total_institution_flow_3d > 0`
+  - LAGGARD_CANDIDATE：guard（同產業 LEADER 漲 ≥ 5%）+ 4 條件中 hits ≥ 2（gap ≥ 5pct / net_1d>0 OR vol_1d_to_5d>1.2 / 站上 5MA OR 10MA；guard 自身已算 1 hit）
+  - 三類都不符 → **剔除**（不原地保留）
+- [backend/app/signals/filters.py](backend/app/signals/filters.py)（~210 行）：
+  - Hard exclusions（直接剔除）：ETF / 金融 / 黑名單（`exclusions.should_exclude`）+ `total_institution_flow_5d < 0` 但**非** LAGGARD + `price_change_3d > 15%` + `avg_turnover_5d < 5e7`
+  - Soft filters（標 hint，不剔除）：`HINT_WEAKENING` / `HINT_RETAIL_OVERHEATED` / `HINT_DISTRIBUTION` / `HINT_RANGE_BOUND`，多條件可同時命中
+  - distribution 包兩條件（爆量不漲 / 高檔長上影），命中其一即算
+
+### 測試
+- [backend/tests/test_signals_candidate_pool.py](backend/tests/test_signals_candidate_pool.py)：13 案例（in-memory SQLite，seed 全市場 master/price/flow，驗證 ingest / rank / pool 正確；用 monkeypatch 把 `POOL_SOFT_TRIGGER=5` / `POOL_HARD_LIMIT=3` 模擬截斷）
+- [backend/tests/test_signals_classification.py](backend/tests/test_signals_classification.py)：21 案例（template helper + override pattern；LEADER 4 條件各別 fail / FOLLOWER paired with LEADER / LAGGARD 2 hits 各種組合 / 整體優先序 / 多 leader 取 max gain）
+- [backend/tests/test_signals_filters.py](backend/tests/test_signals_filters.py)：23 案例（hard exclusion 各條件、邊界 15% 不算、None 視為缺資料；soft filter 各 hint 個別觸發 + 不觸發 + 多重觸發；不修改原 dict）
+- 全 backend suite：470 pass、1 pre-existing fail（`test_engine_connects` 是 worktree 沒 sqlite 檔，非 slice 5 影響）
+
+### Gotcha
+- **FOLLOWER vs LAGGARD 重疊**：`price_change_5d=0` 時 FOLLOWER 失敗（要求 > 0），但會落入 LAGGARD（gap = leader_gain - 0 通常 ≥ 5pct）。測試應斷言 `prelim_type != FOLLOWER`，**不可斷言 `stock_id not in result`**，否則 LAGGARD 也算 in result 會誤判。同 issue 在 `test_follower_dropped_when_3d_flow_not_positive`
+- **`_is_top_pct` 邊界用 `ceil`**：`industry_count=10`、`pct=0.3` → threshold `ceil(10*0.3) = 3`，rank=4 不通過；`pct=0.2` → threshold 2，rank=3 不通過。`industry_count=0` 視為失敗（避免 div by zero）
+- **distribution 高檔長上影公式**：`high - close > (close - open) × 2 AND close < high × 0.97`。紅 K（body 為負）時 inequality 自動成立，配合 close < high × 0.97 仍能正確抓到「紅 K + 拉回」的派發 pattern（不額外加紅 K guard）
+- **soft filter 不修改原 dict**：用 `{**c, "soft_hints": hints}` shallow copy；`apply_soft_filters` 不可 mutate input（pipeline 可能對候選池有其他引用）
+- **hard exclusions 用候選池欄位即可**：`db / target_date` 暫保留簽章但不查 DB，因為 `should_exclude` + 其他條件全部用 candidate_pool 算好的欄位
+
+### 下一步（slice 6）
+- 填 `llm_caller.py`：`run_research_batch` / `run_explanation_batch` / `assemble_market_context` / `assemble_final_output`
+- 接 OpenAI `gpt-4o-search-preview`（spec §5 step 7-8）
+- batch 5~10 檔一次 prompt（成本控制）
