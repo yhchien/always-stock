@@ -240,6 +240,16 @@ def build_candidate_pool(
     _attach_industry_rankings(candidates)
 
     # 6. 截斷（spec §6.1）
+    # spec 描述「LEADER candidate (rank 高) > FOLLOWER candidate > 其他」應優先保留，
+    # 但截斷發生在 classification.classify_stocks() 之前，這時候還沒有 prelim_type 可用，
+    # 所以用 total_institution_flow_3d（三大法人 3 日累計淨買超）做近似 proxy：
+    #   - LEADER 通常法人連買金額最大 → 排序前段
+    #   - FOLLOWER 法人金額中等
+    #   - LAGGARD / 弱勢 / 雜訊 → 法人金額 ~0 或負 → 截斷時優先丟
+    # 實務上候選池 60~120 檔幾乎觸發不到 SOFT_TRIGGER=150 hard limit，這段是安全網，
+    # 真的觸發時用 deterministic proxy 排序而不是隨機切，避免 LEADER 被丟掉的最壞情況。
+    # 若日後發現 proxy 不夠精準，可加一層 lite 預分類（看 net_3d > 0 + price_change_5d > 0
+    # 提早標 prelim_type）再截斷；目前 proxy 已足夠。
     if len(candidates) > POOL_SOFT_TRIGGER:
         candidates.sort(
             key=lambda c: c.get("total_institution_flow_3d") or 0.0,

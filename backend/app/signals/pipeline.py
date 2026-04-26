@@ -103,6 +103,15 @@ def run_signal_pipeline_sync(
                 db, target_date, ingestion, rankings
             )
 
+            # 短路：候選池空 → raise ValueError 讓 cron 分類為 exit 1 (no_data)
+            # 觸發情境：週末 / 假日跑、target_date DB 無交易資料、或當天市場太冷沒檔股票
+            # 通過篩選。沒短路會導致 LLM 跑空 batch、最後寫一筆全空的 snapshot 並 status=done，
+            # 看起來像「成功但 0 檔」很難跟「真的沒抓到」區分。
+            if not pool:
+                raise ValueError(
+                    f"no candidate stocks for target_date={target_date}"
+                )
+
             # Step 4：deterministic filter（含預分類）
             _set_progress(
                 db,

@@ -1381,3 +1381,49 @@ M19 merge 之後使用者回報四個問題，一次修掉：
 - 觀察 Render log + DB 寫入 `signal_snapshots` / `signal_generation_jobs`
 - 開首頁 `https://...vercel.app/`（已登入帳號）→ 看 panel 是否能展開、訊號是否顯示、pulse 動畫是否運作
 - 沒問題就等 cron 03:00 自動跑（週二~週六）
+
+## M23 slice 11：code review patches（2026-04-26）
+
+slice 1~9 完成後 review 出 3 個小瑕疵，集中於 slice 11 修掉，讓整條 pipeline 真正可上 prod。
+
+**修法 1：`llm_caller.DEFAULT_MODEL` 吃 `OPENAI_MODEL` env**
+- 原本 hardcode `DEFAULT_MODEL = "gpt-4o-search-preview"`，workflow 雖然 export 了 `OPENAI_MODEL` 但 `llm_caller` 從未讀取
+- 修法（[backend/app/signals/llm_caller.py](backend/app/signals/llm_caller.py)）：
+  ```python
+  _FALLBACK_MODEL = "gpt-4o-search-preview"
+  DEFAULT_MODEL = os.getenv("OPENAI_MODEL", _FALLBACK_MODEL)
+  ```
+- 為何不用 `app.settings.get_openai_model()`：那個 helper 預設回 `gpt-4o-mini`，不支援 web search，會讓 M23 LLM stage 全掛
+- Module-level snapshot：function 預設參數 (`def f(model=DEFAULT_MODEL)`) 在 import 時 capture 一次值，後續 caller 不需要顯式傳入 model 也能吃到 env
+
+**修法 2：`build_candidate_pool` 空 list → 短路 `ValueError`**
+- 原本 pipeline 拿到空 pool 還是會繼續送空 batch 給 LLM、最後寫一筆 `watchlist=[]` 的 done snapshot；cron exit 永遠 0，無法區分「真的沒抓到」與「成功但 0 檔」
+- 修法（[backend/app/signals/pipeline.py:110](backend/app/signals/pipeline.py)）：在 `build_candidate_pool` 之後加：
+  ```python
+  if not pool:
+      raise ValueError(f"no candidate stocks for target_date={target_date}")
+  ```
+- 既有 pipeline exception handler 會 `_mark_failed` (status="failed") 並 re-raise；`run_daily_signals._classify_exit_code` 抓 "no candidate" 子字串映射到 exit 1（no_data，workflow 仍 pass）
+- 觸發情境：週末 / 假日跑、target_date DB 無交易資料、市場太冷沒任何個股通過篩選
+
+**修法 3：`build_candidate_pool` 截斷排序註解**
+- spec 描述「LEADER candidate (rank 高) > FOLLOWER candidate > 其他」應優先保留，但截斷發生在 `classification.classify_stocks()` 之前，這時候還沒有 `prelim_type` 可用
+- 修法（[backend/app/signals/candidate_pool.py:242](backend/app/signals/candidate_pool.py)）：加 8 行註解說明用 `total_institution_flow_3d`（三大法人 3 日累計淨買超）做 LEADER-aware proxy 排序：
+  - LEADER 通常法人連買金額最大 → 排序前段
+  - LAGGARD / 弱勢 → 法人金額 ~0 或負 → 截斷時優先丟
+- 實務上 60~120 檔幾乎觸發不到 SOFT_TRIGGER=150 hard limit；這段是安全網，未來真要更精準可加 lite 預分類
+
+**測試更新（[backend/tests/test_signals_pipeline.py](backend/tests/test_signals_pipeline.py)）**：
+- `_stub_all_stages_noop` 與 `test_pipeline_marks_failed_when_filter_stage_raises` 把 `build_candidate_pool` stub 從 `[]` 改成 `[{"stock_id": "_dummy"}]`（slice 11 後空 pool 會 raise，會跑不到後續 stage）
+- 新增 `test_pipeline_raises_value_error_when_candidate_pool_empty` 驗證空 pool 短路路徑：raise ValueError + status=failed + finished_at 寫入
+- `test_pipeline_persists_snapshot_with_payload_fields` 的 `candidate_pool_size` 斷言從 `0` 改 `1`（dummy pool 長度）
+- 既有 `test_classify_exit_code_no_data` 已驗證 `ValueError("no candidate stocks for date") → exit 1`
+
+**測試結果**：52 M23 tests pass + 509 全 backend tests pass（`test_engine_connects` 為 worktree sqlite 路徑問題，與本切片無關）
+
+**Gotcha**：
+- **不要把 `if not pool:` 移進 `build_candidate_pool`**：keep candidate_pool 為純 deterministic transform（input → output 不丟例外）；pipeline 才是 orchestration 層、由它決定「沒 pool = 給 cron 看 exit 1」的語義
+- **Module-level `os.getenv()` snapshot 要在 import 時跑**：若改用 `def get_default_model(): return os.getenv(...)` 則 function 預設參數會 evaluate 一次（仍 capture 同一份），但 import-time 寫法更直觀也不會有 monkey-patch surprise
+- **`_classify_exit_code` 已 covered**：`backend/tests/test_run_daily_signals.py:47` 已斷言 `_classify_exit_code(ValueError("no candidate stocks for date")) == 1`，本切片不需新增 cron 端測試
+
+**狀態**：9/10 + slice 11 patches，剩 slice 10（prod smoke test）。slice 7~9 + slice 11 整條同 branch (`claude/angry-cerf-8755da`)，merge 上 main 後即可手動觸發 cron 驗證。

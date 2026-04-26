@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -33,8 +34,12 @@ logger = logging.getLogger(__name__)
 # Spec §5 Step 7：「一次 prompt 處理 5~10 檔（batch）」，第一版取中間值
 DEFAULT_BATCH_SIZE = 8
 
-# Spec §3.2：第一版模型；可由 OPENAI_SIGNALS_MODEL env 在 settings 層 override
-DEFAULT_MODEL = "gpt-4o-search-preview"
+# Spec §3.2：第一版模型 fallback；workflow / Render env 可由 OPENAI_MODEL 覆寫
+# （`.github/workflows/daily_signals.yml` step env 會把它設成 secrets.OPENAI_SIGNALS_MODEL
+# 或預設 "gpt-4o-search-preview"）。`DEFAULT_MODEL` 在 module 載入時 snapshot env，
+# 所有 entry function 預設參數都吃這個值，所以 caller 不必每次 explicit 傳 model。
+_FALLBACK_MODEL = "gpt-4o-search-preview"
+DEFAULT_MODEL = os.getenv("OPENAI_MODEL", _FALLBACK_MODEL)
 
 # 系統 prompt 路徑（spec §10 LLM I/O contract 全文）
 _PROMPT_PATH = (
