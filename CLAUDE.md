@@ -102,7 +102,7 @@
 - M14 輿情分析
 - M15 Telegram 電子報
 - M20 交易分析擴充（預期 45% 報酬率加碼建議 + 風報比 1:1.75）
-- M23 每日異常訊號清單（07:00 台北排程；deterministic filter 篩出符合條件的股票分四組；LLM 為解釋層，把訊號翻成中文白話註解，不預測、不排推薦度）
+- M23 每日異常訊號清單（**03:00 台北排程**；deterministic filter 建候選池 + LLM 上網查公司業務／集團／龍頭；輸出 LEADER / FOLLOWER / LAGGARD 三類；L0 tab bar + pulse 通知 + 多工背景重新產生 + 進度條；不預測報酬、不出買賣建議；spec [docs/plans/m23_daily_signals_spec.md](docs/plans/m23_daily_signals_spec.md)）
 - M24 自訂進出場策略回測（M11 擴充；使用者自設分層進場 / 追價 / 攤平 / 停損停利規則，引擎回測 edge；LLM 為現場判斷層，trigger 觸發時依當下籌碼/產業/技術給「適合執行 yes/no」提示，不替使用者寫規則）
 
 > M18 → M19 → M20 依序執行。M19 已完工（2026-04-23），M20 擴充建立在 M19 卡片帶入 context 之上。
@@ -691,40 +691,63 @@
 
 ---
 
-### M23 每日異常訊號清單
+### M23 每日異常訊號清單（2026-04-25 改版）
 
-**你想解決的問題**：每天開盤前想要一份「今天值得看一下」的清單，不用自己翻產業排行 + 法人 + 融資融券一檔一檔比對。
+> **Canonical spec**：[docs/plans/m23_daily_signals_spec.md](docs/plans/m23_daily_signals_spec.md)
+> LLM prompt：[backend/app/prompts/watch-list-stock.md](backend/app/prompts/watch-list-stock.md)
 
-**三個訊號來源**：
-- 產業熱錢趨勢（哪個產業在吸金）
-- USD/TWD 匯率（資金面環境）
-- 個股融資融券多方狀況（散戶在追、法人在吸）
+**你想解決的問題**：每天早上需要一份「今天值得看一下」的清單，不用自己翻產業排行 + 法人 + 融資融券一檔一檔比對；並且要找出「熱錢主線正在擴散到哪裡」（不只是已經漲的）。
 
-**第一階段：deterministic filter（核心）**
-- 排程：台北 07:00（GitHub Actions 或 Render Cron）
-- 前置工作：新增 `margin_trade` 資料表 + `etl/finmind_margin_trade_sdk.py`，資料源 FinMind `TaiwanStockMarginPurchaseShortSale`（併入 `run_finmind_etl_sdk.py`）
-- 訊號分組（純規則）：
-  - `chip_bullish`：三大法人近 3 日連買 + 該產業熱度近 3 日轉正
-  - `margin_rotation`：融資減少 + 主力法人連買（散戶在賣、法人在接）
-  - `technical_breakout`：突破 20 日均線 + 量能 > 5 日均量 1.5x
-  - `industry_leader`：當日產業熱錢 Top 3 + 個股在該產業 rank 靠前
-- 每組吐 5~10 檔，附觸發條件量化指標（例：「外資近 3 日累計 +2.5 億、半導體產業排行第 1」）
+**輸出三類股票**（無預測 / 無目標價 / 無 BUY-SELL，僅 WATCH / REMOVE）：
+- **LEADER**：產業中最早上漲、漲幅領先、資金排名靠前、法人連買、量能放大、題材明確
+- **FOLLOWER**：與 LEADER 同產業 / 同供應鏈、已同步上漲但漲幅不如 LEADER、籌碼仍支持
+- **LAGGARD**：同產業 LEADER 已漲、該股漲幅落後、業務題材高度相關、法人/量能開始轉強、技術 early_turn
 
-**第二階段：LLM 解釋層（輔助）**
-- 對每檔股票生成「中文白話註解」，例：「2330 觸發 chip_bullish + industry_leader，但融資 5 日累計 +12% 在追高。法人雖連買但散戶也跟風，需注意散戶過熱風險」
-- LLM 做：把已經算出的數字翻成決策語言
-- LLM 不做：預測股價、排「推薦度」、出目標價
+每檔附 **500–1000 字繁體中文 reason**（13 點強制要點，見 prompt「reason 寫作規則」）。
 
-**DB / API / UI**
-- DB：`daily_signal_snapshot(snapshot_date, group_name, rank, stock_id, signals_json, llm_note)` — 存歷史便於事後評估 filter / LLM 註解品質
-- API：`GET /api/signals/daily?date=&group=`（公開）
-- UI：首頁新區塊「今日異常訊號」或 `/signals` 路由，每組 tab 切換，每檔點擊跳 L2
+**Pipeline（10 步）**：data ingestion → industry rank → stock rank → candidate pool → peer/group expand → deterministic filter → LLM research → LLM explanation → persist snapshot → update job status。詳見 spec §2 / §5。
 
-**使用流程**
-1. 每天早上打開首頁 → 看「今日異常訊號」掃一眼
-2. 點某組（例如 `margin_rotation`）→ 看完整 5~10 檔 + LLM 註解
-3. 對某檔有興趣 → 點進 L2 個股頁深入研究
-4. 決定要不要進場由使用者判斷
+**Deterministic 部分（DB + 程式）**：
+- 候選池：top_stocks_3d 40 + top_industries_3d 10 成分股 + 熱門產業龍頭 + 同供應鏈 + 集團股（spec §6，目標 60–120 檔）
+- LEADER / FOLLOWER / LAGGARD candidate 預分類（spec §7）
+- Hard exclusions：ETF、金融股、流動性不足、近 3 日漲超 15%（spec §9.1）
+- Soft filters：retail_overheated / distribution / range_bound（spec §9.2）
+
+**LLM 部分**（**支援 web search 的模型**，例如 `gpt-4o-search-preview`）：
+- 上網查 market_state（VIX / 美股 / 台指期 / USD-TWD）→ STRONG_BULL / STRUCTURAL_BULL / RANGE / WEAK
+- 上網查公司業務、產業鏈位置、題材延續性（≥ 1Q 才合格）、龍頭股 / 集團股表現
+- 一檔一檔不行（cost 高），**5~10 檔 batch 一次 prompt**
+
+**前置工作**：
+- ✅ 新增 `margin_trade` 表 + `etl/finmind_margin_trade_sdk.py`（FinMind `TaiwanStockMarginPurchaseShortSale`；併入 `run_finmind_etl_sdk.py` 為 step 7，non-CRITICAL；2026-04-25 完成。Backfill 待 prod 配額充足時執行）
+- ✅ 新增 `signal_snapshots` 表（一日一筆 UPSERT；存完整 LLM JSON + cost tracking；2026-04-25 model 完工）
+- ✅ 新增 `signal_generation_jobs` 表（job_id / status / progress_pct / current_stage；給前端進度條 polling；2026-04-25 model 完工）
+- ✅ `main.py` lifespan 新增 `_ensure_m23_tables()`：自動 idempotent `CREATE TABLE IF NOT EXISTS`（仿 M18/M19 pattern）
+
+**API**：
+- `GET /api/signals/latest`（公開）
+- `GET /api/signals/snapshot/{date}`（公開）
+- `GET /api/signals/jobs/latest`（公開，前端 polling 用）
+- `POST /api/signals/regenerate`（登入即可，但同日全站 5 次上限 + 每 user 1 次上限 + 同日 running job 拒絕並發）
+
+**排程：台北 03:00**（從原規劃的 07:00 改）
+- `.github/workflows/daily_signals.yml`：cron `0 19 * * 1-5`（UTC = 台北次日 03:00 週二~週六）
+- 4h offset 抓「昨日」當 target_date（沿用 daily_etl_update.yml pattern 防 cron 延遲跨日）
+- 03:00 跑時昨日 ETL 已在 23:00 完成 → 給足 4 小時 buffer
+
+**前端 L0 tab bar UX**（`<DailySignalsPanel />`）：
+- 版位：L0 首頁 TradeQualityAnalysis 之後、HotMoneyList 之前
+- 4 個 tab：LEADER / FOLLOWER / LAGGARD / REMOVED（顯示各組 count）
+- **跳跳跳通知**：localStorage 存 `last_seen_snapshot_date`，比對最新 snapshot 有更新 → header 旁顯示綠色 `animate-ping` 點 + 「新」字；點任一 tab 後寫回 localStorage 取消通知
+- **多工背景產生**：點「重新產生」→ POST `/api/signals/regenerate` → 回 202 + job_id → server BackgroundTasks 跑 → 使用者可以離開頁面繼續用其他功能
+- **進度條**：留在頁面時 polling `/api/signals/jobs/latest` 每 3 秒一次；顯示 `progress_pct` 與 `progress_label`（例：「正在分析第 28 / 45 檔」）
+- 離開頁面再回來：mount 時 polling 自動接上最新進度（不依賴 long-lived connection）
+
+**使用流程**：
+1. 早上開首頁 → tab bar 旁有跳跳跳綠點 → 知道有新報告
+2. 點 tab 看 LEADER / FOLLOWER / LAGGARD 各組 → reason 一目了然
+3. 對某檔有興趣 → 點卡片跳 L2 深入研究
+4. 也可以隨時點「重新產生」觸發新一輪分析（背景跑、不擋使用者操作）
 
 ---
 
@@ -785,7 +808,7 @@ LLM 不做：替使用者寫規則、告訴使用者「該買哪檔」、取代�
 
 | 角色 | 做什麼 | **不**做什麼 |
 |------|--------|-----------|
-| **解釋層**（M23） | 把 deterministic 訊號翻成中文白話 | 不預測股價、不排推薦度 |
+| **解釋層**（M23） | 翻譯 deterministic 訊號 + 上網查公司業務／集團／龍頭比對；判斷 market_state；產 LEADER/FOLLOWER/LAGGARD 三類 reason | 不預測股價、不出目標價、不排推薦度、不發 BUY/SELL |
 | **現場判斷層**（M24） | 在 trigger 觸發當下給 yes/no 提醒 | 不替使用者寫規則、不取代歷史回測 |
 
 決策權永遠在使用者手上：
@@ -1121,3 +1144,286 @@ M19 merge 之後使用者回報四個問題，一次修掉：
 - **`_STREAM_HEADERS` 必加**（`X-Accel-Buffering: no` + `Cache-Control: no-cache`）：Vercel ↔ Render 中間 nginx 預設會 buffer 整段 response，NDJSON 進度會被攢一起送 → progress bar 跳一下就到 done，UX 等於沒做。本地 dev 不會察覺差異，prod 才看得出來。兩個 `StreamingResponse`（market_closed_stream + main generate）都要加
 - **Generator 內不可 raise HTTPException**：headers 已 commit，raise 不會變 4xx，只會變成 broken stream（前端 reader 看到 EOF 而不是錯誤訊息）。所有預期 4xx 路徑必須在 pre-flight 檔下；generator 內的 `except` 統一 emit `error` event 給前端
 - **進度百分比是視覺提示，不是真實進度**：OpenAI call 60% 一段會「卡」最久（5~25 秒），最後一口氣跳到 100%；這是刻意設計（avoid fake animated progress），label 同步更新即可
+
+## M23 slice 4：signals/ 模組骨架完成（2026-04-25）
+
+### Scope（10 切片中的第 4 片）
+- 對應 spec §14：建立 `backend/app/signals/` 7 個模組的「契約面」（簽章 + docstring + stub）
+- 兩個模組**完整實作**：`exclusions.py`（純規則）+ `pipeline.py`（status 流轉 / progress / UPSERT）
+- 四個模組**簽章 + stub**：`candidate_pool.py` / `classification.py` / `filters.py` / `llm_caller.py`（slice 5/6 各自填）
+- 一個資料檔：`group_stocks.json`（5 大集團白名單）
+
+### 落地檔案
+- [backend/app/signals/__init__.py](backend/app/signals/__init__.py) — 模組總覽 + 對應 spec 章節 + re-export `run_signal_pipeline_sync`
+- [backend/app/signals/exclusions.py](backend/app/signals/exclusions.py)（**完整**）：
+  - 8 個 helper：`is_etf` / `is_financial` / `is_blacklisted` / `should_exclude` / `load_group_stocks` / `find_group_for_stock` / `get_group_members` / `get_group_leader`
+  - ETF 規則 `^00\d{2,}$` 或名字含 `ETF / 指數型基金 / 指數股票型`；金融規則 `industry_name` 含 `金融 / 銀行 / 保險 / 證券`
+  - `EXCLUSION_BLACKLIST: Set[str] = set()`（手動黑名單，第一版空）
+  - `_GROUP_STOCKS_CACHE` module-level 快取，`load_group_stocks(force_reload=True)` 可強制重讀
+  - `_meta` 開頭的 key 自動過濾（不會出現在 group dict）
+- [backend/app/signals/group_stocks.json](backend/app/signals/group_stocks.json) — 5 大集團（鴻海 / 台塑 / 國巨 / 聯電 / 聯發科），每組 `leader` + `members`，`leader` 必須在 `members` 內
+- [backend/app/signals/candidate_pool.py](backend/app/signals/candidate_pool.py)（stub）：3 個函式 `ingest_data` / `compute_rankings` / `build_candidate_pool`，slice 5 填
+- [backend/app/signals/classification.py](backend/app/signals/classification.py)（stub）：`PRELIM_TYPE_LEADER/FOLLOWER/LAGGARD_CANDIDATE` 常數 + `classify_stocks`，slice 5 填
+- [backend/app/signals/filters.py](backend/app/signals/filters.py)（stub）：4 個 `HINT_*` 常數 + `apply_hard_exclusions` / `apply_soft_filters`，slice 5 填
+- [backend/app/signals/llm_caller.py](backend/app/signals/llm_caller.py)（stub）：`DEFAULT_BATCH_SIZE = 8` / `DEFAULT_MODEL = "gpt-4o-search-preview"` + 4 個函式 `run_research_batch` / `run_explanation_batch` / `assemble_market_context` / `assemble_final_output`，slice 6 填
+- [backend/app/signals/pipeline.py](backend/app/signals/pipeline.py)（**完整**）：
+  - 7 stage 常數對齊 `models.SignalGenerationJob.current_stage` enum：`STAGE_INGEST/RANK/CANDIDATE/FILTER/LLM_RESEARCH/LLM_EXPLAIN/PERSIST`
+  - `run_signal_pipeline_sync(job_id, target_date, *, session_factory=None)` — cron / BackgroundTasks 共用入口
+  - `_set_progress(db, job, *, status, stage, pct, label)` — 每 stage 結束 commit 一次（前端 polling 即時看到）
+  - `_mark_done` / `_mark_failed`（先 `db.rollback()` 清 session error state，再 re-fetch job 寫狀態）
+  - `_persist_snapshot` — `(snapshot_date)` UPSERT：existing 則 setattr 覆蓋 + 更新 `generated_at`，無則 `db.add(SignalSnapshot(...))`
+  - LLM Research stage 為 batched loop（spec §5 Step 7：「一次 prompt 處理 5~10 檔」），每 batch commit 一次 progress
+  - try/except 包整段：失敗時 `_mark_failed` 寫 traceback[:2000] 後 **re-raise**（讓 caller 紀錄；測試也能 `pytest.raises`）
+
+### 測試
+- [backend/tests/test_signals_exclusions.py](backend/tests/test_signals_exclusions.py)：19 案例
+  - autouse fixture `_reset_group_stocks_cache` 清 module cache，避免測試殘留
+  - ETF / 金融 / 黑名單 / `should_exclude` 整合 / `group_stocks.json` 載入正確性 / leader-member 一致性
+- [backend/tests/test_signals_pipeline.py](backend/tests/test_signals_pipeline.py)：6 案例
+  - `session_factory` fixture 用 in-memory SQLite + `Base.metadata.create_all` per test
+  - `_stub_all_stages_noop(monkeypatch)` 把全部 stage function 換成 noop（happy path）
+  - 失敗路徑：第一個 stage 拋 `NotImplementedError`、filter stage 拋 `RuntimeError` 中間掛掉、`job_id` 不存在 `ValueError`
+  - Happy path：status=done + progress_pct=100、payload 欄位寫入 SignalSnapshot、同日重跑 UPSERT 不違反 unique
+- 全 backend suite：413 pass，1 pre-existing fail（`test_engine_connects` worktree 沒 sqlite 檔）+ 5 pre-existing errors（`test_finmind_sdk_integration` 需 API token），與 slice 4 無關
+
+### Gotcha
+- **`monkeypatch.setattr(module, "name", value)` 預設 `raising=True`**：被 patch 的 attribute 必須先存在於 module，否則 `AttributeError`。所以 `llm_caller.assemble_final_output` 雖然 slice 6 才實作，slice 4 也**必須先放 stub**（簽章對齊 pipeline 的呼叫）才能讓測試 monkeypatch 成功
+- **`_mark_failed` 必須先 `db.rollback()`**：上一個 stage 拋例外後 session 處於 error state，不 rollback 直接 commit 會把整個 transaction 噴掉；rollback 後再 `db.get(SignalGenerationJob, job_id)` re-fetch（不能用例外前抓的 ORM instance，已經 detached）
+- **stage progress commit 在 stage 開始前**：前端 polling 看到 `current_stage=filter / pct=30` 表示「正在跑 filter」；若 filter 拋例外，DB 仍保留這個進度（test_pipeline_marks_failed_when_filter_stage_raises 驗證）讓使用者看得到失敗點
+- **pipeline 不能用 request session**：spec §11.5 明確要求；本實作預設 `SessionLocal` 從 `app.database` import，測試傳 `session_factory=in_memory_factory`
+- **`_persist_snapshot` 用 `(snapshot_date)` 當 key UPSERT 不是 `(snapshot_date, job_id)`**：spec 設計每天一份 snapshot，重跑會覆蓋；測試 `test_pipeline_upserts_existing_snapshot_on_rerun` 驗證重跑後 `job_id` 已更新為最後一次
+- **stage function 全 raise NotImplementedError**：slice 4 跑真實 pipeline 會在 stage 1 ingest 即 failed，這是預期行為；測試靠 monkeypatch 替換為 noop 才能覆蓋 happy path
+
+### 下一步（slice 5）
+- 填 `candidate_pool.py` / `classification.py` / `filters.py` 的 deterministic 規則
+- 接 `daily_price` / `inst_stock_flow` / `industry_daily_flow` / `margin_trade` / `daily_valuation` / `monthly_revenue` 算 hot_score / 法人連買日 / soft hint 等
+- slice 6 才接 OpenAI（`llm_caller`）
+
+## M23 slice 5：deterministic filter 三層完成（2026-04-26）
+
+### Scope（10 切片中的第 5 片）
+- `candidate_pool.py` / `classification.py` / `filters.py` 三模組從 stub 換成完整實作
+- 對應 spec §6（候選池）/ §7（LEADER/FOLLOWER/LAGGARD 預分類）/ §9（hard exclusions + soft filters）
+- 全 deterministic、純規則；slice 6 才接 OpenAI（LLM research / explanation）
+
+### 落地檔案（覆蓋 stub）
+- [backend/app/signals/candidate_pool.py](backend/app/signals/candidate_pool.py)（~600 行）：
+  - 三函式 `ingest_data` / `compute_rankings` / `build_candidate_pool`，依 spec §5 step 1-4 串接
+  - 候選池來源 union：top_stocks_3d 40 + top_industries_3d 10 成分股 + 熱門產業龍頭 + 同產業同 sub_industry 擴散 + 集團股（`exclusions.load_group_stocks`）
+  - 每檔股票算 `industry_count` / `industry_rank_5d` / `industry_rank_net_3d` / `consecutive_buy_days_3d` / `volume_5d_to_60d_ratio` / `price_change_3d/5d/1d` / `total_institution_flow_1d/3d/5d` / `margin_change_3d` / MA5 / MA10 / OHLC / volume ratios（給 §7 §9 用）
+  - 常數：`TOP_INDUSTRIES_LIMIT=10`、`TOP_STOCKS_LIMIT=40`、`TOP_STOCKS_INNER=10`、`POOL_SOFT_TRIGGER=150`、`POOL_HARD_LIMIT=120`
+  - 軟上限超過 → 依「LEADER candidate（rank 高） > FOLLOWER candidate > 其他」截斷至 hard limit
+- [backend/app/signals/classification.py](backend/app/signals/classification.py)（~200 行）：
+  - LEADER：`industry_rank_5d` 前 30%（`ceil(count * 0.3)`）+ `industry_rank_net_3d` 前 20% + `consecutive_buy_days_3d >= 2` + `volume_5d_to_60d_ratio >= 1.5`
+  - FOLLOWER：同產業已有 LEADER + `0 < price_change_5d < leader_gain × 0.7` + `total_institution_flow_3d > 0`
+  - LAGGARD_CANDIDATE：guard（同產業 LEADER 漲 ≥ 5%）+ 4 條件中 hits ≥ 2（gap ≥ 5pct / net_1d>0 OR vol_1d_to_5d>1.2 / 站上 5MA OR 10MA；guard 自身已算 1 hit）
+  - 三類都不符 → **剔除**（不原地保留）
+- [backend/app/signals/filters.py](backend/app/signals/filters.py)（~210 行）：
+  - Hard exclusions（直接剔除）：ETF / 金融 / 黑名單（`exclusions.should_exclude`）+ `total_institution_flow_5d < 0` 但**非** LAGGARD + `price_change_3d > 15%` + `avg_turnover_5d < 5e7`
+  - Soft filters（標 hint，不剔除）：`HINT_WEAKENING` / `HINT_RETAIL_OVERHEATED` / `HINT_DISTRIBUTION` / `HINT_RANGE_BOUND`，多條件可同時命中
+  - distribution 包兩條件（爆量不漲 / 高檔長上影），命中其一即算
+
+### 測試
+- [backend/tests/test_signals_candidate_pool.py](backend/tests/test_signals_candidate_pool.py)：13 案例（in-memory SQLite，seed 全市場 master/price/flow，驗證 ingest / rank / pool 正確；用 monkeypatch 把 `POOL_SOFT_TRIGGER=5` / `POOL_HARD_LIMIT=3` 模擬截斷）
+- [backend/tests/test_signals_classification.py](backend/tests/test_signals_classification.py)：21 案例（template helper + override pattern；LEADER 4 條件各別 fail / FOLLOWER paired with LEADER / LAGGARD 2 hits 各種組合 / 整體優先序 / 多 leader 取 max gain）
+- [backend/tests/test_signals_filters.py](backend/tests/test_signals_filters.py)：23 案例（hard exclusion 各條件、邊界 15% 不算、None 視為缺資料；soft filter 各 hint 個別觸發 + 不觸發 + 多重觸發；不修改原 dict）
+- 全 backend suite：470 pass、1 pre-existing fail（`test_engine_connects` 是 worktree 沒 sqlite 檔，非 slice 5 影響）
+
+### Gotcha
+- **FOLLOWER vs LAGGARD 重疊**：`price_change_5d=0` 時 FOLLOWER 失敗（要求 > 0），但會落入 LAGGARD（gap = leader_gain - 0 通常 ≥ 5pct）。測試應斷言 `prelim_type != FOLLOWER`，**不可斷言 `stock_id not in result`**，否則 LAGGARD 也算 in result 會誤判。同 issue 在 `test_follower_dropped_when_3d_flow_not_positive`
+- **`_is_top_pct` 邊界用 `ceil`**：`industry_count=10`、`pct=0.3` → threshold `ceil(10*0.3) = 3`，rank=4 不通過；`pct=0.2` → threshold 2，rank=3 不通過。`industry_count=0` 視為失敗（避免 div by zero）
+- **distribution 高檔長上影公式**：`high - close > (close - open) × 2 AND close < high × 0.97`。紅 K（body 為負）時 inequality 自動成立，配合 close < high × 0.97 仍能正確抓到「紅 K + 拉回」的派發 pattern（不額外加紅 K guard）
+- **soft filter 不修改原 dict**：用 `{**c, "soft_hints": hints}` shallow copy；`apply_soft_filters` 不可 mutate input（pipeline 可能對候選池有其他引用）
+- **hard exclusions 用候選池欄位即可**：`db / target_date` 暫保留簽章但不查 DB，因為 `should_exclude` + 其他條件全部用 candidate_pool 算好的欄位
+
+### 下一步（slice 6）
+- 填 `llm_caller.py`：`run_research_batch` / `run_explanation_batch` / `assemble_market_context` / `assemble_final_output`
+- 接 OpenAI `gpt-4o-search-preview`（spec §5 step 7-8）
+- batch 5~10 檔一次 prompt（成本控制）
+
+## M23 slice 6：llm_caller.py 完整實作（2026-04-26）
+
+### Scope（10 切片中的第 6 片）
+- `llm_caller.py` 從 stub 換成完整實作；接 OpenAI `gpt-4o-search-preview`（支援 web search）
+- 對應 spec §3.2 / §5 step 0+7+8+9 / §10 LLM I/O contract
+- 全 mock 單元測試覆蓋（不打真實網路、不依賴 API key）
+
+### 落地檔案
+- [backend/app/prompts/watch-list-stock.md](backend/app/prompts/watch-list-stock.md) — 525 行 buy-side 分析師 prompt 從 main 專案複製進 worktree（spec §10 全文 I/O contract + 13 點 reason 寫作規則）
+- [backend/app/signals/llm_caller.py](backend/app/signals/llm_caller.py)（~470 行）：
+  - 4 個 public function 簽章與 pipeline.py 對齊（slice 4 預先放 stub 才能讓測試 monkeypatch 成功）
+  - `assemble_market_context(db_market_snapshot, *, model)` — Step 0：判斷 STRONG_BULL / STRUCTURAL_BULL / RANGE / WEAK
+  - `run_research_batch(stocks_batch, market_context, *, model)` — Step 7：上網查公司業務 / 產業鏈 / 題材 / 集團 / 龍頭，輸出 `type` + `business_summary` + `theme` + `group_info` + `leader_check`
+  - `run_explanation_batch(research_results, market_context, *, model)` — Step 8：依 market_state gating → `signals` + `decision` (WATCH/REMOVE) + 500–1000 字 reason；caller 不需自己分 batch（內部依 `DEFAULT_BATCH_SIZE` 拆 chunk）
+  - `assemble_final_output(market_context, explanation, *, candidate_pool_size, model, total_tokens)` — Step 9：拆 watchlist / removed、計算 `summary` 4 欄、組裝 spec §10.2 完整 schema
+  - `_call_llm_json(system_prompt, user_msg, *, model)` 內部統一入口；`_extract_json` 容錯解析（去 ` ```json ... ``` ` markdown fence）；4 個 fallback function 對應 4 種失敗路徑
+
+### 常數
+- `DEFAULT_BATCH_SIZE = 8`（spec §5 Step 7「5~10 檔/批」中位數）
+- `DEFAULT_MODEL = "gpt-4o-search-preview"`
+- `_MAX_OUTPUT_TOKENS = 8000`（reason 500-1000 字 × 8 檔 batch 預留充足）
+- `_PROMPT_PATH = backend/app/prompts/watch-list-stock.md`
+
+### 測試
+- [backend/tests/test_signals_llm_caller.py](backend/tests/test_signals_llm_caller.py)：26 案例
+  - `_extract_json` 6 案例（plain JSON / fence with lang / fence without lang / garbage / empty / whitespace）
+  - `assemble_market_context` 5 案例（happy / fence / api_key 缺 / invalid JSON / OpenAI 例外）
+  - `run_research_batch` 5 案例（empty / 對齊 / 缺檔 fallback / 整體失敗 / 缺 research key）
+  - `run_explanation_batch` 5 案例（empty / decision+reason / chunk 分批 / 整體失敗 / 缺檔 fallback）
+  - `assemble_final_output` 5 案例（split / summary count / total_tokens / empty / unknown decision treated as remove）
+- 全 backend suite：496 pass（slice 5 470 + slice 6 26）、1 pre-existing fail（`test_engine_connects` worktree 沒 sqlite 檔）
+
+### Gotcha
+- **`gpt-4o-search-preview` 不支援 `temperature` 與 `response_format=json_object`**：跟 M17 `_call_openai` 用法不一樣；本實作 `_call_llm_json` 只傳 `model / messages / max_completion_tokens`，靠 prompt instruction 「JSON only, no markdown fence」+ `_extract_json` 防禦性解析
+- **fallback 預設 `decision=REMOVE`**（保守）：LLM 不可用時不該誤標 WATCH；fallback dict 標 `_unavailable: True` 給 traceability
+- **stock alignment by `stock_id` / `stock` key**：LLM 回應順序可能與輸入不同，缺檔需走 fallback 補齊；用 `by_id` dict 對齊
+- **`run_explanation_batch` 內部分批**：caller 可一口氣傳 60+ 檔進來，不用自己 chunk；測試 `test_run_explanation_batch_chunks_by_default_batch_size` 用 `monkeypatch.setattr(llm_caller, "DEFAULT_BATCH_SIZE", 4)` + 13 檔驗證 4 次 LLM call
+- **System prompt 每次 LLM call 都重新 `_load_system_prompt()`**：方便編輯 prompt 不用重啟 server；FAQ 性能：FS read 一次成本可接受、且第一版 prompt 525 行不大
+- **markdown fence 移除 logic**：`_extract_json` 先 `strip`、startswith `\`\`\`` 時找第一個 `\n` 切掉開頭、endswith `\`\`\`` 切結尾；防 LLM 偶發加 ` ```json ... ``` ` 包裝；無 fence 時直接 `json.loads`
+- **slice 4 pipeline 測試需更新**：`test_pipeline_marks_failed_when_first_stage_raises_not_implemented` 名稱不再準確（slice 5 ingest_data 已實作；slice 6 llm_caller 也不再 raise NotImplementedError），改為 `test_pipeline_marks_failed_when_ingest_stage_raises` 並用 monkeypatch 注入 `_boom`，驗證一樣的失敗路徑契約
+
+### 下一步（slice 7~10）
+- slice 7：`run_signal_pipeline_async` BackgroundTasks wrapper + `/api/signals/regenerate` rate limit + concurrency guard
+- slice 8：`/api/signals/latest` / `/api/signals/snapshot/{date}` / `/api/signals/jobs/latest` 三個公開 GET endpoint
+- slice 9：`.github/workflows/daily_signals.yml` cron 03:00 台北 + smoke test
+- slice 10：前端 `<DailySignalsPanel />` L0 tab bar UX + pulse 通知 + 進度條 polling
+
+## M23 slice 7 API endpoints + cron entrypoint 完成（2026-04-26）
+
+落在 branch `claude/angry-cerf-8755da`。將 spec §11 的 4 個 endpoint 與 §11.6 的 cron 入口整合進 FastAPI app；slice 8/9（前端 + workflow）獨立進行，不在本切片範圍。
+
+### 落地檔案
+- [backend/app/routers/signals.py](backend/app/routers/signals.py) — 新 router；4 個 endpoint：
+  - `GET /api/signals/latest`（公開；DB 無 snapshot → 404 `No snapshot yet`）
+  - `GET /api/signals/snapshot/{snapshot_date}`（公開；無 → 404）
+  - `GET /api/signals/jobs/latest`（公開；無 job → **回 null（200）**，不 404，前端少寫一個分支）
+  - `POST /api/signals/regenerate`（`Depends(require_user)` → 401／同日 running job → 409／user 同日 ≥1 → 429／全站同日 ≥5 → 429／成功 → 202 + `{job_id, snapshot_date}`，`BackgroundTasks` 排程 `_run_pipeline_safely`）
+- [backend/run_daily_signals.py](backend/run_daily_signals.py) — cron 入口（spec §11.6）；4h offset 推算 target_date；建 `SignalGenerationJob(triggered_by="cron")` 後 inline 同步跑 pipeline
+- [backend/app/main.py](backend/app/main.py) — `from app.routers import (..., signals, ...)` + `app.include_router(signals.router, prefix="/api")`
+
+### Pydantic schema（spec §10.3 + §11.3）
+- `SnapshotResponse`：`{ snapshot_date, generated_at, llm_model, data: { market_context / watchlist / removed / summary / candidate_pool_size / final_watchlist_size } }`
+- `JobResponse`：`{ job_id, snapshot_date, status, current_stage, progress_pct, progress_label, started_at, finished_at, error_message }`
+- `RegenerateAcceptedResponse`：`{ job_id, snapshot_date }`
+
+### 限頻 / concurrency 實作
+- 全部走 DB COUNT/SELECT，**沒接 slowapi**（spec §11.4 明寫 in-memory by user_id + snapshot_date，但 DB 查就夠用、且 cron job 也算進全站 5/day 額度，不需要 slowapi 的進階 key 機制）
+- 常數 `USER_DAILY_REGENERATE_LIMIT=1` / `GLOBAL_DAILY_REGENERATE_LIMIT=5` 集中在 `signals.py` 頂部
+- 同日 user 額度與 concurrency guard **平行檢查不同條件**：concurrency 看 `status in ("pending","running")`，user 限頻看「不論成敗都計 1」（避免 user 連按 5 次都失敗也不 reset）
+
+### Cron entrypoint exit code（spec §11.6）
+- `0=ok / 1=no_data / 2=llm_error / 3=db_error`
+- 例外分類靠訊息關鍵字：`"no candidate" / "no data" / "no trade"` → 1；`"openai" / "llm" / "prompt"` → 2；其他全部 → 3
+- `_resolve_target_date_from_now()` 用 `Asia/Taipei` + `now - 4h` 推 `.date()`；保證即使 GitHub Actions cron 延遲到 04:00~06:00 仍 resolve 為昨日
+- argv 第一個位置可手動覆寫 `YYYY-MM-DD`
+
+### Pipeline 注入點
+- BackgroundTasks 包 `_run_pipeline_safely(job_id, target_date)`：catch 所有 exception 不讓 worker crash；pipeline 自身會把 `job.status="failed"` + `error_message` 寫進 DB，所以這層只 log
+- 餵 `session_factory=SessionLocal` 給 `run_signal_pipeline_sync`（spec §11.5：不能用 request session）
+
+### 測試
+- [backend/tests/test_signals_router.py](backend/tests/test_signals_router.py) — 15 案例（latest 404 / latest happy / snapshot 404 / snapshot happy / snapshot bad date 422 / jobs/latest null / jobs/latest happy / regenerate 401 / 202 happy + DB job + background call / 409 concurrency / 429 user / 429 global / fallback today / `_resolve_target_date` 兩個 unit）
+- [backend/tests/test_run_daily_signals.py](backend/tests/test_run_daily_signals.py) — 6 案例（argv 解析 / 4h offset mock / 三類 exit code 分類 / ValueError fallback）
+- 全 132 個 signal-related 測試 + 全 backend suite 517 pass（與 slice 6 baseline 一致）
+
+### Gotcha
+- **`_run_pipeline_safely` 必須 monkeypatch**：router test 用 in-memory SQLite + dependency_overrides，但 `run_signal_pipeline_sync` 內呼叫 `SessionLocal()` 會走預設連線而非測試 engine，所以測試直接攔截 `_run_pipeline_safely` 紀錄 `(job_id, target_date)` 而不真跑
+- **fallback target_date 用今天 + DB 計次仍在當天**：DB 完全空時 `_resolve_target_date()` 回 `date.today()`，user 1/day 與全站 5/day 仍按「今天」計；cron 第一次部署到空 DB 時也能正常觸發
+- **regenerate 第二次 429 user 限頻測試**：第一次成功後 job 是 `pending` 狀態，會卡住第二次的 concurrency guard（409）；測試需要先把它標 `done` 才能驗證 user 限頻 429
+- **path param `snapshot_date` 型別解析失敗回 422**：FastAPI 對 `date` 型 path param 自動 422，不是 400；測試 `test_snapshot_invalid_date_format_returns_422` 鎖這個合約
+- **jobs/latest 用 `Optional[JobResponse]` + 回 None**：Pydantic 序列化 None → `null`；前端直接 `if (!job)` 判斷，不需要 try/catch 404
+
+### 下一步（slice 8~10）
+- slice 8：前端 `<DailySignalsPanel />` L0 tab bar UX + pulse 通知 + 進度條 polling
+- slice 9：`.github/workflows/daily_signals.yml` cron 03:00 台北 + smoke test
+- slice 10：手動觸發驗證 prod，沒問題後等 cron 03:00 自動跑
+
+## M23 slice 8 + 9：前端 panel + GitHub Actions workflow（2026-04-26）
+
+落在 branch `claude/angry-cerf-8755da`，與 slice 7 同 branch（slice 7~9 一起 merge 上 main 才能讓 cron 跑得起來）。
+
+**Why**：spec §13 前端 L0 tab bar UX + spec §12 GitHub Actions 排程；前者是 user-facing 入口、後者是每日自動產生 snapshot 的觸發器。slice 7 完成後對外有 API 但「沒有人會去打」、cron 也沒接 → 必須 8/9 同時上線才算可用閉環。
+
+**How to apply**：
+- 修進度條樣式 / pulse 動畫 → 動 `frontend/src/components/DailySignalsPanel.tsx`（單一檔案、無拆分子元件）
+- 修 polling 間隔 → 動 `frontend/src/lib/useSignalJobPolling.ts` 頂部 `POLL_INTERVAL_MS = 3000`；錯誤 backoff 是 `* 2`（6 秒）
+- 改 cron 時間 → 動 `.github/workflows/daily_signals.yml` `cron: '0 19 * * 1-5'`（UTC，= 台北 03:00 週二~週六）
+- 改 retry 邏輯 → 不要學 `daily_etl_update.yml` 加 `sleep 5400` retry，因為 LLM 失敗用 retry 通常還是會掛（不像 quota 重試會解）；signal pipeline 失敗（exit 2/3）直接 fail workflow，靠 user 點「重新產生」處理
+
+**前端結構**（`DailySignalsPanel.tsx`）：
+- header：折疊鈕（▸/▾，預設 collapse）+「今日異常訊號清單」+ pulse badge（有新訊號時）+ snapshot_date / generated_at
+- 進度條：`useSignalJobPolling()` 回傳 `job` 為 `pending`/`running` 時顯示，progress_pct + progress_label
+- 4 tabs（base-ui）：LEADER / FOLLOWER / LAGGARD / REMOVED，每個 tab 顯示對應 count
+- SignalCard：股票連結 + decision badge（LEADER 綠 / FOLLOWER 藍 / LAGGARD 琥珀）+ 產業/子產業 + 主題 + 訊號 chips（資金/籌碼/融資券/技術）+ reason 中文白話
+- RemovedCard：紅色 REMOVED 徽章 + 排除原因
+- 「重新產生」按鈕 5 狀態（spec §13.5）：未登入 disabled「重新產生（需登入）」/ running disabled「產生中…」/ 送出中「送出中…」/ 載入中 disabled / 可觸發 enabled「重新產生」
+- 點任何 tab 或展開 panel → 寫入 `always-stock:signals:last_seen_snapshot_date` → 清掉 pulse
+- 折疊狀態存 `always-stock:signals:collapsed`（預設 collapse）
+
+**GitHub Actions workflow**（`daily_signals.yml`）：
+- 觸發：cron `0 19 * * 1-5`（UTC = 台北 03:00 週二~週六）+ workflow_dispatch（吃 `target_date` input）
+- target_date：吃 input 優先；沒帶則 `date -d '4 hours ago' +%F`（同 daily_etl_update.yml 防 cron 跨日）
+- timeout 90 min（LLM 60~120 檔 × ~20s/檔 ≈ 30~60 min）
+- env：`DATABASE_URL` + `OPENAI_API_KEY` + `OPENAI_MODEL`（fallback `gpt-4o-search-preview`）
+- exit code 對應：0/1 → workflow pass（1 = no_data 為合理結果，週末或無候選池）；2/3 → workflow fail（LLM / DB 錯誤需人工介入）
+- 不做 `daily_etl_update.yml` 的 sleep+retry：FinMind quota 等 1.5h 會解、OpenAI 失敗多半是模型/prompt 問題 retry 沒用
+
+**Gotcha**：
+- **無 `node_modules` 在 worktree**：本切片 frontend 改動沒跑 `npx tsc --noEmit` / `next build`；type 錯誤靠 PR CI / vercel preview 抓。Component 用的型別都是 `frontend/src/lib/api.ts` 既有 export，型別契合度應該高
+- **base-ui Tabs.Panel `value` prop**：base-ui 用 `value` 比對 `Tabs.Root` 的 `value` 決定哪個 panel 顯示；不是 shadcn `data-state="active"`。`TabsContent` (= `TabsPrimitive.Panel`) 接 `value` 自動切換
+- **`fetchLatestSignalSnapshot` 404 → null**：M23 slice 7 的 endpoint 第一次 deploy 時 DB 無 snapshot，前端不能 throw、要顯示「目前尚無訊號清單」；`api.ts` 的 helper 已實作 404 → null
+- **localStorage 永遠包 try/catch**：SSR + 隱私模式 + iframe 都可能噴；用 `try { window.localStorage.getItem(...) } catch { /* ignore */ }`
+- **Polling cleanup**：`useSignalJobPolling` 用 `cancelledRef` + `clearTimeout(timer)`，unmount / `bumpKey` 變動時都會中斷；點「重新產生」後 `setBumpKey((k) => k + 1)` 觸發 effect 重啟（沒有 long-lived connection）
+- **`job.progress_pct` 可能 > 100 / < 0**：前端用 `Math.min(100, Math.max(0, x))` clamp；後端 pipeline 寫入時雖然應該 0~100 但 UI 不能假設
+
+**slice 10（最後一片）**：
+- 部署後手動 `gh workflow run daily_signals.yml --ref main -f target_date=2026-04-25` 觸發一次
+- 觀察 Render log + DB 寫入 `signal_snapshots` / `signal_generation_jobs`
+- 開首頁 `https://...vercel.app/`（已登入帳號）→ 看 panel 是否能展開、訊號是否顯示、pulse 動畫是否運作
+- 沒問題就等 cron 03:00 自動跑（週二~週六）
+
+## M23 slice 11：code review patches（2026-04-26）
+
+slice 1~9 完成後 review 出 3 個小瑕疵，集中於 slice 11 修掉，讓整條 pipeline 真正可上 prod。
+
+**修法 1：`llm_caller.DEFAULT_MODEL` 吃 `OPENAI_MODEL` env**
+- 原本 hardcode `DEFAULT_MODEL = "gpt-4o-search-preview"`，workflow 雖然 export 了 `OPENAI_MODEL` 但 `llm_caller` 從未讀取
+- 修法（[backend/app/signals/llm_caller.py](backend/app/signals/llm_caller.py)）：
+  ```python
+  _FALLBACK_MODEL = "gpt-4o-search-preview"
+  DEFAULT_MODEL = os.getenv("OPENAI_MODEL", _FALLBACK_MODEL)
+  ```
+- 為何不用 `app.settings.get_openai_model()`：那個 helper 預設回 `gpt-4o-mini`，不支援 web search，會讓 M23 LLM stage 全掛
+- Module-level snapshot：function 預設參數 (`def f(model=DEFAULT_MODEL)`) 在 import 時 capture 一次值，後續 caller 不需要顯式傳入 model 也能吃到 env
+
+**修法 2：`build_candidate_pool` 空 list → 短路 `ValueError`**
+- 原本 pipeline 拿到空 pool 還是會繼續送空 batch 給 LLM、最後寫一筆 `watchlist=[]` 的 done snapshot；cron exit 永遠 0，無法區分「真的沒抓到」與「成功但 0 檔」
+- 修法（[backend/app/signals/pipeline.py:110](backend/app/signals/pipeline.py)）：在 `build_candidate_pool` 之後加：
+  ```python
+  if not pool:
+      raise ValueError(f"no candidate stocks for target_date={target_date}")
+  ```
+- 既有 pipeline exception handler 會 `_mark_failed` (status="failed") 並 re-raise；`run_daily_signals._classify_exit_code` 抓 "no candidate" 子字串映射到 exit 1（no_data，workflow 仍 pass）
+- 觸發情境：週末 / 假日跑、target_date DB 無交易資料、市場太冷沒任何個股通過篩選
+
+**修法 3：`build_candidate_pool` 截斷排序註解**
+- spec 描述「LEADER candidate (rank 高) > FOLLOWER candidate > 其他」應優先保留，但截斷發生在 `classification.classify_stocks()` 之前，這時候還沒有 `prelim_type` 可用
+- 修法（[backend/app/signals/candidate_pool.py:242](backend/app/signals/candidate_pool.py)）：加 8 行註解說明用 `total_institution_flow_3d`（三大法人 3 日累計淨買超）做 LEADER-aware proxy 排序：
+  - LEADER 通常法人連買金額最大 → 排序前段
+  - LAGGARD / 弱勢 → 法人金額 ~0 或負 → 截斷時優先丟
+- 實務上 60~120 檔幾乎觸發不到 SOFT_TRIGGER=150 hard limit；這段是安全網，未來真要更精準可加 lite 預分類
+
+**測試更新（[backend/tests/test_signals_pipeline.py](backend/tests/test_signals_pipeline.py)）**：
+- `_stub_all_stages_noop` 與 `test_pipeline_marks_failed_when_filter_stage_raises` 把 `build_candidate_pool` stub 從 `[]` 改成 `[{"stock_id": "_dummy"}]`（slice 11 後空 pool 會 raise，會跑不到後續 stage）
+- 新增 `test_pipeline_raises_value_error_when_candidate_pool_empty` 驗證空 pool 短路路徑：raise ValueError + status=failed + finished_at 寫入
+- `test_pipeline_persists_snapshot_with_payload_fields` 的 `candidate_pool_size` 斷言從 `0` 改 `1`（dummy pool 長度）
+- 既有 `test_classify_exit_code_no_data` 已驗證 `ValueError("no candidate stocks for date") → exit 1`
+
+**測試結果**：52 M23 tests pass + 509 全 backend tests pass（`test_engine_connects` 為 worktree sqlite 路徑問題，與本切片無關）
+
+**Gotcha**：
+- **不要把 `if not pool:` 移進 `build_candidate_pool`**：keep candidate_pool 為純 deterministic transform（input → output 不丟例外）；pipeline 才是 orchestration 層、由它決定「沒 pool = 給 cron 看 exit 1」的語義
+- **Module-level `os.getenv()` snapshot 要在 import 時跑**：若改用 `def get_default_model(): return os.getenv(...)` 則 function 預設參數會 evaluate 一次（仍 capture 同一份），但 import-time 寫法更直觀也不會有 monkey-patch surprise
+- **`_classify_exit_code` 已 covered**：`backend/tests/test_run_daily_signals.py:47` 已斷言 `_classify_exit_code(ValueError("no candidate stocks for date")) == 1`，本切片不需新增 cron 端測試
+
+**狀態**：9/10 + slice 11 patches，剩 slice 10（prod smoke test）。slice 7~9 + slice 11 整條同 branch (`claude/angry-cerf-8755da`)，merge 上 main 後即可手動觸發 cron 驗證。

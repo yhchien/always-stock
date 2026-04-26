@@ -1,0 +1,88 @@
+name: Daily Signals Generation
+
+on:
+  schedule:
+    # 台北 03:00 週二~週六（即週一~週五收盤後的隔天凌晨）
+    # GitHub Actions cron 只吃 UTC：UTC 19:00 (週一~週五) = 台北 03:00 (週二~週六)
+    # 排在 ETL（台北 23:00）後 4 小時，確保昨日 inst_flow / valuation / monthly_revenue 已就緒
+    - cron: '0 19 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      target_date:
+        description: '目標分析日期 (YYYY-MM-DD)，預設為昨天（cron 4h offset）'
+        required: false
+
+jobs:
+  run_signals:
+    runs-on: ubuntu-latest
+    # LLM batch 60~120 檔 × 平均 ~20s/檔 ≈ 30~60 min；保留 90 min buffer
+    timeout-minutes: 90
+
+    env:
+      TZ: Asia/Taipei
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --quiet -r backend/requirements.txt
+
+      - name: Resolve target date
+        id: resolve
+        env:
+          INPUT_DATE: ${{ github.event.inputs.target_date }}
+        run: |
+          # cron 排程在台北 03:00，但 GitHub Actions cron 常延遲 10~90 分鐘。
+          # 即使延遲到 04:30，往前推 4h = 00:30 仍是當日 → date +%F 給昨日（前一個收盤日）。
+          # 手動觸發若帶 INPUT_DATE 則尊重之，不受 offset 影響。
+          if [ -n "$INPUT_DATE" ]; then
+            TARGET_DATE="$INPUT_DATE"
+          else
+            TARGET_DATE=$(date -d '4 hours ago' +%F)
+          fi
+          echo "target_date=$TARGET_DATE" >> "$GITHUB_OUTPUT"
+          echo "Target date (Taipei): $TARGET_DATE"
+
+      - name: Run signal pipeline
+        id: signals
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ secrets.OPENAI_SIGNALS_MODEL || 'gpt-4o-search-preview' }}
+        run: |
+          set +e
+          python3 run_daily_signals.py ${{ steps.resolve.outputs.target_date }}
+          PIPELINE_EXIT=$?
+          echo "pipeline_exit=$PIPELINE_EXIT" >> "$GITHUB_OUTPUT"
+          echo "Signal pipeline exit code: $PIPELINE_EXIT"
+          exit 0
+
+      - name: Evaluate final status
+        if: always()
+        run: |
+          FINAL_EXIT="${{ steps.signals.outputs.pipeline_exit }}"
+          echo "Target date: ${{ steps.resolve.outputs.target_date }}"
+          echo "Final pipeline exit code: $FINAL_EXIT"
+          # run_daily_signals.py exit codes:
+          #   0 = ok
+          #   1 = no_data（候選池為空 / 無交易日）→ workflow pass，當天無訊號是合理結果
+          #   2 = llm_error（OpenAI / prompt 失敗）→ workflow fail，需重跑
+          #   3 = db_error（DB 連線 / pipeline crash）→ workflow fail
+          case "$FINAL_EXIT" in
+            0) echo "Status: ok" ;;
+            1) echo "Status: no_data (no candidate stocks; non-trading day or quiet market)" ;;
+            2) echo "Status: llm_error (FAIL)" ;;
+            3) echo "Status: db_error (FAIL)" ;;
+            *) echo "Status: unknown (exit=$FINAL_EXIT)" ;;
+          esac
+          # 0 / 1 → pass；2 / 3 → fail
+          case "$FINAL_EXIT" in
+            0|1) exit 0 ;;
+            *) exit 1 ;;
+          esac

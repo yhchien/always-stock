@@ -458,6 +458,62 @@ class FinMindSDKClient:
             logger.warning(f"Failed to fetch broker trade for {trade_date}: {e}")
             raise
 
+    def fetch_margin_purchase_short_sale(
+        self,
+        stock_id_list: List[str],
+        start_date: str,
+        end_date: str,
+        use_async: bool = True,
+    ) -> Any:
+        """
+        批量抓取融資融券每日餘額（M23 訊號管線使用）
+        資料集：TaiwanStockMarginPurchaseShortSale
+
+        FinMind 回傳欄位：
+            date, stock_id,
+            MarginPurchaseTodayBalance, MarginPurchaseYesterdayBalance,
+            ShortSaleTodayBalance, ShortSaleYesterdayBalance, ...
+
+        Args:
+            stock_id_list: 股票代碼列表
+            start_date: 開始日期 (YYYY-MM-DD)
+            end_date: 結束日期 (YYYY-MM-DD)
+            use_async: 是否使用 async 並行
+
+        Returns:
+            pandas DataFrame
+        """
+        if not self.can_proceed():
+            raise RuntimeError("Insufficient quota or critical state")
+
+        logger.info(
+            f"Fetching {len(stock_id_list)} stocks margin/short sale data "
+            f"from {start_date} to {end_date} (async={use_async})"
+        )
+
+        try:
+            if not hasattr(self.api, 'taiwan_stock_margin_purchase_short_sale'):
+                logger.warning(
+                    "SDK has no taiwan_stock_margin_purchase_short_sale method; skipping."
+                )
+                return None
+
+            df = self.api.taiwan_stock_margin_purchase_short_sale(
+                stock_id_list=stock_id_list,
+                start_date=start_date,
+                end_date=end_date,
+                use_async=use_async,
+            )
+
+            self._refresh_quota()
+            logger.info(f"✓ Fetched {len(df) if df is not None else 0} margin/short sale records")
+
+            return df
+
+        except Exception as e:
+            logger.error(f"Failed to fetch margin_purchase_short_sale: {e}")
+            raise
+
     def fetch_financial_statements(
         self,
         stock_id_list: List[str],

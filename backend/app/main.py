@@ -9,7 +9,19 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from app.rate_limit import limiter
-from app.routers import analysis, auth as auth_router, backtest, brokers, financials, industries, market, realtime, stocks, watchlist
+from app.routers import (
+    analysis,
+    auth as auth_router,
+    backtest,
+    brokers,
+    financials,
+    industries,
+    market,
+    realtime,
+    signals,
+    stocks,
+    watchlist,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +52,33 @@ def _seed_admin_user() -> None:
         db.close()
 
 
+def _ensure_m23_tables() -> None:
+    """啟動時確保 M23 訊號管線新表存在（margin_trade / signal_snapshots / signal_generation_jobs）。
+
+    與 _seed_admin_user 拆開：
+    - 沒有 seed 動作（純建表）
+    - 失敗不阻擋 app 啟動，僅 warn（M23 為新功能，舊 endpoint 不依賴）
+    """
+    from app.database import Base, engine
+    from app.models import (  # noqa: F401 — 觸發 metadata 註冊
+        MarginTrade,
+        SignalGenerationJob,
+        SignalSnapshot,
+    )
+
+    try:
+        Base.metadata.create_all(
+            bind=engine,
+            tables=[
+                MarginTrade.__table__,
+                SignalGenerationJob.__table__,
+                SignalSnapshot.__table__,
+            ],
+        )
+    except Exception:
+        logger.exception("Failed to create M23 signal tables at startup")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
@@ -48,6 +87,7 @@ async def lifespan(app: FastAPI):
     when TELEGRAM_BOT_TOKEN is absent so local dev without a token still runs.
     """
     _seed_admin_user()
+    _ensure_m23_tables()
 
     app.state.bot_app = None
 
@@ -130,6 +170,7 @@ app.include_router(backtest.router, prefix="/api")
 app.include_router(financials.router, prefix="/api")
 app.include_router(analysis.router, prefix="/api")
 app.include_router(watchlist.router, prefix="/api")
+app.include_router(signals.router, prefix="/api")
 
 logger.info("always-stock API initialized")
 

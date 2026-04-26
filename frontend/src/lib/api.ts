@@ -949,3 +949,146 @@ export async function fetchIndustryHotMoney(
   if (!res.ok) throw new Error(await buildErrorMessage(res, "熱錢排行載入失敗"))
   return res.json()
 }
+
+// ---------------------------------------------------------------------------
+// M23 每日異常訊號清單（slice 8）
+// ---------------------------------------------------------------------------
+
+export type SignalDecisionType = "LEADER" | "FOLLOWER" | "LAGGARD"
+
+export interface SignalWatchlistItem {
+  stock: string
+  name?: string | null
+  type?: SignalDecisionType | null
+  industry?: string | null
+  sub_industry?: string | null
+  business_summary?: string | null
+  supply_chain_position?: string | null
+  theme_fit?: string | null
+  theme?: {
+    main_theme?: string | null
+    theme_duration?: string | null
+    theme_score?: number | null
+    theme_reason?: string | null
+  } | null
+  group_info?: {
+    is_group_stock?: boolean | null
+    group_name?: string | null
+    related_group_stocks?: string[] | null
+    group_price_sync?: string | null
+  } | null
+  leader_check?: {
+    industry_leader?: string | null
+    leader_price_trend?: string | null
+    leader_supports_theme?: boolean | null
+  } | null
+  signals?: {
+    capital_flow?: string | null
+    chip_trend?: string | null
+    margin_short_signal?: string | null
+    technical_status?: string | null
+  } | null
+  decision?: string | null
+  reason?: string | null
+}
+
+export interface SignalRemovedItem {
+  stock: string
+  name?: string | null
+  remove_reason?: string | null
+}
+
+export interface SignalSummary {
+  main_hot_industries?: string[] | null
+  leader_count?: number | null
+  follower_count?: number | null
+  laggard_count?: number | null
+  risk_note?: string | null
+}
+
+export interface SignalMarketContext {
+  market_state?: string | null
+  taiex_change_pct?: number | null
+  otc_change_pct?: number | null
+  vix_status?: string | null
+  futures_bias?: string | null
+  market_state_reason?: string | null
+}
+
+export interface SignalSnapshotData {
+  market_context: SignalMarketContext
+  watchlist: SignalWatchlistItem[]
+  removed: SignalRemovedItem[]
+  summary: SignalSummary
+  candidate_pool_size: number | null
+  final_watchlist_size: number | null
+}
+
+export interface SignalSnapshotResponse {
+  snapshot_date: string
+  generated_at: string
+  llm_model: string | null
+  data: SignalSnapshotData
+}
+
+export type SignalJobStatus = "pending" | "running" | "done" | "failed"
+
+export interface SignalJobResponse {
+  job_id: string
+  snapshot_date: string
+  status: SignalJobStatus
+  current_stage: string | null
+  progress_pct: number
+  progress_label: string | null
+  started_at: string
+  finished_at: string | null
+  error_message: string | null
+}
+
+export interface SignalRegenerateResponse {
+  job_id: string
+  snapshot_date: string
+}
+
+export async function fetchLatestSignalSnapshot(
+  options?: FetchOptions,
+): Promise<SignalSnapshotResponse | null> {
+  const res = await apiFetch(`${API_BASE}/api/signals/latest`, {
+    signal: options?.signal,
+  })
+  if (res.status === 404) return null
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "訊號清單載入失敗"))
+  return res.json()
+}
+
+export async function fetchSignalSnapshotByDate(
+  snapshotDate: string,
+  options?: FetchOptions,
+): Promise<SignalSnapshotResponse | null> {
+  const res = await apiFetch(
+    `${API_BASE}/api/signals/snapshot/${encodeURIComponent(snapshotDate)}`,
+    { signal: options?.signal },
+  )
+  if (res.status === 404) return null
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "訊號快照載入失敗"))
+  return res.json()
+}
+
+export async function fetchLatestSignalJob(
+  options?: FetchOptions,
+): Promise<SignalJobResponse | null> {
+  const res = await apiFetch(`${API_BASE}/api/signals/jobs/latest`, {
+    signal: options?.signal,
+  })
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "Job 狀態載入失敗"))
+  return res.json()
+}
+
+export async function regenerateSignals(): Promise<SignalRegenerateResponse> {
+  const res = await apiFetch(`${API_BASE}/api/signals/regenerate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+  })
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "重新產生失敗"))
+  return res.json()
+}

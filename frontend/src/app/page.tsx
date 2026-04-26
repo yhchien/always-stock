@@ -8,6 +8,7 @@ import { fetchLatestTradeDate } from "@/lib/api"
 import { todayInTaipei } from "@/lib/utils"
 
 const TradeQualityAnalysis = dynamic(() => import("@/components/TradeQualityAnalysis"), { ssr: false })
+const DailySignalsPanel = dynamic(() => import("@/components/DailySignalsPanel"), { ssr: false })
 const HotMoneyList = dynamic(() => import("@/components/HotMoneyList"), { ssr: false })
 
 function HomeContent() {
@@ -37,6 +38,7 @@ function HomeContent() {
   return (
     <main className="mx-auto w-full max-w-5xl px-4 py-8 flex flex-col gap-6">
       <TradeQualityAnalysis />
+      <DailySignalsPanel />
       <HotMoneyList date={defaultDate} days={3} limit={20} />
       <IndustryDashboard
         defaultDate={defaultDate}
