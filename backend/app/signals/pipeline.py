@@ -19,10 +19,11 @@ M23 Pipeline 主流程：cron / BackgroundTasks 共用入口。
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
 import traceback
 from datetime import date, datetime
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
@@ -41,6 +42,9 @@ STAGE_FILTER = "filter"
 STAGE_LLM_RESEARCH = "llm_research"
 STAGE_LLM_EXPLAIN = "llm_explain"
 STAGE_PERSIST = "persist"
+
+# L3：research batch 並行數上限。OpenAI web search latency 波動較大，先保守開 4。
+MAX_CONCURRENT_RESEARCH_BATCHES = 4
 
 
 def run_signal_pipeline_sync(
@@ -134,22 +138,13 @@ def run_signal_pipeline_sync(
                 label=f"LLM 上網查詢（共 {len(after_soft)} 檔）",
             )
             market_context = llm_caller.assemble_market_context({})
-            research_results: list = []
-            batch_size = llm_caller.DEFAULT_BATCH_SIZE
-            for i in range(0, len(after_soft), batch_size):
-                batch = after_soft[i : i + batch_size]
-                research_results.extend(
-                    llm_caller.run_research_batch(batch, market_context)
-                )
-                done_count = min(i + batch_size, len(after_soft))
-                pct = 45 + int(30 * done_count / total_for_llm)
-                _set_progress(
-                    db,
-                    job,
-                    stage=STAGE_LLM_RESEARCH,
-                    pct=pct,
-                    label=f"研究第 {done_count} / {len(after_soft)} 檔",
-                )
+            research_results = _run_research_batches(
+                db,
+                job,
+                after_soft,
+                market_context,
+                total_for_llm=total_for_llm,
+            )
 
             # Step 6：LLM Explanation
             _set_progress(
@@ -271,3 +266,59 @@ def _persist_snapshot(
     else:
         db.add(SignalSnapshot(snapshot_date=target_date, **fields))
     db.commit()
+
+
+def _run_research_batches(
+    db: Session,
+    job: SignalGenerationJob,
+    candidates: List[Dict[str, Any]],
+    market_context: Dict[str, Any],
+    *,
+    total_for_llm: int,
+) -> List[Dict[str, Any]]:
+    """Research stage：分 batch 並行跑，失敗的 batch 只標記 fallback，不中斷整條 pipeline。"""
+    if not candidates:
+        return []
+
+    batch_size = llm_caller.DEFAULT_BATCH_SIZE
+    batches = [
+        candidates[i : i + batch_size] for i in range(0, len(candidates), batch_size)
+    ]
+    results_by_batch: Dict[int, List[Dict[str, Any]]] = {}
+    done_count = 0
+    max_workers = min(MAX_CONCURRENT_RESEARCH_BATCHES, len(batches))
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_batch_index = {
+            executor.submit(llm_caller.run_research_batch, batch, market_context): idx
+            for idx, batch in enumerate(batches)
+        }
+        for future in as_completed(future_to_batch_index):
+            batch_index = future_to_batch_index[future]
+            batch = batches[batch_index]
+            try:
+                results_by_batch[batch_index] = future.result()
+            except Exception:
+                logger.exception(
+                    "M23 research batch failed; skipping batch_index=%s batch_size=%s",
+                    batch_index,
+                    len(batch),
+                )
+                results_by_batch[batch_index] = [
+                    {**stock, "_llm_failed": True} for stock in batch
+                ]
+
+            done_count += len(batch)
+            pct = 45 + int(30 * done_count / total_for_llm)
+            _set_progress(
+                db,
+                job,
+                stage=STAGE_LLM_RESEARCH,
+                pct=pct,
+                label=f"研究第 {done_count} / {len(candidates)} 檔",
+            )
+
+    ordered_results: List[Dict[str, Any]] = []
+    for batch_index in range(len(batches)):
+        ordered_results.extend(results_by_batch[batch_index])
+    return ordered_results

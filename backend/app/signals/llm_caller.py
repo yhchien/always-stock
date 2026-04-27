@@ -49,6 +49,14 @@ _PROMPT_PATH = (
 # OpenAI 回應的 max tokens；reason 規則要求 500-1000 字 × batch 8 → 預留充足
 _MAX_OUTPUT_TOKENS = 8000
 
+# OpenAI client per-request 上限（秒）
+# `gpt-4o-search-preview` 帶 web search，正常 batch latency 30~60s。
+# 預設不設 timeout 會吃 SDK 默認 600s（10 min），加上 max_retries=2 一個 hung
+# 請求最壞拖 30 min 卡死 pipeline。下面值經驗：90s 給夠單 batch 含 search 的時間，
+# 1 retry 已夠處理短暫 503，總時間最壞 ~180s 就放手 raise。
+_OPENAI_REQUEST_TIMEOUT_SEC = 90.0
+_OPENAI_MAX_RETRIES = 1
+
 
 def assemble_market_context(
     db_market_snapshot: Dict[str, Any],
@@ -286,7 +294,11 @@ def _call_llm_json(
         )
         return None
 
-    client = OpenAI(api_key=api_key)
+    client = OpenAI(
+        api_key=api_key,
+        timeout=_OPENAI_REQUEST_TIMEOUT_SEC,
+        max_retries=_OPENAI_MAX_RETRIES,
+    )
     try:
         response = client.chat.completions.create(
             model=model,
@@ -337,6 +349,10 @@ def _run_explanation_chunk(
     model: str,
 ) -> List[Dict[str, Any]]:
     """單個 chunk 的 explanation LLM call（內部 helper）。"""
+    eligible_chunk = [item for item in chunk if not _should_skip_explanation_llm(item)]
+    if not eligible_chunk:
+        return [_explanation_fallback(item) for item in chunk]
+
     system_prompt = _load_system_prompt()
     user_msg = (
         "[執行 STEP 5 / STEP 6 / STEP 7 / STEP 8 / STEP 9：依 market_state gating "
@@ -344,7 +360,7 @@ def _run_explanation_chunk(
         f"[market_context]\n"
         f"{json.dumps(market_context, ensure_ascii=False, indent=2)}\n\n"
         f"[research_results]\n"
-        f"{json.dumps(chunk, ensure_ascii=False, indent=2)}\n\n"
+        f"{json.dumps(eligible_chunk, ensure_ascii=False, indent=2)}\n\n"
         "輸出格式（JSON only，不要 markdown code fence）：\n"
         "{\n"
         '  "items": [\n'
@@ -378,7 +394,9 @@ def _run_explanation_chunk(
     for research in chunk:
         sid = str(research.get("stock") or research.get("stock_id") or "")
         merged: Dict[str, Any] = {**research}
-        if sid in by_id:
+        if _should_skip_explanation_llm(research):
+            merged.update(_explanation_fallback(research))
+        elif sid in by_id:
             ext = by_id[sid]
             merged["signals"] = ext.get("signals", _default_signals())
             merged["decision"] = str(ext.get("decision") or "REMOVE").upper()
@@ -461,6 +479,10 @@ def _explanation_fallback(research: Dict[str, Any]) -> Dict[str, Any]:
         "decision": "REMOVE",
         "reason": "LLM 不可用，無法完成最終評估（標記為 REMOVE 以避免誤判）。",
     }
+
+
+def _should_skip_explanation_llm(research: Dict[str, Any]) -> bool:
+    return bool(research.get("_llm_failed") or research.get("_unavailable"))
 
 
 def _default_signals() -> Dict[str, str]:

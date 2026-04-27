@@ -8,6 +8,7 @@ ingest 即 failed。本測試以 monkeypatch 替換為 noop 來覆蓋：
                  + 失敗時的 stage / pct 已被 commit 到 DB
   - missing job：job_id 不存在 → ValueError
 """
+import time
 import uuid
 from datetime import date
 
@@ -277,3 +278,132 @@ def test_pipeline_upserts_existing_snapshot_on_rerun(session_factory, monkeypatc
         )
         assert len(snaps) == 1, "重跑應 UPSERT 同一筆而非新增"
         assert snaps[0].job_id == job_id_2  # job_id 已更新為最後一次
+
+
+def test_pipeline_skips_failed_research_batch_and_finishes(session_factory, monkeypatch):
+    monkeypatch.setattr(candidate_pool, "ingest_data", lambda db, td: {"target": td})
+    monkeypatch.setattr(
+        candidate_pool, "compute_rankings", lambda db, td, ing: {"top_industries": [], "top_stocks": []}
+    )
+    monkeypatch.setattr(
+        candidate_pool,
+        "build_candidate_pool",
+        lambda db, td, ing, rank: [{"stock_id": "A"}, {"stock_id": "B"}, {"stock_id": "C"}],
+    )
+    monkeypatch.setattr(classification, "classify_stocks", lambda db, td, pool: list(pool))
+    monkeypatch.setattr(filters, "apply_hard_exclusions", lambda db, td, c: list(c))
+    monkeypatch.setattr(filters, "apply_soft_filters", lambda db, td, c: list(c))
+    monkeypatch.setattr(
+        llm_caller, "assemble_market_context", lambda snap: {"market_state": "RANGE"}
+    )
+    monkeypatch.setattr(llm_caller, "DEFAULT_BATCH_SIZE", 2)
+
+    def _research(batch, _ctx):
+        if batch[0]["stock_id"] == "A":
+            raise RuntimeError("research batch blew up")
+        return [{"stock": item["stock_id"], "name": item["stock_id"]} for item in batch]
+
+    monkeypatch.setattr(llm_caller, "run_research_batch", _research)
+
+    captured = {}
+
+    def _explain(research, _ctx):
+        captured["research"] = research
+        return []
+
+    monkeypatch.setattr(llm_caller, "run_explanation_batch", _explain)
+    monkeypatch.setattr(
+        llm_caller,
+        "assemble_final_output",
+        lambda ctx, expl, *, candidate_pool_size: {
+            "market_context": ctx,
+            "watchlist": [],
+            "removed": [],
+            "summary": {},
+            "candidate_pool_size": candidate_pool_size,
+            "final_watchlist_size": 0,
+            "llm_model": "test-model",
+            "llm_total_tokens": 0,
+        },
+    )
+
+    job_id = str(uuid.uuid4())
+    target_date = date(2026, 4, 25)
+    _seed_pending_job(session_factory, job_id, snapshot_date=target_date)
+
+    run_signal_pipeline_sync(job_id, target_date, session_factory=session_factory)
+
+    with session_factory() as db:
+        rec = db.get(SignalGenerationJob, job_id)
+        assert rec.status == "done"
+        assert rec.progress_pct == 100
+
+    assert captured["research"][0]["stock_id"] == "A"
+    assert captured["research"][0]["_llm_failed"] is True
+    assert captured["research"][1]["_llm_failed"] is True
+    assert captured["research"][2]["stock"] == "C"
+
+
+def test_pipeline_parallel_research_preserves_original_order(
+    session_factory, monkeypatch
+):
+    monkeypatch.setattr(candidate_pool, "ingest_data", lambda db, td: {"target": td})
+    monkeypatch.setattr(
+        candidate_pool, "compute_rankings", lambda db, td, ing: {"top_industries": [], "top_stocks": []}
+    )
+    monkeypatch.setattr(
+        candidate_pool,
+        "build_candidate_pool",
+        lambda db, td, ing, rank: [
+            {"stock_id": "A"},
+            {"stock_id": "B"},
+            {"stock_id": "C"},
+            {"stock_id": "D"},
+        ],
+    )
+    monkeypatch.setattr(classification, "classify_stocks", lambda db, td, pool: list(pool))
+    monkeypatch.setattr(filters, "apply_hard_exclusions", lambda db, td, c: list(c))
+    monkeypatch.setattr(filters, "apply_soft_filters", lambda db, td, c: list(c))
+    monkeypatch.setattr(
+        llm_caller, "assemble_market_context", lambda snap: {"market_state": "RANGE"}
+    )
+    monkeypatch.setattr(llm_caller, "DEFAULT_BATCH_SIZE", 2)
+
+    def _research(batch, _ctx):
+        if batch[0]["stock_id"] == "A":
+            time.sleep(0.05)
+        else:
+            time.sleep(0.01)
+        return [{"stock": item["stock_id"], "name": item["stock_id"]} for item in batch]
+
+    monkeypatch.setattr(llm_caller, "run_research_batch", _research)
+
+    captured = {}
+
+    def _explain(research, _ctx):
+        captured["stocks"] = [item["stock"] for item in research]
+        return []
+
+    monkeypatch.setattr(llm_caller, "run_explanation_batch", _explain)
+    monkeypatch.setattr(
+        llm_caller,
+        "assemble_final_output",
+        lambda ctx, expl, *, candidate_pool_size: {
+            "market_context": ctx,
+            "watchlist": [],
+            "removed": [],
+            "summary": {},
+            "candidate_pool_size": candidate_pool_size,
+            "final_watchlist_size": 0,
+            "llm_model": "test-model",
+            "llm_total_tokens": 0,
+        },
+    )
+
+    job_id = str(uuid.uuid4())
+    target_date = date(2026, 4, 25)
+    _seed_pending_job(session_factory, job_id, snapshot_date=target_date)
+
+    run_signal_pipeline_sync(job_id, target_date, session_factory=session_factory)
+
+    assert captured["stocks"] == ["A", "B", "C", "D"]

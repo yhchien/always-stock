@@ -1441,3 +1441,41 @@ slice 1~9 完成後 review 出 3 個小瑕疵，集中於 slice 11 修掉，讓�
 - **`_classify_exit_code` 已 covered**：`backend/tests/test_run_daily_signals.py:47` 已斷言 `_classify_exit_code(ValueError("no candidate stocks for date")) == 1`，本切片不需新增 cron 端測試
 
 **狀態**：9/10 + slice 11 patches，剩 slice 10（prod smoke test）。slice 7~9 + slice 11 整條同 branch (`claude/angry-cerf-8755da`)，merge 上 main 後即可手動觸發 cron 驗證。
+
+## M23 slice 12：research stage prod hardening（2026-04-27）
+
+這一片是針對 prod 觀察到的「卡在 40 / 90 不再前進」做韌性修補，重點不是換商業邏輯，而是讓 pipeline 在 OpenAI web search 不穩時也能繼續產出 snapshot。
+
+**根因**
+- `llm_caller` 原本沒設 client timeout，OpenAI Python SDK 會吃預設 600 秒，加上自動 retry，單一 batch 最壞可卡 30 分鐘
+- `pipeline.py` 的 research stage 原本是 sequential for-loop；一個 batch 卡住，整條 pipeline 就跟著卡住
+
+**修法 1：OpenAI client timeout / retry 上限**
+- [backend/app/signals/llm_caller.py](backend/app/signals/llm_caller.py) 新增：
+  - `_OPENAI_REQUEST_TIMEOUT_SEC = 90.0`
+  - `_OPENAI_MAX_RETRIES = 1`
+- `_call_llm_json()` 建 `OpenAI(...)` 時顯式帶入 `timeout` 與 `max_retries`
+- 取 90 秒而不是 60 秒：`gpt-4o-search-preview` 帶 web search 時正常 latency 常落在 30~60 秒，90 秒比較不會把正常慢回應誤殺；配 1 retry，單次 hung request 最壞約 180 秒就放手
+
+**修法 2：單一 research batch 失敗不拖死整條 pipeline**
+- [backend/app/signals/pipeline.py](backend/app/signals/pipeline.py) 把 research stage 抽成 `_run_research_batches()`
+- 任一 batch `future.result()` 拋例外時，只記 log 並把該 batch 轉成 `[{**stock, "_llm_failed": True}, ...]`
+- explanation stage 看到 `_llm_failed` / `_unavailable` 會直接走 `_explanation_fallback()`，不再把失敗批次重新送去 LLM
+
+**修法 3：research batch 4-way parallel**
+- `MAX_CONCURRENT_RESEARCH_BATCHES = 4`
+- 用 `ThreadPoolExecutor` + `as_completed()` 並行跑 batch，縮短 90 檔 / 12 batches 的總牆鐘時間
+- 雖然 future 完成順序會亂掉，但最終結果先存 `results_by_batch[batch_index]`，最後依 batch index flatten，確保 explanation stage 收到的股票順序與原 candidate list 一致
+
+**測試**
+- [backend/tests/test_signals_llm_caller.py](backend/tests/test_signals_llm_caller.py)
+  - 新增 timeout / retry limits 驗證
+  - 新增 `_llm_failed` item 會直接走 explanation fallback
+- [backend/tests/test_signals_pipeline.py](backend/tests/test_signals_pipeline.py)
+  - 新增 failed research batch 仍可 `status=done`
+  - 新增 parallel completion 順序不同時，最終 research 順序仍維持原順序
+- 驗證：`cd backend && python3 -m pytest tests/test_signals_llm_caller.py tests/test_signals_pipeline.py` → `37 passed`
+
+**操作記憶**
+- 如果之後又看到 job 卡在類似 `40/90`、`48/96` 這種整批整數倍位置，先看 `llm_research` stage 是否有某個 batch 被 web search 卡住
+- 想再加速時，優先調 `MAX_CONCURRENT_RESEARCH_BATCHES`，不要先動 business filter；但並行數開太高會同時提高 OpenAI 併發壓力與 quota 波動

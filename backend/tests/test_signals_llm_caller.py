@@ -262,6 +262,26 @@ def test_run_research_batch_fallback_when_research_key_missing(monkeypatch):
     assert out[0].get("_unavailable") is True
 
 
+def test_call_llm_json_sets_timeout_and_retry_limits(monkeypatch):
+    init_kwargs = {}
+
+    class _Client:
+        def __init__(self):
+            self.chat = _FakeChat(_FakeCompletions('{"ok": true}'))
+
+    def _factory(**kwargs):
+        init_kwargs.update(kwargs)
+        return _Client()
+
+    monkeypatch.setattr(llm_caller, "OpenAI", _factory)
+    monkeypatch.setattr(llm_caller, "get_openai_api_key", lambda: "fake-key")
+
+    out = llm_caller._call_llm_json("system", "user", model="gpt-4o-search-preview")
+    assert out == {"ok": True}
+    assert init_kwargs["timeout"] == llm_caller._OPENAI_REQUEST_TIMEOUT_SEC
+    assert init_kwargs["max_retries"] == llm_caller._OPENAI_MAX_RETRIES
+
+
 # ---------- run_explanation_batch ----------
 
 
@@ -381,6 +401,29 @@ def test_run_explanation_batch_falls_back_for_missing_stock_in_response(monkeypa
     by_id = {x["stock"]: x for x in out}
     assert by_id["2330"]["decision"] == "WATCH"
     assert by_id["9999"]["decision"] == "REMOVE"  # fallback
+    assert "LLM 不可用" in by_id["9999"]["reason"]
+
+
+def test_run_explanation_batch_skips_llm_for_failed_research_items(monkeypatch):
+    response = {
+        "items": [
+            {
+                "stock": "2330",
+                "signals": {"capital_flow": "strong"},
+                "decision": "WATCH",
+                "reason": "ok",
+            }
+        ]
+    }
+    _patch_openai(monkeypatch, json.dumps(response, ensure_ascii=False))
+    research = [
+        {"stock": "2330", "name": "台積電"},
+        {"stock": "9999", "name": "失敗股", "_llm_failed": True},
+    ]
+    out = llm_caller.run_explanation_batch(research, market_context={})
+    by_id = {x["stock"]: x for x in out}
+    assert by_id["2330"]["decision"] == "WATCH"
+    assert by_id["9999"]["decision"] == "REMOVE"
     assert "LLM 不可用" in by_id["9999"]["reason"]
 
 

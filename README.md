@@ -6,6 +6,7 @@
 - `Trade Quality Analysis`：輸入股票與買進日，還原當時可觀察資訊後給出 5 階交易質量評級（不需登入即可使用，分層 rate limit）
 - `Industry Dashboard`：產業別三大法人資金流向排行
 - `Hot Money List`：首頁底部與 L1 產業頁頂部呈現「近 N 日三大法人累計淨買超」個股排行（L0 Top 20 / L1 Top 10）
+- `Daily Signals`：首頁折疊 panel 呈現每日異常訊號清單（LEADER / FOLLOWER / LAGGARD / REMOVED），支援背景重新產生、進度條與 snapshot 自動更新
 - `Watchlist`：登入後可建立關注買進清單（單一清單上限 20 檔，含未實現損益與一鍵跳 M17 交易分析）
 
 > Daily Brief（盤前摘要）已從首頁移到 Telegram Bot `/brief` 指令。
@@ -233,7 +234,7 @@ npm run dev
 | M20 | 交易分析擴充（預期 45% 報酬率加碼建議 + 風報比 1:1.75） | ⬜ 規劃中（M19 完成後） |
 | M21 | Trade Quality Context 資料管線（6 section 預聚合 JSON + `GET /api/analysis/context`；deterministic + no-hindsight） | ✅ |
 | M22 | 熱錢湧入個股排行（L0 底部 Top 20 / L1 頂部 Top 10，近 N 日三大法人累計買超） | ✅ |
-| M23 | 每日異常訊號清單（**03:00 台北排程**；deterministic filter 建候選池 + LLM 上網查公司業務／集團／龍頭比對；輸出 LEADER / FOLLOWER / LAGGARD 三類；L0 tab bar + pulse 通知 + 多工背景重新產生 + 進度條；不預測報酬、不出買賣建議） | ⬜ 規劃中（[spec](docs/plans/m23_daily_signals_spec.md)） |
+| M23 | 每日異常訊號清單（目前以**使用者手動重新產生**為主；deterministic filter 建候選池 + LLM 上網查公司業務／集團／龍頭比對；輸出 LEADER / FOLLOWER / LAGGARD 三類；L0 panel + pulse 通知 + 多工背景重新產生 + 進度條；research stage 已補 timeout / failed-batch skip / 4-way parallelism；不預測報酬、不出買賣建議） | 🔄 進行中（前後端已上線，持續做 prod smoke / tuning；[spec](docs/plans/m23_daily_signals_spec.md)） |
 | M24 | 自訂進出場策略回測（M11 擴充；使用者自設規則 + 歷史回測驗證 edge + LLM 在 trigger 當下給「適合執行」現場判斷） | ⬜ 規劃中 |
 
 ---
