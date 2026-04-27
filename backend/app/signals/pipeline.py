@@ -151,17 +151,31 @@ def run_signal_pipeline_sync(
                     label=f"研究第 {done_count} / {len(after_soft)} 檔",
                 )
 
-            # Step 6：LLM Explanation
+            # Step 6：LLM Explanation（外層 chunk loop，每 batch commit progress
+            # 避免 75% 卡住數分鐘的 UX 問題；mirror llm_research 模式）
+            total_for_explain = max(len(research_results), 1)
             _set_progress(
                 db,
                 job,
                 stage=STAGE_LLM_EXPLAIN,
                 pct=75,
-                label="LLM 產出解釋",
+                label=f"LLM 產出解釋（共 {len(research_results)} 檔）",
             )
-            explanation = llm_caller.run_explanation_batch(
-                research_results, market_context
-            )
+            explanation: list = []
+            for i in range(0, len(research_results), batch_size):
+                chunk = research_results[i : i + batch_size]
+                explanation.extend(
+                    llm_caller.run_explanation_batch(chunk, market_context)
+                )
+                done_count = min(i + batch_size, len(research_results))
+                pct = 75 + int(20 * done_count / total_for_explain)
+                _set_progress(
+                    db,
+                    job,
+                    stage=STAGE_LLM_EXPLAIN,
+                    pct=pct,
+                    label=f"解釋第 {done_count} / {len(research_results)} 檔",
+                )
 
             # Step 7：Persist Snapshot
             _set_progress(
