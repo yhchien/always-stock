@@ -11,7 +11,7 @@ M23 每日異常訊號清單 API（spec §11）
 - regenerate 用 BackgroundTasks 觸發 `run_signal_pipeline_sync`，立刻回 202
 - 同一個 `snapshot_date` 已有 `running` job → 409 Conflict（讓前端讀進度而非重觸發）
 - 同一日 user 限頻 1 次 → 429
-- 全站同一日累計 5 次 → 429
+- 全站同一日累計 10 次 → 429
 - Pipeline 不能用 request session（請求結束會 close）→ 注入 `SessionLocal` factory
 """
 
@@ -37,8 +37,10 @@ router = APIRouter(prefix="/signals", tags=["signals"])
 
 
 # Spec §11.4：限頻與 concurrency 上限
-USER_DAILY_REGENERATE_LIMIT = 1
-GLOBAL_DAILY_REGENERATE_LIMIT = 5
+# 2026-04-27：原 user=1 / global=5 提高到 user=10 / global=10，給 prod 測試與 admin
+# 多輪重產的彈性。LLM cost 仍受 concurrency guard 與 cron 觸發排程節制。
+USER_DAILY_REGENERATE_LIMIT = 10
+GLOBAL_DAILY_REGENERATE_LIMIT = 10
 
 
 # ---------------------------------------------------------------------------
@@ -237,7 +239,7 @@ def regenerate_signals(
     錯誤碼：
       - 401 未登入（Depends require_user）
       - 409 同 snapshot_date 已有 running job
-      - 429 user 同日已達 1 次 / 全站同日已達 5 次
+      - 429 user 同日已達 10 次 / 全站同日已達 10 次
       - 202 Accepted + { job_id, snapshot_date }
     """
     target_date = _resolve_target_date(db)

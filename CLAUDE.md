@@ -742,7 +742,7 @@
 - `GET /api/signals/latest`（公開）
 - `GET /api/signals/snapshot/{date}`（公開）
 - `GET /api/signals/jobs/latest`（公開，前端 polling 用）
-- `POST /api/signals/regenerate`（登入即可，但同日全站 5 次上限 + 每 user 1 次上限 + 同日 running job 拒絕並發）
+- `POST /api/signals/regenerate`（登入即可，但同日全站 10 次上限 + 每 user 10 次上限 + 同日 running job 拒絕並發；2026-04-27 從 5 / 1 放寬到 10 / 10）
 
 **觸發方式：使用者手動**（2026-04-27 改版，原排程已停用）
 - 觸發路徑：前端 `DailySignalsPanel`「重新產生」按鈕 → POST `/api/signals/regenerate` → FastAPI `BackgroundTasks` 在 Render web service 直接執行 pipeline
@@ -1311,7 +1311,7 @@ M19 merge 之後使用者回報四個問題，一次修掉：
   - `GET /api/signals/latest`（公開；DB 無 snapshot → 404 `No snapshot yet`）
   - `GET /api/signals/snapshot/{snapshot_date}`（公開；無 → 404）
   - `GET /api/signals/jobs/latest`（公開；無 job → **回 null（200）**，不 404，前端少寫一個分支）
-  - `POST /api/signals/regenerate`（`Depends(require_user)` → 401／同日 running job → 409／user 同日 ≥1 → 429／全站同日 ≥5 → 429／成功 → 202 + `{job_id, snapshot_date}`，`BackgroundTasks` 排程 `_run_pipeline_safely`）
+  - `POST /api/signals/regenerate`（`Depends(require_user)` → 401／同日 running job → 409／user 同日 ≥10 → 429／全站同日 ≥10 → 429／成功 → 202 + `{job_id, snapshot_date}`，`BackgroundTasks` 排程 `_run_pipeline_safely`；2026-04-27 從 1/5 放寬到 10/10）
 - [backend/run_daily_signals.py](backend/run_daily_signals.py) — cron 入口（spec §11.6）；4h offset 推算 target_date；建 `SignalGenerationJob(triggered_by="cron")` 後 inline 同步跑 pipeline
 - [backend/app/main.py](backend/app/main.py) — `from app.routers import (..., signals, ...)` + `app.include_router(signals.router, prefix="/api")`
 
@@ -1321,9 +1321,9 @@ M19 merge 之後使用者回報四個問題，一次修掉：
 - `RegenerateAcceptedResponse`：`{ job_id, snapshot_date }`
 
 ### 限頻 / concurrency 實作
-- 全部走 DB COUNT/SELECT，**沒接 slowapi**（spec §11.4 明寫 in-memory by user_id + snapshot_date，但 DB 查就夠用、且 cron job 也算進全站 5/day 額度，不需要 slowapi 的進階 key 機制）
-- 常數 `USER_DAILY_REGENERATE_LIMIT=1` / `GLOBAL_DAILY_REGENERATE_LIMIT=5` 集中在 `signals.py` 頂部
-- 同日 user 額度與 concurrency guard **平行檢查不同條件**：concurrency 看 `status in ("pending","running")`，user 限頻看「不論成敗都計 1」（避免 user 連按 5 次都失敗也不 reset）
+- 全部走 DB COUNT/SELECT，**沒接 slowapi**（spec §11.4 明寫 in-memory by user_id + snapshot_date，但 DB 查就夠用、且 cron job 也算進全站 10/day 額度，不需要 slowapi 的進階 key 機制）
+- 常數 `USER_DAILY_REGENERATE_LIMIT=10` / `GLOBAL_DAILY_REGENERATE_LIMIT=10` 集中在 `signals.py` 頂部（2026-04-27 從 1/5 放寬到 10/10，給 prod 測試 / admin 重產彈性）
+- 同日 user 額度與 concurrency guard **平行檢查不同條件**：concurrency 看 `status in ("pending","running")`，user 限頻看「不論成敗都計 1」（避免 user 連按 N 次都失敗也不 reset）
 
 ### Cron entrypoint exit code（spec §11.6）
 - `0=ok / 1=no_data / 2=llm_error / 3=db_error`
@@ -1342,7 +1342,7 @@ M19 merge 之後使用者回報四個問題，一次修掉：
 
 ### Gotcha
 - **`_run_pipeline_safely` 必須 monkeypatch**：router test 用 in-memory SQLite + dependency_overrides，但 `run_signal_pipeline_sync` 內呼叫 `SessionLocal()` 會走預設連線而非測試 engine，所以測試直接攔截 `_run_pipeline_safely` 紀錄 `(job_id, target_date)` 而不真跑
-- **fallback target_date 用今天 + DB 計次仍在當天**：DB 完全空時 `_resolve_target_date()` 回 `date.today()`，user 1/day 與全站 5/day 仍按「今天」計；cron 第一次部署到空 DB 時也能正常觸發
+- **fallback target_date 用今天 + DB 計次仍在當天**：DB 完全空時 `_resolve_target_date()` 回 `date.today()`，user 10/day 與全站 10/day 仍按「今天」計；cron 第一次部署到空 DB 時也能正常觸發
 - **regenerate 第二次 429 user 限頻測試**：第一次成功後 job 是 `pending` 狀態，會卡住第二次的 concurrency guard（409）；測試需要先把它標 `done` 才能驗證 user 限頻 429
 - **path param `snapshot_date` 型別解析失敗回 422**：FastAPI 對 `date` 型 path param 自動 422，不是 400；測試 `test_snapshot_invalid_date_format_returns_422` 鎖這個合約
 - **jobs/latest 用 `Optional[JobResponse]` + 回 None**：Pydantic 序列化 None → `null`；前端直接 `if (!job)` 判斷，不需要 try/catch 404
