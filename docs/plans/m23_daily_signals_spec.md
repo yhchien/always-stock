@@ -509,8 +509,8 @@ candidate_pool = unique(
 - 觸發背景重新產生
 - 權限：**登入即可**，但有以下限制：
   - **同一個 `snapshot_date` 已有 `running` job → 回 `409 Conflict`**（前端引導讀進度而不是再觸發）
-  - **同一日 user 限頻 1 次** → 回 `429 Too Many Requests`（in-memory rate limit by user_id + snapshot_date）
-  - **全站同一日累計 5 次** → 回 `429`（避免成本失控）
+  - **同一日 user 限頻 10 次** → 回 `429 Too Many Requests`（rate limit by user_id + snapshot_date，2026-04-27 從 1 → 10 放寬）
+  - **全站同一日累計 10 次** → 回 `429`（避免成本失控，2026-04-27 從 5 → 10 放寬）
 - 行為：
   1. 建立 `SignalGenerationJob`（status=pending, triggered_by=`user:{id}`）
   2. 啟動 `BackgroundTasks` 跑 pipeline
@@ -729,7 +729,7 @@ function useSignalJobPolling() {
 |------|---------|---------|
 | 未登入 | disabled | 重新產生（需登入） |
 | 有 running job | disabled | 產生中… |
-| 全站今日累計 >= 5 次 | disabled | 今日已達上限 |
+| 全站今日累計 >= 10 次 | disabled | 今日已達上限 |
 | 我今日已觸發 | disabled | 你今日已觸發 |
 | 可觸發 | enabled | 重新產生 |
 
