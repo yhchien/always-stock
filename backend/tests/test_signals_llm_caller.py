@@ -126,6 +126,8 @@ def test_assemble_market_context_parses_json_happy_path(monkeypatch):
     assert out["vix_status"] == "risk_on"
     assert out["futures_bias"] == "LONG"
     assert "VIX" in out["market_state_reason"]
+    assert out["llm_diagnostic"]["status"] == llm_caller._DIAG_STATUS_OK
+    assert out["llm_diagnostic"]["stage"] == "market"
     assert fake_client._responses_api.calls[0]["tools"] == [{"type": "web_search"}]
     assert fake_client._responses_api.calls[0]["prompt_cache_key"] == llm_caller._CACHE_KEY_MARKET
     assert fake_client.factory_kwargs["timeout"] == llm_caller._OPENAI_TIMEOUT_SECONDS
@@ -166,19 +168,24 @@ def test_assemble_market_context_fallback_when_api_key_missing(monkeypatch):
     # 沒 key → fallback 為 RANGE
     assert out["market_state"] == "RANGE"
     assert out["taiex_change_pct"] == 1.5
-    assert "OpenAI" in out["market_state_reason"]
+    assert "OPENAI_API_KEY" in out["market_state_reason"]
+    assert out["llm_diagnostic"]["status"] == llm_caller._DIAG_STATUS_API_KEY_MISSING
 
 
 def test_assemble_market_context_fallback_on_invalid_json(monkeypatch):
     _patch_openai(monkeypatch, "not valid json")
     out = llm_caller.assemble_market_context({})
     assert out["market_state"] == "RANGE"
+    assert out["llm_diagnostic"]["status"] == llm_caller._DIAG_STATUS_INVALID_JSON
+    assert "合法 JSON" in out["market_state_reason"]
 
 
 def test_assemble_market_context_fallback_on_openai_exception(monkeypatch):
     _patch_openai(monkeypatch, "", raise_exc=RuntimeError("boom"))
     out = llm_caller.assemble_market_context({})
     assert out["market_state"] == "RANGE"
+    assert out["llm_diagnostic"]["status"] == llm_caller._DIAG_STATUS_OPENAI_EXCEPTION
+    assert "RuntimeError" in out["market_state_reason"]
 
 
 # ---------- run_research_batch ----------
@@ -228,6 +235,7 @@ def test_run_research_batch_aligns_response_by_stock_id(monkeypatch):
     assert by_id["2454"]["type"] == "FOLLOWER"
     # 原 batch 欄位（industry）保留
     assert by_id["2330"]["industry"] == "半導體業"
+    assert by_id["2330"]["llm_diagnostic"]["status"] == llm_caller._DIAG_STATUS_OK
     assert fake_client._responses_api.calls[0]["tools"] == [{"type": "web_search"}]
     assert fake_client._responses_api.calls[0]["prompt_cache_key"] == llm_caller._CACHE_KEY_RESEARCH
 
@@ -275,6 +283,10 @@ def test_run_research_batch_fallback_on_llm_failure(monkeypatch):
     out = llm_caller.run_research_batch(batch)
     assert len(out) == 2
     assert all(r.get("_unavailable") is True for r in out)
+    assert all(
+        r["llm_diagnostic"]["status"] == llm_caller._DIAG_STATUS_OPENAI_EXCEPTION
+        for r in out
+    )
 
 
 def test_run_research_batch_fallback_when_research_key_missing(monkeypatch):
@@ -284,6 +296,7 @@ def test_run_research_batch_fallback_when_research_key_missing(monkeypatch):
     out = llm_caller.run_research_batch(batch)
     assert len(out) == 1
     assert out[0].get("_unavailable") is True
+    assert out[0]["llm_diagnostic"]["status"] == llm_caller._DIAG_STATUS_INVALID_JSON
 
 
 # ---------- run_explanation_batch ----------
@@ -371,7 +384,8 @@ def test_run_explanation_batch_fallback_when_llm_fails(monkeypatch):
     out = llm_caller.run_explanation_batch(research, market_context={})
     assert len(out) == 1
     assert out[0]["decision"] == "REMOVE"
-    assert "LLM 不可用" in out[0]["short_reason"]
+    assert "短 decision失敗" in out[0]["short_reason"]
+    assert out[0]["llm_diagnostic"]["status"] == llm_caller._DIAG_STATUS_OPENAI_EXCEPTION
 
 
 def test_run_explanation_batch_falls_back_for_missing_stock_in_response(monkeypatch):
@@ -394,7 +408,8 @@ def test_run_explanation_batch_falls_back_for_missing_stock_in_response(monkeypa
     by_id = {x["stock"]: x for x in out}
     assert by_id["2330"]["decision"] == "WATCH"
     assert by_id["9999"]["decision"] == "REMOVE"  # fallback
-    assert "LLM 不可用" in by_id["9999"]["short_reason"]
+    assert "短 decision失敗" in by_id["9999"]["short_reason"]
+    assert by_id["9999"]["llm_diagnostic"]["status"] == llm_caller._DIAG_STATUS_OK
 
 
 def test_run_watch_reason_batch_only_fills_long_reason(monkeypatch):
@@ -412,7 +427,19 @@ def test_run_watch_reason_batch_only_fills_long_reason(monkeypatch):
     ]
     out = llm_caller.run_watch_reason_batch(watch_items, market_context={"market_state": "RANGE"})
     assert out[0]["reason"].startswith("台積電受惠")
+    assert out[0]["llm_diagnostic"]["status"] == llm_caller._DIAG_STATUS_OK
     assert fake_client._responses_api.calls[0]["prompt_cache_key"] == llm_caller._CACHE_KEY_WATCH_REASON
+
+
+def test_run_watch_reason_batch_fallback_carries_diagnostic(monkeypatch):
+    _patch_openai(monkeypatch, "not valid json")
+    watch_items = [
+        {"stock": "2330", "name": "台積電", "decision": "WATCH", "short_reason": "量價轉強"},
+    ]
+    out = llm_caller.run_watch_reason_batch(watch_items, market_context={})
+    assert "量價轉強" == out[0]["reason"]
+    assert out[0]["llm_diagnostic"]["stage"] == "watch_reason"
+    assert out[0]["llm_diagnostic"]["status"] == llm_caller._DIAG_STATUS_INVALID_JSON
 
 
 # ---------- assemble_final_output ----------

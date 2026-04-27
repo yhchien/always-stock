@@ -234,6 +234,11 @@ npm run dev
 | M21 | Trade Quality Context 資料管線（6 section 預聚合 JSON + `GET /api/analysis/context`；deterministic + no-hindsight） | ✅ |
 | M22 | 熱錢湧入個股排行（L0 底部 Top 20 / L1 頂部 Top 10，近 N 日三大法人累計買超） | ✅ |
 | M23 | 每日異常訊號清單（deterministic filter 建候選池 + LLM 上網查公司業務／集團／龍頭比對；輸出 LEADER / FOLLOWER / LAGGARD 三類；L0 tab bar + pulse 通知 + 多工背景重新產生 + 進度條；全候選先做短 decision，只有 WATCH 補長理由；不預測報酬、不出買賣建議） | 🚧 持續優化中（[spec](docs/plans/m23_daily_signals_spec.md)） |
+
+M23 診斷約定：
+- `market_context` 與 research / decision / watch-reason 各階段 fallback 都會附帶 `llm_diagnostic`
+- `llm_diagnostic.status` 目前至少區分：`ok`、`api_key_missing`、`openai_exception`、`empty_output`、`invalid_json`
+- Step 0 若 fallback，不可再籠統寫成「OpenAI 服務不可用」；需保留更精確的 stage / reason，方便事後判斷是 API key、timeout、空回應還是 JSON 解析失敗
 | M24 | 自訂進出場策略回測（M11 擴充；使用者自設規則 + 歷史回測驗證 edge + LLM 在 trigger 當下給「適合執行」現場判斷） | ⬜ 規劃中 |
 
 ---

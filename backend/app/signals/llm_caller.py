@@ -74,6 +74,11 @@ _CACHE_KEY_MARKET = "m23:market:v2"
 _CACHE_KEY_RESEARCH = "m23:research:v2"
 _CACHE_KEY_DECISION = "m23:decision:v2"
 _CACHE_KEY_WATCH_REASON = "m23:watch-reason:v2"
+_DIAG_STATUS_OK = "ok"
+_DIAG_STATUS_API_KEY_MISSING = "api_key_missing"
+_DIAG_STATUS_OPENAI_EXCEPTION = "openai_exception"
+_DIAG_STATUS_EMPTY_OUTPUT = "empty_output"
+_DIAG_STATUS_INVALID_JSON = "invalid_json"
 
 
 def assemble_market_context(
@@ -108,15 +113,16 @@ def assemble_market_context(
         "}\n"
     )
 
-    payload = _call_llm_json(
+    payload, diagnostic = _call_llm_json(
         system_prompt,
         user_msg,
         model=model,
+        stage="market",
         use_web_search=True,
         prompt_cache_key=_CACHE_KEY_MARKET,
     )
     if payload is None:
-        return _market_context_fallback(db_market_snapshot)
+        return _market_context_fallback(db_market_snapshot, diagnostic=diagnostic)
 
     return {
         "market_state": payload.get("market_state", "RANGE"),
@@ -125,6 +131,7 @@ def assemble_market_context(
         "vix_status": payload.get("vix_status"),
         "futures_bias": payload.get("futures_bias"),
         "market_state_reason": payload.get("market_state_reason", ""),
+        "llm_diagnostic": diagnostic,
     }
 
 
@@ -176,19 +183,25 @@ def run_research_batch(
         "}\n"
     )
 
-    payload = _call_llm_json(
+    payload, diagnostic = _call_llm_json(
         system_prompt,
         user_msg,
         model=model,
+        stage="research",
         use_web_search=True,
         prompt_cache_key=_CACHE_KEY_RESEARCH,
     )
     if payload is None:
-        return [_research_fallback(s) for s in stocks_batch]
+        return [_research_fallback(s, diagnostic=diagnostic) for s in stocks_batch]
 
     research = payload.get("research")
     if not isinstance(research, list):
-        return [_research_fallback(s) for s in stocks_batch]
+        diagnostic = _with_status(
+            diagnostic,
+            status=_DIAG_STATUS_INVALID_JSON,
+            message="LLM payload missing 'research' list.",
+        )
+        return [_research_fallback(s, diagnostic=diagnostic) for s in stocks_batch]
 
     by_id: Dict[str, Dict[str, Any]] = {}
     for item in research:
@@ -202,9 +215,16 @@ def run_research_batch(
     for stock in stocks_batch:
         sid = str(stock.get("stock_id") or stock.get("stock") or "")
         if sid in by_id:
-            aligned.append({**stock, **by_id[sid], "stock": sid})
+            aligned.append(
+                {
+                    **stock,
+                    **by_id[sid],
+                    "stock": sid,
+                    "llm_diagnostic": diagnostic,
+                }
+            )
         else:
-            aligned.append(_research_fallback(stock))
+            aligned.append(_research_fallback(stock, diagnostic=diagnostic))
     return aligned
 
 
@@ -331,22 +351,31 @@ def _call_llm_json(
     user_msg: str,
     *,
     model: str,
+    stage: str,
     use_web_search: bool = False,
     prompt_cache_key: Optional[str] = None,
-) -> Optional[Dict[str, Any]]:
+) -> tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
     """呼叫 OpenAI 並嘗試 parse JSON。
 
     `gpt-4o-search-preview` 不支援 `temperature` / `response_format`，
     所以這裡只送基本 messages + max_completion_tokens。
-    解析失敗 / API key 缺失 / 例外 → 回 None（caller 負責 fallback）。
+    解析失敗 / API key 缺失 / 例外 → 回 `(None, diagnostic)`（caller 負責 fallback）。
     """
+    diagnostic = _base_diagnostic(
+        stage=stage,
+        model=model,
+        use_web_search=use_web_search,
+        prompt_cache_key=prompt_cache_key,
+    )
     api_key = get_openai_api_key()
     if not api_key:
         logger.warning(
             "OPENAI_API_KEY not configured; M23 LLM call skipped (model=%s)",
             model,
         )
-        return None
+        diagnostic["status"] = _DIAG_STATUS_API_KEY_MISSING
+        diagnostic["message"] = "OPENAI_API_KEY not configured."
+        return None, diagnostic
 
     client = OpenAI(
         api_key=api_key,
@@ -368,10 +397,29 @@ def _call_llm_json(
             kwargs["tool_choice"] = "auto"
         response = client.responses.create(**kwargs)
         raw = _extract_responses_output_text(response)
-        return _extract_json(raw)
-    except Exception:
-        logger.exception("M23 LLM call failed (model=%s)", model)
-        return None
+        if not raw.strip():
+            diagnostic["status"] = _DIAG_STATUS_EMPTY_OUTPUT
+            diagnostic["message"] = "OpenAI returned empty output_text."
+            logger.warning(
+                "M23 LLM call returned empty output (stage=%s model=%s)",
+                stage,
+                model,
+            )
+            return None, diagnostic
+        payload = _extract_json(raw)
+        if payload is None:
+            diagnostic["status"] = _DIAG_STATUS_INVALID_JSON
+            diagnostic["message"] = "OpenAI output could not be parsed as JSON."
+            diagnostic["raw_preview"] = raw.strip()[:500]
+            return None, diagnostic
+        diagnostic["status"] = _DIAG_STATUS_OK
+        return payload, diagnostic
+    except Exception as exc:
+        logger.exception("M23 LLM call failed (stage=%s model=%s)", stage, model)
+        diagnostic["status"] = _DIAG_STATUS_OPENAI_EXCEPTION
+        diagnostic["exception_type"] = exc.__class__.__name__
+        diagnostic["message"] = str(exc)[:300]
+        return None, diagnostic
 
 
 def _extract_responses_output_text(response: Any) -> str:
@@ -446,18 +494,24 @@ def _run_decision_chunk(
         "}\n"
     )
 
-    payload = _call_llm_json(
+    payload, diagnostic = _call_llm_json(
         system_prompt,
         user_msg,
         model=model,
+        stage="decision",
         prompt_cache_key=_CACHE_KEY_DECISION,
     )
     if payload is None:
-        return [_decision_fallback(r) for r in chunk]
+        return [_decision_fallback(r, diagnostic=diagnostic) for r in chunk]
 
     items = payload.get("items")
     if not isinstance(items, list):
-        return [_decision_fallback(r) for r in chunk]
+        diagnostic = _with_status(
+            diagnostic,
+            status=_DIAG_STATUS_INVALID_JSON,
+            message="LLM payload missing 'items' list for decision stage.",
+        )
+        return [_decision_fallback(r, diagnostic=diagnostic) for r in chunk]
 
     by_id: Dict[str, Dict[str, Any]] = {}
     for item in items:
@@ -476,8 +530,9 @@ def _run_decision_chunk(
             merged["signals"] = ext.get("signals", _default_signals())
             merged["decision"] = str(ext.get("decision") or "REMOVE").upper()
             merged["short_reason"] = ext.get("short_reason", "")
+            merged["llm_diagnostic"] = diagnostic
         else:
-            fb = _decision_fallback(research)
+            fb = _decision_fallback(research, diagnostic=diagnostic)
             merged.update(fb)
         aligned.append(merged)
     return aligned
@@ -511,18 +566,24 @@ def _run_watch_reason_chunk(
         "}\n"
     )
 
-    payload = _call_llm_json(
+    payload, diagnostic = _call_llm_json(
         system_prompt,
         user_msg,
         model=model,
+        stage="watch_reason",
         prompt_cache_key=_CACHE_KEY_WATCH_REASON,
     )
     if payload is None:
-        return [_watch_reason_fallback(item) for item in chunk]
+        return [_watch_reason_fallback(item, diagnostic=diagnostic) for item in chunk]
 
     items = payload.get("items")
     if not isinstance(items, list):
-        return [_watch_reason_fallback(item) for item in chunk]
+        diagnostic = _with_status(
+            diagnostic,
+            status=_DIAG_STATUS_INVALID_JSON,
+            message="LLM payload missing 'items' list for watch_reason stage.",
+        )
+        return [_watch_reason_fallback(item, diagnostic=diagnostic) for item in chunk]
 
     by_id: Dict[str, Dict[str, Any]] = {}
     for item in items:
@@ -538,8 +599,9 @@ def _run_watch_reason_chunk(
         merged: Dict[str, Any] = {**watch}
         if sid in by_id:
             merged["reason"] = by_id[sid].get("reason", "")
+            merged["llm_diagnostic"] = diagnostic
         else:
-            merged.update(_watch_reason_fallback(watch))
+            merged.update(_watch_reason_fallback(watch, diagnostic=diagnostic))
         aligned.append(merged)
     return aligned
 
@@ -564,7 +626,11 @@ def _format_watch_entry(item: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _market_context_fallback(db_market_snapshot: Dict[str, Any]) -> Dict[str, Any]:
+def _market_context_fallback(
+    db_market_snapshot: Dict[str, Any],
+    *,
+    diagnostic: Dict[str, Any],
+) -> Dict[str, Any]:
     taiex_change_pct = _get_index_change_pct(db_market_snapshot, "taiex")
     otc_change_pct = _get_index_change_pct(db_market_snapshot, "otc")
     return {
@@ -573,11 +639,16 @@ def _market_context_fallback(db_market_snapshot: Dict[str, Any]) -> Dict[str, An
         "otc_change_pct": otc_change_pct,
         "vix_status": "neutral",
         "futures_bias": "NEUTRAL",
-        "market_state_reason": "OpenAI 服務不可用，預設保守判斷為 RANGE。",
+        "market_state_reason": _market_context_fallback_reason(diagnostic),
+        "llm_diagnostic": diagnostic,
     }
 
 
-def _research_fallback(stock: Dict[str, Any]) -> Dict[str, Any]:
+def _research_fallback(
+    stock: Dict[str, Any],
+    *,
+    diagnostic: Dict[str, Any],
+) -> Dict[str, Any]:
     sid = stock.get("stock_id") or stock.get("stock") or ""
     return {
         **stock,
@@ -607,23 +678,96 @@ def _research_fallback(stock: Dict[str, Any]) -> Dict[str, Any]:
             "leader_supports_theme": False,
         },
         "_unavailable": True,
+        "_unavailable_reason": _stage_fallback_reason("research", diagnostic),
+        "llm_diagnostic": diagnostic,
     }
 
 
-def _decision_fallback(research: Dict[str, Any]) -> Dict[str, Any]:
+def _decision_fallback(
+    research: Dict[str, Any],
+    *,
+    diagnostic: Dict[str, Any],
+) -> Dict[str, Any]:
     return {
         **research,
         "signals": _default_signals(),
         "decision": "REMOVE",
-        "short_reason": "LLM 不可用，暫以 REMOVE 保守處理。",
+        "short_reason": _stage_fallback_reason("decision", diagnostic),
+        "llm_diagnostic": diagnostic,
     }
 
 
-def _watch_reason_fallback(item: Dict[str, Any]) -> Dict[str, Any]:
+def _watch_reason_fallback(
+    item: Dict[str, Any],
+    *,
+    diagnostic: Dict[str, Any],
+) -> Dict[str, Any]:
     return {
         **item,
-        "reason": item.get("short_reason") or "LLM 不可用，暫無詳細分析。",
+        "reason": item.get("short_reason")
+        or _stage_fallback_reason("watch_reason", diagnostic),
+        "llm_diagnostic": diagnostic,
     }
+
+
+def _base_diagnostic(
+    *,
+    stage: str,
+    model: str,
+    use_web_search: bool,
+    prompt_cache_key: Optional[str],
+) -> Dict[str, Any]:
+    return {
+        "stage": stage,
+        "model": model,
+        "status": "pending",
+        "use_web_search": use_web_search,
+        "prompt_cache_key": prompt_cache_key,
+    }
+
+
+def _with_status(
+    diagnostic: Dict[str, Any],
+    *,
+    status: str,
+    message: str,
+) -> Dict[str, Any]:
+    updated = dict(diagnostic)
+    updated["status"] = status
+    updated["message"] = message
+    return updated
+
+
+def _market_context_fallback_reason(diagnostic: Dict[str, Any]) -> str:
+    base = _stage_fallback_reason("market", diagnostic)
+    return f"{base} 預設保守判斷為 RANGE。"
+
+
+def _stage_fallback_reason(stage: str, diagnostic: Dict[str, Any]) -> str:
+    status = diagnostic.get("status")
+    stage_label = {
+        "market": "Step 0 市場外部資訊查詢",
+        "research": "個股 research",
+        "decision": "短 decision",
+        "watch_reason": "WATCH 長理由",
+    }.get(stage, "LLM")
+    reason = {
+        _DIAG_STATUS_API_KEY_MISSING: "未設定 OPENAI_API_KEY",
+        _DIAG_STATUS_OPENAI_EXCEPTION: _exception_reason(diagnostic),
+        _DIAG_STATUS_EMPTY_OUTPUT: "OpenAI 回傳空內容",
+        _DIAG_STATUS_INVALID_JSON: "OpenAI 回傳格式不是合法 JSON",
+    }.get(status, "LLM 回應不可用")
+    return f"{stage_label}失敗（{reason}）。"
+
+
+def _exception_reason(diagnostic: Dict[str, Any]) -> str:
+    exc_type = diagnostic.get("exception_type")
+    message = diagnostic.get("message")
+    if exc_type and message:
+        return f"{exc_type}: {message}"
+    if exc_type:
+        return exc_type
+    return "OpenAI 例外"
 
 
 def _default_signals() -> Dict[str, str]:
