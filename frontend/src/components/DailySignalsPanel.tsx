@@ -256,7 +256,13 @@ export default function DailySignalsPanel() {
     setRegenerateError(null)
     try {
       await regenerateSignals()
-      // 立刻觸發 polling 重啟
+      // 成功觸發後立刻清掉前一份 snapshot，避免使用者看到 stale 資料停留到新 job 完成；
+      // 失敗（429 / 409）不清，保留前次清單可用。
+      setSnapshot(null)
+      setSnapshotError(null)
+      setSnapshotLoading(false)
+      setHasNewSignals(false)
+      // 觸發 polling 重啟
       setBumpKey((k) => k + 1)
     } catch (err) {
       setRegenerateError(err instanceof Error ? err.message : "重新產生失敗")
@@ -372,7 +378,12 @@ export default function DailySignalsPanel() {
           {snapshotError && !snapshotLoading && (
             <p className="text-sm text-rose-300">{snapshotError}</p>
           )}
-          {!snapshotLoading && !snapshotError && !snapshot && (
+          {!snapshotLoading && !snapshotError && !snapshot && isJobActive && (
+            <p className="text-sm text-slate-300">
+              正在重新產生訊號清單，請稍候…完成後會自動更新。
+            </p>
+          )}
+          {!snapshotLoading && !snapshotError && !snapshot && !isJobActive && (
             <p className="text-sm text-slate-400">
               目前尚無訊號清單。{isAuthed ? "點擊上方「重新產生」即可建立第一份清單。" : "請等待排程產生或登入後手動觸發。"}
             </p>
