@@ -128,6 +128,8 @@
 - `industry_daily_flow.streak` 已下沉為 ETL 持久化欄位；L0 不可再 request-time 回掃最近 31 個交易日計算 streak
 - `industry_daily_flow.streak` 的 schema 演進要靠顯式 ensure（`ALTER TABLE ... ADD COLUMN streak`）；`Base.metadata.create_all()` 只建新表，不會替既有表補欄位
 - 若要修正歷史 streak，應優先跑 `rebuild_industry_flow.py`（升序重建），不要只改 API 端計算
+- M23 Step 0 / research 改為顯式走 OpenAI Responses API `tools=[{"type":"web_search"}]`；不能只靠 prompt 文字寫「請上網查」
+- `market_context.taiex_change_pct` / `otc_change_pct` 改為 backend authoritative：從 DB snapshot deterministic 帶入，LLM 不可改寫或補 0
 
 ## 資料狀態（2026-04-10）
 

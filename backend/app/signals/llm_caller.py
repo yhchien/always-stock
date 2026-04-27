@@ -48,6 +48,7 @@ _PROMPT_PATH = (
 
 # OpenAI 回應的 max tokens；reason 規則要求 500-1000 字 × batch 8 → 預留充足
 _MAX_OUTPUT_TOKENS = 8000
+_WEB_SEARCH_TOOL = {"type": "web_search"}
 
 
 def assemble_market_context(
@@ -60,32 +61,41 @@ def assemble_market_context(
     LLM 上網查 VIX / 美股 / 台指期 / USD-TWD，搭配 DB 已知數字判斷。
     LLM 不可用 → 回 fallback dict（market_state="RANGE"，reason 標記不可用）。
     """
+    taiex_change_pct = _get_index_change_pct(db_market_snapshot, "taiex")
+    otc_change_pct = _get_index_change_pct(db_market_snapshot, "otc")
     system_prompt = _load_system_prompt()
     user_msg = (
         "[只執行 STEP 0：判斷今日市場狀態]\n"
-        "你必須上網查詢 VIX、美股、台指期、USD/TWD，搭配下方 DB 已知數字，"
+        "你必須使用 web search 查詢 VIX、美股、台指期、USD/TWD，搭配下方 backend 已知數字，"
         "判斷 market_state。\n\n"
-        f"[DB 已知市場數字]\n"
+        "[硬規則]\n"
+        "1. backend 提供的加權/櫃買數字是 authoritative，不可改寫、不可補 0、不可自行重算。\n"
+        "2. 若 backend 某欄位為 null，必須明確說該欄位缺資料；不能寫成『DB 全空』。\n"
+        "3. 你負責的是外部市場補充與整體 market_state 判讀，不是重寫 backend 數字。\n\n"
+        f"[backend 已知市場數字]\n"
         f"{json.dumps(db_market_snapshot, ensure_ascii=False, indent=2)}\n\n"
         "輸出格式（JSON only，不要 markdown code fence）：\n"
         "{\n"
         '  "market_state": "STRONG_BULL | STRUCTURAL_BULL | RANGE | WEAK",\n'
-        '  "taiex_change_pct": number,\n'
-        '  "otc_change_pct": number,\n'
         '  "vix_status": "risk_on | neutral | risk_off",\n'
         '  "futures_bias": "LONG | SHORT | NEUTRAL",\n'
         '  "market_state_reason": "繁體中文說明"\n'
         "}\n"
     )
 
-    payload = _call_llm_json(system_prompt, user_msg, model=model)
+    payload = _call_llm_json(
+        system_prompt,
+        user_msg,
+        model=model,
+        use_web_search=True,
+    )
     if payload is None:
-        return _market_context_fallback()
+        return _market_context_fallback(db_market_snapshot)
 
     return {
         "market_state": payload.get("market_state", "RANGE"),
-        "taiex_change_pct": payload.get("taiex_change_pct"),
-        "otc_change_pct": payload.get("otc_change_pct"),
+        "taiex_change_pct": taiex_change_pct,
+        "otc_change_pct": otc_change_pct,
         "vix_status": payload.get("vix_status"),
         "futures_bias": payload.get("futures_bias"),
         "market_state_reason": payload.get("market_state_reason", ""),
@@ -140,7 +150,12 @@ def run_research_batch(
         "}\n"
     )
 
-    payload = _call_llm_json(system_prompt, user_msg, model=model)
+    payload = _call_llm_json(
+        system_prompt,
+        user_msg,
+        model=model,
+        use_web_search=True,
+    )
     if payload is None:
         return [_research_fallback(s) for s in stocks_batch]
 
@@ -271,6 +286,7 @@ def _call_llm_json(
     user_msg: str,
     *,
     model: str,
+    use_web_search: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """呼叫 OpenAI 並嘗試 parse JSON。
 
@@ -288,19 +304,54 @@ def _call_llm_json(
 
     client = OpenAI(api_key=api_key)
     try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_msg},
-            ],
-            max_completion_tokens=_MAX_OUTPUT_TOKENS,
-        )
-        raw = response.choices[0].message.content or ""
+        if use_web_search:
+            response = client.responses.create(
+                model=model,
+                tools=[_WEB_SEARCH_TOOL],
+                tool_choice="auto",
+                input=[
+                    {
+                        "role": "system",
+                        "content": [{"type": "input_text", "text": system_prompt}],
+                    },
+                    {
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": user_msg}],
+                    },
+                ],
+                max_output_tokens=_MAX_OUTPUT_TOKENS,
+            )
+            raw = _extract_responses_output_text(response)
+        else:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_msg},
+                ],
+                max_completion_tokens=_MAX_OUTPUT_TOKENS,
+            )
+            raw = response.choices[0].message.content or ""
         return _extract_json(raw)
     except Exception:
         logger.exception("M23 LLM call failed (model=%s)", model)
         return None
+
+
+def _extract_responses_output_text(response: Any) -> str:
+    text = getattr(response, "output_text", None)
+    if isinstance(text, str):
+        return text
+
+    output = getattr(response, "output", None) or []
+    chunks: List[str] = []
+    for item in output:
+        if getattr(item, "type", None) != "message":
+            continue
+        for content in getattr(item, "content", None) or []:
+            if getattr(content, "type", None) == "output_text":
+                chunks.append(getattr(content, "text", "") or "")
+    return "\n".join(chunks)
 
 
 def _extract_json(raw: str) -> Optional[Dict[str, Any]]:
@@ -410,11 +461,13 @@ def _format_watch_entry(item: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _market_context_fallback() -> Dict[str, Any]:
+def _market_context_fallback(db_market_snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    taiex_change_pct = _get_index_change_pct(db_market_snapshot, "taiex")
+    otc_change_pct = _get_index_change_pct(db_market_snapshot, "otc")
     return {
         "market_state": "RANGE",
-        "taiex_change_pct": None,
-        "otc_change_pct": None,
+        "taiex_change_pct": taiex_change_pct,
+        "otc_change_pct": otc_change_pct,
         "vix_status": "neutral",
         "futures_bias": "NEUTRAL",
         "market_state_reason": "OpenAI 服務不可用，預設保守判斷為 RANGE。",
@@ -470,3 +523,16 @@ def _default_signals() -> Dict[str, str]:
         "margin_short_signal": "neutral",
         "technical_status": "range_bound",
     }
+
+
+def _get_index_change_pct(
+    db_market_snapshot: Dict[str, Any],
+    index_key: str,
+) -> Optional[float]:
+    snapshot = db_market_snapshot.get(index_key)
+    if not isinstance(snapshot, dict):
+        return None
+    value = snapshot.get("change_pct_1d")
+    if value is None:
+        return None
+    return float(value)

@@ -35,6 +35,12 @@ class _FakeResponse:
         self.choices = [_FakeChoice(content)]
 
 
+class _FakeResponsesResponse:
+    def __init__(self, content: str) -> None:
+        self.output_text = content
+        self.output = []
+
+
 class _FakeCompletions:
     def __init__(self, content: str, *, raise_exc: Optional[Exception] = None) -> None:
         self._content = content
@@ -48,15 +54,36 @@ class _FakeCompletions:
         return _FakeResponse(self._content)
 
 
+class _FakeResponsesAPI:
+    def __init__(self, content: str, *, raise_exc: Optional[Exception] = None) -> None:
+        self._content = content
+        self._raise_exc = raise_exc
+        self.calls: List[Dict[str, Any]] = []
+
+    def create(self, **kwargs: Any) -> _FakeResponsesResponse:
+        self.calls.append(kwargs)
+        if self._raise_exc is not None:
+            raise self._raise_exc
+        return _FakeResponsesResponse(self._content)
+
+
 class _FakeChat:
     def __init__(self, completions: _FakeCompletions) -> None:
         self.completions = completions
 
 
+class _FakeResponses:
+    def __init__(self, responses_api: _FakeResponsesAPI) -> None:
+        self.create = responses_api.create
+        self._api = responses_api
+
+
 class _FakeOpenAIClient:
     def __init__(self, content: str, *, raise_exc: Optional[Exception] = None) -> None:
         self._completions = _FakeCompletions(content, raise_exc=raise_exc)
+        self._responses_api = _FakeResponsesAPI(content, raise_exc=raise_exc)
         self.chat = _FakeChat(self._completions)
+        self.responses = _FakeResponses(self._responses_api)
 
 
 def _patch_openai(
@@ -116,34 +143,60 @@ def test_extract_json_handles_none_like_input():
 def test_assemble_market_context_parses_json_happy_path(monkeypatch):
     payload = {
         "market_state": "STRUCTURAL_BULL",
-        "taiex_change_pct": 1.2,
-        "otc_change_pct": 1.8,
         "vix_status": "risk_on",
         "futures_bias": "LONG",
         "market_state_reason": "VIX 低、台指期偏多",
     }
-    _patch_openai(monkeypatch, json.dumps(payload))
-    out = llm_caller.assemble_market_context({"taiex": 17000})
+    fake_client = _patch_openai(monkeypatch, json.dumps(payload))
+    out = llm_caller.assemble_market_context(
+        {
+            "taiex": {"change_pct_1d": 1.2},
+            "otc": {"change_pct_1d": 1.8},
+        }
+    )
     assert out["market_state"] == "STRUCTURAL_BULL"
     assert out["taiex_change_pct"] == 1.2
+    assert out["otc_change_pct"] == 1.8
     assert out["vix_status"] == "risk_on"
     assert out["futures_bias"] == "LONG"
     assert "VIX" in out["market_state_reason"]
+    assert fake_client._responses_api.calls[0]["tools"] == [{"type": "web_search"}]
+
+
+def test_assemble_market_context_keeps_backend_index_values_even_if_llm_mentions_zeros(monkeypatch):
+    payload = {
+        "market_state": "RANGE",
+        "taiex_change_pct": 0,
+        "otc_change_pct": 0,
+        "vix_status": "neutral",
+        "futures_bias": "NEUTRAL",
+        "market_state_reason": "外部資料不足，但 backend 數字仍可用。",
+    }
+    _patch_openai(monkeypatch, json.dumps(payload))
+    out = llm_caller.assemble_market_context(
+        {
+            "taiex": {"change_pct_1d": 3.23},
+            "otc": None,
+        }
+    )
+    assert out["taiex_change_pct"] == 3.23
+    assert out["otc_change_pct"] is None
 
 
 def test_assemble_market_context_strips_code_fence(monkeypatch):
-    raw = '```json\n{"market_state": "RANGE", "taiex_change_pct": 0.1}\n```'
+    raw = '```json\n{"market_state": "RANGE", "vix_status": "neutral"}\n```'
     _patch_openai(monkeypatch, raw)
-    out = llm_caller.assemble_market_context({})
+    out = llm_caller.assemble_market_context({"taiex": {"change_pct_1d": 0.1}})
     assert out["market_state"] == "RANGE"
     assert out["taiex_change_pct"] == 0.1
 
 
 def test_assemble_market_context_fallback_when_api_key_missing(monkeypatch):
     _patch_openai(monkeypatch, '{"market_state": "STRONG_BULL"}', api_key=None)
-    out = llm_caller.assemble_market_context({})
+    out = llm_caller.assemble_market_context({"taiex": {"change_pct_1d": 1.5}})
     # 沒 key → fallback 為 RANGE
     assert out["market_state"] == "RANGE"
+    assert out["taiex_change_pct"] == 1.5
     assert "OpenAI" in out["market_state_reason"]
 
 
@@ -194,7 +247,7 @@ def test_run_research_batch_aligns_response_by_stock_id(monkeypatch):
             },
         ]
     }
-    _patch_openai(monkeypatch, json.dumps(response, ensure_ascii=False))
+    fake_client = _patch_openai(monkeypatch, json.dumps(response, ensure_ascii=False))
     batch = [
         {"stock_id": "2330", "name": "台積電", "industry": "半導體業"},
         {"stock_id": "2454", "name": "聯發科", "industry": "半導體業"},
@@ -206,6 +259,7 @@ def test_run_research_batch_aligns_response_by_stock_id(monkeypatch):
     assert by_id["2454"]["type"] == "FOLLOWER"
     # 原 batch 欄位（industry）保留
     assert by_id["2330"]["industry"] == "半導體業"
+    assert fake_client._responses_api.calls[0]["tools"] == [{"type": "web_search"}]
 
 
 def test_run_research_batch_falls_back_for_missing_stock_in_response(monkeypatch):
@@ -334,6 +388,7 @@ def test_run_explanation_batch_chunks_by_default_batch_size(monkeypatch):
     class _StatefulClient:
         def __init__(self):
             self.chat = _FakeChat(_StatefulCompletions())
+            self.responses = None
 
     client = _StatefulClient()
 
