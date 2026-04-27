@@ -70,6 +70,7 @@ class IndustryDailyFlow(Base):
     foreign_net_amount = Column(Float, default=0)
     trust_net_amount = Column(Float, default=0)
     dealer_net_amount = Column(Float, default=0)
+    streak = Column(Integer, default=0, nullable=False)
 
     __table_args__ = (
         UniqueConstraint("trade_date", "industry_name", name="uq_industry_date"),

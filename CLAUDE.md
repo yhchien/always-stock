@@ -122,6 +122,13 @@
 - `industry_daily_flow` 仍是 L0 主查詢來源；不要把產業聚合搬回 API 臨時計算或前端計算
 - L2 個股頁的「回測程式」與「關鍵券商」已拆成兩個獨立 toggle，且會記住使用者上次的顯示偏好；被隱藏的 panel 不應 render，也不應觸發後續 API
 
+## 最近重要修正（2026-04-27）
+
+- L0 `/api/industries` 已加 `resolved_date` 粒度的 60 秒 server-side cache；同一天短時間重複請求不可再重跑整段產業查詢
+- `industry_daily_flow.streak` 已下沉為 ETL 持久化欄位；L0 不可再 request-time 回掃最近 31 個交易日計算 streak
+- `industry_daily_flow.streak` 的 schema 演進要靠顯式 ensure（`ALTER TABLE ... ADD COLUMN streak`）；`Base.metadata.create_all()` 只建新表，不會替既有表補欄位
+- 若要修正歷史 streak，應優先跑 `rebuild_industry_flow.py`（升序重建），不要只改 API 端計算
+
 ## 資料狀態（2026-04-10）
 
 - 本地 backfill 已重新補跑大部分歷史缺口

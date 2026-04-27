@@ -22,6 +22,7 @@ class IndustryFlowSnapshot:
     dealer_net_amount: float
     total_buy_amount: float
     total_sell_amount: float
+    streak: int = 0
 
 
 def _serialize_agg_rows(rows: Sequence[IndustryDailyFlow]) -> List[IndustryFlowSnapshot]:
@@ -35,6 +36,7 @@ def _serialize_agg_rows(rows: Sequence[IndustryDailyFlow]) -> List[IndustryFlowS
             dealer_net_amount=row.dealer_net_amount or 0.0,
             total_buy_amount=row.total_buy_amount or 0.0,
             total_sell_amount=row.total_sell_amount or 0.0,
+            streak=row.streak or 0,
         )
         for row in rows
     ]
@@ -56,6 +58,7 @@ def _merge_snapshots(rows: Sequence[IndustryFlowSnapshot]) -> List[IndustryFlowS
                 dealer_net_amount=row.dealer_net_amount,
                 total_buy_amount=row.total_buy_amount,
                 total_sell_amount=row.total_sell_amount,
+                streak=row.streak,
             )
             continue
 
@@ -65,6 +68,10 @@ def _merge_snapshots(rows: Sequence[IndustryFlowSnapshot]) -> List[IndustryFlowS
         current.dealer_net_amount += row.dealer_net_amount
         current.total_buy_amount += row.total_buy_amount
         current.total_sell_amount += row.total_sell_amount
+        if current.streak == 0:
+            current.streak = row.streak
+        elif row.streak != 0 and abs(row.streak) > abs(current.streak):
+            current.streak = row.streak
 
     return list(merged.values())
 
@@ -117,6 +124,7 @@ def _aggregate_from_inst_flow(
                 dealer_net_amount=0.0,
                 total_buy_amount=0.0,
                 total_sell_amount=0.0,
+                streak=0,
             )
             merged[key] = snapshot
 

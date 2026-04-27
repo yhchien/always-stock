@@ -9,6 +9,7 @@ import sys
 sys.path.insert(0, os.path.dirname(__file__))
 
 from app.database import engine
+from app.industry_flow_schema import ensure_industry_daily_flow_streak_column
 from app.models import Base  # noqa: F401 — import triggers all model registrations
 
 logger = logging.getLogger(__name__)
@@ -17,6 +18,7 @@ logger = logging.getLogger(__name__)
 def init_db() -> None:
     """Create all tables (idempotent — existing tables are not dropped or recreated)."""
     Base.metadata.create_all(bind=engine)
+    ensure_industry_daily_flow_streak_column(engine)
     logger.info("Database tables initialized")
 
 

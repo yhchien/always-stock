@@ -136,7 +136,7 @@ npm run dev
 | `stocks_master` | 股票基本資料（industry / sub_industry） | — | FinMind `TaiwanStockInfo` + `TaiwanStockIndustryChain` |
 | `daily_price` | 每日 OHLC、成交量、成交金額 | 2019-01 ~ today | FinMind `TaiwanStockPrice` |
 | `inst_stock_flow` | 個股三大法人買賣超（foreign / trust / dealer，含 amount_est） | 2019-01 ~ today | FinMind `TaiwanStockInstitutionalInvestorsBuySell` |
-| `industry_daily_flow` | 產業別每日法人資金流向彙整（FinMind 細分類 ~53 產業，~8.8 萬筆） | 2019-01 ~ today | 從 `inst_stock_flow` 聚合（`rebuild_industry_flow.py`） |
+| `industry_daily_flow` | 產業別每日法人資金流向彙整（FinMind 細分類 ~53 產業，~8.8 萬筆，含持久化 `streak`） | 2019-01 ~ today | 從 `inst_stock_flow` 聚合（`rebuild_industry_flow.py`） |
 | `daily_valuation` | 每日 P/E、P/B、殖利率 | 2019-01 ~ today | FinMind `TaiwanStockPER` |
 | `monthly_revenue` | 每月營收 + YoY/MoM | 2019-01 ~ 上個月 | FinMind `TaiwanStockMonthRevenue` |
 | `financial_statement` | 季財報各科目（EPS、營益率等） | 2019-Q1 ~ 最新一季 | FinMind 財報資料集 |
@@ -177,7 +177,7 @@ npm run dev
 | Method | Path | 說明 |
 |--------|------|------|
 | GET | `/health` | 健康檢查 |
-| GET | `/api/industries?date=YYYY-MM-DD` | L0：產業排行榜 |
+| GET | `/api/industries?date=YYYY-MM-DD` | L0：產業排行榜（同交易日 60 秒 server-side cache） |
 | GET | `/api/industries/{name}/summary?date=YYYY-MM-DD` | L1：子產業彙總 |
 | GET | `/api/industries/{name}/stocks?date=YYYY-MM-DD` | L1：個股明細 |
 | GET | `/api/stocks/{id}/history?days=90` | L2：個股走勢 + 法人累積 |

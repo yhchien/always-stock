@@ -43,3 +43,12 @@ def test_idempotent_create_all():
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(bind=engine)
     Base.metadata.create_all(bind=engine)  # 第二次呼叫應無事
+
+
+def test_industry_daily_flow_includes_streak_column():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(bind=engine)
+
+    inspector = inspect(engine)
+    cols = {c["name"] for c in inspector.get_columns("industry_daily_flow")}
+    assert "streak" in cols

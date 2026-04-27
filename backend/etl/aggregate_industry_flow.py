@@ -16,11 +16,55 @@ import logging
 from collections import defaultdict
 from datetime import date
 
+from sqlalchemy import and_, func
 from sqlalchemy.orm import Session
 
 from app.models import InstStockFlow, IndustryDailyFlow, StockMaster
 
 logger = logging.getLogger(__name__)
+
+
+def _advance_streak(total_net_amount: float, previous_streak: int) -> int:
+    if total_net_amount > 0:
+        return previous_streak + 1 if previous_streak > 0 else 1
+    if total_net_amount < 0:
+        return previous_streak - 1 if previous_streak < 0 else -1
+    return 0
+
+
+def _load_previous_streaks(
+    db: Session,
+    trade_date: date,
+    industry_names: list[str],
+) -> dict[str, int]:
+    if not industry_names:
+        return {}
+
+    latest_dates = (
+        db.query(
+            IndustryDailyFlow.industry_name.label("industry_name"),
+            func.max(IndustryDailyFlow.trade_date).label("latest_trade_date"),
+        )
+        .filter(
+            IndustryDailyFlow.trade_date < trade_date,
+            IndustryDailyFlow.industry_name.in_(industry_names),
+        )
+        .group_by(IndustryDailyFlow.industry_name)
+        .subquery()
+    )
+
+    rows = (
+        db.query(IndustryDailyFlow.industry_name, IndustryDailyFlow.streak)
+        .join(
+            latest_dates,
+            and_(
+                IndustryDailyFlow.industry_name == latest_dates.c.industry_name,
+                IndustryDailyFlow.trade_date == latest_dates.c.latest_trade_date,
+            ),
+        )
+        .all()
+    )
+    return {industry_name: streak or 0 for industry_name, streak in rows}
 
 
 def aggregate_industry_flow(db: Session, trade_date: date) -> int:
@@ -81,8 +125,10 @@ def aggregate_industry_flow(db: Session, trade_date: date) -> int:
             bucket["dealer_net"] += flow.net_amount_est or 0.0
 
     count = 0
+    previous_streaks = _load_previous_streaks(db, trade_date, list(agg.keys()))
     for industry, vals in agg.items():
         total_net = vals["foreign_net"] + vals["trust_net"] + vals["dealer_net"]
+        streak = _advance_streak(total_net, previous_streaks.get(industry, 0))
 
         existing = (
             db.query(IndustryDailyFlow)
@@ -96,6 +142,7 @@ def aggregate_industry_flow(db: Session, trade_date: date) -> int:
             existing.foreign_net_amount  = vals["foreign_net"]
             existing.trust_net_amount    = vals["trust_net"]
             existing.dealer_net_amount   = vals["dealer_net"]
+            existing.streak              = streak
         else:
             db.add(IndustryDailyFlow(
                 trade_date          = trade_date,
@@ -106,6 +153,7 @@ def aggregate_industry_flow(db: Session, trade_date: date) -> int:
                 foreign_net_amount  = vals["foreign_net"],
                 trust_net_amount    = vals["trust_net"],
                 dealer_net_amount   = vals["dealer_net"],
+                streak              = streak,
             ))
         count += 1
 

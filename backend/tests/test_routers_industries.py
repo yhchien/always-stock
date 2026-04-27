@@ -11,6 +11,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.main import app
 from app.models import Base, DailyPrice, IndustryDailyFlow, InstStockFlow, StockMaster
+from app.routers import industries as industries_router
 from app.database import get_db
 
 TRADE_DATE = date(2025, 4, 1)
@@ -34,10 +35,12 @@ def api(db):
     def override_get_db():
         yield session
 
+    industries_router._industries_cache.clear()
     app.dependency_overrides[get_db] = override_get_db
     client = TestClient(app)
     yield client, session
     app.dependency_overrides.clear()
+    industries_router._industries_cache.clear()
     session.close()
     Base.metadata.drop_all(bind=engine)
 
@@ -54,6 +57,7 @@ def seed_industry(db, industry_name, total_net, foreign_net, trust_net, dealer_n
         foreign_net_amount=foreign_net,
         trust_net_amount=trust_net,
         dealer_net_amount=dealer_net,
+        streak=1 if total_net > 0 else -1 if total_net < 0 else 0,
     ))
 
 
@@ -85,6 +89,29 @@ def seed_flow(db, stock_id, inst_type, net_shares, net_amount):
 # ── tests ─────────────────────────────────────────────────────────────────────
 
 class TestGetIndustries:
+    def test_reuses_cache_for_same_resolved_date(self, api, monkeypatch):
+        client, db = api
+        seed_industry(db, "晶圓代工", 1000, 800, 100, 100)
+        db.commit()
+
+        industries_router._industries_cache.clear()
+
+        original_load = industries_router.load_industry_flow_rows
+        calls = {"count": 0}
+
+        def wrapped_load(*args, **kwargs):
+            calls["count"] += 1
+            return original_load(*args, **kwargs)
+
+        monkeypatch.setattr(industries_router, "load_industry_flow_rows", wrapped_load)
+
+        resp1 = client.get(f"/api/industries?date={TRADE_DATE}")
+        resp2 = client.get(f"/api/industries?date={TRADE_DATE}")
+
+        assert resp1.status_code == 200
+        assert resp2.status_code == 200
+        assert calls["count"] == 1
+
     def test_returns_sorted_list(self, api):
         client, db = api
         seed_industry(db, "晶圓代工", 1000, 800, 100, 100)
@@ -152,10 +179,49 @@ class TestGetIndustries:
         assert "dealer_net_amount" in item
         assert "streak" in item
 
+    def test_uses_persisted_streak_without_history_scan(self, api):
+        client, db = api
+        db.add(IndustryDailyFlow(
+            trade_date=TRADE_DATE,
+            industry_name="半導體",
+            total_net_amount=1000,
+            total_buy_amount=2000,
+            total_sell_amount=1000,
+            foreign_net_amount=700,
+            trust_net_amount=200,
+            dealer_net_amount=100,
+            streak=7,
+        ))
+        db.commit()
+
+        resp = client.get(f"/api/industries?date={TRADE_DATE}")
+        assert resp.status_code == 200
+        assert resp.json()[0]["streak"] == 7
+
     def test_canonicalizes_legacy_industry_names_in_l0_response(self, api):
         client, db = api
-        seed_industry(db, "塑膠工業", 40, 30, 5, 5)
-        seed_industry(db, "石化及塑橡膠", 60, 40, 10, 10)
+        db.add(IndustryDailyFlow(
+            trade_date=TRADE_DATE,
+            industry_name="塑膠工業",
+            total_net_amount=40,
+            total_buy_amount=80,
+            total_sell_amount=40,
+            foreign_net_amount=30,
+            trust_net_amount=5,
+            dealer_net_amount=5,
+            streak=2,
+        ))
+        db.add(IndustryDailyFlow(
+            trade_date=TRADE_DATE,
+            industry_name="石化及塑橡膠",
+            total_net_amount=60,
+            total_buy_amount=120,
+            total_sell_amount=60,
+            foreign_net_amount=40,
+            trust_net_amount=10,
+            dealer_net_amount=10,
+            streak=2,
+        ))
         db.commit()
 
         resp = client.get(f"/api/industries?date={TRADE_DATE}")
@@ -166,14 +232,13 @@ class TestGetIndustries:
         assert data[0]["total_net_amount"] == 100
 
     def test_streak_positive_consecutive_buy(self, api):
-        """Streak should be positive when multiple consecutive days have positive net amount."""
         client, db = api
-        # Seed 3 consecutive positive days
-        for i, d in enumerate([date(2025, 4, 1), date(2025, 3, 31), date(2025, 3, 28)]):
+        for streak, d in [(3, date(2025, 4, 1)), (2, date(2025, 3, 31)), (1, date(2025, 3, 28))]:
             db.add(IndustryDailyFlow(
                 trade_date=d, industry_name="半導體",
-                total_net_amount=1000 + i, total_buy_amount=2000, total_sell_amount=1000,
+                total_net_amount=1000 + streak, total_buy_amount=2000, total_sell_amount=1000,
                 foreign_net_amount=800, trust_net_amount=100, dealer_net_amount=100,
+                streak=streak,
             ))
         db.commit()
 
@@ -183,19 +248,19 @@ class TestGetIndustries:
         assert item["streak"] == 3
 
     def test_streak_negative_consecutive_sell(self, api):
-        """Streak should be negative when consecutive days have negative net amount."""
         client, db = api
-        for d in [date(2025, 4, 1), date(2025, 3, 31)]:
+        for streak, d in [(-2, date(2025, 4, 1)), (-1, date(2025, 3, 31))]:
             db.add(IndustryDailyFlow(
                 trade_date=d, industry_name="半導體",
                 total_net_amount=-500, total_buy_amount=1000, total_sell_amount=1500,
                 foreign_net_amount=-400, trust_net_amount=-50, dealer_net_amount=-50,
+                streak=streak,
             ))
-        # Day before that was positive — breaks the streak
         db.add(IndustryDailyFlow(
             trade_date=date(2025, 3, 28), industry_name="半導體",
             total_net_amount=100, total_buy_amount=1100, total_sell_amount=1000,
             foreign_net_amount=80, trust_net_amount=10, dealer_net_amount=10,
+            streak=1,
         ))
         db.commit()
 

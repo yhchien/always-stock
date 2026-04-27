@@ -54,6 +54,7 @@ def test_load_industry_flow_rows_falls_back_to_inst_flow(db):
     assert row.dealer_net_amount == 100000
     assert row.total_buy_amount == 1300000
     assert row.total_sell_amount == 200000
+    assert row.streak == 0
 
 
 def test_load_industry_flow_rows_for_dates_returns_descending_dates(db):
@@ -94,6 +95,7 @@ def test_load_industry_flow_rows_merges_legacy_and_canonical_names(db):
             foreign_net_amount=40,
             trust_net_amount=5,
             dealer_net_amount=5,
+            streak=2,
         )
     )
     db.add(
@@ -106,6 +108,7 @@ def test_load_industry_flow_rows_merges_legacy_and_canonical_names(db):
             foreign_net_amount=20,
             trust_net_amount=5,
             dealer_net_amount=5,
+            streak=2,
         )
     )
     db.commit()
@@ -118,3 +121,4 @@ def test_load_industry_flow_rows_merges_legacy_and_canonical_names(db):
     assert row.total_net_amount == 80
     assert row.total_buy_amount == 160
     assert row.total_sell_amount == 80
+    assert row.streak == 2

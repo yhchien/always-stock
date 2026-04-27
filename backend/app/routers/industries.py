@@ -19,9 +19,7 @@ from app.hot_money_service import (
 from app.industry_names import normalize_industry_name
 from app.industry_flow_service import (
     get_latest_industry_trade_date,
-    get_recent_industry_trade_dates,
     load_industry_flow_rows,
-    load_industry_flow_rows_for_dates,
 )
 from app.models import InstStockFlow, StockMaster, DailyPrice
 
@@ -30,6 +28,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["industries"])
 LOCK_RETRY_DELAY = 0.15
 LOCK_RETRY_ATTEMPTS = 2
+INDUSTRIES_CACHE_TTL_SECONDS = 60.0
+_industries_cache: Dict[str, tuple[float, List["IndustryFlowItem"]]] = {}
 
 
 # ── Streak helper ────────────────────────────────────────────────────────────
@@ -126,6 +126,29 @@ def _raise_busy_if_locked(error: OperationalError) -> None:
     raise error
 
 
+def _get_cached_industries(resolved_date: date) -> Optional[List["IndustryFlowItem"]]:
+    cache_key = resolved_date.isoformat()
+    cached = _industries_cache.get(cache_key)
+    if cached is None:
+        return None
+
+    expires_at, payload = cached
+    if time.monotonic() >= expires_at:
+        _industries_cache.pop(cache_key, None)
+        return None
+    return payload
+
+
+def _set_cached_industries(
+    resolved_date: date,
+    payload: List["IndustryFlowItem"],
+) -> None:
+    _industries_cache[resolved_date.isoformat()] = (
+        time.monotonic() + INDUSTRIES_CACHE_TTL_SECONDS,
+        payload,
+    )
+
+
 def _load_stocks_by_industry_name(db: Session, industry_name: str) -> List[StockMaster]:
     """直接用 FinMind 分類名稱查 stocks_master，不再做 TWSE/Fugle fallback。"""
     canonical_name = normalize_industry_name(industry_name) or industry_name
@@ -188,6 +211,11 @@ def get_industries(
         logger.warning("No industry flow data on or before %s", date)
         raise HTTPException(status_code=404, detail=f"No data for {date}")
 
+    cached = _get_cached_industries(resolved_date)
+    if cached is not None:
+        logger.debug("Industries cache hit for resolved_date=%s", resolved_date)
+        return cached
+
     try:
         rows = _run_with_lock_retry(
             db,
@@ -199,21 +227,6 @@ def get_industries(
         logger.warning("No industry flow data for requested=%s resolved=%s", date, resolved_date)
         raise HTTPException(status_code=404, detail=f"No data for {date}")
 
-    # Compute streaks: load last 31 trading dates per industry (enough to detect 30+ streak)
-    industry_names = [r.industry_name for r in rows]
-    try:
-        recent_dates = get_recent_industry_trade_dates(db, resolved_date, limit=31)
-        history = _run_with_lock_retry(
-            db,
-            lambda: load_industry_flow_rows_for_dates(db, recent_dates, industry_names),
-        )
-    except OperationalError as error:
-        _raise_busy_if_locked(error)
-    # Group by industry → list of net amounts (date desc)
-    streak_data: Dict[str, list] = defaultdict(list)
-    for row in history:
-        streak_data[row.industry_name].append(row.total_net_amount)
-
     result = []
     for r in rows:
         result.append(IndustryFlowItem(
@@ -224,9 +237,10 @@ def get_industries(
             dealer_net_amount=r.dealer_net_amount,
             total_buy_amount=r.total_buy_amount,
             total_sell_amount=r.total_sell_amount,
-            streak=compute_streak(streak_data.get(r.industry_name, [])),
+            streak=r.streak,
         ))
 
+    _set_cached_industries(resolved_date, result)
     logger.debug("Returning %d industries for requested=%s resolved=%s", len(result), date, resolved_date)
     return result
 

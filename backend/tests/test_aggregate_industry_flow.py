@@ -53,6 +53,7 @@ class TestAggregateIndustryFlow:
         assert row.total_net_amount   == 1050.0
         assert row.total_buy_amount   == 1400.0
         assert row.total_sell_amount  == 350.0
+        assert row.streak == 1
 
     def test_aggregates_by_industry_name_not_sub_industry(self, db):
         """Aggregation groups by industry_name (broad category), not sub_industry."""
@@ -115,6 +116,7 @@ class TestAggregateIndustryFlow:
             trade_date=TRADE_DATE, industry_name="半導體",
             total_buy_amount=0, total_sell_amount=0, total_net_amount=0,
             foreign_net_amount=0, trust_net_amount=0, dealer_net_amount=0,
+            streak=0,
         ))
         add_flow(db, "2330", "foreign", 500, 100, 400)
         add_flow(db, "2330", "trust",   0, 0, 0)
@@ -126,3 +128,46 @@ class TestAggregateIndustryFlow:
         rows = db.query(IndustryDailyFlow).filter_by(industry_name="半導體").all()
         assert len(rows) == 1
         assert rows[0].foreign_net_amount == 400.0
+        assert rows[0].streak == 1
+
+    def test_increments_positive_streak_from_previous_day(self, db):
+        add_stock(db, "2330", "半導體", sub_industry="晶圓代工")
+        db.add(IndustryDailyFlow(
+            trade_date=date(2025, 3, 31),
+            industry_name="半導體",
+            total_buy_amount=1000,
+            total_sell_amount=100,
+            total_net_amount=900,
+            foreign_net_amount=900,
+            trust_net_amount=0,
+            dealer_net_amount=0,
+            streak=3,
+        ))
+        add_flow(db, "2330", "foreign", 500, 0, 500)
+        db.commit()
+
+        aggregate_industry_flow(db, TRADE_DATE)
+
+        row = db.query(IndustryDailyFlow).filter_by(trade_date=TRADE_DATE, industry_name="半導體").one()
+        assert row.streak == 4
+
+    def test_resets_streak_when_flow_direction_flips(self, db):
+        add_stock(db, "2330", "半導體", sub_industry="晶圓代工")
+        db.add(IndustryDailyFlow(
+            trade_date=date(2025, 3, 31),
+            industry_name="半導體",
+            total_buy_amount=1000,
+            total_sell_amount=100,
+            total_net_amount=900,
+            foreign_net_amount=900,
+            trust_net_amount=0,
+            dealer_net_amount=0,
+            streak=3,
+        ))
+        add_flow(db, "2330", "foreign", 0, 400, -400)
+        db.commit()
+
+        aggregate_industry_flow(db, TRADE_DATE)
+
+        row = db.query(IndustryDailyFlow).filter_by(trade_date=TRADE_DATE, industry_name="半導體").one()
+        assert row.streak == -1
