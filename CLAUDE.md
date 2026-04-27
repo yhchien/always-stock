@@ -102,7 +102,7 @@
 - M14 輿情分析
 - M15 Telegram 電子報
 - M20 交易分析擴充（預期 45% 報酬率加碼建議 + 風報比 1:1.75）
-- M23 每日異常訊號清單（**03:00 台北排程**；deterministic filter 建候選池 + LLM 上網查公司業務／集團／龍頭；輸出 LEADER / FOLLOWER / LAGGARD 三類；L0 tab bar + pulse 通知 + 多工背景重新產生 + 進度條；不預測報酬、不出買賣建議；spec [docs/plans/m23_daily_signals_spec.md](docs/plans/m23_daily_signals_spec.md)）
+- M23 每日異常訊號清單（**改為使用者手動觸發**；前端 `DailySignalsPanel`「重新產生」按鈕 → POST `/api/signals/regenerate` → FastAPI BackgroundTasks 跑 pipeline；deterministic filter 建候選池 + LLM 上網查公司業務／集團／龍頭；輸出 LEADER / FOLLOWER / LAGGARD 三類；不預測報酬、不出買賣建議；GitHub Actions cron 已停用，`workflow_dispatch` 保留作管理備援；spec [docs/plans/m23_daily_signals_spec.md](docs/plans/m23_daily_signals_spec.md)）
 - M24 自訂進出場策略回測（M11 擴充；使用者自設分層進場 / 追價 / 攤平 / 停損停利規則，引擎回測 edge；LLM 為現場判斷層，trigger 觸發時依當下籌碼/產業/技術給「適合執行 yes/no」提示，不替使用者寫規則）
 
 > M18 → M19 → M20 依序執行。M19 已完工（2026-04-23），M20 擴充建立在 M19 卡片帶入 context 之上。
@@ -744,10 +744,10 @@
 - `GET /api/signals/jobs/latest`（公開，前端 polling 用）
 - `POST /api/signals/regenerate`（登入即可，但同日全站 5 次上限 + 每 user 1 次上限 + 同日 running job 拒絕並發）
 
-**排程：台北 03:00**（從原規劃的 07:00 改）
-- `.github/workflows/daily_signals.yml`：cron `0 19 * * 1-5`（UTC = 台北次日 03:00 週二~週六）
-- 4h offset 抓「昨日」當 target_date（沿用 daily_etl_update.yml pattern 防 cron 延遲跨日）
-- 03:00 跑時昨日 ETL 已在 23:00 完成 → 給足 4 小時 buffer
+**觸發方式：使用者手動**（2026-04-27 改版，原排程已停用）
+- 觸發路徑：前端 `DailySignalsPanel`「重新產生」按鈕 → POST `/api/signals/regenerate` → FastAPI `BackgroundTasks` 在 Render web service 直接執行 pipeline
+- `.github/workflows/daily_signals.yml`：cron 已移除；保留 `workflow_dispatch` 作管理備援（例如 prod backfill 或 Render background task 暫不可用時用 `gh workflow run` 補跑）
+- **Render web service 必須設 `OPENAI_API_KEY` env**（與 GitHub secret 是兩套，frontend 觸發走 Render 不走 Actions runner）
 
 **前端 L0 tab bar UX**（`<DailySignalsPanel />`）：
 - 版位：L0 首頁 TradeQualityAnalysis 之後、HotMoneyList 之前
