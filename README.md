@@ -161,7 +161,7 @@ npm run dev
 
 | Workflow | 排程 | 說明 |
 |----------|------|------|
-| `.github/workflows/daily_etl_update.yml` | 週一~五 23:00（台北） | 每個交易日收盤後全量刷新 Render PostgreSQL（6 個 FinMind 模組：daily_price / inst_flow / daily_valuation / monthly_revenue / financial_statement / broker_trade_agg）。配額耗盡時 1.5h 後自動 retry 一次；假日由 daily_price 空資料 + 配額健康判定自動短路 |
+| `.github/workflows/daily_etl_update.yml` | 週一~五 18:00（台北） | 每個交易日傍晚全量刷新 Render PostgreSQL（6 個 FinMind 模組：daily_price / inst_flow / daily_valuation / monthly_revenue / financial_statement / broker_trade_agg）。配額耗盡時 1.5h 後自動 retry 一次；假日由 daily_price 空資料 + 配額健康判定自動短路 |
 | `.github/workflows/broker_trade_backfill.yml` | 每小時第 5 分 | 分點買賣超歷史 backfill，以交易日為單位逐批推進 |
 
 ### 待實作資料表

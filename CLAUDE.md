@@ -28,7 +28,7 @@
 - **排程**:
   - macOS launchd（本地）
   - Render Cron Job（雲端，週一至五）
-  - GitHub Actions：`daily_etl_update.yml`（台北週一~五 21:00 全量 ETL）、`broker_trade_backfill.yml`（每小時 broker_trade_agg backfill）
+  - GitHub Actions：`daily_etl_update.yml`（台北週一~五 18:00 全量 ETL）、`broker_trade_backfill.yml`（每小時 broker_trade_agg backfill）
 - **部署**: Render（後端 API + Bot + ETL + Postgres）+ Vercel（前端）
 
 ## FinMind 決策記憶
