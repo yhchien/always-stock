@@ -153,8 +153,7 @@ def run_signal_pipeline_sync(
                     label=f"研究第 {done_count} / {len(after_soft)} 檔",
                 )
 
-            # Step 6：LLM Explanation（外層 chunk loop，每 batch commit progress
-            # 避免 75% 卡住數分鐘的 UX 問題；mirror llm_research 模式）
+            # Step 6a：LLM 短 decision（全候選）
             total_for_explain = max(len(research_results), 1)
             explain_batch_size = llm_caller.DEFAULT_EXPLANATION_BATCH_SIZE
             _set_progress(
@@ -162,7 +161,7 @@ def run_signal_pipeline_sync(
                 job,
                 stage=STAGE_LLM_EXPLAIN,
                 pct=75,
-                label=f"LLM 產出解釋（共 {len(research_results)} 檔）",
+                label=f"LLM 初判（共 {len(research_results)} 檔）",
             )
             explanation: list = []
             for i in range(0, len(research_results), explain_batch_size):
@@ -171,14 +170,57 @@ def run_signal_pipeline_sync(
                     llm_caller.run_explanation_batch(chunk, market_context)
                 )
                 done_count = min(i + explain_batch_size, len(research_results))
-                pct = 75 + int(20 * done_count / total_for_explain)
+                pct = 75 + int(10 * done_count / total_for_explain)
                 _set_progress(
                     db,
                     job,
                     stage=STAGE_LLM_EXPLAIN,
                     pct=pct,
-                    label=f"解釋第 {done_count} / {len(research_results)} 檔",
+                    label=f"初判第 {done_count} / {len(research_results)} 檔",
                 )
+
+            # Step 6b：只對 WATCH 名單補長理由
+            watch_candidates = [
+                item for item in explanation
+                if str(item.get("decision") or "").upper() == "WATCH"
+            ]
+            total_for_watch_reason = max(len(watch_candidates), 1)
+            _set_progress(
+                db,
+                job,
+                stage=STAGE_LLM_EXPLAIN,
+                pct=86,
+                label=f"補長理由（共 {len(watch_candidates)} 檔）",
+            )
+            enriched_watch: list = []
+            for i in range(0, len(watch_candidates), explain_batch_size):
+                chunk = watch_candidates[i : i + explain_batch_size]
+                enriched_watch.extend(
+                    llm_caller.run_watch_reason_batch(chunk, market_context)
+                )
+                done_count = min(i + explain_batch_size, len(watch_candidates))
+                pct = 86 + int(9 * done_count / total_for_watch_reason)
+                _set_progress(
+                    db,
+                    job,
+                    stage=STAGE_LLM_EXPLAIN,
+                    pct=pct,
+                    label=f"長理由第 {done_count} / {len(watch_candidates)} 檔",
+                )
+
+            if enriched_watch:
+                watch_by_id = {
+                    str(item.get("stock") or item.get("stock_id") or ""): item
+                    for item in enriched_watch
+                }
+                merged_explanation: list = []
+                for item in explanation:
+                    sid = str(item.get("stock") or item.get("stock_id") or "")
+                    if sid and sid in watch_by_id:
+                        merged_explanation.append({**item, **watch_by_id[sid]})
+                    else:
+                        merged_explanation.append(item)
+                explanation = merged_explanation
 
             # Step 7：Persist Snapshot
             _set_progress(

@@ -1,5 +1,5 @@
 """
-M23 Step 0 / 7 / 8 / 9：LLM batch research + explanation + market_state + 最終 payload。
+M23 Step 0 / 7 / 8 / 9：LLM batch research + short decision + WATCH 長理由 + market_state。
 
 Slice 6（2026-04-26）：實作完成。
 
@@ -10,7 +10,7 @@ Slice 6（2026-04-26）：實作完成。
   - §11.5 LLM batch 後 commit progress
 
 設計：
-  - 一次 prompt 處理 5~10 檔（DEFAULT_BATCH_SIZE），控制 cost / 時間
+  - research / explanation 分開調 batch，避免長 explanation 卡住整批
   - 第一版用支援 web search 的模型（`gpt-4o-search-preview` 或同等）
   - 沒 web search 或 OpenAI 不可用 → 每檔走 fallback dict（標記 `_unavailable`），pipeline 仍可完成 snapshot
   - System prompt 直接讀 `backend/app/prompts/watch-list-stock.md`（spec §10 對齊）；
@@ -31,7 +31,8 @@ from app.settings import get_openai_api_key
 logger = logging.getLogger(__name__)
 
 
-# Spec §5 Step 7：「一次 prompt 處理 5~10 檔（batch）」，第一版取中間值
+# Spec §5 Step 7：「一次 prompt 處理 5~10 檔（batch）」；research 保持 8，
+# explanation 降到 4 以降低單次 payload。
 DEFAULT_RESEARCH_BATCH_SIZE = 8
 DEFAULT_EXPLANATION_BATCH_SIZE = 4
 
@@ -41,6 +42,14 @@ DEFAULT_EXPLANATION_BATCH_SIZE = 4
 # 所有 entry function 預設參數都吃這個值，所以 caller 不必每次 explicit 傳 model。
 _FALLBACK_MODEL = "gpt-4o-search-preview"
 DEFAULT_MODEL = os.getenv("OPENAI_MODEL", _FALLBACK_MODEL).strip()
+DEFAULT_MARKET_MODEL = os.getenv("OPENAI_SIGNALS_MARKET_MODEL", DEFAULT_MODEL).strip()
+DEFAULT_RESEARCH_MODEL = os.getenv("OPENAI_SIGNALS_RESEARCH_MODEL", DEFAULT_MODEL).strip()
+_DEFAULT_FAST_MODEL = (
+    os.getenv("OPENAI_SIGNALS_FAST_MODEL", "").strip()
+    or ("gpt-5.4-mini" if DEFAULT_MODEL.startswith("gpt-5.4") else DEFAULT_MODEL)
+)
+DEFAULT_DECISION_MODEL = os.getenv("OPENAI_SIGNALS_DECISION_MODEL", _DEFAULT_FAST_MODEL).strip()
+DEFAULT_WATCH_REASON_MODEL = os.getenv("OPENAI_SIGNALS_REASON_MODEL", _DEFAULT_FAST_MODEL).strip()
 
 # 系統 prompt 路徑（spec §10 LLM I/O contract 全文）
 _PROMPT_PATH = (
@@ -52,12 +61,17 @@ _MAX_OUTPUT_TOKENS = 8000
 _WEB_SEARCH_TOOL = {"type": "web_search"}
 _OPENAI_TIMEOUT_SECONDS = 120.0
 _OPENAI_MAX_RETRIES = 1
+_PROMPT_CACHE_RETENTION = "in_memory"
+_CACHE_KEY_MARKET = "m23:market:v2"
+_CACHE_KEY_RESEARCH = "m23:research:v2"
+_CACHE_KEY_DECISION = "m23:decision:v2"
+_CACHE_KEY_WATCH_REASON = "m23:watch-reason:v2"
 
 
 def assemble_market_context(
     db_market_snapshot: Dict[str, Any],
     *,
-    model: str = DEFAULT_MODEL,
+    model: str = DEFAULT_MARKET_MODEL,
 ) -> Dict[str, Any]:
     """Step 0：判斷 market_state（STRONG_BULL / STRUCTURAL_BULL / RANGE / WEAK）。
 
@@ -91,6 +105,7 @@ def assemble_market_context(
         user_msg,
         model=model,
         use_web_search=True,
+        prompt_cache_key=_CACHE_KEY_MARKET,
     )
     if payload is None:
         return _market_context_fallback(db_market_snapshot)
@@ -109,7 +124,7 @@ def run_research_batch(
     stocks_batch: List[Dict[str, Any]],
     market_context: Optional[Dict[str, Any]] = None,
     *,
-    model: str = DEFAULT_MODEL,
+    model: str = DEFAULT_RESEARCH_MODEL,
 ) -> List[Dict[str, Any]]:
     """Step 7：LLM Research Layer。
 
@@ -158,6 +173,7 @@ def run_research_batch(
         user_msg,
         model=model,
         use_web_search=True,
+        prompt_cache_key=_CACHE_KEY_RESEARCH,
     )
     if payload is None:
         return [_research_fallback(s) for s in stocks_batch]
@@ -188,15 +204,12 @@ def run_explanation_batch(
     research_results: List[Dict[str, Any]],
     market_context: Dict[str, Any],
     *,
-    model: str = DEFAULT_MODEL,
+    model: str = DEFAULT_DECISION_MODEL,
 ) -> List[Dict[str, Any]]:
-    """Step 8：LLM Explanation Layer。
+    """Step 8a：先對全候選產出短 decision。
 
-    依 market_state gating + 籌碼 / 技術判斷 → 產出 `signals` / `decision`（WATCH / REMOVE）/
-    500-1000 字 reason（13 點強制要點，見 watch-list-stock.md）。
-
-    內部依 DEFAULT_BATCH_SIZE 拆 chunk（避免單次 prompt 太長）；
-    對 caller 而言一次拿到完整 explanation list。
+    只產出 `signals` / `decision` / 1-2 句 short_reason，避免先替所有候選寫長文。
+    長理由只留給最後的 WATCH 清單。
     """
     if not research_results:
         return []
@@ -204,7 +217,27 @@ def run_explanation_batch(
     out: List[Dict[str, Any]] = []
     for i in range(0, len(research_results), DEFAULT_EXPLANATION_BATCH_SIZE):
         chunk = research_results[i : i + DEFAULT_EXPLANATION_BATCH_SIZE]
-        out.extend(_run_explanation_chunk(chunk, market_context, model=model))
+        out.extend(_run_decision_chunk(chunk, market_context, model=model))
+    return out
+
+
+def run_watch_reason_batch(
+    watch_items: List[Dict[str, Any]],
+    market_context: Dict[str, Any],
+    *,
+    model: str = DEFAULT_WATCH_REASON_MODEL,
+) -> List[Dict[str, Any]]:
+    """Step 8b：只對 WATCH 名單補長理由。
+
+    這一層避免把 REMOVE 候選也花成本產生長文，直接降低整體 latency。
+    """
+    if not watch_items:
+        return []
+
+    out: List[Dict[str, Any]] = []
+    for i in range(0, len(watch_items), DEFAULT_EXPLANATION_BATCH_SIZE):
+        chunk = watch_items[i : i + DEFAULT_EXPLANATION_BATCH_SIZE]
+        out.extend(_run_watch_reason_chunk(chunk, market_context, model=model))
     return out
 
 
@@ -213,7 +246,7 @@ def assemble_final_output(
     explanation: List[Dict[str, Any]],
     *,
     candidate_pool_size: int,
-    model: str = DEFAULT_MODEL,
+    model: str = DEFAULT_WATCH_REASON_MODEL,
     total_tokens: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Step 9：拆 watchlist / removed、計算 summary、組裝最終 payload。
@@ -234,7 +267,8 @@ def assemble_final_output(
                 {
                     "stock": item.get("stock") or item.get("stock_id"),
                     "name": item.get("name", ""),
-                    "remove_reason": item.get("reason")
+                    "remove_reason": item.get("short_reason")
+                    or item.get("reason")
                     or item.get("remove_reason")
                     or "",
                 }
@@ -290,6 +324,7 @@ def _call_llm_json(
     *,
     model: str,
     use_web_search: bool = False,
+    prompt_cache_key: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """呼叫 OpenAI 並嘗試 parse JSON。
 
@@ -311,34 +346,20 @@ def _call_llm_json(
         max_retries=_OPENAI_MAX_RETRIES,
     )
     try:
+        kwargs: Dict[str, Any] = {
+            "model": model,
+            "instructions": system_prompt,
+            "input": user_msg,
+            "max_output_tokens": _MAX_OUTPUT_TOKENS,
+            "prompt_cache_retention": _PROMPT_CACHE_RETENTION,
+        }
+        if prompt_cache_key:
+            kwargs["prompt_cache_key"] = prompt_cache_key
         if use_web_search:
-            response = client.responses.create(
-                model=model,
-                tools=[_WEB_SEARCH_TOOL],
-                tool_choice="auto",
-                input=[
-                    {
-                        "role": "system",
-                        "content": [{"type": "input_text", "text": system_prompt}],
-                    },
-                    {
-                        "role": "user",
-                        "content": [{"type": "input_text", "text": user_msg}],
-                    },
-                ],
-                max_output_tokens=_MAX_OUTPUT_TOKENS,
-            )
-            raw = _extract_responses_output_text(response)
-        else:
-            response = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_msg},
-                ],
-                max_completion_tokens=_MAX_OUTPUT_TOKENS,
-            )
-            raw = response.choices[0].message.content or ""
+            kwargs["tools"] = [_WEB_SEARCH_TOOL]
+            kwargs["tool_choice"] = "auto"
+        response = client.responses.create(**kwargs)
+        raw = _extract_responses_output_text(response)
         return _extract_json(raw)
     except Exception:
         logger.exception("M23 LLM call failed (model=%s)", model)
@@ -388,17 +409,18 @@ def _extract_json(raw: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def _run_explanation_chunk(
+def _run_decision_chunk(
     chunk: List[Dict[str, Any]],
     market_context: Dict[str, Any],
     *,
     model: str,
 ) -> List[Dict[str, Any]]:
-    """單個 chunk 的 explanation LLM call（內部 helper）。"""
+    """單個 chunk 的短 decision call。"""
     system_prompt = _load_system_prompt()
     user_msg = (
-        "[執行 STEP 5 / STEP 6 / STEP 7 / STEP 8 / STEP 9：依 market_state gating "
-        "+ 籌碼 / 技術判斷 → 產出 decision (WATCH / REMOVE) + 500-1000 字 reason]\n\n"
+        "[執行 STEP 5 / STEP 6：先對全候選做短 decision]\n"
+        "你現在只需要判斷 WATCH / REMOVE，並給 1-2 句短理由。"
+        "不要產生長文分析，長理由只留給最後的 WATCH 名單。\n\n"
         f"[market_context]\n"
         f"{json.dumps(market_context, ensure_ascii=False, indent=2)}\n\n"
         f"[research_results]\n"
@@ -410,19 +432,24 @@ def _run_explanation_chunk(
         '      "stock": "股票代碼",\n'
         '      "signals": { "capital_flow": "strong | moderate | weak", "chip_trend": "accumulating | neutral | weakening | retail_overheated | short_squeeze_potential", "margin_short_signal": "positive | neutral | negative", "technical_status": "breakout | steady_uptrend | early_turn | range_bound | distribution | weak" },\n'
         '      "decision": "WATCH | REMOVE",\n'
-        '      "reason": "WATCH → 500-1000 字繁體中文（13 點強制要點）；REMOVE → 排除原因"\n'
+        '      "short_reason": "1-2 句繁體中文，120 字內，說明保留或排除主因"\n'
         '    }\n'
         '  ]\n'
         "}\n"
     )
 
-    payload = _call_llm_json(system_prompt, user_msg, model=model)
+    payload = _call_llm_json(
+        system_prompt,
+        user_msg,
+        model=model,
+        prompt_cache_key=_CACHE_KEY_DECISION,
+    )
     if payload is None:
-        return [_explanation_fallback(r) for r in chunk]
+        return [_decision_fallback(r) for r in chunk]
 
     items = payload.get("items")
     if not isinstance(items, list):
-        return [_explanation_fallback(r) for r in chunk]
+        return [_decision_fallback(r) for r in chunk]
 
     by_id: Dict[str, Dict[str, Any]] = {}
     for item in items:
@@ -440,10 +467,71 @@ def _run_explanation_chunk(
             ext = by_id[sid]
             merged["signals"] = ext.get("signals", _default_signals())
             merged["decision"] = str(ext.get("decision") or "REMOVE").upper()
-            merged["reason"] = ext.get("reason", "")
+            merged["short_reason"] = ext.get("short_reason", "")
         else:
-            fb = _explanation_fallback(research)
+            fb = _decision_fallback(research)
             merged.update(fb)
+        aligned.append(merged)
+    return aligned
+
+
+def _run_watch_reason_chunk(
+    chunk: List[Dict[str, Any]],
+    market_context: Dict[str, Any],
+    *,
+    model: str,
+) -> List[Dict[str, Any]]:
+    """只對 WATCH 名單補長理由。"""
+    system_prompt = _load_system_prompt()
+    user_msg = (
+        "[執行 STEP 7 / STEP 8 / STEP 9：只對 WATCH 名單補長理由]\n"
+        "你現在只處理已經判定為 WATCH 的股票。"
+        "請根據 research 與 market_state，為每檔輸出 250-350 字繁體中文分析。"
+        "不要重做 WATCH / REMOVE 判斷，也不要處理 REMOVE 股票。\n\n"
+        f"[market_context]\n"
+        f"{json.dumps(market_context, ensure_ascii=False, indent=2)}\n\n"
+        f"[watch_items]\n"
+        f"{json.dumps(chunk, ensure_ascii=False, indent=2)}\n\n"
+        "輸出格式（JSON only，不要 markdown code fence）：\n"
+        "{\n"
+        '  "items": [\n'
+        '    {\n'
+        '      "stock": "股票代碼",\n'
+        '      "reason": "250-350 字繁體中文分析"\n'
+        '    }\n'
+        '  ]\n'
+        "}\n"
+    )
+
+    payload = _call_llm_json(
+        system_prompt,
+        user_msg,
+        model=model,
+        prompt_cache_key=_CACHE_KEY_WATCH_REASON,
+    )
+    if payload is None:
+        return [_watch_reason_fallback(item) for item in chunk]
+
+    items = payload.get("items")
+    if not isinstance(items, list):
+        return [_watch_reason_fallback(item) for item in chunk]
+
+    by_id: Dict[str, Dict[str, Any]] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        sid = item.get("stock") or item.get("stock_id")
+        if sid:
+            by_id[str(sid)] = item
+
+    aligned: List[Dict[str, Any]] = []
+    for watch in chunk:
+        sid = str(watch.get("stock") or watch.get("stock_id") or "")
+        merged: Dict[str, Any] = {**watch}
+        if sid in by_id:
+            merged["reason"] = by_id[sid].get("reason", "")
+        else:
+            merged.update(_watch_reason_fallback(watch))
         aligned.append(merged)
     return aligned
 
@@ -464,7 +552,7 @@ def _format_watch_entry(item: Dict[str, Any]) -> Dict[str, Any]:
         "leader_check": item.get("leader_check", {}),
         "signals": item.get("signals", _default_signals()),
         "decision": "WATCH",
-        "reason": item.get("reason", ""),
+        "reason": item.get("reason") or item.get("short_reason", ""),
     }
 
 
@@ -514,12 +602,19 @@ def _research_fallback(stock: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _explanation_fallback(research: Dict[str, Any]) -> Dict[str, Any]:
+def _decision_fallback(research: Dict[str, Any]) -> Dict[str, Any]:
     return {
         **research,
         "signals": _default_signals(),
         "decision": "REMOVE",
-        "reason": "LLM 不可用，無法完成最終評估（標記為 REMOVE 以避免誤判）。",
+        "short_reason": "LLM 不可用，暫以 REMOVE 保守處理。",
+    }
+
+
+def _watch_reason_fallback(item: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        **item,
+        "reason": item.get("short_reason") or "LLM 不可用，暫無詳細分析。",
     }
 
 

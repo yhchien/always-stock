@@ -132,6 +132,11 @@
 - `market_context.taiex_change_pct` / `otc_change_pct` 改為 backend authoritative：從 DB snapshot deterministic 帶入，LLM 不可改寫或補 0
 - M23 OpenAI client 必須顯式設 `timeout=120`、`max_retries=1`；否則單一 `responses.create()` 卡住時，job 會一直停在 `llm_research` 或 `llm_explain` 的同一個 batch 進度
 - M23 batch 建議拆開調：`research` 可維持 8，`explain` 應降到 4；因為 explain prompt 較長，較容易在單次 call 卡住
+- M23 explanation 已改成兩階段：
+  - 全候選先做短 decision（`WATCH/REMOVE + short_reason`）
+  - 只對最後 `WATCH` 名單補長理由（250-350 字）
+- M23 現在對 Responses API 顯式帶 `prompt_cache_key`（market / research / decision / watch-reason 分開），利用固定長 prompt 前綴降低 latency
+- M23 模型分層已接好：`OPENAI_SIGNALS_MARKET_MODEL` / `OPENAI_SIGNALS_RESEARCH_MODEL` / `OPENAI_SIGNALS_DECISION_MODEL` / `OPENAI_SIGNALS_REASON_MODEL`
 
 ## 資料狀態（2026-04-10）
 

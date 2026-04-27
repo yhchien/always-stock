@@ -20,39 +20,10 @@ from app.signals import llm_caller
 # ---------- helpers ----------
 
 
-class _FakeMessage:
-    def __init__(self, content: str) -> None:
-        self.content = content
-
-
-class _FakeChoice:
-    def __init__(self, content: str) -> None:
-        self.message = _FakeMessage(content)
-
-
-class _FakeResponse:
-    def __init__(self, content: str) -> None:
-        self.choices = [_FakeChoice(content)]
-
-
 class _FakeResponsesResponse:
     def __init__(self, content: str) -> None:
         self.output_text = content
         self.output = []
-
-
-class _FakeCompletions:
-    def __init__(self, content: str, *, raise_exc: Optional[Exception] = None) -> None:
-        self._content = content
-        self._raise_exc = raise_exc
-        self.calls: List[Dict[str, Any]] = []
-
-    def create(self, **kwargs: Any) -> _FakeResponse:
-        self.calls.append(kwargs)
-        if self._raise_exc is not None:
-            raise self._raise_exc
-        return _FakeResponse(self._content)
-
 
 class _FakeResponsesAPI:
     def __init__(self, content: str, *, raise_exc: Optional[Exception] = None) -> None:
@@ -67,11 +38,6 @@ class _FakeResponsesAPI:
         return _FakeResponsesResponse(self._content)
 
 
-class _FakeChat:
-    def __init__(self, completions: _FakeCompletions) -> None:
-        self.completions = completions
-
-
 class _FakeResponses:
     def __init__(self, responses_api: _FakeResponsesAPI) -> None:
         self.create = responses_api.create
@@ -80,9 +46,7 @@ class _FakeResponses:
 
 class _FakeOpenAIClient:
     def __init__(self, content: str, *, raise_exc: Optional[Exception] = None) -> None:
-        self._completions = _FakeCompletions(content, raise_exc=raise_exc)
         self._responses_api = _FakeResponsesAPI(content, raise_exc=raise_exc)
-        self.chat = _FakeChat(self._completions)
         self.responses = _FakeResponses(self._responses_api)
 
 
@@ -163,6 +127,7 @@ def test_assemble_market_context_parses_json_happy_path(monkeypatch):
     assert out["futures_bias"] == "LONG"
     assert "VIX" in out["market_state_reason"]
     assert fake_client._responses_api.calls[0]["tools"] == [{"type": "web_search"}]
+    assert fake_client._responses_api.calls[0]["prompt_cache_key"] == llm_caller._CACHE_KEY_MARKET
     assert fake_client.factory_kwargs["timeout"] == llm_caller._OPENAI_TIMEOUT_SECONDS
     assert fake_client.factory_kwargs["max_retries"] == llm_caller._OPENAI_MAX_RETRIES
 
@@ -264,6 +229,7 @@ def test_run_research_batch_aligns_response_by_stock_id(monkeypatch):
     # 原 batch 欄位（industry）保留
     assert by_id["2330"]["industry"] == "半導體業"
     assert fake_client._responses_api.calls[0]["tools"] == [{"type": "web_search"}]
+    assert fake_client._responses_api.calls[0]["prompt_cache_key"] == llm_caller._CACHE_KEY_RESEARCH
 
 
 def test_run_research_batch_falls_back_for_missing_stock_in_response(monkeypatch):
@@ -328,7 +294,7 @@ def test_run_explanation_batch_empty_returns_empty(monkeypatch):
     assert llm_caller.run_explanation_batch([], market_context={}) == []
 
 
-def test_run_explanation_batch_attaches_decision_and_reason(monkeypatch):
+def test_run_explanation_batch_attaches_decision_and_short_reason(monkeypatch):
     response = {
         "items": [
             {
@@ -340,17 +306,17 @@ def test_run_explanation_batch_attaches_decision_and_reason(monkeypatch):
                     "technical_status": "breakout",
                 },
                 "decision": "WATCH",
-                "reason": "詳細 500 字 reason 內容...",
+                "short_reason": "量價與籌碼同步轉強，可續追。",
             },
             {
                 "stock": "2454",
                 "signals": {},
                 "decision": "REMOVE",
-                "reason": "近期已大漲，過熱。",
+                "short_reason": "近期已大漲，短線過熱。",
             },
         ]
     }
-    _patch_openai(monkeypatch, json.dumps(response, ensure_ascii=False))
+    fake_client = _patch_openai(monkeypatch, json.dumps(response, ensure_ascii=False))
     research = [
         {"stock": "2330", "name": "台積電", "type": "LEADER"},
         {"stock": "2454", "name": "聯發科", "type": "FOLLOWER"},
@@ -359,40 +325,28 @@ def test_run_explanation_batch_attaches_decision_and_reason(monkeypatch):
     by_id = {x["stock"]: x for x in out}
     assert by_id["2330"]["decision"] == "WATCH"
     assert by_id["2330"]["signals"]["capital_flow"] == "strong"
-    assert "詳細" in by_id["2330"]["reason"]
+    assert "續追" in by_id["2330"]["short_reason"]
     assert by_id["2454"]["decision"] == "REMOVE"
     # 原 research 欄位（name / type）仍在
     assert by_id["2330"]["type"] == "LEADER"
+    assert fake_client._responses_api.calls[0]["prompt_cache_key"] == llm_caller._CACHE_KEY_DECISION
 
 
 def test_run_explanation_batch_chunks_by_default_batch_size(monkeypatch):
     """13 檔 + DEFAULT_BATCH_SIZE=4 應該分 4 個 chunk（4+4+4+1）。"""
     monkeypatch.setattr(llm_caller, "DEFAULT_EXPLANATION_BATCH_SIZE", 4)
 
-    def _make_response(chunk_size: int, start_idx: int) -> str:
-        items = [
-            {
-                "stock": f"S{start_idx + i:03d}",
-                "signals": {},
-                "decision": "REMOVE",
-                "reason": "stub",
-            }
-            for i in range(chunk_size)
-        ]
-        return json.dumps({"items": items})
-
     # 用一個能依次回應不同 chunk 的 fake client
     call_count = {"n": 0}
 
-    class _StatefulCompletions:
+    class _StatefulResponses:
         def create(self, **kwargs):
             call_count["n"] += 1
-            return _FakeResponse(json.dumps({"items": []}))
+            return _FakeResponsesResponse(json.dumps({"items": []}))
 
     class _StatefulClient:
         def __init__(self):
-            self.chat = _FakeChat(_StatefulCompletions())
-            self.responses = None
+            self.responses = _StatefulResponses()
 
     client = _StatefulClient()
 
@@ -417,7 +371,7 @@ def test_run_explanation_batch_fallback_when_llm_fails(monkeypatch):
     out = llm_caller.run_explanation_batch(research, market_context={})
     assert len(out) == 1
     assert out[0]["decision"] == "REMOVE"
-    assert "LLM 不可用" in out[0]["reason"]
+    assert "LLM 不可用" in out[0]["short_reason"]
 
 
 def test_run_explanation_batch_falls_back_for_missing_stock_in_response(monkeypatch):
@@ -427,7 +381,7 @@ def test_run_explanation_batch_falls_back_for_missing_stock_in_response(monkeypa
                 "stock": "2330",
                 "signals": {"capital_flow": "strong"},
                 "decision": "WATCH",
-                "reason": "ok",
+                "short_reason": "ok",
             }
         ]
     }
@@ -440,7 +394,25 @@ def test_run_explanation_batch_falls_back_for_missing_stock_in_response(monkeypa
     by_id = {x["stock"]: x for x in out}
     assert by_id["2330"]["decision"] == "WATCH"
     assert by_id["9999"]["decision"] == "REMOVE"  # fallback
-    assert "LLM 不可用" in by_id["9999"]["reason"]
+    assert "LLM 不可用" in by_id["9999"]["short_reason"]
+
+
+def test_run_watch_reason_batch_only_fills_long_reason(monkeypatch):
+    response = {
+        "items": [
+            {
+                "stock": "2330",
+                "reason": "台積電受惠 AI 資本支出與龍頭延續，籌碼與技術同步，仍具觀察價值。",
+            }
+        ]
+    }
+    fake_client = _patch_openai(monkeypatch, json.dumps(response, ensure_ascii=False))
+    watch_items = [
+        {"stock": "2330", "name": "台積電", "decision": "WATCH", "short_reason": "量價轉強"},
+    ]
+    out = llm_caller.run_watch_reason_batch(watch_items, market_context={"market_state": "RANGE"})
+    assert out[0]["reason"].startswith("台積電受惠")
+    assert fake_client._responses_api.calls[0]["prompt_cache_key"] == llm_caller._CACHE_KEY_WATCH_REASON
 
 
 # ---------- assemble_final_output ----------
@@ -475,7 +447,7 @@ def _remove_item(stock: str, name: str) -> Dict[str, Any]:
         "stock": stock,
         "name": name,
         "decision": "REMOVE",
-        "reason": "近期過熱不適合介入",
+        "short_reason": "近期過熱不適合介入",
     }
 
 
@@ -514,7 +486,7 @@ def test_assemble_final_output_includes_total_tokens_when_provided():
         {"market_state": "RANGE"}, [], candidate_pool_size=0, total_tokens=12345
     )
     assert out["llm_total_tokens"] == 12345
-    assert out["llm_model"] == llm_caller.DEFAULT_MODEL
+    assert out["llm_model"] == llm_caller.DEFAULT_WATCH_REASON_MODEL
 
 
 def test_assemble_final_output_handles_empty_explanation():

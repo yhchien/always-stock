@@ -79,6 +79,9 @@ def _stub_all_stages_noop(monkeypatch):
         llm_caller, "run_explanation_batch", lambda research, ctx: []
     )
     monkeypatch.setattr(
+        llm_caller, "run_watch_reason_batch", lambda watch, ctx: list(watch)
+    )
+    monkeypatch.setattr(
         llm_caller,
         "assemble_final_output",
         lambda ctx, expl, *, candidate_pool_size: {
@@ -252,6 +255,7 @@ def test_pipeline_passes_db_market_snapshot_into_step_zero(session_factory, monk
     monkeypatch.setattr(llm_caller, "assemble_market_context", _assemble_market_context)
     monkeypatch.setattr(llm_caller, "run_research_batch", lambda batch, ctx: list(batch))
     monkeypatch.setattr(llm_caller, "run_explanation_batch", lambda research, ctx: [])
+    monkeypatch.setattr(llm_caller, "run_watch_reason_batch", lambda watch, ctx: list(watch))
     monkeypatch.setattr(
         llm_caller,
         "assemble_final_output",
