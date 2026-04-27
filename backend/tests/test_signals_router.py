@@ -13,7 +13,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import get_db
 from app.main import app
-from app.models import Base, SignalGenerationJob, SignalSnapshot
+from app.models import Base, SignalGenerationJob, SignalSnapshot, User
 from app.routers import signals as signals_router
 
 
@@ -55,6 +55,13 @@ def _register_login(client: TestClient, email: str = "alice@example.com") -> Non
         json={"email": email, "password": "passw0rd!"},
     )
     assert res.status_code == 200, res.text
+
+
+def _promote_user_to_admin(db, email: str) -> None:
+    user = db.query(User).filter(User.email == email).first()
+    assert user is not None
+    user.is_admin = True
+    db.commit()
 
 
 def _seed_snapshot(
@@ -256,6 +263,29 @@ def test_regenerate_429_when_user_already_triggered_today(api):
         db.commit()
 
     # 額度用滿後下一次 → 429
+    over = client.post("/api/signals/regenerate")
+    assert over.status_code == 429
+    assert "今日" in over.json()["detail"]
+
+
+def test_regenerate_admin_gets_daily_limit_15(api):
+    client, db, _ = api
+    _seed_snapshot(db, date(2026, 4, 25))
+    email = "admin@example.com"
+    _register_login(client, email=email)
+    _promote_user_to_admin(db, email)
+
+    limit = signals_router.ADMIN_DAILY_REGENERATE_LIMIT
+
+    for _ in range(limit):
+        res = client.post("/api/signals/regenerate")
+        assert res.status_code == 202
+        job_id = res.json()["job_id"]
+        job = db.query(SignalGenerationJob).filter_by(job_id=job_id).first()
+        job.status = "done"
+        job.finished_at = datetime.utcnow()
+        db.commit()
+
     over = client.post("/api/signals/regenerate")
     assert over.status_code == 429
     assert "今日" in over.json()["detail"]

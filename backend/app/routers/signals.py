@@ -37,10 +37,13 @@ router = APIRouter(prefix="/signals", tags=["signals"])
 
 
 # Spec §11.4：限頻與 concurrency 上限
-# 2026-04-27：原 user=1 / global=5 提高到 user=10 / global=10，給 prod 測試與 admin
-# 多輪重產的彈性。LLM cost 仍受 concurrency guard 與 cron 觸發排程節制。
+# 2026-04-27：原 user=1 / global=5 提高到 user=10 / global=10。
+# 2026-04-27：admin 帳號另給 daily 15 次，並把 global 提到 15，
+# 方便訊號異常排查時不被全站上限提早擋住。
+# LLM cost 仍受 concurrency guard 與 cron 觸發排程節制。
 USER_DAILY_REGENERATE_LIMIT = 10
-GLOBAL_DAILY_REGENERATE_LIMIT = 10
+ADMIN_DAILY_REGENERATE_LIMIT = 15
+GLOBAL_DAILY_REGENERATE_LIMIT = 15
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +161,10 @@ def _global_count_today(db: Session, target_date: date) -> int:
     )
 
 
+def _user_daily_limit(user: User) -> int:
+    return ADMIN_DAILY_REGENERATE_LIMIT if user.is_admin else USER_DAILY_REGENERATE_LIMIT
+
+
 def _run_pipeline_safely(job_id: str, target_date: date) -> None:
     """BackgroundTasks 包裝：吞例外不讓 worker crash（pipeline 自身會把狀態寫成 failed）。"""
     try:
@@ -250,7 +257,8 @@ def regenerate_signals(
             detail="此日期已有產生中的 job，請等候完成",
         )
 
-    if _user_count_today(db, user.id, target_date) >= USER_DAILY_REGENERATE_LIMIT:
+    user_daily_limit = _user_daily_limit(user)
+    if _user_count_today(db, user.id, target_date) >= user_daily_limit:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="您今日已觸發過訊號重產，明日再試",
