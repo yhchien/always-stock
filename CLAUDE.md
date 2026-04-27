@@ -137,6 +137,11 @@
   - 只對最後 `WATCH` 名單補長理由（250-350 字）
 - M23 現在對 Responses API 顯式帶 `prompt_cache_key`（market / research / decision / watch-reason 分開），利用固定長 prompt 前綴降低 latency
 - M23 模型分層已接好：`OPENAI_SIGNALS_MARKET_MODEL` / `OPENAI_SIGNALS_RESEARCH_MODEL` / `OPENAI_SIGNALS_DECISION_MODEL` / `OPENAI_SIGNALS_REASON_MODEL`
+- 目前預設配置：
+  - `OPENAI_SIGNALS_MARKET_MODEL=gpt-4o-search-preview`
+  - `OPENAI_SIGNALS_RESEARCH_MODEL=gpt-5.4-mini`
+  - `OPENAI_SIGNALS_DECISION_MODEL=gpt-5.4`
+  - `OPENAI_SIGNALS_REASON_MODEL=gpt-5.4-mini`
 
 ## 資料狀態（2026-04-10）
 

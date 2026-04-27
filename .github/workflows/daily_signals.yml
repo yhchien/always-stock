@@ -53,6 +53,10 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ secrets.OPENAI_SIGNALS_MODEL || 'gpt-4o-search-preview' }}
+          OPENAI_SIGNALS_MARKET_MODEL: ${{ secrets.OPENAI_SIGNALS_MARKET_MODEL || 'gpt-4o-search-preview' }}
+          OPENAI_SIGNALS_RESEARCH_MODEL: ${{ secrets.OPENAI_SIGNALS_RESEARCH_MODEL || 'gpt-5.4-mini' }}
+          OPENAI_SIGNALS_DECISION_MODEL: ${{ secrets.OPENAI_SIGNALS_DECISION_MODEL || 'gpt-5.4' }}
+          OPENAI_SIGNALS_REASON_MODEL: ${{ secrets.OPENAI_SIGNALS_REASON_MODEL || 'gpt-5.4-mini' }}
         run: |
           set +e
           python3 run_daily_signals.py ${{ steps.resolve.outputs.target_date }}

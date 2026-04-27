@@ -42,14 +42,22 @@ DEFAULT_EXPLANATION_BATCH_SIZE = 4
 # 所有 entry function 預設參數都吃這個值，所以 caller 不必每次 explicit 傳 model。
 _FALLBACK_MODEL = "gpt-4o-search-preview"
 DEFAULT_MODEL = os.getenv("OPENAI_MODEL", _FALLBACK_MODEL).strip()
-DEFAULT_MARKET_MODEL = os.getenv("OPENAI_SIGNALS_MARKET_MODEL", DEFAULT_MODEL).strip()
-DEFAULT_RESEARCH_MODEL = os.getenv("OPENAI_SIGNALS_RESEARCH_MODEL", DEFAULT_MODEL).strip()
-_DEFAULT_FAST_MODEL = (
-    os.getenv("OPENAI_SIGNALS_FAST_MODEL", "").strip()
-    or ("gpt-5.4-mini" if DEFAULT_MODEL.startswith("gpt-5.4") else DEFAULT_MODEL)
-)
-DEFAULT_DECISION_MODEL = os.getenv("OPENAI_SIGNALS_DECISION_MODEL", _DEFAULT_FAST_MODEL).strip()
-DEFAULT_WATCH_REASON_MODEL = os.getenv("OPENAI_SIGNALS_REASON_MODEL", _DEFAULT_FAST_MODEL).strip()
+DEFAULT_MARKET_MODEL = os.getenv(
+    "OPENAI_SIGNALS_MARKET_MODEL",
+    "gpt-4o-search-preview",
+).strip()
+DEFAULT_RESEARCH_MODEL = os.getenv(
+    "OPENAI_SIGNALS_RESEARCH_MODEL",
+    "gpt-5.4-mini",
+).strip()
+DEFAULT_DECISION_MODEL = os.getenv(
+    "OPENAI_SIGNALS_DECISION_MODEL",
+    "gpt-5.4",
+).strip()
+DEFAULT_WATCH_REASON_MODEL = os.getenv(
+    "OPENAI_SIGNALS_REASON_MODEL",
+    "gpt-5.4-mini",
+).strip()
 
 # 系統 prompt 路徑（spec §10 LLM I/O contract 全文）
 _PROMPT_PATH = (
