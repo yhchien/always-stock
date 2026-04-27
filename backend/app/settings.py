@@ -13,11 +13,14 @@ load_dotenv(PROJECT_ROOT / ".env")
 
 
 def get_openai_api_key() -> str:
-    return os.getenv("OPENAI_API_KEY", "")
+    # strip trailing whitespace / newline — GitHub Secrets web UI 貼值時容易帶到 \n，
+    # httpx 對 header 含 CR/LF 會 silently drop 整個 Authorization → OpenAI 回
+    # "Missing bearer or basic authentication in header"，難以診斷。
+    return os.getenv("OPENAI_API_KEY", "").strip()
 
 
 def get_openai_model() -> str:
-    return os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    return os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip()
 
 
 def get_admin_email() -> str:

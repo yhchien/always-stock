@@ -39,7 +39,7 @@ DEFAULT_BATCH_SIZE = 8
 # 或預設 "gpt-4o-search-preview"）。`DEFAULT_MODEL` 在 module 載入時 snapshot env，
 # 所有 entry function 預設參數都吃這個值，所以 caller 不必每次 explicit 傳 model。
 _FALLBACK_MODEL = "gpt-4o-search-preview"
-DEFAULT_MODEL = os.getenv("OPENAI_MODEL", _FALLBACK_MODEL)
+DEFAULT_MODEL = os.getenv("OPENAI_MODEL", _FALLBACK_MODEL).strip()
 
 # 系統 prompt 路徑（spec §10 LLM I/O contract 全文）
 _PROMPT_PATH = (
