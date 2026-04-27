@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.models import SignalGenerationJob, SignalSnapshot
 from app.signals import candidate_pool, classification, filters, llm_caller
+from app.signals import market_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +134,8 @@ def run_signal_pipeline_sync(
                 pct=45,
                 label=f"LLM 上網查詢（共 {len(after_soft)} 檔）",
             )
-            market_context = llm_caller.assemble_market_context({})
+            db_market_snapshot = market_snapshot.build_db_market_snapshot(db, target_date)
+            market_context = llm_caller.assemble_market_context(db_market_snapshot)
             research_results: list = []
             batch_size = llm_caller.DEFAULT_BATCH_SIZE
             for i in range(0, len(after_soft), batch_size):

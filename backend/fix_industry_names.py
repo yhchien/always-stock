@@ -12,32 +12,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from app.database import SessionLocal
+from app.industry_names import CANONICAL_INDUSTRY_NAME_MAP
 from app.models import StockMaster
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("fix_industry_names")
 
-RENAME_MAP = {
-    # 明確重複（命名正規化）
-    "半導體業":         "半導體",
-    "汽車工業":         "汽車",
-    "造紙工業":         "造紙",
-    "紡織纖維":         "紡織",
-    "電腦及週邊設備業": "電腦及週邊設備",
-    "通信網路業":       "通信網路",
-    "創新版股票":       "創新板股票",   # 錯字修正
-    # 邊界合入
-    "金融保險":         "金融",
-    "塑膠工業":         "石化及塑橡膠",
-    "航運業":           "交通運輸及航運",
-    "其他電子業":       "其他",
-    "電子通路業":       "其他",
-    "電子零組件業":     "其他",
-    "電器電纜":         "電機機械",
-    "運動休閒":         "休閒娛樂",
-    "運動科技":         "休閒娛樂",
-    "生技醫療業":       "醫療器材",
-}
+RENAME_MAP = CANONICAL_INDUSTRY_NAME_MAP
 
 def main():
     db = SessionLocal()

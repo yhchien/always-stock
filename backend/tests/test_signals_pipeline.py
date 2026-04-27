@@ -17,6 +17,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.models import Base, SignalGenerationJob, SignalSnapshot
 from app.signals import candidate_pool, classification, filters, llm_caller
+from app.signals import market_snapshot
 from app.signals.pipeline import run_signal_pipeline_sync
 
 
@@ -223,6 +224,56 @@ def test_pipeline_marks_done_when_all_stages_noop(session_factory, monkeypatch):
         assert rec.current_stage == "persist"
         assert rec.finished_at is not None
         assert rec.error_message is None
+
+
+def test_pipeline_passes_db_market_snapshot_into_step_zero(session_factory, monkeypatch):
+    monkeypatch.setattr(candidate_pool, "ingest_data", lambda db, td: {"target": td})
+    monkeypatch.setattr(candidate_pool, "compute_rankings", lambda db, td, ing: {})
+    monkeypatch.setattr(
+        candidate_pool,
+        "build_candidate_pool",
+        lambda db, td, ing, rank: [{"stock_id": "_dummy"}],
+    )
+    monkeypatch.setattr(classification, "classify_stocks", lambda db, td, pool: [])
+    monkeypatch.setattr(filters, "apply_hard_exclusions", lambda db, td, c: [])
+    monkeypatch.setattr(filters, "apply_soft_filters", lambda db, td, c: [])
+    monkeypatch.setattr(
+        market_snapshot,
+        "build_db_market_snapshot",
+        lambda db, td: {"taiex": {"change_pct_1d": 1.23}, "otc": None},
+    )
+
+    captured = {}
+
+    def _assemble_market_context(snapshot):
+        captured["snapshot"] = snapshot
+        return {"market_state": "RANGE"}
+
+    monkeypatch.setattr(llm_caller, "assemble_market_context", _assemble_market_context)
+    monkeypatch.setattr(llm_caller, "run_research_batch", lambda batch, ctx: list(batch))
+    monkeypatch.setattr(llm_caller, "run_explanation_batch", lambda research, ctx: [])
+    monkeypatch.setattr(
+        llm_caller,
+        "assemble_final_output",
+        lambda ctx, expl, *, candidate_pool_size: {
+            "market_context": ctx,
+            "watchlist": [],
+            "removed": [],
+            "summary": {},
+            "candidate_pool_size": candidate_pool_size,
+            "final_watchlist_size": 0,
+            "llm_model": "test-model",
+            "llm_total_tokens": 0,
+        },
+    )
+
+    job_id = str(uuid.uuid4())
+    target_date = date(2026, 4, 25)
+    _seed_pending_job(session_factory, job_id, snapshot_date=target_date)
+
+    run_signal_pipeline_sync(job_id, target_date, session_factory=session_factory)
+
+    assert captured["snapshot"] == {"taiex": {"change_pct_1d": 1.23}, "otc": None}
 
 
 def test_pipeline_persists_snapshot_with_payload_fields(session_factory, monkeypatch):

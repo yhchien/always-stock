@@ -1,12 +1,13 @@
 from datetime import date
 
+from app.industry_names import normalize_industry_name
 from app.industry_flow_service import (
     get_latest_industry_trade_date,
     get_recent_industry_trade_dates,
     load_industry_flow_rows,
     load_industry_flow_rows_for_dates,
 )
-from app.models import InstStockFlow, StockMaster
+from app.models import IndustryDailyFlow, InstStockFlow, StockMaster
 
 
 def _seed_stock(db, stock_id: str, stock_name: str, industry_name: str) -> None:
@@ -79,3 +80,41 @@ def test_latest_and_recent_trade_dates_use_inst_flow_when_agg_is_missing(db):
 
     assert get_latest_industry_trade_date(db, d2) == d2
     assert get_recent_industry_trade_dates(db, d2, 2) == [d2, d1]
+
+
+def test_load_industry_flow_rows_merges_legacy_and_canonical_names(db):
+    trade_date = date(2024, 1, 3)
+    db.add(
+        IndustryDailyFlow(
+            trade_date=trade_date,
+            industry_name="塑膠工業",
+            total_buy_amount=100,
+            total_sell_amount=50,
+            total_net_amount=50,
+            foreign_net_amount=40,
+            trust_net_amount=5,
+            dealer_net_amount=5,
+        )
+    )
+    db.add(
+        IndustryDailyFlow(
+            trade_date=trade_date,
+            industry_name="石化及塑橡膠",
+            total_buy_amount=60,
+            total_sell_amount=30,
+            total_net_amount=30,
+            foreign_net_amount=20,
+            trust_net_amount=5,
+            dealer_net_amount=5,
+        )
+    )
+    db.commit()
+
+    rows = load_industry_flow_rows(db, trade_date)
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.industry_name == normalize_industry_name("塑膠工業")
+    assert row.total_net_amount == 80
+    assert row.total_buy_amount == 160
+    assert row.total_sell_amount == 80
