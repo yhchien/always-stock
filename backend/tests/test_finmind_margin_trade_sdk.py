@@ -13,8 +13,7 @@ class FakeFinMindSDKClient:
     def __init__(self, df=None):
         self._df = df
 
-    def fetch_margin_purchase_short_sale(self, stock_id_list, start_date, end_date, use_async):
-        assert use_async is True
+    def fetch_margin_short_sale_dataset(self, start_date, end_date):
         if self._df is not None:
             return self._df
         return pd.DataFrame(
@@ -133,7 +132,7 @@ def test_margin_trade_empty_returns_no_data(db):
 
 def test_margin_trade_quota_error_returns_insufficient_quota(db):
     class QuotaExhaustedClient:
-        def fetch_margin_purchase_short_sale(self, **kwargs):
+        def fetch_margin_short_sale_dataset(self, **kwargs):
             raise RuntimeError("Insufficient quota or critical state")
 
     result = fetch_and_upsert_margin_trade_finmind_sdk(

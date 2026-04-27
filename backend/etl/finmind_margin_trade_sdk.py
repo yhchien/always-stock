@@ -56,15 +56,57 @@ def fetch_and_upsert_margin_trade_finmind_sdk(
     )
 
     try:
-        df = client.fetch_margin_purchase_short_sale(
-            stock_id_list=stock_ids,
-            start_date=start_date.strftime("%Y-%m-%d"),
-            end_date=end_date.strftime("%Y-%m-%d"),
-            use_async=True,
-        )
+        # FinMind v4 dataset-level fetch 對此 dataset **只回 start_date 當日資料**，
+        # 忽略 end_date。單日（daily ETL）只需 1 call；多日（backfill）必須逐交易日呼叫。
+        # 每日 1 quota（20 天 backfill = 20 quota）。
+        if start_date == end_date:
+            df = client.fetch_margin_short_sale_dataset(
+                start_date=start_date.strftime("%Y-%m-%d"),
+                end_date=start_date.strftime("%Y-%m-%d"),
+            )
+        else:
+            trade_dates = [
+                row[0]
+                for row in db.execute(
+                    text(
+                        "SELECT DISTINCT trade_date FROM daily_price "
+                        "WHERE trade_date BETWEEN :s AND :e ORDER BY trade_date"
+                    ),
+                    {"s": start_date, "e": end_date},
+                ).all()
+            ]
+            if not trade_dates:
+                logger.warning("No trading days in daily_price between %s and %s", start_date, end_date)
+                result["status"] = "no_data"
+                return result
+
+            frames = []
+            for d in trade_dates:
+                d_str = d.strftime("%Y-%m-%d")
+                sub_df = client.fetch_margin_short_sale_dataset(start_date=d_str, end_date=d_str)
+                if sub_df is None or sub_df.empty:
+                    logger.info("No margin/short data on %s (skipped)", d_str)
+                    continue
+                frames.append(sub_df)
+
+            if not frames:
+                logger.warning("No margin/short data returned from FinMind across all trading days")
+                result["status"] = "no_data"
+                return result
+
+            df = pd.concat(frames, ignore_index=True)
 
         if df is None or df.empty:
             logger.warning("No margin/short data returned from FinMind")
+            result["status"] = "no_data"
+            return result
+
+        # dataset-level 回的是全市場（含 ETF / 興櫃），先過濾到 stocks_master
+        if stock_ids:
+            df = df[df["stock_id"].astype(str).str.strip().isin(set(stock_ids))].copy()
+
+        if df.empty:
+            logger.warning("No margin/short data after filtering to stocks_master")
             result["status"] = "no_data"
             return result
 

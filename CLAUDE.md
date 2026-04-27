@@ -358,8 +358,9 @@
 - `daily_valuation` → `TaiwanStockPER`
 - `monthly_revenue` → `TaiwanStockMonthRevenue`
 - `financial_statement` → `TaiwanStockFinancialStatements`
+- `margin_trade` → `TaiwanStockMarginPurchaseShortSale`（**v4 dataset-level fetch 只回 `start_date` 當日資料**，必須逐交易日呼叫；ETL 模組內部 loop daily_price.trade_date，每天 1 quota）
 
-實作位置：`backend/etl/finmind_sdk_client.py` 的 `_fetch_dataset_for_range()` + 5 個 `fetch_*_dataset()` wrapper；ETL 模組拿到全市場 DataFrame 後以 `df[df["stock_id"].isin(stock_ids)]` 過濾到 stocks_master 範圍。
+實作位置：`backend/etl/finmind_sdk_client.py` 的 `_fetch_dataset_for_range()` + 6 個 `fetch_*_dataset()` wrapper；ETL 模組拿到全市場 DataFrame 後以 `df[df["stock_id"].isin(stock_ids)]` 過濾到 stocks_master 範圍。
 
 **broker_trade_agg 例外**：`TaiwanStockTradingDailyReport` 必須帶 `data_id` 不接受 dataset-level 呼叫，仍是 per-stock。已從 `run_finmind_etl_sdk.py` 預設步驟拔掉；`broker_trade_backfill.yml`（每小時 cron）獨立處理。要強制跑時用 `--steps broker_trade_agg`。
 
@@ -733,7 +734,7 @@
 - 一檔一檔不行（cost 高），**5~10 檔 batch 一次 prompt**
 
 **前置工作**：
-- ✅ 新增 `margin_trade` 表 + `etl/finmind_margin_trade_sdk.py`（FinMind `TaiwanStockMarginPurchaseShortSale`；併入 `run_finmind_etl_sdk.py` 為 step 7，non-CRITICAL；2026-04-25 完成。Backfill 待 prod 配額充足時執行）
+- ✅ 新增 `margin_trade` 表 + `etl/finmind_margin_trade_sdk.py`（FinMind `TaiwanStockMarginPurchaseShortSale`；併入 `run_finmind_etl_sdk.py` 為 step 7，non-CRITICAL；2026-04-25 完成。2026-04-27 切換為 dataset-level fetch + 補齊 2026-03-26 ~ 2026-04-24 共 25,168 筆 backfill）
 - ✅ 新增 `signal_snapshots` 表（一日一筆 UPSERT；存完整 LLM JSON + cost tracking；2026-04-25 model 完工）
 - ✅ 新增 `signal_generation_jobs` 表（job_id / status / progress_pct / current_stage；給前端進度條 polling；2026-04-25 model 完工）
 - ✅ `main.py` lifespan 新增 `_ensure_m23_tables()`：自動 idempotent `CREATE TABLE IF NOT EXISTS`（仿 M18/M19 pattern）
