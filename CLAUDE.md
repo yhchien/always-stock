@@ -130,7 +130,8 @@
 - 若要修正歷史 streak，應優先跑 `rebuild_industry_flow.py`（升序重建），不要只改 API 端計算
 - M23 Step 0 / research 改為顯式走 OpenAI Responses API `tools=[{"type":"web_search"}]`；不能只靠 prompt 文字寫「請上網查」
 - `market_context.taiex_change_pct` / `otc_change_pct` 改為 backend authoritative：從 DB snapshot deterministic 帶入，LLM 不可改寫或補 0
-- M23 OpenAI client 必須顯式設 `timeout=90`、`max_retries=1`；否則單一 `responses.create()` 卡住時，job 會一直停在 `llm_research` 或 `llm_explain` 的同一個 batch 進度
+- M23 OpenAI client 必須顯式設 `timeout=120`、`max_retries=1`；否則單一 `responses.create()` 卡住時，job 會一直停在 `llm_research` 或 `llm_explain` 的同一個 batch 進度
+- M23 batch 建議拆開調：`research` 可維持 8，`explain` 應降到 4；因為 explain prompt 較長，較容易在單次 call 卡住
 
 ## 資料狀態（2026-04-10）
 

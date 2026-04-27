@@ -367,7 +367,7 @@ def test_run_explanation_batch_attaches_decision_and_reason(monkeypatch):
 
 def test_run_explanation_batch_chunks_by_default_batch_size(monkeypatch):
     """13 檔 + DEFAULT_BATCH_SIZE=4 應該分 4 個 chunk（4+4+4+1）。"""
-    monkeypatch.setattr(llm_caller, "DEFAULT_BATCH_SIZE", 4)
+    monkeypatch.setattr(llm_caller, "DEFAULT_EXPLANATION_BATCH_SIZE", 4)
 
     def _make_response(chunk_size: int, start_idx: int) -> str:
         items = [

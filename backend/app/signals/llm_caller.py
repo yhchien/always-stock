@@ -32,7 +32,8 @@ logger = logging.getLogger(__name__)
 
 
 # Spec §5 Step 7：「一次 prompt 處理 5~10 檔（batch）」，第一版取中間值
-DEFAULT_BATCH_SIZE = 8
+DEFAULT_RESEARCH_BATCH_SIZE = 8
+DEFAULT_EXPLANATION_BATCH_SIZE = 4
 
 # Spec §3.2：第一版模型 fallback；workflow / Render env 可由 OPENAI_MODEL 覆寫
 # （`.github/workflows/daily_signals.yml` step env 會把它設成 secrets.OPENAI_SIGNALS_MODEL
@@ -49,7 +50,7 @@ _PROMPT_PATH = (
 # OpenAI 回應的 max tokens；reason 規則要求 500-1000 字 × batch 8 → 預留充足
 _MAX_OUTPUT_TOKENS = 8000
 _WEB_SEARCH_TOOL = {"type": "web_search"}
-_OPENAI_TIMEOUT_SECONDS = 90.0
+_OPENAI_TIMEOUT_SECONDS = 120.0
 _OPENAI_MAX_RETRIES = 1
 
 
@@ -201,8 +202,8 @@ def run_explanation_batch(
         return []
 
     out: List[Dict[str, Any]] = []
-    for i in range(0, len(research_results), DEFAULT_BATCH_SIZE):
-        chunk = research_results[i : i + DEFAULT_BATCH_SIZE]
+    for i in range(0, len(research_results), DEFAULT_EXPLANATION_BATCH_SIZE):
+        chunk = research_results[i : i + DEFAULT_EXPLANATION_BATCH_SIZE]
         out.extend(_run_explanation_chunk(chunk, market_context, model=model))
     return out
 

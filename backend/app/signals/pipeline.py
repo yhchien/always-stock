@@ -137,13 +137,13 @@ def run_signal_pipeline_sync(
             db_market_snapshot = market_snapshot.build_db_market_snapshot(db, target_date)
             market_context = llm_caller.assemble_market_context(db_market_snapshot)
             research_results: list = []
-            batch_size = llm_caller.DEFAULT_BATCH_SIZE
-            for i in range(0, len(after_soft), batch_size):
-                batch = after_soft[i : i + batch_size]
+            research_batch_size = llm_caller.DEFAULT_RESEARCH_BATCH_SIZE
+            for i in range(0, len(after_soft), research_batch_size):
+                batch = after_soft[i : i + research_batch_size]
                 research_results.extend(
                     llm_caller.run_research_batch(batch, market_context)
                 )
-                done_count = min(i + batch_size, len(after_soft))
+                done_count = min(i + research_batch_size, len(after_soft))
                 pct = 45 + int(30 * done_count / total_for_llm)
                 _set_progress(
                     db,
@@ -156,6 +156,7 @@ def run_signal_pipeline_sync(
             # Step 6：LLM Explanation（外層 chunk loop，每 batch commit progress
             # 避免 75% 卡住數分鐘的 UX 問題；mirror llm_research 模式）
             total_for_explain = max(len(research_results), 1)
+            explain_batch_size = llm_caller.DEFAULT_EXPLANATION_BATCH_SIZE
             _set_progress(
                 db,
                 job,
@@ -164,12 +165,12 @@ def run_signal_pipeline_sync(
                 label=f"LLM 產出解釋（共 {len(research_results)} 檔）",
             )
             explanation: list = []
-            for i in range(0, len(research_results), batch_size):
-                chunk = research_results[i : i + batch_size]
+            for i in range(0, len(research_results), explain_batch_size):
+                chunk = research_results[i : i + explain_batch_size]
                 explanation.extend(
                     llm_caller.run_explanation_batch(chunk, market_context)
                 )
-                done_count = min(i + batch_size, len(research_results))
+                done_count = min(i + explain_batch_size, len(research_results))
                 pct = 75 + int(20 * done_count / total_for_explain)
                 _set_progress(
                     db,
