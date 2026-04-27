@@ -341,13 +341,27 @@
 
 ### 配額消耗 (Sponsor 6000 req/hour)
 
-| 場景 | 舊方法（REST per-stock/day） | 新方法（SDK batch） | 節省 |
-|------|---------------------------|------------------|-----|
-| 單日全市場 | 1,600 × 1 = 1,600 | ~1 | **-99.9%** |
-| 一年 backfill | 1,600 × 245 = 392,000 | ~6 batches × 6 = ~36 | **-99.9%** |
-| 一年完整 backfill（6 種資料）| ~2.35M | ~36 | **-99.9%** |
+> **2026-04-27 修正**：先前估算「SDK `stock_id_list=[...]` async batch = 1 req」是錯的。SDK 內部對每個 `data_id` 都打一次 v4 endpoint，仍是 per-stock 計費（1592 檔 ≈ 1500 req / 步）。daily_etl_update workflow 實測：
+> daily_price 1466 → inst_flow +1708 → daily_valuation +1591 → monthly_revenue 已 6012/6000 超標 → 後續 financial / broker 全跳過。
+>
+> 已改為走 **dataset-level batch**：純 v4 REST，**不帶 `data_id`**、僅帶 `dataset` + `start_date` / `end_date`，單次拉全市場該區間資料，**1 quota per dataset**。
 
-每年約消耗 36 req，遠低於 6000/hour 上限；全量 8 年 backfill 約需 `36 × 8 = 288 req`，一個小時內可完成。
+| 場景 | 舊（per-stock SDK list） | 新（dataset-level REST） | 節省 |
+|------|----------------------|----------------------|-----|
+| 單日 daily_price | ~1500 req | 1 req | **-99.9%** |
+| 單日完整 ETL（5 dataset） | ~7500 req（必爆） | ~5 req | **-99.9%** |
+| 一年 backfill | ~365K req | ~5 × 12 = 60 req | **-99.98%** |
+
+**dataset 對應**：
+- `daily_price` → `TaiwanStockPrice`
+- `inst_flow` → `TaiwanStockInstitutionalInvestorsBuySell`（**舊名 `TaiwanStockInstitutionalInvestors` 已被 v4 enum 拒收**）
+- `daily_valuation` → `TaiwanStockPER`
+- `monthly_revenue` → `TaiwanStockMonthRevenue`
+- `financial_statement` → `TaiwanStockFinancialStatements`
+
+實作位置：`backend/etl/finmind_sdk_client.py` 的 `_fetch_dataset_for_range()` + 5 個 `fetch_*_dataset()` wrapper；ETL 模組拿到全市場 DataFrame 後以 `df[df["stock_id"].isin(stock_ids)]` 過濾到 stocks_master 範圍。
+
+**broker_trade_agg 例外**：`TaiwanStockTradingDailyReport` 必須帶 `data_id` 不接受 dataset-level 呼叫，仍是 per-stock。已從 `run_finmind_etl_sdk.py` 預設步驟拔掉；`broker_trade_backfill.yml`（每小時 cron）獨立處理。要強制跑時用 `--steps broker_trade_agg`。
 
 ### 待辦事項
 

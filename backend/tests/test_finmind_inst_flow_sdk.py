@@ -7,11 +7,9 @@ from etl.finmind_inst_flow_sdk import fetch_and_upsert_inst_flow_finmind_sdk
 
 
 class FakeFinMindSDKClient:
-    def fetch_institutional_investors(self, stock_id_list, start_date, end_date, use_async):
-        assert stock_id_list == ["2330"]
+    def fetch_inst_investors_buysell_dataset(self, start_date, end_date):
         assert start_date == "2026-04-21"
         assert end_date == "2026-04-21"
-        assert use_async is True
         return pd.DataFrame(
             [
                 {

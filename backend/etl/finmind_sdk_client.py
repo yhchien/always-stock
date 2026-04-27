@@ -125,6 +125,112 @@ class FinMindSDKClient:
 
         return True
 
+    # ------------------------------------------------------------------
+    # Dataset-level fetch (no data_id) — 1 quota per call, regardless of
+    # how many stocks the dataset contains. 用於每日 ETL：拿全市場單日資料
+    # 後在 ETL 模組 layer 過濾 stocks_master 範圍。
+    # ------------------------------------------------------------------
+    def _fetch_dataset_for_range(
+        self,
+        dataset: str,
+        start_date: str,
+        end_date: str,
+    ) -> Any:
+        """
+        對 FinMind v4 REST 打單一 dataset（不帶 data_id），回傳 pandas DataFrame。
+        每個 dataset / 區間只計 1 配額。
+        """
+        import requests
+        import pandas as pd
+
+        if not self.can_proceed():
+            raise RuntimeError("Insufficient quota or critical state")
+
+        logger.info(
+            f"Fetching dataset {dataset} from {start_date} to {end_date} "
+            f"(no data_id, dataset-level batch)"
+        )
+
+        try:
+            resp = requests.get(
+                "https://api.finmindtrade.com/api/v4/data",
+                params={
+                    "dataset": dataset,
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "token": self.token,
+                },
+                timeout=120,
+            )
+            if resp.status_code == 402:
+                logger.error(f"402 quota exceeded for dataset {dataset}")
+                self._refresh_quota()
+                raise RuntimeError("Insufficient quota or critical state")
+            resp.raise_for_status()
+            body = resp.json()
+            data = body.get("data") or []
+            df = pd.DataFrame(data) if data else pd.DataFrame()
+
+            self._refresh_quota()
+            logger.info(f"✓ Fetched {len(df)} {dataset} records (dataset-level)")
+            return df
+
+        except RuntimeError:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to fetch dataset {dataset}: {e}")
+            raise
+
+    def fetch_taiwan_stock_price_dataset(
+        self,
+        start_date: str,
+        end_date: str,
+    ) -> Any:
+        """單日 / 區間全市場每日股價（1 quota）"""
+        return self._fetch_dataset_for_range("TaiwanStockPrice", start_date, end_date)
+
+    def fetch_inst_investors_buysell_dataset(
+        self,
+        start_date: str,
+        end_date: str,
+    ) -> Any:
+        """單日 / 區間全市場個股法人買賣超（1 quota）
+
+        注意：FinMind v4 已淘汰 TaiwanStockInstitutionalInvestors，
+        改用 TaiwanStockInstitutionalInvestorsBuySell。
+        """
+        return self._fetch_dataset_for_range(
+            "TaiwanStockInstitutionalInvestorsBuySell", start_date, end_date
+        )
+
+    def fetch_per_dataset(
+        self,
+        start_date: str,
+        end_date: str,
+    ) -> Any:
+        """單日 / 區間全市場 PER/PBR/殖利率（1 quota）"""
+        return self._fetch_dataset_for_range("TaiwanStockPER", start_date, end_date)
+
+    def fetch_month_revenue_dataset(
+        self,
+        start_date: str,
+        end_date: str,
+    ) -> Any:
+        """區間全市場月營收（1 quota）"""
+        return self._fetch_dataset_for_range(
+            "TaiwanStockMonthRevenue", start_date, end_date
+        )
+
+    def fetch_financial_statements_dataset(
+        self,
+        start_date: str,
+        end_date: str,
+    ) -> Any:
+        """區間全市場財報（1 quota）"""
+        return self._fetch_dataset_for_range(
+            "TaiwanStockFinancialStatements", start_date, end_date
+        )
+
     def fetch_taiwan_stock_price(
         self,
         stock_id_list: List[str],
