@@ -89,7 +89,7 @@
 - M11: 回測程式（DSL + AI mapping + equity curve + 策略建議；2026-04 擴充 4 欄位改版 + 9 K棒型態 + 6 技術型態 + 報酬率%回撤圖）
 - M16: AI 盤前摘要（Daily Brief，2026-04-20 起改由 Telegram Bot `/brief` 提供）
 - M17: 交易質量 AI 分析（Trade Quality Analysis，5 階評級 + 四象限 + 目標價）
-- M18: 使用者註冊系統（Email/password + server-side session + RequireAuth；M17 公開但分層 rate limit；admin@always-stock.dev / forwork）
+- M18: 使用者註冊系統（Email/password + server-side session + RequireAuth；M17 公開但分層 rate limit；admin email / password 由 Render env var `ADMIN_EMAIL` / `ADMIN_PASSWORD` 設定）
 - M19: 關注買進清單（單一清單上限 20 檔，加入 popup 填買進日/均價；L0 HotMoneyList、L1 StockList、L2 個股頁右下「加入清單」；Navbar「我的清單」；/watchlist 卡片含未實現損益 + 交易分析深連結 M17；資料綁 user_id）
 - M22: 熱錢湧入個股排行（L0 底部 Top 20 / L1 頂部 Top 10，近 N 日三大法人累計買超；spec 在 [docs/plans/hot_money_list_spec.md](docs/plans/hot_money_list_spec.md)）
 - M21: Trade Quality Context 資料管線（6 個 section 預聚合 JSON：industry/chip/peer_rank/fundamental/price_structure/news_stub；deterministic + no hindsight；入口 `build_trade_quality_context(db, stock_id, buy_date)`；`GET /api/analysis/context` 需登入；實作 [docs/plans/m21_context_pipeline_implementation.md](docs/plans/m21_context_pipeline_implementation.md)）
@@ -633,7 +633,7 @@
 
 ### M18 使用者註冊系統
 - **認證方式**：第一階段僅支援 Gmail OAuth（未來可能加其他 provider）
-- **Admin local auth**：帳號 `admin` / 密碼 `forwork`（寫死在後端 env 或 seeder，給開發者繞過 Gmail 用）
+- **Admin local auth**：帳號 / 密碼由 Render env var `ADMIN_EMAIL` / `ADMIN_PASSWORD` 設定（給開發者繞過 Gmail 用）
 - **Gating 範圍**：
   - 未登入：全站頁面可 render，但互動 **disable**（灰掉蓋提示「請登入」），**唯一例外**是首頁 M17 AI 交易分析（不需登入即可使用）
   - Telegram Bot 也要 gating：chat_id 需先綁定已註冊的 Gmail 帳號才能使用任何指令（Bot 第一次互動時引導至登入頁）
@@ -836,7 +836,7 @@ LLM 不做：替使用者寫規則、告訴使用者「該買哪檔」、取代�
 - **Auth**：Email/password 單純註冊登入（**無** Gmail OAuth、無 email 驗證、無密碼重設）。未來要加 OAuth 只需在 `users` 加 `provider` 欄位 + 新 callback
 - **Session**：Server-side session（UUID token in httpOnly cookie，30 天過期，可 revoke）；非 JWT、非 localStorage
 - **Telegram 綁定**：整個 drop，不做 `user_telegram_bindings`
-- **Admin 預設帳號**：`admin@always-stock.dev` / `forwork`（可用 `ADMIN_EMAIL` / `ADMIN_PASSWORD` env 覆寫）
+- **Admin 帳號**：由 `ADMIN_EMAIL` / `ADMIN_PASSWORD` env 設定（必填，未設時 `get_admin_password()` 會 raise；`_seed_admin_user` 啟動時失敗會被 except 吃掉，server 仍會起來但 admin 帳號未 seed）
 - **⚠️ 為何不是 `admin@local`**：Pydantic `EmailStr` 會拒收無 TLD 或 RFC 2606 保留 TLD（`.local` / `.test` / `.localhost` / `.internal` / `.invalid` / `.example`）的 email，`/api/auth/login` 會 422 而進不了 handler。預設必須是**真實 TLD**的 email。`tests/test_auth_router.py::test_admin_seeder_default_email_passes_pydantic_emailstr` 保護這個 invariant
 
 ### DB Schema
@@ -909,7 +909,7 @@ LLM 不做：替使用者寫規則、告訴使用者「該買哪檔」、取代�
 - `IndustryDashboard` / `StockList` 對應的 `/api/industries*` 路由現在應比照 `/market`：
   若使用者選到非交易日，後端自動 resolve 到 `<= requested_date` 的最近交易日，而不是直接 404
 - 首頁點產業時，必須帶 **目前 component state 的 date**，不能帶外層舊的 query param date，否則會出現 UI 選了 `3/4`、實際跳頁卻還是舊日期的 race condition
-- `/login` 前端不能對 login mode 一律套 `minLength=8` / `password.length < 8` 驗證，否則預設 admin 帳號 `admin@always-stock.dev / forwork`（7 碼）永遠送不到後端
+- `/login` 前端不能對 login mode 一律套 `minLength=8` / `password.length < 8` 驗證，否則少於 8 碼的既有帳號（含 admin 若 `ADMIN_PASSWORD` 設成短密碼）永遠送不到後端
 - 註冊仍維持最少 8 碼；只有登入要允許短於 8 碼的既有帳號
 
 ## Render production M18 表沒建起來修復（2026-04-22）

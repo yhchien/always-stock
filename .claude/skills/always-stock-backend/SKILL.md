@@ -149,7 +149,7 @@ Render 的 Docker image（Python runtime）目前跑 **Python 3.9**。撰寫 `ba
 ## 12. Phase 3 規劃（M18/M19/M20）
 
 ### M18 使用者註冊系統（⬜ 待開始）
-- 認證：Gmail OAuth（第一階段唯一）+ Admin local auth（`admin` / `forwork`）
+- 認證：Gmail OAuth（第一階段唯一）+ Admin local auth（帳號 / 密碼由 `ADMIN_EMAIL` / `ADMIN_PASSWORD` env 設定）
 - Gating：未登入僅開放首頁 M17（`POST /api/analysis/trade-quality`），其他 endpoint 全部要求登入
 - Telegram Bot：chat_id 需綁定已註冊帳號才能用任何指令
 - 新增表：`users`、`user_telegram_bindings`（+ session/JWT）

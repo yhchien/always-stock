@@ -111,7 +111,7 @@ GitHub repo (yhchien/always-stock)
 3. 確認 OK 後，**在 Render Postgres 上執行 schema 變更**：
    ```bash
    cd backend
-   DATABASE_URL="postgresql://yoyo:...@...render.com/always_stock" python3 init_db.py
+   DATABASE_URL="postgresql://<USER>:<PASSWORD>@<HOST>/<DBNAME>" python3 init_db.py
    ```
    注意：`init_db.py` 只會新增表/欄位，不會刪除或修改既有的欄位。
    如果需要修改既有欄位（改名、改型別、刪欄位），需要手動寫 migration script。
