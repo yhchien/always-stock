@@ -18,9 +18,9 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.hot_money_service import compute_hot_money, get_recent_trade_dates
+from app.industry_flow_service import load_industry_flow_rows_for_dates
 from app.models import (
     DailyPrice,
-    IndustryDailyFlow,
     InstStockFlow,
     MarginTrade,
     StockMaster,
@@ -107,17 +107,16 @@ def compute_rankings(
         return {"top_industries_3d": [], "top_stocks_3d": []}
 
     # 產業排行：直接從 industry_daily_flow 聚合（已含三大法人總額）
-    industry_rows = (
-        db.query(
-            IndustryDailyFlow.industry_name,
-            func.sum(IndustryDailyFlow.total_net_amount).label("net_3d"),
+    industry_totals: Dict[str, float] = {}
+    for row in load_industry_flow_rows_for_dates(db, trade_dates_3d):
+        industry_totals[row.industry_name] = (
+            industry_totals.get(row.industry_name, 0.0) + float(row.total_net_amount or 0.0)
         )
-        .filter(IndustryDailyFlow.trade_date.in_(trade_dates_3d))
-        .group_by(IndustryDailyFlow.industry_name)
-        .order_by(func.sum(IndustryDailyFlow.total_net_amount).desc())
-        .limit(TOP_INDUSTRIES_LIMIT)
-        .all()
-    )
+    industry_rows = sorted(
+        industry_totals.items(),
+        key=lambda item: item[1],
+        reverse=True,
+    )[:TOP_INDUSTRIES_LIMIT]
 
     industry_counts: Dict[str, int] = {}
     for master in masters.values():

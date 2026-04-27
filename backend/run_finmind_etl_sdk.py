@@ -200,11 +200,16 @@ class FinMindETLOrchestratorSDK:
         else:
             close_db = False
 
-        # 決定要執行的步驟（None 代表全部）
-        ALL_STEPS = ["stocks_master", "daily_price", "inst_flow", "industry_flow",
-                     "daily_valuation", "monthly_revenue", "financial_statement",
-                     "broker_trade_agg", "margin_trade"]
-        active_steps = set(steps) if steps else set(ALL_STEPS)
+        # 決定要執行的步驟。
+        # 預設不跑 broker_trade_agg：它是 per-stock query（~1500 quota / 日，
+        # 必爆 6000/hr），由 broker_trade_backfill.yml 每小時 cron 獨立排程。
+        # margin_trade 仍在預設流程內（M23 daily signals 依賴），但仍是
+        # per-stock 計費，未來有配額壓力時可考慮比照 broker_trade_agg 拔出。
+        DEFAULT_STEPS = ["stocks_master", "daily_price", "inst_flow", "industry_flow",
+                         "daily_valuation", "monthly_revenue", "financial_statement",
+                         "margin_trade"]
+        ALL_STEPS = DEFAULT_STEPS + ["broker_trade_agg"]
+        active_steps = set(steps) if steps else set(DEFAULT_STEPS)
 
         start_time = datetime.utcnow()
         logger.info("=" * 80)

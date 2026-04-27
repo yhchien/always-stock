@@ -89,7 +89,7 @@
 - M11: 回測程式（DSL + AI mapping + equity curve + 策略建議；2026-04 擴充 4 欄位改版 + 9 K棒型態 + 6 技術型態 + 報酬率%回撤圖）
 - M16: AI 盤前摘要（Daily Brief，2026-04-20 起改由 Telegram Bot `/brief` 提供）
 - M17: 交易質量 AI 分析（Trade Quality Analysis，5 階評級 + 四象限 + 目標價）
-- M18: 使用者註冊系統（Email/password + server-side session + RequireAuth；M17 公開但分層 rate limit；admin@always-stock.dev / forwork）
+- M18: 使用者註冊系統（Email/password + server-side session + RequireAuth；M17 公開但分層 rate limit；admin email / password 由 Render env var `ADMIN_EMAIL` / `ADMIN_PASSWORD` 設定）
 - M19: 關注買進清單（單一清單上限 20 檔，加入 popup 填買進日/均價；L0 HotMoneyList、L1 StockList、L2 個股頁右下「加入清單」；Navbar「我的清單」；/watchlist 卡片含未實現損益 + 交易分析深連結 M17；資料綁 user_id）
 - M22: 熱錢湧入個股排行（L0 底部 Top 20 / L1 頂部 Top 10，近 N 日三大法人累計買超；spec 在 [docs/plans/hot_money_list_spec.md](docs/plans/hot_money_list_spec.md)）
 - M21: Trade Quality Context 資料管線（6 個 section 預聚合 JSON：industry/chip/peer_rank/fundamental/price_structure/news_stub；deterministic + no hindsight；入口 `build_trade_quality_context(db, stock_id, buy_date)`；`GET /api/analysis/context` 需登入；實作 [docs/plans/m21_context_pipeline_implementation.md](docs/plans/m21_context_pipeline_implementation.md)）
@@ -102,7 +102,7 @@
 - M14 輿情分析
 - M15 Telegram 電子報
 - M20 交易分析擴充（預期 45% 報酬率加碼建議 + 風報比 1:1.75）
-- M23 每日異常訊號清單（**03:00 台北排程**；deterministic filter 建候選池 + LLM 上網查公司業務／集團／龍頭；輸出 LEADER / FOLLOWER / LAGGARD 三類；L0 tab bar + pulse 通知 + 多工背景重新產生 + 進度條；不預測報酬、不出買賣建議；spec [docs/plans/m23_daily_signals_spec.md](docs/plans/m23_daily_signals_spec.md)）
+- M23 每日異常訊號清單（**改為使用者手動觸發**；前端 `DailySignalsPanel`「重新產生」按鈕 → POST `/api/signals/regenerate` → FastAPI BackgroundTasks 跑 pipeline；deterministic filter 建候選池 + LLM 上網查公司業務／集團／龍頭；輸出 LEADER / FOLLOWER / LAGGARD 三類；不預測報酬、不出買賣建議；GitHub Actions cron 已停用，`workflow_dispatch` 保留作管理備援；spec [docs/plans/m23_daily_signals_spec.md](docs/plans/m23_daily_signals_spec.md)）
 - M24 自訂進出場策略回測（M11 擴充；使用者自設分層進場 / 追價 / 攤平 / 停損停利規則，引擎回測 edge；LLM 為現場判斷層，trigger 觸發時依當下籌碼/產業/技術給「適合執行 yes/no」提示，不替使用者寫規則）
 
 > M18 → M19 → M20 依序執行。M19 已完工（2026-04-23），M20 擴充建立在 M19 卡片帶入 context 之上。
@@ -341,13 +341,28 @@
 
 ### 配額消耗 (Sponsor 6000 req/hour)
 
-| 場景 | 舊方法（REST per-stock/day） | 新方法（SDK batch） | 節省 |
-|------|---------------------------|------------------|-----|
-| 單日全市場 | 1,600 × 1 = 1,600 | ~1 | **-99.9%** |
-| 一年 backfill | 1,600 × 245 = 392,000 | ~6 batches × 6 = ~36 | **-99.9%** |
-| 一年完整 backfill（6 種資料）| ~2.35M | ~36 | **-99.9%** |
+> **2026-04-27 修正**：先前估算「SDK `stock_id_list=[...]` async batch = 1 req」是錯的。SDK 內部對每個 `data_id` 都打一次 v4 endpoint，仍是 per-stock 計費（1592 檔 ≈ 1500 req / 步）。daily_etl_update workflow 實測：
+> daily_price 1466 → inst_flow +1708 → daily_valuation +1591 → monthly_revenue 已 6012/6000 超標 → 後續 financial / broker 全跳過。
+>
+> 已改為走 **dataset-level batch**：純 v4 REST，**不帶 `data_id`**、僅帶 `dataset` + `start_date` / `end_date`，單次拉全市場該區間資料，**1 quota per dataset**。
 
-每年約消耗 36 req，遠低於 6000/hour 上限；全量 8 年 backfill 約需 `36 × 8 = 288 req`，一個小時內可完成。
+| 場景 | 舊（per-stock SDK list） | 新（dataset-level REST） | 節省 |
+|------|----------------------|----------------------|-----|
+| 單日 daily_price | ~1500 req | 1 req | **-99.9%** |
+| 單日完整 ETL（5 dataset） | ~7500 req（必爆） | ~5 req | **-99.9%** |
+| 一年 backfill | ~365K req | ~5 × 12 = 60 req | **-99.98%** |
+
+**dataset 對應**：
+- `daily_price` → `TaiwanStockPrice`
+- `inst_flow` → `TaiwanStockInstitutionalInvestorsBuySell`（**舊名 `TaiwanStockInstitutionalInvestors` 已被 v4 enum 拒收**）
+- `daily_valuation` → `TaiwanStockPER`
+- `monthly_revenue` → `TaiwanStockMonthRevenue`
+- `financial_statement` → `TaiwanStockFinancialStatements`
+- `margin_trade` → `TaiwanStockMarginPurchaseShortSale`（**v4 dataset-level fetch 只回 `start_date` 當日資料**，必須逐交易日呼叫；ETL 模組內部 loop daily_price.trade_date，每天 1 quota）
+
+實作位置：`backend/etl/finmind_sdk_client.py` 的 `_fetch_dataset_for_range()` + 6 個 `fetch_*_dataset()` wrapper；ETL 模組拿到全市場 DataFrame 後以 `df[df["stock_id"].isin(stock_ids)]` 過濾到 stocks_master 範圍。
+
+**broker_trade_agg 例外**：`TaiwanStockTradingDailyReport` 必須帶 `data_id` 不接受 dataset-level 呼叫，仍是 per-stock。已從 `run_finmind_etl_sdk.py` 預設步驟拔掉；`broker_trade_backfill.yml`（每小時 cron）獨立處理。要強制跑時用 `--steps broker_trade_agg`。
 
 ### 待辦事項
 
@@ -618,7 +633,7 @@
 
 ### M18 使用者註冊系統
 - **認證方式**：第一階段僅支援 Gmail OAuth（未來可能加其他 provider）
-- **Admin local auth**：帳號 `admin` / 密碼 `forwork`（寫死在後端 env 或 seeder，給開發者繞過 Gmail 用）
+- **Admin local auth**：帳號 / 密碼由 Render env var `ADMIN_EMAIL` / `ADMIN_PASSWORD` 設定（給開發者繞過 Gmail 用）
 - **Gating 範圍**：
   - 未登入：全站頁面可 render，但互動 **disable**（灰掉蓋提示「請登入」），**唯一例外**是首頁 M17 AI 交易分析（不需登入即可使用）
   - Telegram Bot 也要 gating：chat_id 需先綁定已註冊的 Gmail 帳號才能使用任何指令（Bot 第一次互動時引導至登入頁）
@@ -719,7 +734,7 @@
 - 一檔一檔不行（cost 高），**5~10 檔 batch 一次 prompt**
 
 **前置工作**：
-- ✅ 新增 `margin_trade` 表 + `etl/finmind_margin_trade_sdk.py`（FinMind `TaiwanStockMarginPurchaseShortSale`；併入 `run_finmind_etl_sdk.py` 為 step 7，non-CRITICAL；2026-04-25 完成。Backfill 待 prod 配額充足時執行）
+- ✅ 新增 `margin_trade` 表 + `etl/finmind_margin_trade_sdk.py`（FinMind `TaiwanStockMarginPurchaseShortSale`；併入 `run_finmind_etl_sdk.py` 為 step 7，non-CRITICAL；2026-04-25 完成。2026-04-27 切換為 dataset-level fetch + 補齊 2026-03-26 ~ 2026-04-24 共 25,168 筆 backfill）
 - ✅ 新增 `signal_snapshots` 表（一日一筆 UPSERT；存完整 LLM JSON + cost tracking；2026-04-25 model 完工）
 - ✅ 新增 `signal_generation_jobs` 表（job_id / status / progress_pct / current_stage；給前端進度條 polling；2026-04-25 model 完工）
 - ✅ `main.py` lifespan 新增 `_ensure_m23_tables()`：自動 idempotent `CREATE TABLE IF NOT EXISTS`（仿 M18/M19 pattern）
@@ -728,12 +743,12 @@
 - `GET /api/signals/latest`（公開）
 - `GET /api/signals/snapshot/{date}`（公開）
 - `GET /api/signals/jobs/latest`（公開，前端 polling 用）
-- `POST /api/signals/regenerate`（登入即可，但同日全站 5 次上限 + 每 user 1 次上限 + 同日 running job 拒絕並發）
+- `POST /api/signals/regenerate`（登入即可，但同日全站 10 次上限 + 每 user 10 次上限 + 同日 running job 拒絕並發；2026-04-27 從 5 / 1 放寬到 10 / 10）
 
-**排程：台北 03:00**（從原規劃的 07:00 改）
-- `.github/workflows/daily_signals.yml`：cron `0 19 * * 1-5`（UTC = 台北次日 03:00 週二~週六）
-- 4h offset 抓「昨日」當 target_date（沿用 daily_etl_update.yml pattern 防 cron 延遲跨日）
-- 03:00 跑時昨日 ETL 已在 23:00 完成 → 給足 4 小時 buffer
+**觸發方式：使用者手動**（2026-04-27 改版，原排程已停用）
+- 觸發路徑：前端 `DailySignalsPanel`「重新產生」按鈕 → POST `/api/signals/regenerate` → FastAPI `BackgroundTasks` 在 Render web service 直接執行 pipeline
+- `.github/workflows/daily_signals.yml`：cron 已移除；保留 `workflow_dispatch` 作管理備援（例如 prod backfill 或 Render background task 暫不可用時用 `gh workflow run` 補跑）
+- **Render web service 必須設 `OPENAI_API_KEY` env**（與 GitHub secret 是兩套，frontend 觸發走 Render 不走 Actions runner）
 
 **前端 L0 tab bar UX**（`<DailySignalsPanel />`）：
 - 版位：L0 首頁 TradeQualityAnalysis 之後、HotMoneyList 之前
@@ -821,7 +836,7 @@ LLM 不做：替使用者寫規則、告訴使用者「該買哪檔」、取代�
 - **Auth**：Email/password 單純註冊登入（**無** Gmail OAuth、無 email 驗證、無密碼重設）。未來要加 OAuth 只需在 `users` 加 `provider` 欄位 + 新 callback
 - **Session**：Server-side session（UUID token in httpOnly cookie，30 天過期，可 revoke）；非 JWT、非 localStorage
 - **Telegram 綁定**：整個 drop，不做 `user_telegram_bindings`
-- **Admin 預設帳號**：`admin@always-stock.dev` / `forwork`（可用 `ADMIN_EMAIL` / `ADMIN_PASSWORD` env 覆寫）
+- **Admin 帳號**：由 `ADMIN_EMAIL` / `ADMIN_PASSWORD` env 設定（必填，未設時 `get_admin_password()` 會 raise；`_seed_admin_user` 啟動時失敗會被 except 吃掉，server 仍會起來但 admin 帳號未 seed）
 - **⚠️ 為何不是 `admin@local`**：Pydantic `EmailStr` 會拒收無 TLD 或 RFC 2606 保留 TLD（`.local` / `.test` / `.localhost` / `.internal` / `.invalid` / `.example`）的 email，`/api/auth/login` 會 422 而進不了 handler。預設必須是**真實 TLD**的 email。`tests/test_auth_router.py::test_admin_seeder_default_email_passes_pydantic_emailstr` 保護這個 invariant
 
 ### DB Schema
@@ -894,7 +909,7 @@ LLM 不做：替使用者寫規則、告訴使用者「該買哪檔」、取代�
 - `IndustryDashboard` / `StockList` 對應的 `/api/industries*` 路由現在應比照 `/market`：
   若使用者選到非交易日，後端自動 resolve 到 `<= requested_date` 的最近交易日，而不是直接 404
 - 首頁點產業時，必須帶 **目前 component state 的 date**，不能帶外層舊的 query param date，否則會出現 UI 選了 `3/4`、實際跳頁卻還是舊日期的 race condition
-- `/login` 前端不能對 login mode 一律套 `minLength=8` / `password.length < 8` 驗證，否則預設 admin 帳號 `admin@always-stock.dev / forwork`（7 碼）永遠送不到後端
+- `/login` 前端不能對 login mode 一律套 `minLength=8` / `password.length < 8` 驗證，否則少於 8 碼的既有帳號（含 admin 若 `ADMIN_PASSWORD` 設成短密碼）永遠送不到後端
 - 註冊仍維持最少 8 碼；只有登入要允許短於 8 碼的既有帳號
 
 ## Render production M18 表沒建起來修復（2026-04-22）
@@ -1297,7 +1312,7 @@ M19 merge 之後使用者回報四個問題，一次修掉：
   - `GET /api/signals/latest`（公開；DB 無 snapshot → 404 `No snapshot yet`）
   - `GET /api/signals/snapshot/{snapshot_date}`（公開；無 → 404）
   - `GET /api/signals/jobs/latest`（公開；無 job → **回 null（200）**，不 404，前端少寫一個分支）
-  - `POST /api/signals/regenerate`（`Depends(require_user)` → 401／同日 running job → 409／user 同日 ≥1 → 429／全站同日 ≥5 → 429／成功 → 202 + `{job_id, snapshot_date}`，`BackgroundTasks` 排程 `_run_pipeline_safely`）
+  - `POST /api/signals/regenerate`（`Depends(require_user)` → 401／同日 running job → 409／user 同日 ≥10 → 429／全站同日 ≥10 → 429／成功 → 202 + `{job_id, snapshot_date}`，`BackgroundTasks` 排程 `_run_pipeline_safely`；2026-04-27 從 1/5 放寬到 10/10）
 - [backend/run_daily_signals.py](backend/run_daily_signals.py) — cron 入口（spec §11.6）；4h offset 推算 target_date；建 `SignalGenerationJob(triggered_by="cron")` 後 inline 同步跑 pipeline
 - [backend/app/main.py](backend/app/main.py) — `from app.routers import (..., signals, ...)` + `app.include_router(signals.router, prefix="/api")`
 
@@ -1307,9 +1322,9 @@ M19 merge 之後使用者回報四個問題，一次修掉：
 - `RegenerateAcceptedResponse`：`{ job_id, snapshot_date }`
 
 ### 限頻 / concurrency 實作
-- 全部走 DB COUNT/SELECT，**沒接 slowapi**（spec §11.4 明寫 in-memory by user_id + snapshot_date，但 DB 查就夠用、且 cron job 也算進全站 5/day 額度，不需要 slowapi 的進階 key 機制）
-- 常數 `USER_DAILY_REGENERATE_LIMIT=1` / `GLOBAL_DAILY_REGENERATE_LIMIT=5` 集中在 `signals.py` 頂部
-- 同日 user 額度與 concurrency guard **平行檢查不同條件**：concurrency 看 `status in ("pending","running")`，user 限頻看「不論成敗都計 1」（避免 user 連按 5 次都失敗也不 reset）
+- 全部走 DB COUNT/SELECT，**沒接 slowapi**（spec §11.4 明寫 in-memory by user_id + snapshot_date，但 DB 查就夠用、且 cron job 也算進全站 10/day 額度，不需要 slowapi 的進階 key 機制）
+- 常數 `USER_DAILY_REGENERATE_LIMIT=10` / `GLOBAL_DAILY_REGENERATE_LIMIT=10` 集中在 `signals.py` 頂部（2026-04-27 從 1/5 放寬到 10/10，給 prod 測試 / admin 重產彈性）
+- 同日 user 額度與 concurrency guard **平行檢查不同條件**：concurrency 看 `status in ("pending","running")`，user 限頻看「不論成敗都計 1」（避免 user 連按 N 次都失敗也不 reset）
 
 ### Cron entrypoint exit code（spec §11.6）
 - `0=ok / 1=no_data / 2=llm_error / 3=db_error`
@@ -1328,7 +1343,7 @@ M19 merge 之後使用者回報四個問題，一次修掉：
 
 ### Gotcha
 - **`_run_pipeline_safely` 必須 monkeypatch**：router test 用 in-memory SQLite + dependency_overrides，但 `run_signal_pipeline_sync` 內呼叫 `SessionLocal()` 會走預設連線而非測試 engine，所以測試直接攔截 `_run_pipeline_safely` 紀錄 `(job_id, target_date)` 而不真跑
-- **fallback target_date 用今天 + DB 計次仍在當天**：DB 完全空時 `_resolve_target_date()` 回 `date.today()`，user 1/day 與全站 5/day 仍按「今天」計；cron 第一次部署到空 DB 時也能正常觸發
+- **fallback target_date 用今天 + DB 計次仍在當天**：DB 完全空時 `_resolve_target_date()` 回 `date.today()`，user 10/day 與全站 10/day 仍按「今天」計；cron 第一次部署到空 DB 時也能正常觸發
 - **regenerate 第二次 429 user 限頻測試**：第一次成功後 job 是 `pending` 狀態，會卡住第二次的 concurrency guard（409）；測試需要先把它標 `done` 才能驗證 user 限頻 429
 - **path param `snapshot_date` 型別解析失敗回 422**：FastAPI 對 `date` 型 path param 自動 422，不是 400；測試 `test_snapshot_invalid_date_format_returns_422` 鎖這個合約
 - **jobs/latest 用 `Optional[JobResponse]` + 回 None**：Pydantic 序列化 None → `null`；前端直接 `if (!job)` 判斷，不需要 try/catch 404

@@ -6,6 +6,7 @@ from typing import Dict, List, Optional, Sequence
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.industry_names import normalize_industry_name
 from app.models import IndustryDailyFlow, InstStockFlow, StockMaster
 
 logger = logging.getLogger(__name__)
@@ -27,7 +28,7 @@ def _serialize_agg_rows(rows: Sequence[IndustryDailyFlow]) -> List[IndustryFlowS
     return [
         IndustryFlowSnapshot(
             trade_date=row.trade_date,
-            industry_name=row.industry_name,
+            industry_name=normalize_industry_name(row.industry_name) or "",
             total_net_amount=row.total_net_amount or 0.0,
             foreign_net_amount=row.foreign_net_amount or 0.0,
             trust_net_amount=row.trust_net_amount or 0.0,
@@ -37,6 +38,35 @@ def _serialize_agg_rows(rows: Sequence[IndustryDailyFlow]) -> List[IndustryFlowS
         )
         for row in rows
     ]
+
+
+def _merge_snapshots(rows: Sequence[IndustryFlowSnapshot]) -> List[IndustryFlowSnapshot]:
+    merged: Dict[tuple[date, str], IndustryFlowSnapshot] = {}
+    for row in rows:
+        industry_name = normalize_industry_name(row.industry_name) or ""
+        key = (row.trade_date, industry_name)
+        current = merged.get(key)
+        if current is None:
+            merged[key] = IndustryFlowSnapshot(
+                trade_date=row.trade_date,
+                industry_name=industry_name,
+                total_net_amount=row.total_net_amount,
+                foreign_net_amount=row.foreign_net_amount,
+                trust_net_amount=row.trust_net_amount,
+                dealer_net_amount=row.dealer_net_amount,
+                total_buy_amount=row.total_buy_amount,
+                total_sell_amount=row.total_sell_amount,
+            )
+            continue
+
+        current.total_net_amount += row.total_net_amount
+        current.foreign_net_amount += row.foreign_net_amount
+        current.trust_net_amount += row.trust_net_amount
+        current.dealer_net_amount += row.dealer_net_amount
+        current.total_buy_amount += row.total_buy_amount
+        current.total_sell_amount += row.total_sell_amount
+
+    return list(merged.values())
 
 
 def _aggregate_from_inst_flow(
@@ -74,12 +104,13 @@ def _aggregate_from_inst_flow(
 
     merged: Dict[tuple, IndustryFlowSnapshot] = {}
     for trade_date, industry_name, inst_type, buy_amount, sell_amount, net_amount in rows:
-        key = (trade_date, industry_name)
+        canonical_name = normalize_industry_name(industry_name) or ""
+        key = (trade_date, canonical_name)
         snapshot = merged.get(key)
         if snapshot is None:
             snapshot = IndustryFlowSnapshot(
                 trade_date=trade_date,
-                industry_name=industry_name,
+                industry_name=canonical_name,
                 total_net_amount=0.0,
                 foreign_net_amount=0.0,
                 trust_net_amount=0.0,
@@ -141,7 +172,12 @@ def load_industry_flow_rows_for_dates(
     if missing_dates:
         rows.extend(_aggregate_from_inst_flow(db, missing_dates, industry_names))
 
-    return sorted(rows, key=lambda row: (row.trade_date, row.total_net_amount), reverse=True)
+    merged_rows = _merge_snapshots(rows)
+    return sorted(
+        merged_rows,
+        key=lambda row: (row.trade_date, row.total_net_amount),
+        reverse=True,
+    )
 
 
 def get_latest_industry_trade_date(db: Session, ceiling: Optional[date] = None) -> Optional[date]:

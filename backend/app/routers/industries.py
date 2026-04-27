@@ -16,6 +16,7 @@ from app.hot_money_service import (
     compute_hot_money,
     serialize_hot_money_result,
 )
+from app.industry_names import normalize_industry_name
 from app.industry_flow_service import (
     get_latest_industry_trade_date,
     get_recent_industry_trade_dates,
@@ -127,11 +128,13 @@ def _raise_busy_if_locked(error: OperationalError) -> None:
 
 def _load_stocks_by_industry_name(db: Session, industry_name: str) -> List[StockMaster]:
     """直接用 FinMind 分類名稱查 stocks_master，不再做 TWSE/Fugle fallback。"""
+    canonical_name = normalize_industry_name(industry_name) or industry_name
+    candidate_names = {industry_name, canonical_name}
     return _run_with_lock_retry(
         db,
         lambda: (
             db.query(StockMaster)
-            .filter(StockMaster.industry_name == industry_name)
+            .filter(StockMaster.industry_name.in_(candidate_names))
             .all()
         ),
     )

@@ -110,12 +110,14 @@ def fetch_and_upsert_monthly_revenue_sdk(
     )
 
     try:
-        df = client.fetch_month_revenue(
-            stock_id_list=stock_ids,
+        df = client.fetch_month_revenue_dataset(
             start_date=start_date.strftime("%Y-%m-%d"),
             end_date=end_date.strftime("%Y-%m-%d"),
-            use_async=True,
         )
+
+        # dataset-level 回的是全市場，先過濾到 stocks_master
+        if df is not None and not df.empty and stock_ids:
+            df = df[df["stock_id"].astype(str).str.strip().isin(set(stock_ids))].copy()
 
         if df is None or df.empty:
             logger.warning("No monthly revenue data returned from FinMind")

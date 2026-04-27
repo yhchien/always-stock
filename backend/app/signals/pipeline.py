@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.models import SignalGenerationJob, SignalSnapshot
 from app.signals import candidate_pool, classification, filters, llm_caller
+from app.signals import market_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +134,8 @@ def run_signal_pipeline_sync(
                 pct=45,
                 label=f"LLM 上網查詢（共 {len(after_soft)} 檔）",
             )
-            market_context = llm_caller.assemble_market_context({})
+            db_market_snapshot = market_snapshot.build_db_market_snapshot(db, target_date)
+            market_context = llm_caller.assemble_market_context(db_market_snapshot)
             research_results: list = []
             batch_size = llm_caller.DEFAULT_BATCH_SIZE
             for i in range(0, len(after_soft), batch_size):
@@ -151,17 +153,31 @@ def run_signal_pipeline_sync(
                     label=f"研究第 {done_count} / {len(after_soft)} 檔",
                 )
 
-            # Step 6：LLM Explanation
+            # Step 6：LLM Explanation（外層 chunk loop，每 batch commit progress
+            # 避免 75% 卡住數分鐘的 UX 問題；mirror llm_research 模式）
+            total_for_explain = max(len(research_results), 1)
             _set_progress(
                 db,
                 job,
                 stage=STAGE_LLM_EXPLAIN,
                 pct=75,
-                label="LLM 產出解釋",
+                label=f"LLM 產出解釋（共 {len(research_results)} 檔）",
             )
-            explanation = llm_caller.run_explanation_batch(
-                research_results, market_context
-            )
+            explanation: list = []
+            for i in range(0, len(research_results), batch_size):
+                chunk = research_results[i : i + batch_size]
+                explanation.extend(
+                    llm_caller.run_explanation_batch(chunk, market_context)
+                )
+                done_count = min(i + batch_size, len(research_results))
+                pct = 75 + int(20 * done_count / total_for_explain)
+                _set_progress(
+                    db,
+                    job,
+                    stage=STAGE_LLM_EXPLAIN,
+                    pct=pct,
+                    label=f"解釋第 {done_count} / {len(research_results)} 檔",
+                )
 
             # Step 7：Persist Snapshot
             _set_progress(

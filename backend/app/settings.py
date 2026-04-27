@@ -29,7 +29,13 @@ def get_admin_email() -> str:
 
 
 def get_admin_password() -> str:
-    return os.getenv("ADMIN_PASSWORD", "forwork")
+    value = os.getenv("ADMIN_PASSWORD", "").strip()
+    if not value:
+        raise RuntimeError(
+            "ADMIN_PASSWORD env var is not set. "
+            "Set it in Render dashboard (or local .env) before starting the server."
+        )
+    return value
 
 
 def get_session_cookie_name() -> str:

@@ -152,6 +152,19 @@ class TestGetIndustries:
         assert "dealer_net_amount" in item
         assert "streak" in item
 
+    def test_canonicalizes_legacy_industry_names_in_l0_response(self, api):
+        client, db = api
+        seed_industry(db, "塑膠工業", 40, 30, 5, 5)
+        seed_industry(db, "石化及塑橡膠", 60, 40, 10, 10)
+        db.commit()
+
+        resp = client.get(f"/api/industries?date={TRADE_DATE}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["industry_name"] == "石化及塑橡膠"
+        assert data[0]["total_net_amount"] == 100
+
     def test_streak_positive_consecutive_buy(self, api):
         """Streak should be positive when multiple consecutive days have positive net amount."""
         client, db = api
@@ -260,6 +273,17 @@ class TestGetIndustryStocks:
         resp = client.get("/api/industries/半導體/stocks?date=2025-04-01")
         assert resp.status_code == 200
         assert resp.json()[0]["stock_id"] == "2330"
+
+    def test_legacy_industry_alias_can_drill_down_to_canonical_stocks(self, api):
+        client, db = api
+        seed_stock(db, "1301", "台塑", "石化及塑橡膠", sub_industry="塑膠製品")
+        seed_price(db, "1301", 100.0)
+        seed_flow(db, "1301", "foreign", 100, 100000)
+        db.commit()
+
+        resp = client.get(f"/api/industries/塑膠工業/stocks?date={TRADE_DATE}")
+        assert resp.status_code == 200
+        assert resp.json()[0]["stock_id"] == "1301"
 
 
 class TestGetSubIndustrySummary:

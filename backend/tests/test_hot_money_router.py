@@ -197,3 +197,14 @@ class TestIndustryHotMoney:
         assert resp.status_code == 200
         payload = resp.json()
         assert payload["items"] == []
+
+    def test_legacy_industry_alias_resolves_in_hot_money(self, api):
+        client, db = api
+        _seed_stock(db, "1301", "台塑", "石化及塑橡膠", sub_industry="塑膠製品")
+        _seed_flow(db, date(2026, 4, 22), "1301", "foreign", 1e8)
+        db.commit()
+
+        resp = client.get("/api/industries/塑膠工業/hot-money?date=2026-04-22&days=1")
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert [item["stock_id"] for item in payload["items"]] == ["1301"]
