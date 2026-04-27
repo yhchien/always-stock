@@ -49,6 +49,8 @@ _PROMPT_PATH = (
 # OpenAI 回應的 max tokens；reason 規則要求 500-1000 字 × batch 8 → 預留充足
 _MAX_OUTPUT_TOKENS = 8000
 _WEB_SEARCH_TOOL = {"type": "web_search"}
+_OPENAI_TIMEOUT_SECONDS = 90.0
+_OPENAI_MAX_RETRIES = 1
 
 
 def assemble_market_context(
@@ -302,7 +304,11 @@ def _call_llm_json(
         )
         return None
 
-    client = OpenAI(api_key=api_key)
+    client = OpenAI(
+        api_key=api_key,
+        timeout=_OPENAI_TIMEOUT_SECONDS,
+        max_retries=_OPENAI_MAX_RETRIES,
+    )
     try:
         if use_web_search:
             response = client.responses.create(

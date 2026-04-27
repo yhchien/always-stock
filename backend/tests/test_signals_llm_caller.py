@@ -95,8 +95,10 @@ def _patch_openai(
 ) -> _FakeOpenAIClient:
     """把 llm_caller.OpenAI 換成 fake；回傳已被綁定的 client（用來檢查 calls）。"""
     fake_client = _FakeOpenAIClient(response_content, raise_exc=raise_exc)
+    fake_client.factory_kwargs = {}
 
     def _factory(**_kwargs: Any) -> _FakeOpenAIClient:
+        fake_client.factory_kwargs = _kwargs
         return fake_client
 
     monkeypatch.setattr(llm_caller, "OpenAI", _factory)
@@ -161,6 +163,8 @@ def test_assemble_market_context_parses_json_happy_path(monkeypatch):
     assert out["futures_bias"] == "LONG"
     assert "VIX" in out["market_state_reason"]
     assert fake_client._responses_api.calls[0]["tools"] == [{"type": "web_search"}]
+    assert fake_client.factory_kwargs["timeout"] == llm_caller._OPENAI_TIMEOUT_SECONDS
+    assert fake_client.factory_kwargs["max_retries"] == llm_caller._OPENAI_MAX_RETRIES
 
 
 def test_assemble_market_context_keeps_backend_index_values_even_if_llm_mentions_zeros(monkeypatch):
