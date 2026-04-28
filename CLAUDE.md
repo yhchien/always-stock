@@ -141,8 +141,9 @@
 - `llm_diagnostic.status` 目前標準值：`ok` / `api_key_missing` / `openai_exception` / `empty_output` / `invalid_json`
 - Step 0 market fallback 文案不可再籠統寫成「OpenAI 服務不可用」；必須帶出較精確原因（例如 API key 缺失、OpenAI 例外、空回應、非 JSON）
 - research / decision / watch-reason 三段若 fallback，也要把診斷掛回各股票項目，避免 snapshot 成功但無法判斷是哪一層退回保守結果
+- M23 現在走 Responses API + `web_search` tool；預設 fallback 不可再用 `gpt-4o-search-preview`，避免線上帳號回 `404 Model not found`
 - 目前預設配置：
-  - `OPENAI_SIGNALS_MARKET_MODEL=gpt-4o-search-preview`
+  - `OPENAI_SIGNALS_MARKET_MODEL=gpt-5.4-mini`
   - `OPENAI_SIGNALS_RESEARCH_MODEL=gpt-5.4-mini`
   - `OPENAI_SIGNALS_DECISION_MODEL=gpt-5.4`
   - `OPENAI_SIGNALS_REASON_MODEL=gpt-5.4-mini`

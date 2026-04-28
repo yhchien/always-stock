@@ -11,7 +11,7 @@ Slice 6（2026-04-26）：實作完成。
 
 設計：
   - research / explanation 分開調 batch，避免長 explanation 卡住整批
-  - 第一版用支援 web search 的模型（`gpt-4o-search-preview` 或同等）
+  - 第一版用可搭配 Responses API `web_search` 的模型（例如現有 signals model）
   - 沒 web search 或 OpenAI 不可用 → 每檔走 fallback dict（標記 `_unavailable`），pipeline 仍可完成 snapshot
   - System prompt 直接讀 `backend/app/prompts/watch-list-stock.md`（spec §10 對齊）；
     user_msg 內提示「只執行 STEP X」讓 LLM 聚焦於當前批次任務
@@ -36,15 +36,16 @@ logger = logging.getLogger(__name__)
 DEFAULT_RESEARCH_BATCH_SIZE = 8
 DEFAULT_EXPLANATION_BATCH_SIZE = 4
 
-# Spec §3.2：第一版模型 fallback；workflow / Render env 可由 OPENAI_MODEL 覆寫
-# （`.github/workflows/daily_signals.yml` step env 會把它設成 secrets.OPENAI_SIGNALS_MODEL
-# 或預設 "gpt-4o-search-preview"）。`DEFAULT_MODEL` 在 module 載入時 snapshot env，
+# Spec §3.2：第一版模型 fallback；workflow / Render env 可由 OPENAI_MODEL 覆寫。
+# 這裡避免再預設舊的 search-preview model 名稱，改以目前線上可用的 signals model
+# （Responses API + tools=[{"type": "web_search"}]）為主。`DEFAULT_MODEL`
+# 在 module 載入時 snapshot env，
 # 所有 entry function 預設參數都吃這個值，所以 caller 不必每次 explicit 傳 model。
-_FALLBACK_MODEL = "gpt-4o-search-preview"
+_FALLBACK_MODEL = "gpt-5.4-mini"
 DEFAULT_MODEL = os.getenv("OPENAI_MODEL", _FALLBACK_MODEL).strip()
 DEFAULT_MARKET_MODEL = os.getenv(
     "OPENAI_SIGNALS_MARKET_MODEL",
-    "gpt-4o-search-preview",
+    "gpt-5.4-mini",
 ).strip()
 DEFAULT_RESEARCH_MODEL = os.getenv(
     "OPENAI_SIGNALS_RESEARCH_MODEL",
@@ -357,8 +358,7 @@ def _call_llm_json(
 ) -> tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
     """呼叫 OpenAI 並嘗試 parse JSON。
 
-    `gpt-4o-search-preview` 不支援 `temperature` / `response_format`，
-    所以這裡只送基本 messages + max_completion_tokens。
+    這裡走 Responses API，只送基本 instruction / input / tools / max_output_tokens。
     解析失敗 / API key 缺失 / 例外 → 回 `(None, diagnostic)`（caller 負責 fallback）。
     """
     diagnostic = _base_diagnostic(

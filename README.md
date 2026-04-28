@@ -239,6 +239,7 @@ M23 診斷約定：
 - `market_context` 與 research / decision / watch-reason 各階段 fallback 都會附帶 `llm_diagnostic`
 - `llm_diagnostic.status` 目前至少區分：`ok`、`api_key_missing`、`openai_exception`、`empty_output`、`invalid_json`
 - Step 0 若 fallback，不可再籠統寫成「OpenAI 服務不可用」；需保留更精確的 stage / reason，方便事後判斷是 API key、timeout、空回應還是 JSON 解析失敗
+- M23 走的是 Responses API + `web_search` tool；預設不再使用 `gpt-4o-search-preview` 這種舊 search-preview model 名稱作 fallback，避免 `404 Model not found`
 | M24 | 自訂進出場策略回測（M11 擴充；使用者自設規則 + 歷史回測驗證 edge + LLM 在 trigger 當下給「適合執行」現場判斷） | ⬜ 規劃中 |
 
 ---
