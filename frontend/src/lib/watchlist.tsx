@@ -20,7 +20,7 @@ import {
 } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
 
-export const WATCHLIST_CAPACITY = 20
+export const WATCHLIST_CAPACITY = 30
 
 interface WatchlistContextValue {
   items: WatchlistItem[]

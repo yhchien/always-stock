@@ -19,6 +19,7 @@ M23 Pipeline 主流程：cron / BackgroundTasks 共用入口。
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
 import traceback
 from datetime import date, datetime
@@ -42,6 +43,7 @@ STAGE_FILTER = "filter"
 STAGE_LLM_RESEARCH = "llm_research"
 STAGE_LLM_EXPLAIN = "llm_explain"
 STAGE_PERSIST = "persist"
+LLM_BATCH_CONCURRENCY = 2
 
 
 def run_signal_pipeline_sync(
@@ -136,22 +138,23 @@ def run_signal_pipeline_sync(
             )
             db_market_snapshot = market_snapshot.build_db_market_snapshot(db, target_date)
             market_context = llm_caller.assemble_market_context(db_market_snapshot)
-            research_results: list = []
             research_batch_size = llm_caller.DEFAULT_RESEARCH_BATCH_SIZE
-            for i in range(0, len(after_soft), research_batch_size):
-                batch = after_soft[i : i + research_batch_size]
-                research_results.extend(
-                    llm_caller.run_research_batch(batch, market_context)
-                )
-                done_count = min(i + research_batch_size, len(after_soft))
-                pct = 45 + int(30 * done_count / total_for_llm)
-                _set_progress(
+            research_batches = [
+                after_soft[i : i + research_batch_size]
+                for i in range(0, len(after_soft), research_batch_size)
+            ]
+            research_results = _run_parallel_batches(
+                research_batches,
+                lambda batch: llm_caller.run_research_batch(batch, market_context),
+                concurrency=LLM_BATCH_CONCURRENCY,
+                on_batch_done=lambda done_count: _set_progress(
                     db,
                     job,
                     stage=STAGE_LLM_RESEARCH,
-                    pct=pct,
+                    pct=45 + int(30 * done_count / total_for_llm),
                     label=f"研究第 {done_count} / {len(after_soft)} 檔",
-                )
+                ),
+            )
 
             # Step 6a：LLM 短 decision（全候選）
             total_for_explain = max(len(research_results), 1)
@@ -163,21 +166,22 @@ def run_signal_pipeline_sync(
                 pct=75,
                 label=f"LLM 初判（共 {len(research_results)} 檔）",
             )
-            explanation: list = []
-            for i in range(0, len(research_results), explain_batch_size):
-                chunk = research_results[i : i + explain_batch_size]
-                explanation.extend(
-                    llm_caller.run_explanation_batch(chunk, market_context)
-                )
-                done_count = min(i + explain_batch_size, len(research_results))
-                pct = 75 + int(10 * done_count / total_for_explain)
-                _set_progress(
+            explain_batches = [
+                research_results[i : i + explain_batch_size]
+                for i in range(0, len(research_results), explain_batch_size)
+            ]
+            explanation = _run_parallel_batches(
+                explain_batches,
+                lambda chunk: llm_caller.run_explanation_batch(chunk, market_context),
+                concurrency=LLM_BATCH_CONCURRENCY,
+                on_batch_done=lambda done_count: _set_progress(
                     db,
                     job,
                     stage=STAGE_LLM_EXPLAIN,
-                    pct=pct,
+                    pct=75 + int(10 * done_count / total_for_explain),
                     label=f"初判第 {done_count} / {len(research_results)} 檔",
-                )
+                ),
+            )
 
             # Step 6b：只對 WATCH 名單補長理由
             watch_candidates = [
@@ -192,21 +196,22 @@ def run_signal_pipeline_sync(
                 pct=86,
                 label=f"補長理由（共 {len(watch_candidates)} 檔）",
             )
-            enriched_watch: list = []
-            for i in range(0, len(watch_candidates), explain_batch_size):
-                chunk = watch_candidates[i : i + explain_batch_size]
-                enriched_watch.extend(
-                    llm_caller.run_watch_reason_batch(chunk, market_context)
-                )
-                done_count = min(i + explain_batch_size, len(watch_candidates))
-                pct = 86 + int(9 * done_count / total_for_watch_reason)
-                _set_progress(
+            watch_batches = [
+                watch_candidates[i : i + explain_batch_size]
+                for i in range(0, len(watch_candidates), explain_batch_size)
+            ]
+            enriched_watch = _run_parallel_batches(
+                watch_batches,
+                lambda chunk: llm_caller.run_watch_reason_batch(chunk, market_context),
+                concurrency=LLM_BATCH_CONCURRENCY,
+                on_batch_done=lambda done_count: _set_progress(
                     db,
                     job,
                     stage=STAGE_LLM_EXPLAIN,
-                    pct=pct,
+                    pct=86 + int(9 * done_count / total_for_watch_reason),
                     label=f"長理由第 {done_count} / {len(watch_candidates)} 檔",
-                )
+                ),
+            )
 
             if enriched_watch:
                 watch_by_id = {
@@ -330,3 +335,43 @@ def _persist_snapshot(
     else:
         db.add(SignalSnapshot(snapshot_date=target_date, **fields))
     db.commit()
+
+
+def _run_parallel_batches(
+    batches: list[list],
+    runner: Callable[[list], list],
+    *,
+    concurrency: int,
+    on_batch_done: Optional[Callable[[int], None]] = None,
+) -> list:
+    if not batches:
+        return []
+    if concurrency <= 1 or len(batches) == 1:
+        out: list = []
+        done_count = 0
+        for batch in batches:
+            result = runner(batch)
+            out.extend(result)
+            done_count += len(batch)
+            if on_batch_done is not None:
+                on_batch_done(done_count)
+        return out
+
+    results_by_index: dict[int, list] = {}
+    done_count = 0
+    with ThreadPoolExecutor(max_workers=min(concurrency, len(batches))) as executor:
+        future_to_meta = {
+            executor.submit(runner, batch): (idx, len(batch))
+            for idx, batch in enumerate(batches)
+        }
+        for future in as_completed(future_to_meta):
+            idx, batch_size = future_to_meta[future]
+            results_by_index[idx] = future.result()
+            done_count += batch_size
+            if on_batch_done is not None:
+                on_batch_done(done_count)
+
+    flattened: list = []
+    for idx in range(len(batches)):
+        flattened.extend(results_by_index[idx])
+    return flattened

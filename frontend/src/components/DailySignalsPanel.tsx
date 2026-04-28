@@ -125,6 +125,15 @@ function SignalCard({ item }: { item: SignalWatchlistItem }) {
           {item.reason}
         </p>
       )}
+
+      <div className="mt-3 flex justify-end">
+        <Link
+          href={stockHref}
+          className="inline-flex items-center rounded border border-sky-500/50 bg-sky-500/10 px-2.5 py-1 text-xs font-medium text-sky-200 hover:bg-sky-500/20"
+        >
+          看 K 線圖
+        </Link>
+      </div>
     </article>
   )
 }

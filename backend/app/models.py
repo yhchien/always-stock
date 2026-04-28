@@ -260,7 +260,7 @@ class UserSession(Base):
 class UserWatchlist(Base):
     """
     使用者關注買進清單（M19）
-    每個使用者一個清單，上限 20 檔（由 API 層強制）
+    每個使用者一個清單，上限 30 檔（由 API 層強制）
     """
     __tablename__ = "user_watchlist"
 

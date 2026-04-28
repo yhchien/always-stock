@@ -142,11 +142,16 @@
 - Step 0 market fallback 文案不可再籠統寫成「OpenAI 服務不可用」；必須帶出較精確原因（例如 API key 缺失、OpenAI 例外、空回應、非 JSON）
 - research / decision / watch-reason 三段若 fallback，也要把診斷掛回各股票項目，避免 snapshot 成功但無法判斷是哪一層退回保守結果
 - M23 現在走 Responses API + `web_search` tool；預設 fallback 不可再用 `gpt-4o-search-preview`，避免線上帳號回 `404 Model not found`
+- M23 pipeline 的 research / decision / watch-reason batch 現在允許有限度並行（concurrency=2）；若要再加速，優先調這個並行度，不要先無限制放大 batch
+- `DailySignalsPanel` 卡片要提供明確的個股/K線入口，不要只剩股票代號文字 link
 - 目前預設配置：
   - `OPENAI_SIGNALS_MARKET_MODEL=gpt-5.4-mini`
   - `OPENAI_SIGNALS_RESEARCH_MODEL=gpt-5.4-mini`
   - `OPENAI_SIGNALS_DECISION_MODEL=gpt-5.4`
   - `OPENAI_SIGNALS_REASON_MODEL=gpt-5.4-mini`
+- M17 / Trade Quality Analysis 現在對同 stock_id + buy_date 有 5 分鐘 in-memory cache；重複查同一標的時應先命中 cache 再考慮重新打 OpenAI
+- 首頁首屏效能：`TradeQualityAnalysis` 保持先載，`DailySignalsPanel` / `HotMoneyList` / `IndustryDashboard` 改 deferred mount，避免首次同時打多支 API
+- 觀察清單上限已調整為 30；前後端文案、capacity 常數、API 限制需同步
 
 ## 資料狀態（2026-04-10）
 

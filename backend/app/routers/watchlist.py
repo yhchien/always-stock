@@ -2,14 +2,14 @@
 關注買進清單 API（M19）
 
 - GET    /api/watchlist            → 取得目前使用者的持股列表（含最新收盤價 + 未實現損益）
-- POST   /api/watchlist            → 加入一檔（上限 20 檔、同股不可重複）
+- POST   /api/watchlist            → 加入一檔（上限 30 檔、同股不可重複）
 - DELETE /api/watchlist/{entry_id} → 移除單筆
 - DELETE /api/watchlist            → 清空整個清單
 
 所有端點需要登入（Depends(require_user)）。
 
 Cap enforcement 注意：
-POST 的 20 檔上限由 COUNT(*) → INSERT 兩步完成，並未在 transaction 內上鎖。
+POST 的 30 檔上限由 COUNT(*) → INSERT 兩步完成，並未在 transaction 內上鎖。
 同一使用者從兩個 tab 幾乎同時加入時，理論上有 race，可能插到第 21 筆；
 實務觸發機率極低，且最壞結果僅是資料多 1 筆，不影響正確性。
 若未來要徹底保證，可改用 SELECT ... FOR UPDATE 鎖定該使用者的子集，
@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/watchlist", tags=["watchlist"])
 
-WATCHLIST_MAX_ENTRIES = 20
+WATCHLIST_MAX_ENTRIES = 30
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 

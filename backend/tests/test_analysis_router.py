@@ -23,6 +23,7 @@ from app.models import (
     StockMaster,
 )
 from app.rate_limit import limiter
+from app.routers import analysis as analysis_router
 from app.routers.analysis import _is_market_not_open_yet, _load_system_prompt
 
 
@@ -43,9 +44,11 @@ def api():
     app.dependency_overrides[get_db] = override_get_db
     # 清空 slowapi in-memory storage，避免跨測試累積 rate limit counter
     limiter.reset()
+    analysis_router._trade_quality_cache.clear()
     client = TestClient(app)
     yield client, session
     app.dependency_overrides.clear()
+    analysis_router._trade_quality_cache.clear()
     session.close()
     Base.metadata.drop_all(bind=engine)
 
@@ -539,6 +542,37 @@ def test_trade_quality_user_message_includes_m21_deterministic_block(api):
         assert section in msg
 
 
+def test_trade_quality_uses_short_ttl_cache_for_same_stock_and_date(api):
+    client, db = api
+    _seed_full_context(db)
+
+    fake_payload = {
+        "rating": "BUY",
+        "summary": "cached",
+        "report_markdown": "cached-report",
+    }
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = MagicMock(
+        choices=[MagicMock(message=MagicMock(content=json.dumps(fake_payload)))]
+    )
+
+    with patch("app.routers.analysis.get_openai_api_key", return_value="k"), \
+         patch("app.routers.analysis.OpenAI", return_value=mock_client):
+        first = client.post(
+            "/api/analysis/trade-quality",
+            json={"stock_id": "2330", "buy_date": "2024-01-11"},
+        )
+        second = client.post(
+            "/api/analysis/trade-quality",
+            json={"stock_id": "2330", "buy_date": "2024-01-11"},
+        )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["summary"] == "cached"
+    assert mock_client.chat.completions.create.call_count == 1
+
+
 # ── /api/analysis/trade-quality/stream（progress bar 用 NDJSON）─────────────
 
 
@@ -585,6 +619,39 @@ def test_trade_quality_stream_emits_4_stages_in_order(api):
     assert payload["rating_label"] == "推薦"
     assert payload["target_price_low"] == 650
     assert payload["source"] == "openai"
+
+
+def test_trade_quality_stream_returns_cached_done_event(api):
+    client, db = api
+    _seed_full_context(db)
+
+    fake_payload = {
+        "rating": "BUY",
+        "summary": "stream cached",
+        "report_markdown": "cached",
+    }
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = MagicMock(
+        choices=[MagicMock(message=MagicMock(content=json.dumps(fake_payload)))]
+    )
+
+    with patch("app.routers.analysis.get_openai_api_key", return_value="k"), \
+         patch("app.routers.analysis.OpenAI", return_value=mock_client):
+        first = client.post(
+            "/api/analysis/trade-quality",
+            json={"stock_id": "2330", "buy_date": "2024-01-11"},
+        )
+        assert first.status_code == 200
+        resp = client.post(
+            "/api/analysis/trade-quality/stream",
+            json={"stock_id": "2330", "buy_date": "2024-01-11"},
+        )
+
+    assert resp.status_code == 200
+    events = _parse_ndjson(resp.text)
+    assert [e["stage"] for e in events] == ["done"]
+    assert events[0]["label"] == "完成（快取）"
+    assert mock_client.chat.completions.create.call_count == 1
 
 
 def test_trade_quality_stream_sets_proxy_no_buffer_headers(api):

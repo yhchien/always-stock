@@ -240,6 +240,10 @@ M23 診斷約定：
 - `llm_diagnostic.status` 目前至少區分：`ok`、`api_key_missing`、`openai_exception`、`empty_output`、`invalid_json`
 - Step 0 若 fallback，不可再籠統寫成「OpenAI 服務不可用」；需保留更精確的 stage / reason，方便事後判斷是 API key、timeout、空回應還是 JSON 解析失敗
 - M23 走的是 Responses API + `web_search` tool；預設不再使用 `gpt-4o-search-preview` 這種舊 search-preview model 名稱作 fallback，避免 `404 Model not found`
+- M23 pipeline 現在對 research / decision / watch-reason batch 採有限度並行（concurrency=2），在不把 OpenAI 壓太兇的前提下縮短整體 job 時間
+- 首頁改為分段 deferred mount：`TradeQualityAnalysis` 先載，`DailySignalsPanel` / `HotMoneyList` / `IndustryDashboard` 近視窗時再掛載，降低初次載入壓力
+- 交易分析 `/api/analysis/trade-quality` 與 `/stream` 目前對同 stock+buy_date 有 5 分鐘短時快取，重複分析可直接回 cache
+- 觀察清單上限已由 20 調整為 30
 | M24 | 自訂進出場策略回測（M11 擴充；使用者自設規則 + 歷史回測驗證 edge + LLM 在 trigger 當下給「適合執行」現場判斷） | ⬜ 規劃中 |
 
 ---

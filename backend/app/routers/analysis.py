@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time as time_module
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, List, Optional
@@ -59,6 +60,8 @@ PROMPT_FILES = [
     Path(__file__).resolve().parents[1] / "prompts" / "trade_quality.md",
     Path(__file__).resolve().parents[3] / "docs" / "trade_quality_prompt.md",
 ]
+_TRADE_QUALITY_CACHE_TTL_SECONDS = 300
+_trade_quality_cache: dict[tuple[str, str], tuple[float, "TradeQualityResponse"]] = {}
 
 
 # ── Request / Response schemas ───────────────────────────────────────────────
@@ -438,6 +441,32 @@ def _call_openai(system_prompt: str, user_msg: str) -> Optional[dict]:
         return None
 
 
+def _trade_quality_cache_key(stock_id: str, buy_date: date) -> tuple[str, str]:
+    return (stock_id.strip(), buy_date.isoformat())
+
+
+def _get_cached_trade_quality(stock_id: str, buy_date: date) -> Optional[TradeQualityResponse]:
+    cached = _trade_quality_cache.get(_trade_quality_cache_key(stock_id, buy_date))
+    if cached is None:
+        return None
+    expires_at, payload = cached
+    if expires_at < time_module.time():
+        _trade_quality_cache.pop(_trade_quality_cache_key(stock_id, buy_date), None)
+        return None
+    return payload
+
+
+def _store_cached_trade_quality(
+    stock_id: str,
+    buy_date: date,
+    payload: TradeQualityResponse,
+) -> None:
+    _trade_quality_cache[_trade_quality_cache_key(stock_id, buy_date)] = (
+        time_module.time() + _TRADE_QUALITY_CACHE_TTL_SECONDS,
+        payload,
+    )
+
+
 def _normalize_response(
     payload: dict,
     stock: StockMaster,
@@ -523,6 +552,10 @@ def analyze_trade_quality(
     if not resolved:
         raise HTTPException(status_code=404, detail="資料庫無交易日資料")
 
+    cached = _get_cached_trade_quality(req.stock_id, resolved)
+    if cached is not None:
+        return cached
+
     stock, context, warnings = _collect_context(db, req.stock_id, resolved)
     m21_context = _build_deterministic_context(db, req.stock_id, resolved, warnings)
 
@@ -547,7 +580,9 @@ def analyze_trade_quality(
             source="unavailable",
         )
 
-    return _normalize_response(payload, stock, resolved, warnings, source="openai")
+    response = _normalize_response(payload, stock, resolved, warnings, source="openai")
+    _store_cached_trade_quality(req.stock_id, resolved, response)
+    return response
 
 
 # ── Streaming endpoint（progress bar 用）─────────────────────────────────────
@@ -612,6 +647,17 @@ def analyze_trade_quality_stream(
     if not resolved:
         raise HTTPException(status_code=404, detail="資料庫無交易日資料")
 
+    cached = _get_cached_trade_quality(req.stock_id, resolved)
+    if cached is not None:
+        def cached_stream():
+            yield _emit("done", "完成（快取）", payload=jsonable_encoder(cached))
+
+        return StreamingResponse(
+            cached_stream(),
+            media_type="application/x-ndjson",
+            headers=_STREAM_HEADERS,
+        )
+
     # Pre-flight：stock 找不到 / prompt 缺檔，raise 走 HTTP 4xx/5xx，前端可正確錯誤處理
     stock_check = db.get(StockMaster, req.stock_id)
     if not stock_check:
@@ -649,6 +695,7 @@ def analyze_trade_quality_stream(
                 return
 
             response = _normalize_response(payload, stock, resolved, warnings, source="openai")
+            _store_cached_trade_quality(req.stock_id, resolved, response)
             yield _emit("done", "完成", payload=jsonable_encoder(response))
         except Exception:
             # 注意：headers 已 commit，此處 raise HTTPException 不會變 4xx，會變成
