@@ -18,7 +18,7 @@ from sqlalchemy.orm import sessionmaker
 from app.models import Base, SignalGenerationJob, SignalSnapshot
 from app.signals import candidate_pool, classification, filters, llm_caller
 from app.signals import market_snapshot
-from app.signals.pipeline import run_signal_pipeline_sync
+from app.signals.pipeline import _cap_llm_input, run_signal_pipeline_sync
 
 
 @pytest.fixture
@@ -332,3 +332,47 @@ def test_pipeline_upserts_existing_snapshot_on_rerun(session_factory, monkeypatc
         )
         assert len(snaps) == 1, "重跑應 UPSERT 同一筆而非新增"
         assert snaps[0].job_id == job_id_2  # job_id 已更新為最後一次
+
+
+def test_cap_llm_input_prioritizes_prelim_type_then_flow():
+    candidates = [
+        {
+            "stock_id": "L1",
+            "prelim_type": "LEADER",
+            "total_institution_flow_3d": 10.0,
+            "total_institution_flow_1d": 1.0,
+            "price_change_5d": 3.0,
+            "in_top_stocks_3d": False,
+            "in_top_industries_3d": True,
+        },
+        {
+            "stock_id": "F1",
+            "prelim_type": "FOLLOWER",
+            "total_institution_flow_3d": 999.0,
+            "total_institution_flow_1d": 9.0,
+            "price_change_5d": 9.0,
+            "in_top_stocks_3d": True,
+            "in_top_industries_3d": True,
+        },
+        {
+            "stock_id": "L2",
+            "prelim_type": "LEADER",
+            "total_institution_flow_3d": 20.0,
+            "total_institution_flow_1d": 2.0,
+            "price_change_5d": 4.0,
+            "in_top_stocks_3d": True,
+            "in_top_industries_3d": True,
+        },
+        {
+            "stock_id": "G1",
+            "prelim_type": "LAGGARD_CANDIDATE",
+            "total_institution_flow_3d": 500.0,
+            "total_institution_flow_1d": 5.0,
+            "price_change_5d": 2.0,
+            "in_top_stocks_3d": True,
+            "in_top_industries_3d": False,
+        },
+    ]
+
+    out = _cap_llm_input(candidates, limit=2)
+    assert [item["stock_id"] for item in out] == ["L2", "L1"]

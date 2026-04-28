@@ -244,6 +244,9 @@ M23 診斷約定：
 - 首頁改為分段 deferred mount：`TradeQualityAnalysis` 先載，`DailySignalsPanel` / `HotMoneyList` / `IndustryDashboard` 近視窗時再掛載，降低初次載入壓力
 - 交易分析 `/api/analysis/trade-quality` 與 `/stream` 目前對同 stock+buy_date 有 5 分鐘短時快取，重複分析可直接回 cache
 - 觀察清單上限已由 20 調整為 30
+- M23 候選來源已縮窄：`TOP_INDUSTRIES_LIMIT=6`、`TOP_STOCKS_LIMIT=30`、`TOP_STOCKS_INNER=6`
+- M23 laggard 候選維持 `hits >= 2`，但額外要求 `total_institution_flow_1d > 0`
+- M23 在 `after_hard` 後新增 `LLM_INPUT_HARD_LIMIT=50`，依 `prelim_type -> top_stock/top_industry -> flow score` 排序後截斷，再送進 LLM
 | M24 | 自訂進出場策略回測（M11 擴充；使用者自設規則 + 歷史回測驗證 edge + LLM 在 trigger 當下給「適合執行」現場判斷） | ⬜ 規劃中 |
 
 ---

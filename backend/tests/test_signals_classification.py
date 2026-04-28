@@ -187,19 +187,19 @@ def test_laggard_dropped_when_leader_gain_below_5pct():
     assert "1101" in types  # leader 仍存在（其他條件滿足）
 
 
-def test_laggard_uses_volume_signal_when_net_1d_zero():
+def test_laggard_dropped_when_net_1d_not_positive_even_if_volume_strength_exists():
     laggard = _laggard_template(
         total_institution_flow_1d=0.0,
         volume_1d_to_5d_ratio=1.5,  # > 1.2
     )
     pool = [_leader_template(), laggard]
     out = classify_stocks(None, date(2026, 4, 25), pool)
-    types = {c["stock_id"]: c["prelim_type"] for c in out}
-    assert types["1103"] == PRELIM_TYPE_LAGGARD_CANDIDATE
+    types = {c["stock_id"] for c in out}
+    assert "1103" not in types
 
 
-def test_laggard_uses_ma10_breakout_when_others_miss():
-    """guard + close>ma_10d → 1 + 1 = 2 hits."""
+def test_laggard_dropped_when_ma10_breakout_but_net_1d_not_positive():
+    """新規則：即使滿足其他 hits，只要 net_1d <= 0 就不能進 laggard。"""
     laggard = _laggard_template(
         price_change_5d=10.0,  # gap=2<5
         total_institution_flow_1d=-1.0e6,  # 非正
@@ -210,8 +210,8 @@ def test_laggard_uses_ma10_breakout_when_others_miss():
     )
     pool = [_leader_template(), laggard]
     out = classify_stocks(None, date(2026, 4, 25), pool)
-    types = {c["stock_id"]: c["prelim_type"] for c in out}
-    assert types["1103"] == PRELIM_TYPE_LAGGARD_CANDIDATE
+    types = {c["stock_id"] for c in out}
+    assert "1103" not in types
 
 
 def test_laggard_dropped_when_only_guard_no_other_hits():

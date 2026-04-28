@@ -171,6 +171,10 @@ def _is_laggard_candidate(
     if leader_gain is None or leader_gain < _LAGGARD_LEADER_GAIN_MIN_PCT:
         return False
 
+    net_1d = candidate.get("total_institution_flow_1d") or 0.0
+    if net_1d <= 0:
+        return False
+
     price_5d = candidate.get("price_change_5d") or 0.0
     gap = leader_gain - price_5d
 
@@ -182,7 +186,6 @@ def _is_laggard_candidate(
         hits += 1
 
     # 條件 3：近 1 日法人或量能轉強
-    net_1d = candidate.get("total_institution_flow_1d") or 0.0
     vol_1d_to_5d = candidate.get("volume_1d_to_5d_ratio")
     if net_1d > 0 or (
         vol_1d_to_5d is not None and vol_1d_to_5d > _LAGGARD_VOLUME_RATIO_MIN

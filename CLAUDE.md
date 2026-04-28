@@ -144,6 +144,9 @@
 - M23 現在走 Responses API + `web_search` tool；預設 fallback 不可再用 `gpt-4o-search-preview`，避免線上帳號回 `404 Model not found`
 - M23 pipeline 的 research / decision / watch-reason batch 現在允許有限度並行（concurrency=2）；若要再加速，優先調這個並行度，不要先無限制放大 batch
 - `DailySignalsPanel` 卡片要提供明確的個股/K線入口，不要只剩股票代號文字 link
+- M23 候選池目前採較保守來源範圍：`TOP_INDUSTRIES_LIMIT=6`、`TOP_STOCKS_LIMIT=30`、`TOP_STOCKS_INNER=6`
+- M23 laggard 候選雖仍是 `hits >= 2`，但新增硬條件 `total_institution_flow_1d > 0`，避免把純量價轉強但法人尚未回補的邊緣股送進 LLM
+- M23 在 `after_hard` 後新增 `LLM_INPUT_HARD_LIMIT=50`；排序優先序是 `LEADER > FOLLOWER > LAGGARD_CANDIDATE`，同類內再看 `in_top_stocks_3d / in_top_industries_3d / total_institution_flow_3d / total_institution_flow_1d / price_change_5d`
 - 目前預設配置：
   - `OPENAI_SIGNALS_MARKET_MODEL=gpt-5.4-mini`
   - `OPENAI_SIGNALS_RESEARCH_MODEL=gpt-5.4-mini`

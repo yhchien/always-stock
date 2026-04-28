@@ -44,6 +44,7 @@ STAGE_LLM_RESEARCH = "llm_research"
 STAGE_LLM_EXPLAIN = "llm_explain"
 STAGE_PERSIST = "persist"
 LLM_BATCH_CONCURRENCY = 2
+LLM_INPUT_HARD_LIMIT = 50
 
 
 def run_signal_pipeline_sync(
@@ -125,7 +126,8 @@ def run_signal_pipeline_sync(
             )
             classified = classification.classify_stocks(db, target_date, pool)
             after_hard = filters.apply_hard_exclusions(db, target_date, classified)
-            after_soft = filters.apply_soft_filters(db, target_date, after_hard)
+            llm_input = _cap_llm_input(after_hard, limit=LLM_INPUT_HARD_LIMIT)
+            after_soft = filters.apply_soft_filters(db, target_date, llm_input)
 
             # Step 5：LLM Research（batch）
             total_for_llm = max(len(after_soft), 1)
@@ -375,3 +377,39 @@ def _run_parallel_batches(
     for idx in range(len(batches)):
         flattened.extend(results_by_index[idx])
     return flattened
+
+
+def _cap_llm_input(
+    candidates: list[Dict[str, Any]],
+    *,
+    limit: int,
+) -> list[Dict[str, Any]]:
+    if limit <= 0 or len(candidates) <= limit:
+        return list(candidates)
+
+    ordered = sorted(candidates, key=_llm_input_sort_key)
+    return ordered[:limit]
+
+
+def _llm_input_sort_key(candidate: Dict[str, Any]) -> tuple:
+    prelim_type = str(candidate.get("prelim_type") or "").upper()
+    priority = {
+        "LEADER": 0,
+        "FOLLOWER": 1,
+        "LAGGARD_CANDIDATE": 2,
+    }.get(prelim_type, 3)
+    flow_3d = float(candidate.get("total_institution_flow_3d") or 0.0)
+    flow_1d = float(candidate.get("total_institution_flow_1d") or 0.0)
+    price_5d = float(candidate.get("price_change_5d") or 0.0)
+    top_stock_bonus = 1 if candidate.get("in_top_stocks_3d") else 0
+    top_industry_bonus = 1 if candidate.get("in_top_industries_3d") else 0
+
+    return (
+        priority,
+        -top_stock_bonus,
+        -top_industry_bonus,
+        -flow_3d,
+        -flow_1d,
+        -price_5d,
+        str(candidate.get("stock_id") or ""),
+    )

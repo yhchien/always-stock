@@ -36,9 +36,9 @@ logger = logging.getLogger(__name__)
 _INST_TYPES = ("foreign", "trust", "dealer")
 
 # Spec §5 Step 1 / Step 2
-TOP_INDUSTRIES_LIMIT = 10
-TOP_STOCKS_LIMIT = 40
-TOP_STOCKS_INNER = 10  # spec §6 group expansion 取 top 10
+TOP_INDUSTRIES_LIMIT = 6
+TOP_STOCKS_LIMIT = 30
+TOP_STOCKS_INNER = 6  # spec §6 group expansion 取 top 6
 
 # Spec §6.1 候選池規模
 POOL_SOFT_TRIGGER = 150  # 超過此數量啟動截斷
