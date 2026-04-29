@@ -445,12 +445,15 @@ def test_archive_summary_returns_aggregated_rows_and_return_pct(api, monkeypatch
                 group_info={},
                 leader_check={},
                 signals={},
+                baseline_trade_date=date(2026, 4, 25),
+                baseline_price=105.0,
+                latest_eval_trade_date=date(2026, 4, 29),
+                latest_eval_price=121.0,
+                return_pct=(121.0 - 105.0) / 105.0 * 100.0,
             ),
         ]
     )
     db.commit()
-    _seed_daily_price(db, "2330", date(2026, 4, 25), open_price=100.0, close_price=110.0)
-    _seed_daily_price(db, "2330", date(2026, 4, 29), open_price=111.0, close_price=121.0)
 
     monkeypatch.setattr(
         signals_router.signal_archive,
@@ -506,12 +509,15 @@ def test_archive_detail_returns_reports_in_desc_date_order(api, monkeypatch):
                 group_info={},
                 leader_check={},
                 signals={},
+                baseline_trade_date=date(2026, 4, 25),
+                baseline_price=205.0,
+                latest_eval_trade_date=date(2026, 4, 29),
+                latest_eval_price=215.0,
+                return_pct=(215.0 - 205.0) / 205.0 * 100.0,
             ),
         ]
     )
     db.commit()
-    _seed_daily_price(db, "2454", date(2026, 4, 25), open_price=200.0, close_price=210.0)
-    _seed_daily_price(db, "2454", date(2026, 4, 29), open_price=212.0, close_price=215.0)
 
     monkeypatch.setattr(
         signals_router.signal_archive,

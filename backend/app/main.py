@@ -36,6 +36,16 @@ def _ensure_industry_flow_schema() -> None:
         logger.exception("Failed to ensure industry_daily_flow schema at startup")
 
 
+def _ensure_signal_watch_schema() -> None:
+    from app.database import engine
+    from app.signal_watch_schema import ensure_signal_watch_hit_return_columns
+
+    try:
+        ensure_signal_watch_hit_return_columns(engine)
+    except Exception:
+        logger.exception("Failed to ensure signal_watch_hits schema at startup")
+
+
 def _seed_admin_user() -> None:
     """啟動時確保 M18 auth 表存在 + admin 帳號存在。失敗不阻擋 app 啟動。"""
     from app.auth import ensure_admin_user
@@ -101,6 +111,7 @@ async def lifespan(app: FastAPI):
     _seed_admin_user()
     _ensure_m23_tables()
     _ensure_industry_flow_schema()
+    _ensure_signal_watch_schema()
 
     app.state.bot_app = None
 

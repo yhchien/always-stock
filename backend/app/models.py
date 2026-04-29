@@ -362,6 +362,11 @@ class SignalWatchHit(Base):
     group_info = Column(JSON, nullable=False)
     leader_check = Column(JSON, nullable=False)
     signals = Column(JSON, nullable=False)
+    baseline_trade_date = Column(Date, nullable=True)
+    baseline_price = Column(Float, nullable=True)
+    latest_eval_trade_date = Column(Date, nullable=True)
+    latest_eval_price = Column(Float, nullable=True)
+    return_pct = Column(Float, nullable=True)
     snapshot_generated_at = Column(DateTime, nullable=True)
     job_id = Column(
         String(36),

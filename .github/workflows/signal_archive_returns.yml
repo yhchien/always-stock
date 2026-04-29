@@ -1,0 +1,55 @@
+name: Signal Archive Returns Update
+
+on:
+  schedule:
+    # 台北 20:00（週一到週五）= UTC 12:00
+    - cron: '0 12 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  update_signal_returns:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      TZ: Asia/Taipei
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --quiet -r backend/requirements.txt
+
+      - name: Update archive returns
+        id: returns
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          set +e
+          python3 run_signal_archive_returns.py
+          RETURNS_EXIT=$?
+          echo "returns_exit=$RETURNS_EXIT" >> "$GITHUB_OUTPUT"
+          echo "Signal archive returns exit code: $RETURNS_EXIT"
+          exit 0
+
+      - name: Evaluate final status
+        if: always()
+        run: |
+          FINAL_EXIT="${{ steps.returns.outputs.returns_exit }}"
+          echo "Final archive returns exit code: $FINAL_EXIT"
+          case "$FINAL_EXIT" in
+            0) echo "Status: ok" ;;
+            1) echo "Status: no_data (no signal rows or no eligible trade data)" ;;
+            2) echo "Status: error (FAIL)" ;;
+            *) echo "Status: unknown (exit=$FINAL_EXIT)" ;;
+          esac
+          case "$FINAL_EXIT" in
+            0|1) exit 0 ;;
+            *) exit 1 ;;
+          esac

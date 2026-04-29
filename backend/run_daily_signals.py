@@ -1,11 +1,11 @@
 """
 M23 每日異常訊號清單排程入口（spec §11.6）
 
-GitHub Actions cron 在台北 03:00（UTC 19:00 前一日）觸發；
+GitHub Actions cron 在台北 19:00（UTC 11:00）觸發；
 inline 同步跑 pipeline 後 exit。
 
 用法：
-    # 由 cron 觸發（target_date 自動從「現在 - 4h」推算為昨日）
+    # 由 cron 觸發（target_date 依台北 19:00 分界自動解析）
     python run_daily_signals.py
 
     # 手動指定日期（YYYY-MM-DD）
@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 import sys
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -39,12 +39,24 @@ EXIT_OK = 0
 EXIT_NO_DATA = 1
 EXIT_LLM_ERROR = 2
 EXIT_DB_ERROR = 3
+TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+SIGNALS_SAME_DAY_READY_TIME = time(hour=19, minute=0)
 
 
 def _resolve_target_date_from_now() -> date:
-    """spec §11.6：4h offset 確保 03:00 跑（即使延遲到 04:00~06:00）仍 resolve 為昨日。"""
-    now_tpe = datetime.now(ZoneInfo("Asia/Taipei"))
-    return (now_tpe - timedelta(hours=4)).date()
+    """依台北 19:00 分界決定預設 target date。
+
+    規則與 API 的「當日訊號何時可用」一致：
+      - 19:00 後：使用今天
+      - 19:00 前：使用昨天
+
+    這樣 cron 在 19:00 盤後跑時會產生當日 snapshot；
+    若管理者在 19:00 前手動觸發且未帶日期，則仍保守使用昨天。
+    """
+    now_tpe = datetime.now(TAIPEI_TZ)
+    if now_tpe.time() >= SIGNALS_SAME_DAY_READY_TIME:
+        return now_tpe.date()
+    return now_tpe.date() - timedelta(days=1)
 
 
 def _parse_target_date_from_argv(argv: list) -> date:

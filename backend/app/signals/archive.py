@@ -42,6 +42,7 @@ def persist_signal_watch_hits(
     job_id: str,
 ) -> None:
     """Replace a snapshot day's archive hits with the latest watchlist, then prune retention."""
+    carried_state = _load_latest_return_state_by_stock(db, before_date=target_date)
     db.query(SignalWatchHit).filter(SignalWatchHit.snapshot_date == target_date).delete(
         synchronize_session=False
     )
@@ -55,10 +56,12 @@ def persist_signal_watch_hits(
     watchlist = payload.get("watchlist") or []
 
     for item in watchlist:
+        stock_id = str(item.get("stock") or "")
+        prior = carried_state.get(stock_id) or {}
         db.add(
             SignalWatchHit(
                 snapshot_date=target_date,
-                stock_id=str(item.get("stock") or ""),
+                stock_id=stock_id,
                 stock_name=str(item.get("name") or ""),
                 signal_type=str(item.get("type") or "LEADER").upper(),
                 industry_name=item.get("industry"),
@@ -69,6 +72,11 @@ def persist_signal_watch_hits(
                 group_info=item.get("group_info") or {},
                 leader_check=item.get("leader_check") or {},
                 signals=item.get("signals") or {},
+                baseline_trade_date=prior.get("baseline_trade_date"),
+                baseline_price=prior.get("baseline_price"),
+                latest_eval_trade_date=prior.get("latest_eval_trade_date"),
+                latest_eval_price=prior.get("latest_eval_price"),
+                return_pct=prior.get("return_pct"),
                 snapshot_generated_at=generated_at,
                 job_id=job_id,
             )
@@ -204,6 +212,30 @@ def _load_grouped_hits(
     return grouped
 
 
+def _load_latest_return_state_by_stock(
+    db: Session,
+    *,
+    before_date: Optional[date] = None,
+) -> dict[str, dict[str, Optional[float] | Optional[date]]]:
+    query = db.query(SignalWatchHit)
+    if before_date is not None:
+        query = query.filter(SignalWatchHit.snapshot_date < before_date)
+    rows = query.order_by(SignalWatchHit.stock_id, SignalWatchHit.snapshot_date.desc()).all()
+
+    state_by_stock: dict[str, dict[str, Optional[float] | Optional[date]]] = {}
+    for row in rows:
+        if row.stock_id in state_by_stock:
+            continue
+        state_by_stock[row.stock_id] = {
+            "baseline_trade_date": row.baseline_trade_date,
+            "baseline_price": row.baseline_price,
+            "latest_eval_trade_date": row.latest_eval_trade_date,
+            "latest_eval_price": row.latest_eval_price,
+            "return_pct": row.return_pct,
+        }
+    return state_by_stock
+
+
 def _build_archive_summary_item(
     db: Session,
     *,
@@ -223,16 +255,6 @@ def _build_archive_summary_item(
         as_of_trade_date=as_of_trade_date,
         cache=tracking_day_cache,
     )
-    baseline_trade_date, baseline_price = _resolve_baseline_for_stock(
-        db, stock_id=stock_id, first_seen_date=first_seen_date
-    )
-    latest_eval_trade_date, latest_eval_price, return_pct = _resolve_return_for_stock(
-        db,
-        stock_id=stock_id,
-        as_of_trade_date=as_of_trade_date,
-        baseline_trade_date=baseline_trade_date,
-        baseline_price=baseline_price,
-    )
     return ArchiveSummaryItem(
         stock_id=stock_id,
         stock_name=latest_row.stock_name,
@@ -243,11 +265,11 @@ def _build_archive_summary_item(
         tracking_day_index=tracking_day_index,
         hit_count=hit_count,
         latest_signal_type=latest_row.signal_type,
-        baseline_trade_date=baseline_trade_date,
-        baseline_price=baseline_price,
-        latest_eval_trade_date=latest_eval_trade_date,
-        latest_eval_price=latest_eval_price,
-        return_pct=return_pct,
+        baseline_trade_date=latest_row.baseline_trade_date,
+        baseline_price=latest_row.baseline_price,
+        latest_eval_trade_date=latest_row.latest_eval_trade_date,
+        latest_eval_price=latest_row.latest_eval_price,
+        return_pct=latest_row.return_pct,
     )
 
 
@@ -275,62 +297,64 @@ def _count_tracking_days(
     return cache[first_seen_date]
 
 
-def _resolve_baseline_for_stock(
+def update_signal_watch_returns(
     db: Session,
     *,
-    stock_id: str,
-    first_seen_date: date,
-) -> tuple[Optional[date], Optional[float]]:
-    row = (
-        db.query(DailyPrice)
-        .filter(
-            DailyPrice.stock_id == stock_id,
-            DailyPrice.trade_date > first_seen_date,
-            DailyPrice.open_price.isnot(None),
-            DailyPrice.close_price.isnot(None),
-        )
-        .order_by(DailyPrice.trade_date.asc())
-        .first()
+    as_of_trade_date: Optional[date] = None,
+) -> int:
+    """Update persisted archive returns for the latest tracked row of each stock."""
+    trade_date = as_of_trade_date or resolve_archive_as_of_trade_date(
+        db,
+        now=datetime.now(TAIPEI_TZ),
     )
-    if row is None or row.open_price is None or row.close_price is None:
-        return None, None
-    baseline_price = (float(row.open_price) + float(row.close_price)) / 2.0
-    return row.trade_date, baseline_price
+    if trade_date is None:
+        return 0
 
+    grouped = _load_grouped_hits(db)
+    if not grouped:
+        return 0
 
-def _resolve_return_for_stock(
-    db: Session,
-    *,
-    stock_id: str,
-    as_of_trade_date: Optional[date],
-    baseline_trade_date: Optional[date],
-    baseline_price: Optional[float],
-) -> tuple[Optional[date], Optional[float], Optional[float]]:
-    if (
-        as_of_trade_date is None
-        or baseline_trade_date is None
-        or baseline_price in (None, 0)
-        or as_of_trade_date < baseline_trade_date
-    ):
-        return None, None, None
-
-    if as_of_trade_date == baseline_trade_date:
-        return baseline_trade_date, baseline_price, 0.0
-
-    eval_price = (
-        db.query(DailyPrice.close_price)
-        .filter(
-            DailyPrice.stock_id == stock_id,
-            DailyPrice.trade_date == as_of_trade_date,
-            DailyPrice.close_price.isnot(None),
+    updated = 0
+    for stock_id, rows in grouped.items():
+        latest_row = rows[-1]
+        first_seen_date = rows[0].snapshot_date
+        price_row = (
+            db.query(DailyPrice)
+            .filter(
+                DailyPrice.stock_id == stock_id,
+                DailyPrice.trade_date == trade_date,
+                DailyPrice.open_price.isnot(None),
+                DailyPrice.close_price.isnot(None),
+            )
+            .first()
         )
-        .scalar()
-    )
-    if eval_price is None:
-        return as_of_trade_date, None, None
-    eval_price = float(eval_price)
-    return_pct = (eval_price - baseline_price) / baseline_price * 100.0
-    return as_of_trade_date, eval_price, return_pct
+        if price_row is None:
+            continue
+
+        close_price = float(price_row.close_price)
+        if latest_row.baseline_price not in (None, 0) and latest_row.return_pct is not None:
+            latest_row.latest_eval_trade_date = trade_date
+            latest_row.latest_eval_price = close_price
+            latest_row.return_pct = (
+                (close_price - float(latest_row.baseline_price))
+                / float(latest_row.baseline_price)
+                * 100.0
+            )
+            updated += 1
+            continue
+
+        if first_seen_date < trade_date:
+            baseline_price = (float(price_row.open_price) + close_price) / 2.0
+            latest_row.baseline_trade_date = trade_date
+            latest_row.baseline_price = baseline_price
+            latest_row.latest_eval_trade_date = trade_date
+            latest_row.latest_eval_price = baseline_price
+            latest_row.return_pct = 0.0
+            updated += 1
+
+    if updated:
+        db.commit()
+    return updated
 
 
 def _serialize_summary_item(item: ArchiveSummaryItem) -> dict[str, Any]:

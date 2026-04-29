@@ -28,9 +28,11 @@ def test_parse_target_date_from_argv_explicit(runner_module):
     ) == date(2026, 4, 25)
 
 
-def test_parse_target_date_from_argv_missing_uses_now_offset(runner_module, monkeypatch):
-    """argv 沒帶日期 → 走 4h offset 邏輯。Mock now 為 03:30 台北 → target = 昨日。"""
-    fixed_now = datetime(2026, 4, 25, 3, 30, 0, tzinfo=ZoneInfo("Asia/Taipei"))
+def test_parse_target_date_from_argv_missing_before_ready_time_uses_yesterday(
+    runner_module, monkeypatch
+):
+    """argv 沒帶日期且台北未到 19:00 → 預設使用昨天。"""
+    fixed_now = datetime(2026, 4, 25, 18, 30, 0, tzinfo=ZoneInfo("Asia/Taipei"))
 
     class FakeDateTime:
         @classmethod
@@ -40,6 +42,23 @@ def test_parse_target_date_from_argv_missing_uses_now_offset(runner_module, monk
     monkeypatch.setattr(runner_module, "datetime", FakeDateTime)
     assert runner_module._parse_target_date_from_argv(["run_daily_signals.py"]) == date(
         2026, 4, 24
+    )
+
+
+def test_parse_target_date_from_argv_missing_after_ready_time_uses_today(
+    runner_module, monkeypatch
+):
+    """argv 沒帶日期且台北已到 19:00 → 預設使用今天。"""
+    fixed_now = datetime(2026, 4, 25, 19, 30, 0, tzinfo=ZoneInfo("Asia/Taipei"))
+
+    class FakeDateTime:
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now if tz is None else fixed_now.astimezone(tz)
+
+    monkeypatch.setattr(runner_module, "datetime", FakeDateTime)
+    assert runner_module._parse_target_date_from_argv(["run_daily_signals.py"]) == date(
+        2026, 4, 25
     )
 
 

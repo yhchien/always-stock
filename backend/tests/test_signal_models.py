@@ -149,6 +149,11 @@ def test_signal_watch_hit_persists_reason_and_json_fields(db):
         group_info={"is_group_stock": False},
         leader_check={"industry_leader": "2330"},
         signals={"capital_flow": "strong"},
+        baseline_trade_date=date(2026, 4, 28),
+        baseline_price=105.0,
+        latest_eval_trade_date=date(2026, 4, 29),
+        latest_eval_price=121.0,
+        return_pct=15.2381,
     )
     db.add(rec)
     db.commit()
@@ -158,4 +163,9 @@ def test_signal_watch_hit_persists_reason_and_json_fields(db):
     assert got.signal_type == "LEADER"
     assert got.reason == "AI 主線延續，外資續買。"
     assert got.theme["main_theme"] == "AI"
+    assert got.baseline_trade_date == date(2026, 4, 28)
+    assert got.baseline_price == 105.0
+    assert got.latest_eval_trade_date == date(2026, 4, 29)
+    assert got.latest_eval_price == 121.0
+    assert got.return_pct == pytest.approx(15.2381)
     assert got.created_at is not None
