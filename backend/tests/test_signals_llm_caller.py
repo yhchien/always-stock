@@ -535,3 +535,38 @@ def test_assemble_final_output_unknown_decision_treated_as_remove():
     out = llm_caller.assemble_final_output({"market_state": "RANGE"}, explanation, candidate_pool_size=2)
     assert out["watchlist"] == []
     assert len(out["removed"]) == 2
+
+
+def test_assemble_final_output_caps_watchlist_to_30_and_moves_overflow_to_removed(monkeypatch):
+    explanation = []
+    for i in range(35):
+        explanation.append(
+            {
+                **_watch_item(
+                    f"{1000 + i}",
+                    f"Stock-{i}",
+                    "LEADER" if i < 10 else "FOLLOWER",
+                    "半導體業",
+                ),
+                "theme": {"theme_score": max(0, 35 - i)},
+                "signals": {
+                    "capital_flow": "strong" if i < 30 else "moderate",
+                    "chip_trend": "accumulating" if i < 30 else "weakening",
+                    "margin_short_signal": "positive" if i < 30 else "neutral",
+                    "technical_status": "breakout" if i < 30 else "range_bound",
+                },
+            }
+        )
+
+    out = llm_caller.assemble_final_output(
+        {"market_state": "STRUCTURAL_BULL"},
+        explanation,
+        candidate_pool_size=80,
+    )
+
+    assert len(out["watchlist"]) == 30
+    assert out["final_watchlist_size"] == 30
+    assert len(out["removed"]) == 5
+    assert all(item["stock"] not in {str(1030), str(1031), str(1032), str(1033), str(1034)} for item in out["watchlist"])
+    overflow_removed = [item for item in out["removed"] if "上限 30 檔" in item["remove_reason"]]
+    assert len(overflow_removed) == 5

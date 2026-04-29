@@ -4,9 +4,11 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 
 import {
+  fetchSignalRegenerateQuota,
   fetchLatestSignalSnapshot,
   regenerateSignals,
   type SignalDecisionType,
+  type SignalRegenerateQuotaResponse,
   type SignalRemovedItem,
   type SignalSnapshotResponse,
   type SignalWatchlistItem,
@@ -170,8 +172,10 @@ export default function DailySignalsPanel() {
   const [bumpKey, setBumpKey] = useState(0)
   const [regenerating, setRegenerating] = useState(false)
   const [regenerateError, setRegenerateError] = useState<string | null>(null)
+  const [regenerateQuota, setRegenerateQuota] = useState<SignalRegenerateQuotaResponse | null>(null)
 
   const { job } = useSignalJobPolling(bumpKey)
+  const jobStatus = job?.status
 
   // 初始展開狀態：讀 localStorage（預設 collapse）
   useEffect(() => {
@@ -210,8 +214,24 @@ export default function DailySignalsPanel() {
     void loadSnapshot()
   }, [loadSnapshot])
 
+  const loadRegenerateQuota = useCallback(async () => {
+    if (authStatus !== "authenticated") {
+      setRegenerateQuota(null)
+      return
+    }
+    try {
+      const data = await fetchSignalRegenerateQuota()
+      setRegenerateQuota(data)
+    } catch {
+      setRegenerateQuota(null)
+    }
+  }, [authStatus])
+
+  useEffect(() => {
+    void loadRegenerateQuota()
+  }, [loadRegenerateQuota, bumpKey, jobStatus])
+
   // 偵測 job 完成 → 重新拉 snapshot
-  const jobStatus = job?.status
   useEffect(() => {
     if (jobStatus === "done") {
       void loadSnapshot()
@@ -271,14 +291,16 @@ export default function DailySignalsPanel() {
       setSnapshotError(null)
       setSnapshotLoading(false)
       setHasNewSignals(false)
+      void loadRegenerateQuota()
       // 觸發 polling 重啟
       setBumpKey((k) => k + 1)
     } catch (err) {
       setRegenerateError(err instanceof Error ? err.message : "重新產生失敗")
+      void loadRegenerateQuota()
     } finally {
       setRegenerating(false)
     }
-  }, [])
+  }, [loadRegenerateQuota])
 
   const watchlist = snapshot?.data.watchlist ?? []
   const removed = snapshot?.data.removed ?? []
@@ -292,6 +314,7 @@ export default function DailySignalsPanel() {
 
   const isAuthed = authStatus === "authenticated"
   const isJobActive = jobStatus === "pending" || jobStatus === "running"
+  const quotaReached = isAuthed && !!regenerateQuota?.disabled
 
   // 「重新產生」按鈕狀態（spec §13.5）
   let regenerateLabel = "重新產生"
@@ -307,6 +330,9 @@ export default function DailySignalsPanel() {
     regenerateDisabled = true
   } else if (regenerating) {
     regenerateLabel = "送出中…"
+    regenerateDisabled = true
+  } else if (quotaReached) {
+    regenerateLabel = `重新產生（今日已達 ${regenerateQuota?.daily_limit ?? 3} 次）`
     regenerateDisabled = true
   }
 
@@ -346,6 +372,12 @@ export default function DailySignalsPanel() {
           )}
         </div>
         <div className="flex items-center gap-2">
+          <Link
+            href="/signals/archive"
+            className="inline-flex items-center rounded border border-slate-600 bg-slate-800/50 px-3 py-1 text-xs font-medium text-slate-200 hover:bg-slate-700"
+          >
+            40日追蹤
+          </Link>
           <button
             type="button"
             onClick={handleRegenerate}
@@ -354,6 +386,11 @@ export default function DailySignalsPanel() {
           >
             {regenerateLabel}
           </button>
+          {isAuthed && regenerateQuota && (
+            <span className="text-[11px] text-slate-400">
+              今日剩餘 {regenerateQuota.remaining_count}/{regenerateQuota.daily_limit}
+            </span>
+          )}
         </div>
       </header>
 

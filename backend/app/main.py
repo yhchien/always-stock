@@ -74,6 +74,7 @@ def _ensure_m23_tables() -> None:
         MarginTrade,
         SignalGenerationJob,
         SignalSnapshot,
+        SignalWatchHit,
     )
 
     try:
@@ -83,6 +84,7 @@ def _ensure_m23_tables() -> None:
                 MarginTrade.__table__,
                 SignalGenerationJob.__table__,
                 SignalSnapshot.__table__,
+                SignalWatchHit.__table__,
             ],
         )
     except Exception:

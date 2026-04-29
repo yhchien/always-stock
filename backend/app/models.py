@@ -341,6 +341,40 @@ class SignalSnapshot(Base):
     )
 
 
+class SignalWatchHit(Base):
+    """
+    M23 訊號追蹤命中表
+    一列代表某個 snapshot_date 命中的一檔 watchlist 股票。
+    同日重產時以 (snapshot_date, stock_id) 覆蓋。
+    """
+    __tablename__ = "signal_watch_hits"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    snapshot_date = Column(Date, nullable=False, index=True)
+    stock_id = Column(String, nullable=False, index=True)
+    stock_name = Column(String, nullable=False)
+    signal_type = Column(String(16), nullable=False)          # LEADER | FOLLOWER | LAGGARD
+    industry_name = Column(String, nullable=True)
+    sub_industry = Column(String, nullable=True)
+    business_summary = Column(Text, nullable=True)
+    reason = Column(Text, nullable=False)
+    theme = Column(JSON, nullable=False)
+    group_info = Column(JSON, nullable=False)
+    leader_check = Column(JSON, nullable=False)
+    signals = Column(JSON, nullable=False)
+    snapshot_generated_at = Column(DateTime, nullable=True)
+    job_id = Column(
+        String(36),
+        ForeignKey("signal_generation_jobs.job_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("snapshot_date", "stock_id", name="uq_signal_watch_hit_date_stock"),
+    )
+
+
 class IndustryMapping(Base):
     """
     產業分類對照表（雙軌驗證用）

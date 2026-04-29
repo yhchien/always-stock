@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
 from app.models import SignalGenerationJob, SignalSnapshot
+from app.signals import archive as signal_archive
 from app.signals import candidate_pool, classification, filters, llm_caller
 from app.signals import market_snapshot
 
@@ -241,6 +242,7 @@ def run_signal_pipeline_sync(
                 market_context, explanation, candidate_pool_size=len(pool)
             )
             _persist_snapshot(db, target_date, final_payload, job_id)
+            signal_archive.persist_signal_watch_hits(db, target_date, final_payload, job_id)
 
             _mark_done(db, job)
         except Exception:

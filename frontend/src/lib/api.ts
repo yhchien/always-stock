@@ -1050,6 +1050,57 @@ export interface SignalRegenerateResponse {
   snapshot_date: string
 }
 
+export interface SignalRegenerateQuotaResponse {
+  snapshot_date: string
+  daily_limit: number
+  used_count: number
+  remaining_count: number
+  disabled: boolean
+}
+
+export type SignalArchiveSortBy =
+  | "tracking_days_desc"
+  | "return_desc"
+  | "return_asc"
+  | "hit_count_desc"
+  | "latest_hit_desc"
+  | "stock_id_asc"
+
+export interface SignalArchiveSummaryItem {
+  stock_id: string
+  stock_name: string
+  industry_name: string | null
+  sub_industry: string | null
+  first_seen_date: string
+  latest_hit_date: string
+  tracking_day_index: number
+  hit_count: number
+  latest_signal_type: string
+  baseline_trade_date: string | null
+  baseline_price: number | null
+  latest_eval_trade_date: string | null
+  latest_eval_price: number | null
+  return_pct: number | null
+}
+
+export interface SignalArchiveSummaryResponse {
+  as_of_trade_date: string | null
+  retention_trade_days: number
+  items: SignalArchiveSummaryItem[]
+}
+
+export interface SignalArchiveReportItem {
+  snapshot_date: string
+  signal_type: string
+  reason: string
+  business_summary: string | null
+  snapshot_generated_at: string | null
+}
+
+export interface SignalArchiveDetailResponse extends SignalArchiveSummaryItem {
+  reports: SignalArchiveReportItem[]
+}
+
 export async function fetchLatestSignalSnapshot(
   options?: FetchOptions,
 ): Promise<SignalSnapshotResponse | null> {
@@ -1081,6 +1132,46 @@ export async function fetchLatestSignalJob(
     signal: options?.signal,
   })
   if (!res.ok) throw new Error(await buildErrorMessage(res, "Job 狀態載入失敗"))
+  return res.json()
+}
+
+export async function fetchSignalRegenerateQuota(
+  options?: FetchOptions,
+): Promise<SignalRegenerateQuotaResponse> {
+  const res = await apiFetch(`${API_BASE}/api/signals/quota`, {
+    signal: options?.signal,
+  })
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "重產額度載入失敗"))
+  return res.json()
+}
+
+export async function fetchSignalArchive(
+  params?: {
+    sort_by?: SignalArchiveSortBy
+    type?: string
+    limit?: number
+  },
+  options?: FetchOptions,
+): Promise<SignalArchiveSummaryResponse> {
+  const qs = new URLSearchParams()
+  if (params?.sort_by) qs.set("sort_by", params.sort_by)
+  if (params?.type) qs.set("type", params.type)
+  if (params?.limit != null) qs.set("limit", String(params.limit))
+  const url = `${API_BASE}/api/signals/archive${qs.toString() ? `?${qs.toString()}` : ""}`
+  const res = await apiFetch(url, { signal: options?.signal })
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "訊號追蹤清單載入失敗"))
+  return res.json()
+}
+
+export async function fetchSignalArchiveDetail(
+  stockId: string,
+  options?: FetchOptions,
+): Promise<SignalArchiveDetailResponse | null> {
+  const res = await apiFetch(`${API_BASE}/api/signals/archive/${encodeURIComponent(stockId)}`, {
+    signal: options?.signal,
+  })
+  if (res.status === 404) return null
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "訊號追蹤詳情載入失敗"))
   return res.json()
 }
 

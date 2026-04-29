@@ -19,31 +19,34 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.auth import require_user
 from app.database import SessionLocal, get_db
+from app.industry_flow_service import get_latest_industry_trade_date
 from app.models import SignalGenerationJob, SignalSnapshot, User
+from app.signals import archive as signal_archive
 from app.signals.pipeline import run_signal_pipeline_sync
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/signals", tags=["signals"])
+TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+SIGNALS_SAME_DAY_READY_TIME = time(hour=19, minute=0)
 
 
 # Spec §11.4：限頻與 concurrency 上限
-# 2026-04-27：原 user=1 / global=5 提高到 user=10 / global=10。
-# 2026-04-27：admin 帳號另給 daily 15 次，並把 global 提到 15，
-# 方便訊號異常排查時不被全站上限提早擋住。
-# LLM cost 仍受 concurrency guard 與 cron 觸發排程節制。
-USER_DAILY_REGENERATE_LIMIT = 10
-ADMIN_DAILY_REGENERATE_LIMIT = 15
+# 每帳號每日最多可手動重產 3 次。
+# 只計入 pending / running / done；failed 不算，避免使用者因系統錯誤白白耗掉額度。
+USER_DAILY_REGENERATE_LIMIT = 3
 GLOBAL_DAILY_REGENERATE_LIMIT = 15
+_COUNTED_JOB_STATUSES = ("pending", "running", "done")
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +80,49 @@ class JobResponse(BaseModel):
 class RegenerateAcceptedResponse(BaseModel):
     job_id: str
     snapshot_date: date
+
+
+class RegenerateQuotaResponse(BaseModel):
+    snapshot_date: date
+    daily_limit: int
+    used_count: int
+    remaining_count: int
+    disabled: bool
+
+
+class SignalArchiveSummaryItemResponse(BaseModel):
+    stock_id: str
+    stock_name: str
+    industry_name: Optional[str]
+    sub_industry: Optional[str]
+    first_seen_date: date
+    latest_hit_date: date
+    tracking_day_index: int
+    hit_count: int
+    latest_signal_type: str
+    baseline_trade_date: Optional[date]
+    baseline_price: Optional[float]
+    latest_eval_trade_date: Optional[date]
+    latest_eval_price: Optional[float]
+    return_pct: Optional[float]
+
+
+class SignalArchiveSummaryResponse(BaseModel):
+    as_of_trade_date: Optional[date]
+    retention_trade_days: int
+    items: List[SignalArchiveSummaryItemResponse]
+
+
+class SignalArchiveReportResponse(BaseModel):
+    snapshot_date: date
+    signal_type: str
+    reason: str
+    business_summary: Optional[str]
+    snapshot_generated_at: Optional[datetime]
+
+
+class SignalArchiveDetailResponse(SignalArchiveSummaryItemResponse):
+    reports: List[SignalArchiveReportResponse]
 
 
 # ---------------------------------------------------------------------------
@@ -116,16 +162,35 @@ def _serialize_job(job: SignalGenerationJob) -> JobResponse:
     )
 
 
+def _get_taipei_now() -> datetime:
+    return datetime.now(TAIPEI_TZ)
+
+
 def _resolve_target_date(db: Session) -> date:
-    """fallback target date 用最新 snapshot；若 DB 完全空則用今天（限頻仍會擋）。"""
-    latest = (
+    """依台北時間決定 signals 應使用的最新可用交易日。
+
+    規則：
+      - 19:00 後：允許使用「今天」資料
+      - 19:00 前：只使用「昨天以前」資料
+      - 非交易日 / 假日：自然回退到 `<= ceiling` 的最近交易日
+
+    若交易資料完全空，才退回既有最新 snapshot；再沒有才回今天。
+    """
+    now = _get_taipei_now()
+    ceiling = now.date() if now.time() >= SIGNALS_SAME_DAY_READY_TIME else now.date() - timedelta(days=1)
+
+    latest_trade_date = get_latest_industry_trade_date(db, ceiling)
+    if latest_trade_date is not None:
+        return latest_trade_date
+
+    latest_snapshot = (
         db.query(SignalSnapshot)
         .order_by(SignalSnapshot.snapshot_date.desc())
         .first()
     )
-    if latest is not None:
-        return latest.snapshot_date
-    return date.today()
+    if latest_snapshot is not None:
+        return latest_snapshot.snapshot_date
+    return now.date()
 
 
 def _has_running_job_for_date(db: Session, target_date: date) -> bool:
@@ -141,12 +206,13 @@ def _has_running_job_for_date(db: Session, target_date: date) -> bool:
 
 
 def _user_count_today(db: Session, user_id: int, target_date: date) -> int:
-    """同一使用者當日已觸發次數（不論成敗）。"""
+    """同一使用者當日已觸發且應計次數（failed 不算）。"""
     return (
         db.query(SignalGenerationJob)
         .filter(
             SignalGenerationJob.snapshot_date == target_date,
             SignalGenerationJob.triggered_by == f"user:{user_id}",
+            SignalGenerationJob.status.in_(_COUNTED_JOB_STATUSES),
         )
         .count()
     )
@@ -159,10 +225,6 @@ def _global_count_today(db: Session, target_date: date) -> int:
         .filter(SignalGenerationJob.snapshot_date == target_date)
         .count()
     )
-
-
-def _user_daily_limit(user: User) -> int:
-    return ADMIN_DAILY_REGENERATE_LIMIT if user.is_admin else USER_DAILY_REGENERATE_LIMIT
 
 
 def _run_pipeline_safely(job_id: str, target_date: date) -> None:
@@ -231,6 +293,54 @@ def get_latest_job(db: Session = Depends(get_db)) -> Optional[JobResponse]:
     return _serialize_job(job)
 
 
+@router.get("/archive", response_model=SignalArchiveSummaryResponse)
+def get_signal_archive(
+    sort_by: str = Query(default="tracking_days_desc"),
+    signal_type: Optional[str] = Query(default=None, alias="type"),
+    limit: int = Query(default=200, ge=1, le=500),
+    db: Session = Depends(get_db),
+) -> SignalArchiveSummaryResponse:
+    payload = signal_archive.list_archive_summary(
+        db,
+        sort_by=sort_by,
+        signal_type=signal_type,
+        limit=limit,
+    )
+    return SignalArchiveSummaryResponse(**payload)
+
+
+@router.get("/archive/{stock_id}", response_model=SignalArchiveDetailResponse)
+def get_signal_archive_detail(
+    stock_id: str,
+    db: Session = Depends(get_db),
+) -> SignalArchiveDetailResponse:
+    payload = signal_archive.get_archive_detail(db, stock_id)
+    if payload is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No archived signal records for {stock_id}",
+        )
+    return SignalArchiveDetailResponse(**payload)
+
+
+@router.get("/quota", response_model=RegenerateQuotaResponse)
+def get_regenerate_quota(
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> RegenerateQuotaResponse:
+    target_date = _resolve_target_date(db)
+    daily_limit = USER_DAILY_REGENERATE_LIMIT
+    used_count = _user_count_today(db, user.id, target_date)
+    remaining_count = max(daily_limit - used_count, 0)
+    return RegenerateQuotaResponse(
+        snapshot_date=target_date,
+        daily_limit=daily_limit,
+        used_count=used_count,
+        remaining_count=remaining_count,
+        disabled=remaining_count <= 0,
+    )
+
+
 @router.post(
     "/regenerate",
     response_model=RegenerateAcceptedResponse,
@@ -257,11 +367,11 @@ def regenerate_signals(
             detail="此日期已有產生中的 job，請等候完成",
         )
 
-    user_daily_limit = _user_daily_limit(user)
+    user_daily_limit = USER_DAILY_REGENERATE_LIMIT
     if _user_count_today(db, user.id, target_date) >= user_daily_limit:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="您今日已觸發過訊號重產，明日再試",
+            detail=f"您今日重新產生次數已達上限（{user_daily_limit} 次），明日再試",
         )
 
     if _global_count_today(db, target_date) >= GLOBAL_DAILY_REGENERATE_LIMIT:

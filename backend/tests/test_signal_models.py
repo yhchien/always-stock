@@ -5,7 +5,7 @@ from datetime import date, datetime
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from app.models import SignalGenerationJob, SignalSnapshot
+from app.models import SignalGenerationJob, SignalSnapshot, SignalWatchHit
 
 
 def _make_job(snapshot_date=date(2026, 4, 25), status="pending", triggered_by="cron"):
@@ -133,3 +133,29 @@ def test_snapshot_job_id_nullable_for_legacy_or_orphan(db):
 
     rec = db.query(SignalSnapshot).one()
     assert rec.job_id is None
+
+
+def test_signal_watch_hit_persists_reason_and_json_fields(db):
+    rec = SignalWatchHit(
+        snapshot_date=date(2026, 4, 25),
+        stock_id="2330",
+        stock_name="台積電",
+        signal_type="LEADER",
+        industry_name="半導體業",
+        sub_industry="晶圓代工",
+        business_summary="晶圓代工龍頭",
+        reason="AI 主線延續，外資續買。",
+        theme={"main_theme": "AI"},
+        group_info={"is_group_stock": False},
+        leader_check={"industry_leader": "2330"},
+        signals={"capital_flow": "strong"},
+    )
+    db.add(rec)
+    db.commit()
+
+    got = db.query(SignalWatchHit).one()
+    assert got.stock_id == "2330"
+    assert got.signal_type == "LEADER"
+    assert got.reason == "AI 主線延續，外資續買。"
+    assert got.theme["main_theme"] == "AI"
+    assert got.created_at is not None

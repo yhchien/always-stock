@@ -771,13 +771,15 @@
 - ✅ 新增 `margin_trade` 表 + `etl/finmind_margin_trade_sdk.py`（FinMind `TaiwanStockMarginPurchaseShortSale`；併入 `run_finmind_etl_sdk.py` 為 step 7，non-CRITICAL；2026-04-25 完成。2026-04-27 切換為 dataset-level fetch + 補齊 2026-03-26 ~ 2026-04-24 共 25,168 筆 backfill）
 - ✅ 新增 `signal_snapshots` 表（一日一筆 UPSERT；存完整 LLM JSON + cost tracking；2026-04-25 model 完工）
 - ✅ 新增 `signal_generation_jobs` 表（job_id / status / progress_pct / current_stage；給前端進度條 polling；2026-04-25 model 完工）
+- 🚧 M23 延伸：40 交易日訊號追蹤清單（watchlist 命中歷史、hit count、追蹤第 N 天、報酬率與報告時間軸），spec 在 [docs/plans/m23_signal_archive_spec.md](docs/plans/m23_signal_archive_spec.md)
 - ✅ `main.py` lifespan 新增 `_ensure_m23_tables()`：自動 idempotent `CREATE TABLE IF NOT EXISTS`（仿 M18/M19 pattern）
 
 **API**：
 - `GET /api/signals/latest`（公開）
 - `GET /api/signals/snapshot/{date}`（公開）
 - `GET /api/signals/jobs/latest`（公開，前端 polling 用）
-- `POST /api/signals/regenerate`（登入即可，但同日全站 10 次上限 + 每 user 10 次上限 + 同日 running job 拒絕並發；2026-04-27 從 5 / 1 放寬到 10 / 10）
+- `GET /api/signals/quota`（登入後可讀；前端 disable 與剩餘次數顯示用）
+- `POST /api/signals/regenerate`（登入即可；每帳號每日 3 次、`failed` 不計次、同日全站 15 次上限、同日 running job 拒絕並發）
 
 **觸發方式：使用者手動**（2026-04-27 改版，原排程已停用）
 - 觸發路徑：前端 `DailySignalsPanel`「重新產生」按鈕 → POST `/api/signals/regenerate` → FastAPI `BackgroundTasks` 在 Render web service 直接執行 pipeline
@@ -790,6 +792,8 @@
 - **跳跳跳通知**：localStorage 存 `last_seen_snapshot_date`，比對最新 snapshot 有更新 → header 旁顯示綠色 `animate-ping` 點 + 「新」字；點任一 tab 後寫回 localStorage 取消通知
 - **多工背景產生**：點「重新產生」→ POST `/api/signals/regenerate` → 回 202 + job_id → server BackgroundTasks 跑 → 使用者可以離開頁面繼續用其他功能
 - **進度條**：留在頁面時 polling `/api/signals/jobs/latest` 每 3 秒一次；顯示 `progress_pct` 與 `progress_label`（例：「正在分析第 28 / 45 檔」）
+- **重產額度**：header 讀 `/api/signals/quota` 顯示今日剩餘次數；達每日 3 次時按鈕 disable；若當次 job `failed`，額度自動釋回
+- **追蹤入口**：後續在 `DailySignalsPanel` header 提供 `40日追蹤` 入口，進到 M23 訊號追蹤清單頁
 - 離開頁面再回來：mount 時 polling 自動接上最新進度（不依賴 long-lived connection）
 
 **使用流程**：

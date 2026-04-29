@@ -1,9 +1,10 @@
-"""M23 slice 7 — `/api/signals/*` 4 endpoints 測試。"""
+"""M23 slice 7 — `/api/signals/*` endpoints 測試。"""
 
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,8 +14,11 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import get_db
 from app.main import app
-from app.models import Base, SignalGenerationJob, SignalSnapshot, User
+from app.models import Base, DailyPrice, InstStockFlow, SignalGenerationJob, SignalSnapshot, SignalWatchHit, User
 from app.routers import signals as signals_router
+
+
+TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
 
 @pytest.fixture
@@ -55,13 +59,6 @@ def _register_login(client: TestClient, email: str = "alice@example.com") -> Non
         json={"email": email, "password": "passw0rd!"},
     )
     assert res.status_code == 200, res.text
-
-
-def _promote_user_to_admin(db, email: str) -> None:
-    user = db.query(User).filter(User.email == email).first()
-    assert user is not None
-    user.is_admin = True
-    db.commit()
 
 
 def _seed_snapshot(
@@ -111,6 +108,51 @@ def _seed_job(
     db.add(job)
     db.commit()
     return job
+
+
+def _seed_trade_date(
+    db,
+    trade_date: date,
+    *,
+    stock_id: str = "2330",
+) -> InstStockFlow:
+    row = InstStockFlow(
+        trade_date=trade_date,
+        stock_id=stock_id,
+        inst_type="foreign",
+        buy_shares=1000,
+        sell_shares=0,
+        net_shares=1000,
+        buy_amount_est=1000000,
+        sell_amount_est=0,
+        net_amount_est=1000000,
+    )
+    db.add(row)
+    db.commit()
+    return row
+
+
+def _seed_daily_price(
+    db,
+    stock_id: str,
+    trade_date: date,
+    *,
+    open_price: Optional[float] = None,
+    close_price: Optional[float] = None,
+) -> DailyPrice:
+    row = DailyPrice(
+        stock_id=stock_id,
+        trade_date=trade_date,
+        open_price=open_price,
+        close_price=close_price,
+        high_price=close_price,
+        low_price=close_price,
+        volume=1000,
+        turnover=1000000,
+    )
+    db.add(row)
+    db.commit()
+    return row
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +258,7 @@ def test_regenerate_requires_login(api):
 
 def test_regenerate_happy_path_202_and_kicks_off_background(api):
     client, db, calls = api
-    _seed_snapshot(db, date(2026, 4, 25))
+    _seed_trade_date(db, date(2026, 4, 25))
     _register_login(client)
 
     res = client.post("/api/signals/regenerate")
@@ -236,7 +278,7 @@ def test_regenerate_happy_path_202_and_kicks_off_background(api):
 
 def test_regenerate_returns_409_when_running_job_exists_same_date(api):
     client, db, _ = api
-    _seed_snapshot(db, date(2026, 4, 25))
+    _seed_trade_date(db, date(2026, 4, 25))
     _seed_job(db, "running-job", date(2026, 4, 25), status="running")
     _register_login(client)
 
@@ -247,7 +289,7 @@ def test_regenerate_returns_409_when_running_job_exists_same_date(api):
 
 def test_regenerate_429_when_user_already_triggered_today(api):
     client, db, _ = api
-    _seed_snapshot(db, date(2026, 4, 25))
+    _seed_trade_date(db, date(2026, 4, 25))
     _register_login(client)
 
     limit = signals_router.USER_DAILY_REGENERATE_LIMIT
@@ -268,32 +310,26 @@ def test_regenerate_429_when_user_already_triggered_today(api):
     assert "今日" in over.json()["detail"]
 
 
-def test_regenerate_admin_gets_daily_limit_15(api):
+def test_regenerate_failed_job_does_not_count_toward_user_limit(api):
     client, db, _ = api
-    _seed_snapshot(db, date(2026, 4, 25))
-    email = "admin@example.com"
-    _register_login(client, email=email)
-    _promote_user_to_admin(db, email)
+    _seed_trade_date(db, date(2026, 4, 25))
+    _register_login(client)
 
-    limit = signals_router.ADMIN_DAILY_REGENERATE_LIMIT
+    _seed_job(
+        db,
+        "failed-user-job",
+        date(2026, 4, 25),
+        triggered_by="user:1",
+        status="failed",
+    )
 
-    for _ in range(limit):
-        res = client.post("/api/signals/regenerate")
-        assert res.status_code == 202
-        job_id = res.json()["job_id"]
-        job = db.query(SignalGenerationJob).filter_by(job_id=job_id).first()
-        job.status = "done"
-        job.finished_at = datetime.utcnow()
-        db.commit()
-
-    over = client.post("/api/signals/regenerate")
-    assert over.status_code == 429
-    assert "今日" in over.json()["detail"]
+    res = client.post("/api/signals/regenerate")
+    assert res.status_code == 202
 
 
 def test_regenerate_429_when_global_count_exhausted(api):
     client, db, _ = api
-    _seed_snapshot(db, date(2026, 4, 25))
+    _seed_trade_date(db, date(2026, 4, 25))
 
     limit = signals_router.GLOBAL_DAILY_REGENERATE_LIMIT
     # 預埋 N 筆 cron job 撐滿全站額度（已完成才不卡 concurrency guard）
@@ -312,17 +348,190 @@ def test_regenerate_429_when_global_count_exhausted(api):
     assert "全站" in res.json()["detail"]
 
 
-def test_regenerate_uses_today_when_db_has_no_snapshot(api, monkeypatch):
-    """DB 完全空 → fallback target_date = today。"""
+def test_regenerate_uses_today_when_no_trade_data_or_snapshot(api, monkeypatch):
+    """DB 完全空 → fallback target_date = 今天。"""
     client, db, calls = api
     _register_login(client)
+
+    monkeypatch.setattr(
+        signals_router,
+        "_get_taipei_now",
+        lambda: datetime(2026, 4, 29, 20, 0, 0, tzinfo=TAIPEI_TZ),
+    )
 
     res = client.post("/api/signals/regenerate")
     assert res.status_code == 202
     body = res.json()
-    assert body["snapshot_date"] == date.today().isoformat()
+    assert body["snapshot_date"] == "2026-04-29"
     job_id = body["job_id"]
-    assert calls == [(job_id, date.today())]
+    assert calls == [(job_id, date(2026, 4, 29))]
+
+
+def test_regenerate_quota_requires_login(api):
+    client, _, _ = api
+    res = client.get("/api/signals/quota")
+    assert res.status_code == 401
+
+
+def test_regenerate_quota_returns_remaining_count_and_excludes_failed(api):
+    client, db, _ = api
+    _seed_trade_date(db, date(2026, 4, 25))
+    _register_login(client)
+
+    _seed_job(db, "user-done", date(2026, 4, 25), triggered_by="user:1", status="done")
+    _seed_job(db, "user-running", date(2026, 4, 25), triggered_by="user:1", status="running")
+    _seed_job(db, "user-failed", date(2026, 4, 25), triggered_by="user:1", status="failed")
+
+    res = client.get("/api/signals/quota")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["snapshot_date"] == "2026-04-25"
+    assert body["daily_limit"] == 3
+    assert body["used_count"] == 2
+    assert body["remaining_count"] == 1
+    assert body["disabled"] is False
+
+
+def test_regenerate_quota_disables_when_limit_reached(api):
+    client, db, _ = api
+    _seed_trade_date(db, date(2026, 4, 25))
+    _register_login(client)
+
+    for i in range(signals_router.USER_DAILY_REGENERATE_LIMIT):
+        _seed_job(
+            db,
+            f"user-counted-{i}",
+            date(2026, 4, 25),
+            triggered_by="user:1",
+            status="done",
+        )
+
+    res = client.get("/api/signals/quota")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["used_count"] == 3
+    assert body["remaining_count"] == 0
+    assert body["disabled"] is True
+
+
+def test_archive_summary_returns_aggregated_rows_and_return_pct(api, monkeypatch):
+    client, db, _ = api
+    db.add_all(
+        [
+            SignalWatchHit(
+                snapshot_date=date(2026, 4, 24),
+                stock_id="2330",
+                stock_name="台積電",
+                signal_type="LEADER",
+                industry_name="半導體業",
+                sub_industry="晶圓代工",
+                business_summary="晶圓代工龍頭",
+                reason="第一次",
+                theme={},
+                group_info={},
+                leader_check={},
+                signals={},
+            ),
+            SignalWatchHit(
+                snapshot_date=date(2026, 4, 28),
+                stock_id="2330",
+                stock_name="台積電",
+                signal_type="FOLLOWER",
+                industry_name="半導體業",
+                sub_industry="晶圓代工",
+                business_summary="晶圓代工龍頭",
+                reason="第二次",
+                theme={},
+                group_info={},
+                leader_check={},
+                signals={},
+            ),
+        ]
+    )
+    db.commit()
+    _seed_daily_price(db, "2330", date(2026, 4, 25), open_price=100.0, close_price=110.0)
+    _seed_daily_price(db, "2330", date(2026, 4, 29), open_price=111.0, close_price=121.0)
+
+    monkeypatch.setattr(
+        signals_router.signal_archive,
+        "resolve_archive_as_of_trade_date",
+        lambda db, now=None: date(2026, 4, 29),
+    )
+
+    res = client.get("/api/signals/archive")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["as_of_trade_date"] == "2026-04-29"
+    assert len(body["items"]) == 1
+    item = body["items"][0]
+    assert item["stock_id"] == "2330"
+    assert item["tracking_day_index"] >= 1
+    assert item["hit_count"] == 2
+    assert item["latest_signal_type"] == "FOLLOWER"
+    assert item["baseline_trade_date"] == "2026-04-25"
+    assert item["baseline_price"] == 105.0
+    assert item["latest_eval_trade_date"] == "2026-04-29"
+    assert item["latest_eval_price"] == 121.0
+    assert round(item["return_pct"], 2) == round((121.0 - 105.0) / 105.0 * 100.0, 2)
+
+
+def test_archive_detail_returns_reports_in_desc_date_order(api, monkeypatch):
+    client, db, _ = api
+    db.add_all(
+        [
+            SignalWatchHit(
+                snapshot_date=date(2026, 4, 24),
+                stock_id="2454",
+                stock_name="聯發科",
+                signal_type="LEADER",
+                industry_name="半導體業",
+                sub_industry="IC 設計",
+                business_summary="第一次摘要",
+                reason="第一次報告",
+                theme={},
+                group_info={},
+                leader_check={},
+                signals={},
+            ),
+            SignalWatchHit(
+                snapshot_date=date(2026, 4, 28),
+                stock_id="2454",
+                stock_name="聯發科",
+                signal_type="FOLLOWER",
+                industry_name="半導體業",
+                sub_industry="IC 設計",
+                business_summary="第二次摘要",
+                reason="第二次報告",
+                theme={},
+                group_info={},
+                leader_check={},
+                signals={},
+            ),
+        ]
+    )
+    db.commit()
+    _seed_daily_price(db, "2454", date(2026, 4, 25), open_price=200.0, close_price=210.0)
+    _seed_daily_price(db, "2454", date(2026, 4, 29), open_price=212.0, close_price=215.0)
+
+    monkeypatch.setattr(
+        signals_router.signal_archive,
+        "resolve_archive_as_of_trade_date",
+        lambda db, now=None: date(2026, 4, 29),
+    )
+
+    res = client.get("/api/signals/archive/2454")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["stock_id"] == "2454"
+    assert body["hit_count"] == 2
+    assert [report["snapshot_date"] for report in body["reports"]] == ["2026-04-28", "2026-04-24"]
+    assert body["reports"][0]["reason"] == "第二次報告"
+
+
+def test_archive_detail_returns_404_when_missing(api):
+    client, _, _ = api
+    res = client.get("/api/signals/archive/9999")
+    assert res.status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -330,13 +539,57 @@ def test_regenerate_uses_today_when_db_has_no_snapshot(api, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_target_date_picks_latest_snapshot(api):
+def test_resolve_target_date_uses_same_day_trade_date_after_1900(api, monkeypatch):
     _, db, _ = api
-    _seed_snapshot(db, date(2026, 4, 24))
+    _seed_trade_date(db, date(2026, 4, 28))
+    _seed_trade_date(db, date(2026, 4, 29), stock_id="2317")
+    monkeypatch.setattr(
+        signals_router,
+        "_get_taipei_now",
+        lambda: datetime(2026, 4, 29, 20, 0, 0, tzinfo=TAIPEI_TZ),
+    )
+    assert signals_router._resolve_target_date(db) == date(2026, 4, 29)
+
+
+def test_resolve_target_date_uses_previous_trade_date_before_1900(api, monkeypatch):
+    _, db, _ = api
+    _seed_trade_date(db, date(2026, 4, 28))
+    _seed_trade_date(db, date(2026, 4, 29), stock_id="2317")
+    monkeypatch.setattr(
+        signals_router,
+        "_get_taipei_now",
+        lambda: datetime(2026, 4, 29, 18, 59, 0, tzinfo=TAIPEI_TZ),
+    )
+    assert signals_router._resolve_target_date(db) == date(2026, 4, 28)
+
+
+def test_resolve_target_date_falls_back_to_previous_available_trade_date_on_holiday(api, monkeypatch):
+    _, db, _ = api
+    _seed_trade_date(db, date(2026, 4, 28))
+    monkeypatch.setattr(
+        signals_router,
+        "_get_taipei_now",
+        lambda: datetime(2026, 5, 2, 20, 0, 0, tzinfo=TAIPEI_TZ),
+    )
+    assert signals_router._resolve_target_date(db) == date(2026, 4, 28)
+
+
+def test_resolve_target_date_falls_back_to_latest_snapshot_when_trade_data_empty(api, monkeypatch):
+    _, db, _ = api
     _seed_snapshot(db, date(2026, 4, 25))
+    monkeypatch.setattr(
+        signals_router,
+        "_get_taipei_now",
+        lambda: datetime(2026, 4, 29, 20, 0, 0, tzinfo=TAIPEI_TZ),
+    )
     assert signals_router._resolve_target_date(db) == date(2026, 4, 25)
 
 
-def test_resolve_target_date_falls_back_to_today_when_empty(api):
+def test_resolve_target_date_falls_back_to_today_when_empty(api, monkeypatch):
     _, db, _ = api
-    assert signals_router._resolve_target_date(db) == date.today()
+    monkeypatch.setattr(
+        signals_router,
+        "_get_taipei_now",
+        lambda: datetime(2026, 4, 29, 20, 0, 0, tzinfo=TAIPEI_TZ),
+    )
+    assert signals_router._resolve_target_date(db) == date(2026, 4, 29)
