@@ -93,13 +93,14 @@ export default function SignalArchivePage() {
       setDetail(null)
       return
     }
+    const stockId = selectedStockId
 
     let cancelled = false
     async function run() {
       setDetailLoading(true)
       setDetailError(null)
       try {
-        const data = await fetchSignalArchiveDetail(selectedStockId)
+        const data = await fetchSignalArchiveDetail(stockId)
         if (!cancelled) setDetail(data)
       } catch (err) {
         if (!cancelled) {
