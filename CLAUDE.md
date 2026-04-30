@@ -801,6 +801,7 @@
 - **首頁 bootstrap**：除了 deferred mount，首頁現在還會先集中預抓 `latest trade date`、`latest signals snapshot`、`latest signal job`、`market hot money`、`industries`，再把初始 payload 灌給各 panel，避免 mount 後各元件再各自重打一次
 - **首頁 client cache**：前端目前對 `latest trade date`、`/api/industries`、`/api/market/hot-money`、`/api/signals/latest` 做短 TTL client cache；但 `DailySignalsPanel` 在 regenerate 後重抓 snapshot 時必須 `bypassCache`，避免看到剛重產前的 stale 資料
 - **首頁 loading UX**：首屏現在有 boot loading overlay，會顯示正在載入哪幾塊資料與總進度；不要回退成只有整頁 skeleton / spinner 而沒有載入語意
+- **40日追蹤頁文案**：報酬率規則要直接寫成「第一個交易日抓到 = `--`、第二個交易日用 `(open + close) / 2` 建 baseline 並固定 `0.00%`、第三個交易日起才開始計算報酬率」，避免使用者把「第二天」誤解成「第二次命中」
 - 離開頁面再回來：mount 時 polling 自動接上最新進度（不依賴 long-lived connection）
 
 **使用流程**：
