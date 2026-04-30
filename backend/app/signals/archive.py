@@ -664,16 +664,21 @@ def update_signal_watch_returns(
         if baseline_row is not None:
             baseline_trade_date = baseline_row.baseline_trade_date
             baseline_price = float(baseline_row.baseline_price)
-            return_pct = (
-                (close_price - baseline_price)
-                / baseline_price
-                * 100.0
-            )
+            if baseline_trade_date == trade_date:
+                latest_eval_price = baseline_price
+                return_pct = 0.0
+            else:
+                latest_eval_price = close_price
+                return_pct = (
+                    (close_price - baseline_price)
+                    / baseline_price
+                    * 100.0
+                )
             for row in rows:
                 row.baseline_trade_date = baseline_trade_date
                 row.baseline_price = baseline_price
                 row.latest_eval_trade_date = trade_date
-                row.latest_eval_price = close_price
+                row.latest_eval_price = latest_eval_price
                 row.return_pct = return_pct
             updated += 1
             continue

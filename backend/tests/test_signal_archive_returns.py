@@ -266,6 +266,78 @@ def test_archive_summary_uses_persisted_return_fields():
         assert item["return_pct"] == ((120.0 - 105.0) / 105.0) * 100.0
 
 
+def test_update_signal_watch_returns_keeps_baseline_day_at_zero_on_rerun():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+
+    with Session() as db:
+        db.add_all(
+            [
+                SignalWatchHit(
+                    snapshot_date=date(2026, 4, 29),
+                    stock_id="2421",
+                    stock_name="建準",
+                    signal_type="FOLLOWER",
+                    industry_name="電機機械",
+                    sub_industry="車用機械傳動設備及零配件",
+                    business_summary="a",
+                    reason="a",
+                    theme={},
+                    group_info={},
+                    leader_check={},
+                    signals={},
+                    baseline_trade_date=date(2026, 4, 30),
+                    baseline_price=73.5,
+                    latest_eval_trade_date=date(2026, 4, 30),
+                    latest_eval_price=73.5,
+                    return_pct=0.0,
+                ),
+                SignalWatchHit(
+                    snapshot_date=date(2026, 4, 30),
+                    stock_id="2421",
+                    stock_name="建準",
+                    signal_type="FOLLOWER",
+                    industry_name="電機機械",
+                    sub_industry="車用機械傳動設備及零配件",
+                    business_summary="b",
+                    reason="b",
+                    theme={},
+                    group_info={},
+                    leader_check={},
+                    signals={},
+                    baseline_trade_date=date(2026, 4, 30),
+                    baseline_price=73.5,
+                    latest_eval_trade_date=date(2026, 4, 30),
+                    latest_eval_price=73.5,
+                    return_pct=0.0,
+                ),
+            ]
+        )
+        db.commit()
+        _seed_price(db, "2421", date(2026, 4, 30), 75.0, 72.0)
+
+        updated = archive.update_signal_watch_returns(
+            db,
+            as_of_trade_date=date(2026, 4, 30),
+        )
+        assert updated == 1
+
+        rows = (
+            db.query(SignalWatchHit)
+            .filter(SignalWatchHit.stock_id == "2421")
+            .order_by(SignalWatchHit.snapshot_date.asc())
+            .all()
+        )
+        assert len(rows) == 2
+        for row in rows:
+            assert row.baseline_trade_date == date(2026, 4, 30)
+            assert row.baseline_price == 73.5
+            assert row.latest_eval_trade_date == date(2026, 4, 30)
+            assert row.latest_eval_price == 73.5
+            assert row.return_pct == 0.0
+
+
 def test_refresh_completed_signal_cycles_upserts_40_day_archive_rows():
     engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
     Base.metadata.create_all(bind=engine)

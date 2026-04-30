@@ -157,6 +157,12 @@ export default function SignalArchivePage() {
           <p className="mt-1 text-sm text-slate-400">
             追蹤最近 {summary?.retention_trade_days ?? 40} 個交易日內，被納入每日異常訊號清單的股票。
           </p>
+          <div className="mt-2 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs leading-6 text-slate-400">
+            <p>報酬率定義：</p>
+            <p>第一天抓到：報酬率顯示 `--`，當天不計算。</p>
+            <p>第二天抓到：以第二個交易日的 `(開盤價 + 收盤價) / 2` 建立基準價，當天報酬率固定顯示 `0%`。</p>
+            <p>第三天起：用最新評估日的收盤價，相對這個基準價計算報酬率。</p>
+          </div>
           {summary?.as_of_trade_date && (
             <p className="mt-1 text-xs text-slate-500">最新評估交易日：{summary.as_of_trade_date}</p>
           )}
