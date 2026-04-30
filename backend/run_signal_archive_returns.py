@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 import sys
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -32,16 +32,27 @@ def _resolve_target_trade_date() -> date:
     now_tpe = datetime.now(TAIPEI_TZ)
     if now_tpe.time() >= RETURNS_READY_TIME:
         return now_tpe.date()
-    return now_tpe.date()
+    return now_tpe.date() - timedelta(days=1)
 
 
-def main() -> int:
+def _parse_target_trade_date(argv: list[str]) -> date:
+    if len(argv) > 1 and argv[1].strip():
+        return date.fromisoformat(argv[1].strip())
+    return _resolve_target_trade_date()
+
+
+def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    target_trade_date = _resolve_target_trade_date()
+    argv = argv or sys.argv
+    try:
+        target_trade_date = _parse_target_trade_date(argv)
+    except ValueError as exc:
+        logger.error("Invalid target_trade_date argv: %s", exc)
+        return EXIT_ERROR
     logger.info("Signal archive return update start: target_trade_date=%s", target_trade_date)
 
     try:
@@ -76,4 +87,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv))

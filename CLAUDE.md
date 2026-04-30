@@ -775,6 +775,7 @@
 - 2026-04-30 新增 `signal_watch_completed_archives`：當一檔股票完成一個 40 交易日追蹤 cycle 後，封存 `first_seen_date / hit_count / return_day_10_pct / return_day_20_pct / return_day_30_pct / return_day_40_pct / completed_trade_date`；若未來同檔重新被抓到，會以新的 `first_seen_date` 再新增一列
 - 2026-04-30 修正 `signal_watch_returns` 更新口徑：同一檔股票在 active 40 日追蹤 cycle 內的所有 `signal_watch_hits`，都要一起同步 `baseline_trade_date / baseline_price / latest_eval_trade_date / latest_eval_price / return_pct`；不能只更新最新一列，否則第 2 天後部分列會停在 `0%` 或舊值
 - 2026-04-30 再補一層 guard：若 `trade_date == baseline_trade_date`（也就是第 2 天建立 baseline 的當天），即使人工或排程同日重跑 `run_signal_archive_returns.py`，`latest_eval_price` 也要維持 `baseline_price`，`return_pct` 必須強制是 `0.0`，不可先用同日收盤價算出正負報酬
+- `run_signal_archive_returns.py` 現在必須支援手動帶日期（`python3 run_signal_archive_returns.py 2026-04-30`），而且若未帶日期，20:00 前預設要回前一天，避免凌晨手動補跑時誤打到休市日 / 當日無資料
 - 這類 `40日追蹤` 報酬率修正 deploy 後，必須手動補跑 `backend/run_signal_archive_returns.py` 一次，才會把 DB 內既有 active rows 回補正確
 - ✅ `main.py` lifespan 新增 `_ensure_m23_tables()`：自動 idempotent `CREATE TABLE IF NOT EXISTS`（仿 M18/M19 pattern）
 

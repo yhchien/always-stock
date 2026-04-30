@@ -5,6 +5,10 @@ on:
     # 台北 20:00（週一到週五）= UTC 12:00
     - cron: '0 12 * * 1-5'
   workflow_dispatch:
+    inputs:
+      target_date:
+        description: '目標交易日 (YYYY-MM-DD)，手動補跑時可指定，例如 2026-04-30'
+        required: false
 
 jobs:
   update_signal_returns:
@@ -30,9 +34,14 @@ jobs:
         working-directory: backend
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          INPUT_DATE: ${{ github.event.inputs.target_date }}
         run: |
           set +e
-          python3 run_signal_archive_returns.py
+          if [ -n "$INPUT_DATE" ]; then
+            python3 run_signal_archive_returns.py "$INPUT_DATE"
+          else
+            python3 run_signal_archive_returns.py
+          fi
           RETURNS_EXIT=$?
           echo "returns_exit=$RETURNS_EXIT" >> "$GITHUB_OUTPUT"
           echo "Signal archive returns exit code: $RETURNS_EXIT"
