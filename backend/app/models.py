@@ -380,6 +380,38 @@ class SignalWatchHit(Base):
     )
 
 
+class SignalWatchCompletedArchive(Base):
+    """
+    M23 訊號追蹤 40 交易日結束後封存表
+    一列代表一檔股票完成一個 40 交易日追蹤 cycle 的摘要。
+    若同檔股票未來重新進入新的 40 日追蹤，會以新的 first_seen_date 再新增一列。
+    """
+    __tablename__ = "signal_watch_completed_archives"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    stock_id = Column(String, nullable=False, index=True)
+    stock_name = Column(String, nullable=False)
+    industry_name = Column(String, nullable=True)
+    sub_industry = Column(String, nullable=True)
+    first_seen_date = Column(Date, nullable=False, index=True)
+    latest_hit_date = Column(Date, nullable=False)
+    hit_count = Column(Integer, nullable=False, default=1)
+    latest_signal_type = Column(String(16), nullable=False)
+    baseline_trade_date = Column(Date, nullable=True)
+    baseline_price = Column(Float, nullable=True)
+    return_day_10_pct = Column(Float, nullable=True)
+    return_day_20_pct = Column(Float, nullable=True)
+    return_day_30_pct = Column(Float, nullable=True)
+    return_day_40_pct = Column(Float, nullable=True)
+    completed_trade_date = Column(Date, nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("stock_id", "first_seen_date", name="uq_signal_watch_completed_cycle"),
+    )
+
+
 class IndustryMapping(Base):
     """
     產業分類對照表（雙軌驗證用）

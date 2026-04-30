@@ -1089,6 +1089,28 @@ export interface SignalArchiveSummaryResponse {
   items: SignalArchiveSummaryItem[]
 }
 
+export interface SignalArchiveCompletedItem {
+  stock_id: string
+  stock_name: string
+  industry_name: string | null
+  sub_industry: string | null
+  first_seen_date: string
+  latest_hit_date: string
+  hit_count: number
+  latest_signal_type: string
+  baseline_trade_date: string | null
+  baseline_price: number | null
+  return_day_10_pct: number | null
+  return_day_20_pct: number | null
+  return_day_30_pct: number | null
+  return_day_40_pct: number | null
+  completed_trade_date: string
+}
+
+export interface SignalArchiveCompletedResponse {
+  items: SignalArchiveCompletedItem[]
+}
+
 export interface SignalArchiveReportItem {
   snapshot_date: string
   signal_type: string
@@ -1172,6 +1194,20 @@ export async function fetchSignalArchiveDetail(
   })
   if (res.status === 404) return null
   if (!res.ok) throw new Error(await buildErrorMessage(res, "訊號追蹤詳情載入失敗"))
+  return res.json()
+}
+
+export async function fetchCompletedSignalArchive(
+  params?: {
+    limit?: number
+  },
+  options?: FetchOptions,
+): Promise<SignalArchiveCompletedResponse> {
+  const qs = new URLSearchParams()
+  if (params?.limit != null) qs.set("limit", String(params.limit))
+  const url = `${API_BASE}/api/signals/archive/completed${qs.toString() ? `?${qs.toString()}` : ""}`
+  const res = await apiFetch(url, { signal: options?.signal })
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "40日移出紀錄載入失敗"))
   return res.json()
 }
 

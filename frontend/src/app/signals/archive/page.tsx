@@ -4,8 +4,10 @@ import Link from "next/link"
 import { useCallback, useEffect, useMemo, useState } from "react"
 
 import {
+  fetchCompletedSignalArchive,
   fetchSignalArchive,
   fetchSignalArchiveDetail,
+  type SignalArchiveCompletedResponse,
   type SignalArchiveDetailResponse,
   type SignalArchiveSortBy,
   type SignalArchiveSummaryResponse,
@@ -63,11 +65,14 @@ function ReturnCell({ value }: { value: number | null }) {
 export default function SignalArchivePage() {
   const [sortBy, setSortBy] = useState<SignalArchiveSortBy>("tracking_days_desc")
   const [summary, setSummary] = useState<SignalArchiveSummaryResponse | null>(null)
+  const [completedSummary, setCompletedSummary] = useState<SignalArchiveCompletedResponse | null>(null)
   const [selectedStockId, setSelectedStockId] = useState<string | null>(null)
   const [detail, setDetail] = useState<SignalArchiveDetailResponse | null>(null)
   const [loading, setLoading] = useState(true)
+  const [completedLoading, setCompletedLoading] = useState(true)
   const [detailLoading, setDetailLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [completedError, setCompletedError] = useState<string | null>(null)
   const [detailError, setDetailError] = useState<string | null>(null)
 
   const loadSummary = useCallback(async () => {
@@ -87,6 +92,28 @@ export default function SignalArchivePage() {
   useEffect(() => {
     void loadSummary()
   }, [loadSummary])
+
+  useEffect(() => {
+    let cancelled = false
+    async function run() {
+      setCompletedLoading(true)
+      setCompletedError(null)
+      try {
+        const data = await fetchCompletedSignalArchive({ limit: 200 })
+        if (!cancelled) setCompletedSummary(data)
+      } catch (err) {
+        if (!cancelled) {
+          setCompletedError(err instanceof Error ? err.message : "40日移出紀錄載入失敗")
+        }
+      } finally {
+        if (!cancelled) setCompletedLoading(false)
+      }
+    }
+    void run()
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   useEffect(() => {
     if (!selectedStockId) {
@@ -235,6 +262,88 @@ export default function SignalArchivePage() {
                   </TableRow>
                 )
               })}
+            </TableBody>
+          </Table>
+        )}
+      </section>
+
+      <section className="rounded-xl border border-slate-700 bg-slate-900/40 p-4">
+        <header className="mb-4">
+          <h2 className="text-lg font-semibold text-slate-100">移出 40 日後紀錄</h2>
+          <p className="mt-1 text-sm text-slate-400">
+            當股票完成一個 40 交易日追蹤 cycle 後，會在這裡留下封存摘要；同一檔之後若重新被抓到，會再新增一列。
+          </p>
+        </header>
+        {completedLoading && <p className="text-sm text-slate-400">載入中…</p>}
+        {completedError && !completedLoading && (
+          <p className="text-sm text-rose-300">{completedError}</p>
+        )}
+        {!completedLoading && !completedError && (completedSummary?.items.length ?? 0) === 0 && (
+          <p className="text-sm text-slate-400">暫無資料</p>
+        )}
+        {!completedLoading && !completedError && completedSummary && completedSummary.items.length > 0 && (
+          <Table>
+            <TableHeader>
+              <TableRow className="border-slate-700">
+                <TableHead className="text-slate-300">股票</TableHead>
+                <TableHead className="text-slate-300">首次抓到</TableHead>
+                <TableHead className="text-slate-300">40天中抓到次數</TableHead>
+                <TableHead className="text-slate-300">第10天</TableHead>
+                <TableHead className="text-slate-300">第20天</TableHead>
+                <TableHead className="text-slate-300">第30天</TableHead>
+                <TableHead className="text-slate-300">第40天</TableHead>
+                <TableHead className="text-slate-300">移出日</TableHead>
+                <TableHead className="text-slate-300">操作</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {completedSummary.items.map((item) => (
+                <TableRow
+                  key={`${item.stock_id}-${item.first_seen_date}`}
+                  className="border-slate-800"
+                >
+                  <TableCell className="align-top">
+                    <div className="flex flex-col">
+                      <span className="text-sm font-semibold text-slate-100">
+                        {item.stock_id} {item.stock_name}
+                      </span>
+                      <span className="text-xs text-slate-500">
+                        {item.industry_name ?? "—"}
+                        {item.sub_industry ? ` · ${item.sub_industry}` : ""}
+                      </span>
+                    </div>
+                  </TableCell>
+                  <TableCell className="font-mono text-xs text-slate-300">
+                    {item.first_seen_date}
+                  </TableCell>
+                  <TableCell className="text-sm text-slate-200">
+                    {item.hit_count} 次
+                  </TableCell>
+                  <TableCell>
+                    <ReturnCell value={item.return_day_10_pct} />
+                  </TableCell>
+                  <TableCell>
+                    <ReturnCell value={item.return_day_20_pct} />
+                  </TableCell>
+                  <TableCell>
+                    <ReturnCell value={item.return_day_30_pct} />
+                  </TableCell>
+                  <TableCell>
+                    <ReturnCell value={item.return_day_40_pct} />
+                  </TableCell>
+                  <TableCell className="font-mono text-xs text-slate-300">
+                    {item.completed_trade_date}
+                  </TableCell>
+                  <TableCell>
+                    <Link
+                      href={`/stocks/${encodeURIComponent(item.stock_id)}`}
+                      className="rounded border border-sky-500/50 bg-sky-500/10 px-2 py-1 text-xs text-sky-200 hover:bg-sky-500/20"
+                    >
+                      K線圖
+                    </Link>
+                  </TableCell>
+                </TableRow>
+              ))}
             </TableBody>
           </Table>
         )}

@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import date, timedelta
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.models import Base, DailyPrice, SignalGenerationJob, SignalSnapshot, SignalWatchHit
+from app.models import (
+    Base,
+    DailyPrice,
+    SignalGenerationJob,
+    SignalSnapshot,
+    SignalWatchCompletedArchive,
+    SignalWatchHit,
+)
 from app.signals import archive
 
 
@@ -236,3 +243,79 @@ def test_archive_summary_uses_persisted_return_fields():
         assert item["latest_eval_trade_date"] == date(2026, 4, 30)
         assert item["latest_eval_price"] == 120.0
         assert item["return_pct"] == ((120.0 - 105.0) / 105.0) * 100.0
+
+
+def test_refresh_completed_signal_cycles_upserts_40_day_archive_rows():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+
+    with Session() as db:
+        first_seen = date(2026, 1, 2)
+        for day in range(1, 41):
+            trade_date = first_seen + timedelta(days=day - 1)
+            _seed_price(
+                db,
+                "2330",
+                trade_date,
+                open_price=100.0 + day,
+                close_price=101.0 + day,
+            )
+        db.add_all(
+            [
+                SignalWatchHit(
+                    snapshot_date=first_seen,
+                    stock_id="2330",
+                    stock_name="台積電",
+                    signal_type="LEADER",
+                    industry_name="半導體業",
+                    sub_industry="晶圓代工",
+                    business_summary="a",
+                    reason="第一次",
+                    theme={},
+                    group_info={},
+                    leader_check={},
+                    signals={},
+                ),
+                SignalWatchHit(
+                    snapshot_date=first_seen + timedelta(days=18),
+                    stock_id="2330",
+                    stock_name="台積電",
+                    signal_type="FOLLOWER",
+                    industry_name="半導體業",
+                    sub_industry="晶圓代工",
+                    business_summary="b",
+                    reason="第二次",
+                    theme={},
+                    group_info={},
+                    leader_check={},
+                    signals={},
+                ),
+            ]
+        )
+        db.commit()
+
+        upserted = archive.refresh_completed_signal_cycles(
+            db,
+            as_of_trade_date=first_seen + timedelta(days=39),
+        )
+        assert upserted == 1
+        db.commit()
+
+        row = db.query(SignalWatchCompletedArchive).one()
+        assert row.stock_id == "2330"
+        assert row.first_seen_date == first_seen
+        assert row.latest_hit_date == first_seen + timedelta(days=18)
+        assert row.hit_count == 2
+        assert row.latest_signal_type == "FOLLOWER"
+        assert row.baseline_trade_date == first_seen + timedelta(days=1)
+        assert row.baseline_price == ((102.0 + 103.0) / 2.0)
+        assert row.completed_trade_date == first_seen + timedelta(days=39)
+        assert row.return_day_10_pct is not None
+        assert row.return_day_20_pct is not None
+        assert row.return_day_30_pct is not None
+        assert row.return_day_40_pct is not None
+
+        payload = archive.list_completed_archive_summary(db)
+        assert payload["items"][0]["stock_id"] == "2330"
+        assert payload["items"][0]["completed_trade_date"] == first_seen + timedelta(days=39)

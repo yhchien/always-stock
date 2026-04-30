@@ -84,6 +84,7 @@ def _ensure_m23_tables() -> None:
         MarginTrade,
         SignalGenerationJob,
         SignalSnapshot,
+        SignalWatchCompletedArchive,
         SignalWatchHit,
     )
 
@@ -94,6 +95,7 @@ def _ensure_m23_tables() -> None:
                 MarginTrade.__table__,
                 SignalGenerationJob.__table__,
                 SignalSnapshot.__table__,
+                SignalWatchCompletedArchive.__table__,
                 SignalWatchHit.__table__,
             ],
         )

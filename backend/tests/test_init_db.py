@@ -18,6 +18,7 @@ def test_all_tables_created():
     assert "daily_price" in tables
     assert "inst_stock_flow" in tables
     assert "industry_daily_flow" in tables
+    assert "signal_watch_completed_archives" in tables
 
 
 def test_stocks_master_columns():

@@ -102,7 +102,7 @@
 - M14 輿情分析
 - M15 Telegram 電子報
 - M20 交易分析擴充（預期 45% 報酬率加碼建議 + 風報比 1:1.75）
-- M23 每日異常訊號清單（**改為使用者手動觸發**；前端 `DailySignalsPanel`「重新產生」按鈕 → POST `/api/signals/regenerate` → FastAPI BackgroundTasks 跑 pipeline；deterministic filter 建候選池 + LLM 上網查公司業務／集團／龍頭；輸出 LEADER / FOLLOWER / LAGGARD 三類；不預測報酬、不出買賣建議；GitHub Actions cron 已停用，`workflow_dispatch` 保留作管理備援；spec [docs/plans/m23_daily_signals_spec.md](docs/plans/m23_daily_signals_spec.md)）
+- M23 每日異常訊號清單（**改為使用者手動觸發**；前端 `DailySignalsPanel`「重新產生」按鈕 → POST `/api/signals/regenerate` → FastAPI BackgroundTasks 跑 pipeline；deterministic filter 建候選池 + LLM 上網查公司業務／集團／龍頭；輸出 LEADER / FOLLOWER / LAGGARD 三類；另有 `/signals/archive` 的 40 交易日追蹤總表，並新增 `/api/signals/archive/completed` 封存移出 40 日後的 cycle 摘要；不預測報酬、不出買賣建議；GitHub Actions cron 已停用，`workflow_dispatch` 保留作管理備援；spec [docs/plans/m23_daily_signals_spec.md](docs/plans/m23_daily_signals_spec.md)）
 - M24 自訂進出場策略回測（M11 擴充；使用者自設分層進場 / 追價 / 攤平 / 停損停利規則，引擎回測 edge；LLM 為現場判斷層，trigger 觸發時依當下籌碼/產業/技術給「適合執行 yes/no」提示，不替使用者寫規則）
 
 > M18 → M19 → M20 依序執行。M19 已完工（2026-04-23），M20 擴充建立在 M19 卡片帶入 context 之上。
@@ -772,6 +772,7 @@
 - ✅ 新增 `signal_snapshots` 表（一日一筆 UPSERT；存完整 LLM JSON + cost tracking；2026-04-25 model 完工）
 - ✅ 新增 `signal_generation_jobs` 表（job_id / status / progress_pct / current_stage；給前端進度條 polling；2026-04-25 model 完工）
 - 🚧 M23 延伸：40 交易日訊號追蹤清單（watchlist 命中歷史、hit count、追蹤第 N 天、報酬率與報告時間軸），spec 在 [docs/plans/m23_signal_archive_spec.md](docs/plans/m23_signal_archive_spec.md)
+- 2026-04-30 新增 `signal_watch_completed_archives`：當一檔股票完成一個 40 交易日追蹤 cycle 後，封存 `first_seen_date / hit_count / return_day_10_pct / return_day_20_pct / return_day_30_pct / return_day_40_pct / completed_trade_date`；若未來同檔重新被抓到，會以新的 `first_seen_date` 再新增一列
 - ✅ `main.py` lifespan 新增 `_ensure_m23_tables()`：自動 idempotent `CREATE TABLE IF NOT EXISTS`（仿 M18/M19 pattern）
 
 **API**：
@@ -793,7 +794,7 @@
 - **多工背景產生**：點「重新產生」→ POST `/api/signals/regenerate` → 回 202 + job_id → server BackgroundTasks 跑 → 使用者可以離開頁面繼續用其他功能
 - **進度條**：留在頁面時 polling `/api/signals/jobs/latest` 每 3 秒一次；顯示 `progress_pct` 與 `progress_label`（例：「正在分析第 28 / 45 檔」）
 - **重產額度**：header 讀 `/api/signals/quota` 顯示今日剩餘次數；達每日 3 次時按鈕 disable；若當次 job `failed`，額度自動釋回
-- **追蹤入口**：後續在 `DailySignalsPanel` header 提供 `40日追蹤` 入口，進到 M23 訊號追蹤清單頁
+- **追蹤入口**：`DailySignalsPanel` header 已提供 `40日追蹤` 入口，進到 M23 訊號追蹤清單頁；頁面目前包含 active summary 與 completed archive 兩張表，completed table 初期無資料時顯示「暫無資料」
 - 離開頁面再回來：mount 時 polling 自動接上最新進度（不依賴 long-lived connection）
 
 **使用流程**：

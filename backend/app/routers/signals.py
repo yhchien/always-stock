@@ -113,6 +113,28 @@ class SignalArchiveSummaryResponse(BaseModel):
     items: List[SignalArchiveSummaryItemResponse]
 
 
+class SignalArchiveCompletedItemResponse(BaseModel):
+    stock_id: str
+    stock_name: str
+    industry_name: Optional[str]
+    sub_industry: Optional[str]
+    first_seen_date: date
+    latest_hit_date: date
+    hit_count: int
+    latest_signal_type: str
+    baseline_trade_date: Optional[date]
+    baseline_price: Optional[float]
+    return_day_10_pct: Optional[float]
+    return_day_20_pct: Optional[float]
+    return_day_30_pct: Optional[float]
+    return_day_40_pct: Optional[float]
+    completed_trade_date: date
+
+
+class SignalArchiveCompletedResponse(BaseModel):
+    items: List[SignalArchiveCompletedItemResponse]
+
+
 class SignalArchiveReportResponse(BaseModel):
     snapshot_date: date
     signal_type: str
@@ -307,6 +329,18 @@ def get_signal_archive(
         limit=limit,
     )
     return SignalArchiveSummaryResponse(**payload)
+
+
+@router.get("/archive/completed", response_model=SignalArchiveCompletedResponse)
+def get_completed_signal_archive(
+    limit: int = Query(default=200, ge=1, le=500),
+    db: Session = Depends(get_db),
+) -> SignalArchiveCompletedResponse:
+    payload = signal_archive.list_completed_archive_summary(
+        db,
+        limit=limit,
+    )
+    return SignalArchiveCompletedResponse(**payload)
 
 
 @router.get("/archive/{stock_id}", response_model=SignalArchiveDetailResponse)

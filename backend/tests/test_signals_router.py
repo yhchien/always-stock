@@ -14,7 +14,16 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import get_db
 from app.main import app
-from app.models import Base, DailyPrice, InstStockFlow, SignalGenerationJob, SignalSnapshot, SignalWatchHit, User
+from app.models import (
+    Base,
+    DailyPrice,
+    InstStockFlow,
+    SignalGenerationJob,
+    SignalSnapshot,
+    SignalWatchCompletedArchive,
+    SignalWatchHit,
+    User,
+)
 from app.routers import signals as signals_router
 
 
@@ -538,6 +547,42 @@ def test_archive_detail_returns_404_when_missing(api):
     client, _, _ = api
     res = client.get("/api/signals/archive/9999")
     assert res.status_code == 404
+
+
+def test_completed_archive_summary_returns_rows(api):
+    client, db, _ = api
+    db.add(
+        SignalWatchCompletedArchive(
+            stock_id="2454",
+            stock_name="聯發科",
+            industry_name="半導體業",
+            sub_industry="IC 設計",
+            first_seen_date=date(2026, 3, 3),
+            latest_hit_date=date(2026, 3, 21),
+            hit_count=3,
+            latest_signal_type="FOLLOWER",
+            baseline_trade_date=date(2026, 3, 4),
+            baseline_price=205.0,
+            return_day_10_pct=2.5,
+            return_day_20_pct=4.5,
+            return_day_30_pct=6.5,
+            return_day_40_pct=8.5,
+            completed_trade_date=date(2026, 4, 29),
+        )
+    )
+    db.commit()
+
+    res = client.get("/api/signals/archive/completed")
+    assert res.status_code == 200
+    body = res.json()
+    assert len(body["items"]) == 1
+    item = body["items"][0]
+    assert item["stock_id"] == "2454"
+    assert item["stock_name"] == "聯發科"
+    assert item["first_seen_date"] == "2026-03-03"
+    assert item["hit_count"] == 3
+    assert item["return_day_40_pct"] == 8.5
+    assert item["completed_trade_date"] == "2026-04-29"
 
 
 # ---------------------------------------------------------------------------

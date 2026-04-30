@@ -141,6 +141,7 @@ npm run dev
 | `monthly_revenue` | 每月營收 + YoY/MoM | 2019-01 ~ 上個月 | FinMind `TaiwanStockMonthRevenue` |
 | `financial_statement` | 季財報各科目（EPS、營益率等） | 2019-Q1 ~ 最新一季 | FinMind 財報資料集 |
 | `broker_trade_agg` | 分點買賣超聚合 | 2024-01 ~ today（GitHub Actions 每小時推進） | FinMind `TaiwanStockTradingDailyReportSecIdAgg` |
+| `signal_watch_completed_archives` | M23：完成 40 交易日追蹤後的封存摘要（first_seen / hit_count / day10/20/30/40 return） | 2026-04 ~ today | 從 `signal_watch_hits` + `daily_price` 計算 |
 
 ### M18 / M19 資料表（使用者系統）
 
@@ -193,6 +194,9 @@ npm run dev
 | GET | `/api/market/latest-trade-date` | 取得 DB 最新交易日 |
 | GET | `/api/market/hot-money?date=&days=3&limit=20` | L0：熱錢湧入個股排行 Top N（M22） |
 | GET | `/api/industries/{name}/hot-money?date=&days=3&limit=10&sub_industry=` | L1：單產業熱錢排行（M22） |
+| GET | `/api/signals/archive` | M23：最近 40 交易日訊號追蹤總表 |
+| GET | `/api/signals/archive/{stock_id}` | M23：單一股票 40 日追蹤報告時間軸 |
+| GET | `/api/signals/archive/completed` | M23：移出 40 日後的封存表（day10/20/30/40 報酬） |
 | POST | `/api/analysis/trade-quality` | 首頁 AI 交易質量分析（公開；未登入 3/day、已登入 30/day） |
 | GET | `/api/analysis/context` | M21：Trade Quality Context 6 section 預聚合 JSON（需登入；deterministic + no-hindsight） |
 | POST | `/api/backtest/run` | L3：回測執行（需登入） |
@@ -233,7 +237,7 @@ npm run dev
 | M20 | 交易分析擴充（預期 45% 報酬率加碼建議 + 風報比 1:1.75） | ⬜ 規劃中（M19 完成後） |
 | M21 | Trade Quality Context 資料管線（6 section 預聚合 JSON + `GET /api/analysis/context`；deterministic + no-hindsight） | ✅ |
 | M22 | 熱錢湧入個股排行（L0 底部 Top 20 / L1 頂部 Top 10，近 N 日三大法人累計買超） | ✅ |
-| M23 | 每日異常訊號清單（deterministic filter 建候選池 + LLM 上網查公司業務／集團／龍頭比對；輸出 LEADER / FOLLOWER / LAGGARD 三類；L0 tab bar + pulse 通知 + 多工背景重新產生 + 進度條；全候選先做短 decision，只有 WATCH 補長理由；另含 40 交易日訊號追蹤清單、命中次數、報酬率與報告時間軸；不預測報酬、不出買賣建議） | 🚧 持續優化中（[core spec](docs/plans/m23_daily_signals_spec.md) / [archive spec](docs/plans/m23_signal_archive_spec.md)） |
+| M23 | 每日異常訊號清單（deterministic filter 建候選池 + LLM 上網查公司業務／集團／龍頭比對；輸出 LEADER / FOLLOWER / LAGGARD 三類；L0 tab bar + pulse 通知 + 多工背景重新產生 + 進度條；全候選先做短 decision，只有 WATCH 補長理由；另含 40 交易日訊號追蹤清單、命中次數、報酬率與報告時間軸，並新增移出 40 日後的 completed archive 封存表；不預測報酬、不出買賣建議） | 🚧 持續優化中（[core spec](docs/plans/m23_daily_signals_spec.md) / [archive spec](docs/plans/m23_signal_archive_spec.md)） |
 
 M23 診斷約定：
 - `market_context` 與 research / decision / watch-reason 各階段 fallback 都會附帶 `llm_diagnostic`

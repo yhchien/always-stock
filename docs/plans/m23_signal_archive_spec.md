@@ -15,6 +15,7 @@
 3. 目前已經進入追蹤第幾個交易日
 4. 自基準日以來的報酬率
 5. 每一次被抓到當天的報告內容
+6. 當股票完成 40 交易日追蹤後，保留一份 completed archive 摘要，包含第 10 / 20 / 30 / 40 天報酬率
 
 這不是使用者自選 watchlist，也不是回測系統；它是 **M23 訊號輸出的歷史追蹤視圖**。
 
@@ -112,6 +113,28 @@ class SignalWatchHit(Base):
 1. `signal_snapshots` 是整包 JSON，做 stock-level 聚合與排序成本較高
 2. 同日重產時，需要精準覆蓋 `(snapshot_date, stock_id)` 命中集合
 3. 報告時間軸、hit count、retention 清理，都更適合 normalized table
+
+### 4.3 `signal_watch_completed_archives`
+
+當某檔股票完成一個 40 交易日追蹤 cycle 後，額外寫入一張 completed archive table：
+
+- `stock_id`
+- `stock_name`
+- `industry_name`
+- `sub_industry`
+- `first_seen_date`
+- `latest_hit_date`
+- `hit_count`
+- `latest_signal_type`
+- `baseline_trade_date`
+- `baseline_price`
+- `return_day_10_pct`
+- `return_day_20_pct`
+- `return_day_30_pct`
+- `return_day_40_pct`
+- `completed_trade_date`
+
+同一檔股票如果在之後某個時間點已經移出舊 cycle，且未來重新被抓到，應以新的 `first_seen_date` 再新增一筆 completed archive row，而不是覆蓋舊 row。
 
 ---
 

@@ -10,7 +10,12 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.models import DailyPrice, SignalSnapshot, SignalWatchHit
+from app.models import (
+    DailyPrice,
+    SignalSnapshot,
+    SignalWatchCompletedArchive,
+    SignalWatchHit,
+)
 
 ARCHIVE_RETENTION_TRADE_DAYS = 40
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
@@ -33,6 +38,25 @@ class ArchiveSummaryItem:
     latest_eval_trade_date: Optional[date]
     latest_eval_price: Optional[float]
     return_pct: Optional[float]
+
+
+@dataclass
+class CompletedArchiveItem:
+    stock_id: str
+    stock_name: str
+    industry_name: Optional[str]
+    sub_industry: Optional[str]
+    first_seen_date: date
+    latest_hit_date: date
+    hit_count: int
+    latest_signal_type: str
+    baseline_trade_date: Optional[date]
+    baseline_price: Optional[float]
+    return_day_10_pct: Optional[float]
+    return_day_20_pct: Optional[float]
+    return_day_30_pct: Optional[float]
+    return_day_40_pct: Optional[float]
+    completed_trade_date: date
 
 
 def persist_signal_watch_hits(
@@ -82,6 +106,10 @@ def persist_signal_watch_hits(
             )
         )
 
+    refresh_completed_signal_cycles(
+        db,
+        as_of_trade_date=target_date,
+    )
     _prune_signal_watch_hits(db)
     db.commit()
 
@@ -179,6 +207,45 @@ def get_archive_detail(
     return payload
 
 
+def list_completed_archive_summary(
+    db: Session,
+    *,
+    limit: int = 200,
+) -> dict[str, Any]:
+    query = db.query(SignalWatchCompletedArchive).order_by(
+        SignalWatchCompletedArchive.completed_trade_date.desc(),
+        SignalWatchCompletedArchive.first_seen_date.desc(),
+        SignalWatchCompletedArchive.stock_id.asc(),
+    )
+    if limit > 0:
+        query = query.limit(limit)
+    rows = query.all()
+    return {
+        "items": [
+            _serialize_completed_archive_item(
+                CompletedArchiveItem(
+                    stock_id=row.stock_id,
+                    stock_name=row.stock_name,
+                    industry_name=row.industry_name,
+                    sub_industry=row.sub_industry,
+                    first_seen_date=row.first_seen_date,
+                    latest_hit_date=row.latest_hit_date,
+                    hit_count=row.hit_count,
+                    latest_signal_type=row.latest_signal_type,
+                    baseline_trade_date=row.baseline_trade_date,
+                    baseline_price=row.baseline_price,
+                    return_day_10_pct=row.return_day_10_pct,
+                    return_day_20_pct=row.return_day_20_pct,
+                    return_day_30_pct=row.return_day_30_pct,
+                    return_day_40_pct=row.return_day_40_pct,
+                    completed_trade_date=row.completed_trade_date,
+                )
+            )
+            for row in rows
+        ]
+    }
+
+
 def resolve_archive_as_of_trade_date(
     db: Session,
     *,
@@ -195,6 +262,93 @@ def resolve_archive_as_of_trade_date(
         .filter(DailyPrice.trade_date <= ceiling)
         .scalar()
     )
+
+
+def refresh_completed_signal_cycles(
+    db: Session,
+    *,
+    as_of_trade_date: Optional[date] = None,
+) -> int:
+    trade_date = as_of_trade_date or resolve_archive_as_of_trade_date(
+        db,
+        now=datetime.now(TAIPEI_TZ),
+    )
+    if trade_date is None:
+        return 0
+
+    grouped = _load_grouped_hits(db)
+    if not grouped:
+        return 0
+
+    tracking_day_cache: dict[date, int] = {}
+    trade_date_cache: dict[tuple[date, int], Optional[date]] = {}
+    price_cache: dict[tuple[str, date], Optional[DailyPrice]] = {}
+    upserted = 0
+
+    for stock_id, rows in grouped.items():
+        first_seen_date = rows[0].snapshot_date
+        tracking_day_index = _count_tracking_days(
+            db,
+            first_seen_date=first_seen_date,
+            as_of_trade_date=trade_date,
+            cache=tracking_day_cache,
+        )
+        if tracking_day_index < ARCHIVE_RETENTION_TRADE_DAYS:
+            continue
+
+        completed_item = _build_completed_archive_item(
+            db,
+            stock_id=stock_id,
+            rows=rows,
+            trade_date_cache=trade_date_cache,
+            price_cache=price_cache,
+        )
+        existing = (
+            db.query(SignalWatchCompletedArchive)
+            .filter(
+                SignalWatchCompletedArchive.stock_id == stock_id,
+                SignalWatchCompletedArchive.first_seen_date == first_seen_date,
+            )
+            .one_or_none()
+        )
+        if existing is None:
+            db.add(
+                SignalWatchCompletedArchive(
+                    stock_id=completed_item.stock_id,
+                    stock_name=completed_item.stock_name,
+                    industry_name=completed_item.industry_name,
+                    sub_industry=completed_item.sub_industry,
+                    first_seen_date=completed_item.first_seen_date,
+                    latest_hit_date=completed_item.latest_hit_date,
+                    hit_count=completed_item.hit_count,
+                    latest_signal_type=completed_item.latest_signal_type,
+                    baseline_trade_date=completed_item.baseline_trade_date,
+                    baseline_price=completed_item.baseline_price,
+                    return_day_10_pct=completed_item.return_day_10_pct,
+                    return_day_20_pct=completed_item.return_day_20_pct,
+                    return_day_30_pct=completed_item.return_day_30_pct,
+                    return_day_40_pct=completed_item.return_day_40_pct,
+                    completed_trade_date=completed_item.completed_trade_date,
+                )
+            )
+        else:
+            existing.stock_name = completed_item.stock_name
+            existing.industry_name = completed_item.industry_name
+            existing.sub_industry = completed_item.sub_industry
+            existing.latest_hit_date = completed_item.latest_hit_date
+            existing.hit_count = completed_item.hit_count
+            existing.latest_signal_type = completed_item.latest_signal_type
+            existing.baseline_trade_date = completed_item.baseline_trade_date
+            existing.baseline_price = completed_item.baseline_price
+            existing.return_day_10_pct = completed_item.return_day_10_pct
+            existing.return_day_20_pct = completed_item.return_day_20_pct
+            existing.return_day_30_pct = completed_item.return_day_30_pct
+            existing.return_day_40_pct = completed_item.return_day_40_pct
+            existing.completed_trade_date = completed_item.completed_trade_date
+            existing.updated_at = datetime.utcnow()
+        upserted += 1
+
+    return upserted
 
 
 def _load_grouped_hits(
@@ -234,6 +388,86 @@ def _load_latest_return_state_by_stock(
             "return_pct": row.return_pct,
         }
     return state_by_stock
+
+
+def _build_completed_archive_item(
+    db: Session,
+    *,
+    stock_id: str,
+    rows: list[SignalWatchHit],
+    trade_date_cache: dict[tuple[date, int], Optional[date]],
+    price_cache: dict[tuple[str, date], Optional[DailyPrice]],
+) -> CompletedArchiveItem:
+    first_row = rows[0]
+    latest_row = rows[-1]
+    first_seen_date = first_row.snapshot_date
+    completed_trade_date = _resolve_nth_trade_date(
+        db,
+        first_seen_date=first_seen_date,
+        day_index=ARCHIVE_RETENTION_TRADE_DAYS,
+        cache=trade_date_cache,
+    ) or latest_row.snapshot_date
+    baseline_trade_date = _resolve_nth_trade_date(
+        db,
+        first_seen_date=first_seen_date,
+        day_index=2,
+        cache=trade_date_cache,
+    )
+    baseline_price = _resolve_baseline_price(
+        db,
+        stock_id=stock_id,
+        baseline_trade_date=baseline_trade_date,
+        cache=price_cache,
+    )
+    return CompletedArchiveItem(
+        stock_id=stock_id,
+        stock_name=latest_row.stock_name,
+        industry_name=latest_row.industry_name,
+        sub_industry=latest_row.sub_industry,
+        first_seen_date=first_seen_date,
+        latest_hit_date=latest_row.snapshot_date,
+        hit_count=len(rows),
+        latest_signal_type=latest_row.signal_type,
+        baseline_trade_date=baseline_trade_date,
+        baseline_price=baseline_price,
+        return_day_10_pct=_resolve_return_for_tracking_day(
+            db,
+            stock_id=stock_id,
+            first_seen_date=first_seen_date,
+            tracking_day=10,
+            baseline_price=baseline_price,
+            trade_date_cache=trade_date_cache,
+            price_cache=price_cache,
+        ),
+        return_day_20_pct=_resolve_return_for_tracking_day(
+            db,
+            stock_id=stock_id,
+            first_seen_date=first_seen_date,
+            tracking_day=20,
+            baseline_price=baseline_price,
+            trade_date_cache=trade_date_cache,
+            price_cache=price_cache,
+        ),
+        return_day_30_pct=_resolve_return_for_tracking_day(
+            db,
+            stock_id=stock_id,
+            first_seen_date=first_seen_date,
+            tracking_day=30,
+            baseline_price=baseline_price,
+            trade_date_cache=trade_date_cache,
+            price_cache=price_cache,
+        ),
+        return_day_40_pct=_resolve_return_for_tracking_day(
+            db,
+            stock_id=stock_id,
+            first_seen_date=first_seen_date,
+            tracking_day=40,
+            baseline_price=baseline_price,
+            trade_date_cache=trade_date_cache,
+            price_cache=price_cache,
+        ),
+        completed_trade_date=completed_trade_date,
+    )
 
 
 def _build_archive_summary_item(
@@ -297,6 +531,100 @@ def _count_tracking_days(
     return cache[first_seen_date]
 
 
+def _resolve_nth_trade_date(
+    db: Session,
+    *,
+    first_seen_date: date,
+    day_index: int,
+    cache: dict[tuple[date, int], Optional[date]],
+) -> Optional[date]:
+    key = (first_seen_date, day_index)
+    if key in cache:
+        return cache[key]
+    rows = (
+        db.query(DailyPrice.trade_date)
+        .filter(DailyPrice.trade_date >= first_seen_date)
+        .distinct()
+        .order_by(DailyPrice.trade_date.asc())
+        .limit(day_index)
+        .all()
+    )
+    trade_date = rows[-1][0] if len(rows) >= day_index else None
+    cache[key] = trade_date
+    return trade_date
+
+
+def _resolve_price_row(
+    db: Session,
+    *,
+    stock_id: str,
+    trade_date: Optional[date],
+    cache: dict[tuple[str, date], Optional[DailyPrice]],
+) -> Optional[DailyPrice]:
+    if trade_date is None:
+        return None
+    key = (stock_id, trade_date)
+    if key in cache:
+        return cache[key]
+    row = (
+        db.query(DailyPrice)
+        .filter(
+            DailyPrice.stock_id == stock_id,
+            DailyPrice.trade_date == trade_date,
+        )
+        .first()
+    )
+    cache[key] = row
+    return row
+
+
+def _resolve_baseline_price(
+    db: Session,
+    *,
+    stock_id: str,
+    baseline_trade_date: Optional[date],
+    cache: dict[tuple[str, date], Optional[DailyPrice]],
+) -> Optional[float]:
+    row = _resolve_price_row(
+        db,
+        stock_id=stock_id,
+        trade_date=baseline_trade_date,
+        cache=cache,
+    )
+    if row is None or row.open_price is None or row.close_price is None:
+        return None
+    return (float(row.open_price) + float(row.close_price)) / 2.0
+
+
+def _resolve_return_for_tracking_day(
+    db: Session,
+    *,
+    stock_id: str,
+    first_seen_date: date,
+    tracking_day: int,
+    baseline_price: Optional[float],
+    trade_date_cache: dict[tuple[date, int], Optional[date]],
+    price_cache: dict[tuple[str, date], Optional[DailyPrice]],
+) -> Optional[float]:
+    if baseline_price in (None, 0):
+        return None
+    trade_date = _resolve_nth_trade_date(
+        db,
+        first_seen_date=first_seen_date,
+        day_index=tracking_day,
+        cache=trade_date_cache,
+    )
+    row = _resolve_price_row(
+        db,
+        stock_id=stock_id,
+        trade_date=trade_date,
+        cache=price_cache,
+    )
+    if row is None or row.close_price is None:
+        return None
+    return (float(row.close_price) - float(baseline_price)) / float(baseline_price) * 100.0
+
+
 def update_signal_watch_returns(
     db: Session,
     *,
@@ -352,7 +680,8 @@ def update_signal_watch_returns(
             latest_row.return_pct = 0.0
             updated += 1
 
-    if updated:
+    completed_upserts = refresh_completed_signal_cycles(db, as_of_trade_date=trade_date)
+    if updated or completed_upserts:
         db.commit()
     return updated
 
@@ -373,6 +702,26 @@ def _serialize_summary_item(item: ArchiveSummaryItem) -> dict[str, Any]:
         "latest_eval_trade_date": item.latest_eval_trade_date,
         "latest_eval_price": item.latest_eval_price,
         "return_pct": item.return_pct,
+    }
+
+
+def _serialize_completed_archive_item(item: CompletedArchiveItem) -> dict[str, Any]:
+    return {
+        "stock_id": item.stock_id,
+        "stock_name": item.stock_name,
+        "industry_name": item.industry_name,
+        "sub_industry": item.sub_industry,
+        "first_seen_date": item.first_seen_date,
+        "latest_hit_date": item.latest_hit_date,
+        "hit_count": item.hit_count,
+        "latest_signal_type": item.latest_signal_type,
+        "baseline_trade_date": item.baseline_trade_date,
+        "baseline_price": item.baseline_price,
+        "return_day_10_pct": item.return_day_10_pct,
+        "return_day_20_pct": item.return_day_20_pct,
+        "return_day_30_pct": item.return_day_30_pct,
+        "return_day_40_pct": item.return_day_40_pct,
+        "completed_trade_date": item.completed_trade_date,
     }
 
 
