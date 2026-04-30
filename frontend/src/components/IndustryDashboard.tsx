@@ -61,13 +61,22 @@ interface Props {
   defaultDate: string
   onDateChange?: (date: string) => void
   onSelectIndustry?: (name: string, date: string) => void
+  initialRows?: IndustryFlowItem[]
+  initialRowsDate?: string | null
 }
 
-export default function IndustryDashboard({ defaultDate, onDateChange, onSelectIndustry }: Props) {
+export default function IndustryDashboard({
+  defaultDate,
+  onDateChange,
+  onSelectIndustry,
+  initialRows,
+  initialRowsDate,
+}: Props) {
+  const hasInitialRows = initialRowsDate === defaultDate && initialRows != null
   const [date, setDate] = useState(defaultDate)
   const [tab, setTab] = useState<Tab>("total")
-  const [rows, setRows] = useState<IndustryFlowItem[]>([])
-  const [loading, setLoading] = useState(false)
+  const [rows, setRows] = useState<IndustryFlowItem[]>(hasInitialRows ? [] : (initialRows ?? []))
+  const [loading, setLoading] = useState(hasInitialRows ? false : true)
   const [error, setError] = useState<string | null>(null)
   const [sortKey, setSortKey] = useState<SortKey>("total")
   const [sortAsc, setSortAsc] = useState(false)
@@ -95,6 +104,7 @@ export default function IndustryDashboard({ defaultDate, onDateChange, onSelectI
   }, [])
 
   useEffect(() => {
+    if (initialRowsDate === date && initialRows) return
     let cleanup: (() => void) | void
     void load(date).then((fn) => {
       cleanup = fn
@@ -102,7 +112,7 @@ export default function IndustryDashboard({ defaultDate, onDateChange, onSelectI
     return () => {
       cleanup?.()
     }
-  }, [date, load])
+  }, [date, initialRows, initialRowsDate, load])
 
   useEffect(() => {
     setDate(defaultDate)
@@ -125,8 +135,10 @@ export default function IndustryDashboard({ defaultDate, onDateChange, onSelectI
   }
 
   const filtered = search
-    ? rows.filter((r) => r.industry_name.toLowerCase().includes(search.toLowerCase()))
-    : rows
+    ? (initialRowsDate === date && initialRows ? initialRows : rows).filter((r) =>
+        r.industry_name.toLowerCase().includes(search.toLowerCase()),
+      )
+    : (initialRowsDate === date && initialRows ? initialRows : rows)
 
   const sorted = [...filtered].sort((a, b) => {
     const va = getSortValue(a, sortKey)

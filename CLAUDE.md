@@ -773,6 +773,8 @@
 - ✅ 新增 `signal_generation_jobs` 表（job_id / status / progress_pct / current_stage；給前端進度條 polling；2026-04-25 model 完工）
 - 🚧 M23 延伸：40 交易日訊號追蹤清單（watchlist 命中歷史、hit count、追蹤第 N 天、報酬率與報告時間軸），spec 在 [docs/plans/m23_signal_archive_spec.md](docs/plans/m23_signal_archive_spec.md)
 - 2026-04-30 新增 `signal_watch_completed_archives`：當一檔股票完成一個 40 交易日追蹤 cycle 後，封存 `first_seen_date / hit_count / return_day_10_pct / return_day_20_pct / return_day_30_pct / return_day_40_pct / completed_trade_date`；若未來同檔重新被抓到，會以新的 `first_seen_date` 再新增一列
+- 2026-04-30 修正 `signal_watch_returns` 更新口徑：同一檔股票在 active 40 日追蹤 cycle 內的所有 `signal_watch_hits`，都要一起同步 `baseline_trade_date / baseline_price / latest_eval_trade_date / latest_eval_price / return_pct`；不能只更新最新一列，否則第 2 天後部分列會停在 `0%` 或舊值
+- 這類 `40日追蹤` 報酬率修正 deploy 後，必須手動補跑 `backend/run_signal_archive_returns.py` 一次，才會把 DB 內既有 active rows 回補正確
 - ✅ `main.py` lifespan 新增 `_ensure_m23_tables()`：自動 idempotent `CREATE TABLE IF NOT EXISTS`（仿 M18/M19 pattern）
 
 **API**：
@@ -795,6 +797,9 @@
 - **進度條**：留在頁面時 polling `/api/signals/jobs/latest` 每 3 秒一次；顯示 `progress_pct` 與 `progress_label`（例：「正在分析第 28 / 45 檔」）
 - **重產額度**：header 讀 `/api/signals/quota` 顯示今日剩餘次數；達每日 3 次時按鈕 disable；若當次 job `failed`，額度自動釋回
 - **追蹤入口**：`DailySignalsPanel` header 已提供 `40日追蹤` 入口，進到 M23 訊號追蹤清單頁；頁面目前包含 active summary 與 completed archive 兩張表，completed table 初期無資料時顯示「暫無資料」
+- **首頁 bootstrap**：除了 deferred mount，首頁現在還會先集中預抓 `latest trade date`、`latest signals snapshot`、`latest signal job`、`market hot money`、`industries`，再把初始 payload 灌給各 panel，避免 mount 後各元件再各自重打一次
+- **首頁 client cache**：前端目前對 `latest trade date`、`/api/industries`、`/api/market/hot-money`、`/api/signals/latest` 做短 TTL client cache；但 `DailySignalsPanel` 在 regenerate 後重抓 snapshot 時必須 `bypassCache`，避免看到剛重產前的 stale 資料
+- **首頁 loading UX**：首屏現在有 boot loading overlay，會顯示正在載入哪幾塊資料與總進度；不要回退成只有整頁 skeleton / spinner 而沒有載入語意
 - 離開頁面再回來：mount 時 polling 自動接上最新進度（不依賴 long-lived connection）
 
 **使用流程**：

@@ -159,6 +159,20 @@ def test_update_signal_watch_returns_applies_requested_rules():
                 ),
                 SignalWatchHit(
                     snapshot_date=date(2026, 4, 30),
+                    stock_id="2454",
+                    stock_name="聯發科",
+                    signal_type="FOLLOWER",
+                    industry_name="半導體業",
+                    sub_industry="IC 設計",
+                    business_summary="b2",
+                    reason="b2",
+                    theme={},
+                    group_info={},
+                    leader_check={},
+                    signals={},
+                ),
+                SignalWatchHit(
+                    snapshot_date=date(2026, 4, 30),
                     stock_id="2317",
                     stock_name="鴻海",
                     signal_type="LEADER",
@@ -189,12 +203,19 @@ def test_update_signal_watch_returns_applies_requested_rules():
         assert tsmc.latest_eval_price == 120.0
         assert tsmc.return_pct == ((120.0 - 105.0) / 105.0) * 100.0
 
-        mtk = db.query(SignalWatchHit).filter(SignalWatchHit.stock_id == "2454").one()
-        assert mtk.baseline_trade_date == date(2026, 4, 30)
-        assert mtk.baseline_price == 210.0
-        assert mtk.latest_eval_trade_date == date(2026, 4, 30)
-        assert mtk.latest_eval_price == 210.0
-        assert mtk.return_pct == 0.0
+        mtk_rows = (
+            db.query(SignalWatchHit)
+            .filter(SignalWatchHit.stock_id == "2454")
+            .order_by(SignalWatchHit.snapshot_date.asc())
+            .all()
+        )
+        assert len(mtk_rows) == 2
+        for mtk in mtk_rows:
+            assert mtk.baseline_trade_date == date(2026, 4, 30)
+            assert mtk.baseline_price == 210.0
+            assert mtk.latest_eval_trade_date == date(2026, 4, 30)
+            assert mtk.latest_eval_price == 210.0
+            assert mtk.return_pct == 0.0
 
         honhai = db.query(SignalWatchHit).filter(SignalWatchHit.stock_id == "2317").one()
         assert honhai.baseline_trade_date is None

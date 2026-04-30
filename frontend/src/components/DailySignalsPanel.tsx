@@ -6,6 +6,7 @@ import Link from "next/link"
 import {
   fetchSignalRegenerateQuota,
   fetchLatestSignalSnapshot,
+  type SignalJobResponse,
   regenerateSignals,
   type SignalDecisionType,
   type SignalRegenerateQuotaResponse,
@@ -161,10 +162,20 @@ function RemovedCard({ item }: { item: SignalRemovedItem }) {
   )
 }
 
-export default function DailySignalsPanel() {
+export default function DailySignalsPanel({
+  initialSnapshot,
+  initialSnapshotLoaded = false,
+  initialJob,
+  initialJobLoaded = false,
+}: {
+  initialSnapshot?: SignalSnapshotResponse | null
+  initialSnapshotLoaded?: boolean
+  initialJob?: SignalJobResponse | null
+  initialJobLoaded?: boolean
+}) {
   const { status: authStatus } = useAuth()
-  const [snapshot, setSnapshot] = useState<SignalSnapshotResponse | null>(null)
-  const [snapshotLoading, setSnapshotLoading] = useState(true)
+  const [snapshot, setSnapshot] = useState<SignalSnapshotResponse | null>(initialSnapshot ?? null)
+  const [snapshotLoading, setSnapshotLoading] = useState(!initialSnapshotLoaded)
   const [snapshotError, setSnapshotError] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState(true)
   const [tab, setTab] = useState<SignalsTab>("leader")
@@ -174,7 +185,7 @@ export default function DailySignalsPanel() {
   const [regenerateError, setRegenerateError] = useState<string | null>(null)
   const [regenerateQuota, setRegenerateQuota] = useState<SignalRegenerateQuotaResponse | null>(null)
 
-  const { job } = useSignalJobPolling(bumpKey)
+  const { job } = useSignalJobPolling(bumpKey, initialJob ?? null, initialJobLoaded)
   const jobStatus = job?.status
 
   // 初始展開狀態：讀 localStorage（預設 collapse）
@@ -201,7 +212,7 @@ export default function DailySignalsPanel() {
     setSnapshotLoading(true)
     setSnapshotError(null)
     try {
-      const data = await fetchLatestSignalSnapshot()
+      const data = await fetchLatestSignalSnapshot({ bypassCache: true })
       setSnapshot(data)
     } catch (err) {
       setSnapshotError(err instanceof Error ? err.message : "訊號清單載入失敗")
@@ -211,8 +222,9 @@ export default function DailySignalsPanel() {
   }, [])
 
   useEffect(() => {
+    if (initialSnapshotLoaded) return
     void loadSnapshot()
-  }, [loadSnapshot])
+  }, [initialSnapshotLoaded, loadSnapshot])
 
   const loadRegenerateQuota = useCallback(async () => {
     if (authStatus !== "authenticated") {

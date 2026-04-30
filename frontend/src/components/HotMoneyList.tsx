@@ -27,6 +27,8 @@ interface HotMoneyListProps {
   days?: number
   limit?: number
   title?: string
+  initialData?: HotMoneyResponse | null
+  initialDataDate?: string | null
 }
 
 function AmountCell({ value }: { value: number }) {
@@ -52,10 +54,13 @@ export default function HotMoneyList({
   days = 3,
   limit,
   title,
+  initialData,
+  initialDataDate,
 }: HotMoneyListProps) {
   const router = useRouter()
-  const [data, setData] = useState<HotMoneyResponse | null>(null)
-  const [loading, setLoading] = useState(false)
+  const hasInitialData = initialDataDate === date && initialData != null
+  const [data, setData] = useState<HotMoneyResponse | null>(hasInitialData ? null : (initialData ?? null))
+  const [loading, setLoading] = useState(hasInitialData ? false : true)
   const [error, setError] = useState<string | null>(null)
 
   const effectiveLimit = limit ?? (industryName ? 10 : 20)
@@ -63,39 +68,41 @@ export default function HotMoneyList({
 
   useEffect(() => {
     if (!date) return
+    if (hasInitialData) return
     const controller = new AbortController()
-    setLoading(true)
-    setError(null)
-    const request = industryName
-      ? fetchIndustryHotMoney(industryName, date, {
-          days,
-          limit: effectiveLimit,
-          subIndustry: subIndustry ?? null,
-        }, { signal: controller.signal })
-      : fetchMarketHotMoney(date, days, effectiveLimit, { signal: controller.signal })
-
-    request
-      .then((res) => {
+    async function run() {
+      setLoading(true)
+      setError(null)
+      try {
+        const res = industryName
+          ? await fetchIndustryHotMoney(industryName, date, {
+              days,
+              limit: effectiveLimit,
+              subIndustry: subIndustry ?? null,
+            }, { signal: controller.signal })
+          : await fetchMarketHotMoney(date, days, effectiveLimit, { signal: controller.signal })
         if (!controller.signal.aborted) setData(res)
-      })
-      .catch((err) => {
+      } catch (err) {
         if (controller.signal.aborted) return
         setError(toDisplayError(err))
         setData(null)
-      })
-      .finally(() => {
+      } finally {
         if (!controller.signal.aborted) setLoading(false)
-      })
+      }
+    }
+
+    void run()
 
     return () => controller.abort()
-  }, [industryName, subIndustry, date, days, effectiveLimit])
+  }, [industryName, subIndustry, date, days, effectiveLimit, hasInitialData])
 
-  const items = data?.items ?? []
+  const resolvedData = hasInitialData ? initialData : data
+  const items = resolvedData?.items ?? []
   const windowLabel =
-    data?.start_date && data?.end_date
-      ? data.start_date === data.end_date
-        ? data.end_date
-        : `${data.start_date} ~ ${data.end_date}`
+    resolvedData?.start_date && resolvedData?.end_date
+      ? resolvedData.start_date === resolvedData.end_date
+        ? resolvedData.end_date
+        : `${resolvedData.start_date} ~ ${resolvedData.end_date}`
       : null
 
   return (

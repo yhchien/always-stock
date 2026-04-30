@@ -2,6 +2,29 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"
 const REALTIME_BATCH_SIZE = 50
 const BROKER_FETCH_RETRIES = 1
 const BROKER_FETCH_RETRY_DELAY_MS = 400
+const LATEST_TRADE_DATE_CACHE_TTL_MS = 5 * 60 * 1000
+const INDUSTRIES_CACHE_TTL_MS = 5 * 60 * 1000
+const HOT_MONEY_CACHE_TTL_MS = 5 * 60 * 1000
+const SIGNAL_SNAPSHOT_CACHE_TTL_MS = 60 * 1000
+const CLIENT_CACHE_PREFIX = "always-stock:client-cache:"
+const memoryCache = new Map<string, { expiresAt: number; value: unknown }>()
+const pendingCache = new Map<string, Promise<unknown>>()
+
+export function resetClientCacheForTests(): void {
+  memoryCache.clear()
+  pendingCache.clear()
+  if (!canUseClientCache()) return
+  try {
+    const keysToRemove: string[] = []
+    for (let i = 0; i < window.sessionStorage.length; i += 1) {
+      const key = window.sessionStorage.key(i)
+      if (key?.startsWith(CLIENT_CACHE_PREFIX)) keysToRemove.push(key)
+    }
+    keysToRemove.forEach((key) => window.sessionStorage.removeItem(key))
+  } catch {
+    // ignore
+  }
+}
 
 /**
  * 統一的 fetch wrapper，帶上 session cookie（M18）。
@@ -74,6 +97,75 @@ export interface StockHistoryResponse {
 
 export interface FetchOptions {
   signal?: AbortSignal
+  bypassCache?: boolean
+}
+
+function canUseClientCache(): boolean {
+  return typeof window !== "undefined" && typeof window.sessionStorage !== "undefined"
+}
+
+function readClientCache<T>(key: string): T | null {
+  const now = Date.now()
+  const memory = memoryCache.get(key)
+  if (memory) {
+    if (memory.expiresAt > now) return memory.value as T
+    memoryCache.delete(key)
+  }
+
+  if (!canUseClientCache()) return null
+  try {
+    const raw = window.sessionStorage.getItem(`${CLIENT_CACHE_PREFIX}${key}`)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as { expiresAt: number; value: T }
+    if (parsed.expiresAt <= now) {
+      window.sessionStorage.removeItem(`${CLIENT_CACHE_PREFIX}${key}`)
+      return null
+    }
+    memoryCache.set(key, { expiresAt: parsed.expiresAt, value: parsed.value })
+    return parsed.value
+  } catch {
+    return null
+  }
+}
+
+function writeClientCache<T>(key: string, value: T, ttlMs: number): void {
+  const expiresAt = Date.now() + ttlMs
+  memoryCache.set(key, { expiresAt, value })
+  if (!canUseClientCache()) return
+  try {
+    window.sessionStorage.setItem(
+      `${CLIENT_CACHE_PREFIX}${key}`,
+      JSON.stringify({ expiresAt, value }),
+    )
+  } catch {
+    // ignore storage quota / serialization issues
+  }
+}
+
+async function fetchWithClientCache<T>(
+  key: string,
+  ttlMs: number,
+  loader: () => Promise<T>,
+): Promise<T> {
+  const cached = readClientCache<T>(key)
+  if (cached !== null) return cached
+
+  const pending = pendingCache.get(key)
+  if (pending) return pending as Promise<T>
+
+  const request = loader()
+    .then((value) => {
+      writeClientCache(key, value, ttlMs)
+      pendingCache.delete(key)
+      return value
+    })
+    .catch((error) => {
+      pendingCache.delete(key)
+      throw error
+    })
+
+  pendingCache.set(key, request as Promise<unknown>)
+  return request
 }
 
 export interface BacktestTemplate {
@@ -247,9 +339,16 @@ export function toDisplayError(error: unknown, fallback = "載入失敗"): strin
 }
 
 export async function fetchIndustries(date: string, options?: FetchOptions): Promise<IndustryFlowItem[]> {
-  const res = await apiFetch(`${API_BASE}/api/industries?date=${date}`, { signal: options?.signal })
-  if (!res.ok) throw new Error(`Failed to fetch industries: ${res.status}`)
-  return res.json()
+  if (options?.bypassCache) {
+    const res = await apiFetch(`${API_BASE}/api/industries?date=${date}`, { signal: options.signal })
+    if (!res.ok) throw new Error(`Failed to fetch industries: ${res.status}`)
+    return res.json()
+  }
+  return fetchWithClientCache(`industries:${date}`, INDUSTRIES_CACHE_TTL_MS, async () => {
+    const res = await apiFetch(`${API_BASE}/api/industries?date=${date}`, { signal: options?.signal })
+    if (!res.ok) throw new Error(`Failed to fetch industries: ${res.status}`)
+    return res.json()
+  })
 }
 
 export async function fetchIndustryStocks(
@@ -664,12 +763,22 @@ export async function searchStocks(q: string, options?: FetchOptions): Promise<S
 }
 
 export async function fetchLatestTradeDate(options?: FetchOptions): Promise<string | null> {
-  const res = await apiFetch(`${API_BASE}/api/market/latest-trade-date`, {
-    signal: options?.signal,
+  if (options?.bypassCache) {
+    const res = await apiFetch(`${API_BASE}/api/market/latest-trade-date`, {
+      signal: options.signal,
+    })
+    if (!res.ok) throw new Error(await buildErrorMessage(res, "最新交易日載入失敗"))
+    const data: { trade_date: string | null } = await res.json()
+    return data.trade_date
+  }
+  return fetchWithClientCache("latest-trade-date", LATEST_TRADE_DATE_CACHE_TTL_MS, async () => {
+    const res = await apiFetch(`${API_BASE}/api/market/latest-trade-date`, {
+      signal: options?.signal,
+    })
+    if (!res.ok) throw new Error(await buildErrorMessage(res, "最新交易日載入失敗"))
+    const data: { trade_date: string | null } = await res.json()
+    return data.trade_date
   })
-  if (!res.ok) throw new Error(await buildErrorMessage(res, "最新交易日載入失敗"))
-  const data: { trade_date: string | null } = await res.json()
-  return data.trade_date
 }
 
 export type TradeQualityRating = "STRONG_BUY" | "BUY" | "NEUTRAL" | "WATCH" | "RUN"
@@ -863,16 +972,30 @@ export async function fetchMarketHotMoney(
   limit = 20,
   options?: FetchOptions,
 ): Promise<HotMoneyResponse> {
-  const params = new URLSearchParams({
-    date,
-    days: String(days),
-    limit: String(limit),
+  if (options?.bypassCache) {
+    const params = new URLSearchParams({
+      date,
+      days: String(days),
+      limit: String(limit),
+    })
+    const res = await apiFetch(`${API_BASE}/api/market/hot-money?${params}`, {
+      signal: options.signal,
+    })
+    if (!res.ok) throw new Error(await buildErrorMessage(res, "熱錢排行載入失敗"))
+    return res.json()
+  }
+  return fetchWithClientCache(`market-hot-money:${date}:${days}:${limit}`, HOT_MONEY_CACHE_TTL_MS, async () => {
+    const params = new URLSearchParams({
+      date,
+      days: String(days),
+      limit: String(limit),
+    })
+    const res = await apiFetch(`${API_BASE}/api/market/hot-money?${params}`, {
+      signal: options?.signal,
+    })
+    if (!res.ok) throw new Error(await buildErrorMessage(res, "熱錢排行載入失敗"))
+    return res.json()
   })
-  const res = await apiFetch(`${API_BASE}/api/market/hot-money?${params}`, {
-    signal: options?.signal,
-  })
-  if (!res.ok) throw new Error(await buildErrorMessage(res, "熱錢排行載入失敗"))
-  return res.json()
 }
 
 // ── Watchlist (M19) ────────────────────────────────────────────────────────
@@ -1126,12 +1249,22 @@ export interface SignalArchiveDetailResponse extends SignalArchiveSummaryItem {
 export async function fetchLatestSignalSnapshot(
   options?: FetchOptions,
 ): Promise<SignalSnapshotResponse | null> {
-  const res = await apiFetch(`${API_BASE}/api/signals/latest`, {
-    signal: options?.signal,
+  if (options?.bypassCache) {
+    const res = await apiFetch(`${API_BASE}/api/signals/latest`, {
+      signal: options.signal,
+    })
+    if (res.status === 404) return null
+    if (!res.ok) throw new Error(await buildErrorMessage(res, "訊號清單載入失敗"))
+    return res.json()
+  }
+  return fetchWithClientCache("signals:latest-snapshot", SIGNAL_SNAPSHOT_CACHE_TTL_MS, async () => {
+    const res = await apiFetch(`${API_BASE}/api/signals/latest`, {
+      signal: options?.signal,
+    })
+    if (res.status === 404) return null
+    if (!res.ok) throw new Error(await buildErrorMessage(res, "訊號清單載入失敗"))
+    return res.json()
   })
-  if (res.status === 404) return null
-  if (!res.ok) throw new Error(await buildErrorMessage(res, "訊號清單載入失敗"))
-  return res.json()
 }
 
 export async function fetchSignalSnapshotByDate(
@@ -1217,5 +1350,10 @@ export async function regenerateSignals(): Promise<SignalRegenerateResponse> {
     headers: { "Content-Type": "application/json" },
   })
   if (!res.ok) throw new Error(await buildErrorMessage(res, "重新產生失敗"))
+  memoryCache.delete("signals:latest-snapshot")
+  pendingCache.delete("signals:latest-snapshot")
+  if (canUseClientCache()) {
+    window.sessionStorage.removeItem(`${CLIENT_CACHE_PREFIX}signals:latest-snapshot`)
+  }
   return res.json()
 }

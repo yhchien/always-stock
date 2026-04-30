@@ -9,7 +9,10 @@ import {
   fetchBrokerTrades,
   fetchIndustries,
   fetchIndustryStocks,
+  fetchLatestTradeDate,
+  fetchMarketHotMoney,
   fetchRealtimeQuotes,
+  resetClientCacheForTests,
   fetchStockHistory,
   fetchSubIndustrySummary,
   runBacktest,
@@ -118,7 +121,11 @@ describe("fetchSubIndustrySummary", () => {
 // ── fetchIndustries ──────────────────────────────────────────────────────────
 
 describe("fetchIndustries", () => {
-  afterEach(() => jest.restoreAllMocks())
+  afterEach(() => {
+    jest.restoreAllMocks()
+    window.sessionStorage.clear()
+    resetClientCacheForTests()
+  })
 
   it("returns parsed JSON on success", async () => {
     const mockData = [{ industry_name: "半導體", total_net_amount: 1e9 }]
@@ -139,6 +146,69 @@ describe("fetchIndustries", () => {
     } as Response)
 
     await expect(fetchIndustries("2026-04-01")).rejects.toThrow("404")
+  })
+
+  it("reuses client cache for the same date", async () => {
+    const mockData = [{ industry_name: "半導體", total_net_amount: 1e9 }]
+    const mockFetch = jest.spyOn(global, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => mockData,
+    } as Response)
+
+    const countIndustryCalls = () =>
+      mockFetch.mock.calls.filter(([url]) => String(url).includes("/api/industries?date=2026-04-01")).length
+
+    const before = countIndustryCalls()
+    await fetchIndustries("2026-04-01")
+    const afterFirst = countIndustryCalls()
+    await fetchIndustries("2026-04-01")
+
+    expect(afterFirst).toBeGreaterThan(before)
+    expect(countIndustryCalls()).toBe(afterFirst)
+  })
+})
+
+describe("home bootstrap caches", () => {
+  afterEach(() => {
+    jest.restoreAllMocks()
+    window.sessionStorage.clear()
+    resetClientCacheForTests()
+  })
+
+  it("caches latest trade date", async () => {
+    const mockFetch = jest.spyOn(global, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({ trade_date: "2026-04-30" }),
+    } as Response)
+
+    const countCalls = () =>
+      mockFetch.mock.calls.filter(([url]) => String(url).includes("/api/market/latest-trade-date")).length
+
+    const before = countCalls()
+    await fetchLatestTradeDate()
+    const afterFirst = countCalls()
+    await fetchLatestTradeDate()
+
+    expect(afterFirst).toBeGreaterThan(before)
+    expect(countCalls()).toBe(afterFirst)
+  })
+
+  it("caches market hot money by date window", async () => {
+    const mockFetch = jest.spyOn(global, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({ start_date: "2026-04-28", end_date: "2026-04-30", trade_dates: [], items: [] }),
+    } as Response)
+
+    const countCalls = () =>
+      mockFetch.mock.calls.filter(([url]) => String(url).includes("/api/market/hot-money?date=2026-04-30")).length
+
+    const before = countCalls()
+    await fetchMarketHotMoney("2026-04-30", 3, 20)
+    const afterFirst = countCalls()
+    await fetchMarketHotMoney("2026-04-30", 3, 20)
+
+    expect(afterFirst).toBeGreaterThan(before)
+    expect(countCalls()).toBe(afterFirst)
   })
 })
 

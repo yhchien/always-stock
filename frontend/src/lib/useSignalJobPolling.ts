@@ -21,15 +21,22 @@ interface PollingState {
  *   - `bumpKey` 變動時重新觸發 polling（讓使用者點「重新產生」後立刻接上新 job）
  *   - unmount 自動清 timer，無 long-lived connection
  */
-export function useSignalJobPolling(bumpKey: number = 0): PollingState {
-  const [job, setJob] = useState<SignalJobResponse | null>(null)
-  const [loading, setLoading] = useState(true)
+export function useSignalJobPolling(
+  bumpKey: number = 0,
+  initialJob: SignalJobResponse | null = null,
+  initialLoaded: boolean = false,
+): PollingState {
+  const [job, setJob] = useState<SignalJobResponse | null>(initialJob)
+  const [loading, setLoading] = useState(!initialLoaded)
   const [error, setError] = useState<string | null>(null)
   const cancelledRef = useRef(false)
 
   useEffect(() => {
     cancelledRef.current = false
     let timer: ReturnType<typeof setTimeout> | null = null
+    const useInitialValue = initialLoaded && bumpKey === 0
+    const initialJobIsActive =
+      initialJob != null && (initialJob.status === "pending" || initialJob.status === "running")
 
     async function poll() {
       try {
@@ -50,14 +57,23 @@ export function useSignalJobPolling(bumpKey: number = 0): PollingState {
       }
     }
 
-    setLoading(true)
-    poll()
+    if (useInitialValue) {
+      setJob(initialJob)
+      setLoading(false)
+      setError(null)
+      if (initialJobIsActive) {
+        timer = setTimeout(poll, POLL_INTERVAL_MS)
+      }
+    } else {
+      setLoading(true)
+      poll()
+    }
 
     return () => {
       cancelledRef.current = true
       if (timer) clearTimeout(timer)
     }
-  }, [bumpKey])
+  }, [bumpKey, initialJob, initialLoaded])
 
   return { job, loading, error }
 }

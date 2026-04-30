@@ -39,7 +39,11 @@ function formatPriceRange(low?: number | null, high?: number | null): string | n
   return null
 }
 
-export default function TradeQualityAnalysis() {
+export default function TradeQualityAnalysis({
+  initialLatestDate,
+}: {
+  initialLatestDate?: string | null
+}) {
   const searchParams = useSearchParams()
   const [query, setQuery] = useState("")
   const [selected, setSelected] = useState<StockSearchItem | null>(null)
@@ -48,7 +52,7 @@ export default function TradeQualityAnalysis() {
 
   const [useCustomDate, setUseCustomDate] = useState(false)
   const [buyDate, setBuyDate] = useState("")
-  const [latestDate, setLatestDate] = useState<string | null>(null)
+  const [latestDate, setLatestDate] = useState<string | null>(initialLatestDate ?? null)
 
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -63,12 +67,13 @@ export default function TradeQualityAnalysis() {
 
   // Load latest trade date once on mount
   useEffect(() => {
+    if (initialLatestDate !== undefined) return
     const ctrl = new AbortController()
     fetchLatestTradeDate({ signal: ctrl.signal })
       .then((d) => setLatestDate(d))
       .catch(() => {})
     return () => ctrl.abort()
-  }, [])
+  }, [initialLatestDate])
 
   // Autocomplete: debounce search
   useEffect(() => {

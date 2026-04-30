@@ -630,7 +630,7 @@ def update_signal_watch_returns(
     *,
     as_of_trade_date: Optional[date] = None,
 ) -> int:
-    """Update persisted archive returns for the latest tracked row of each stock."""
+    """Update persisted archive returns for all tracked rows of each stock cycle."""
     trade_date = as_of_trade_date or resolve_archive_as_of_trade_date(
         db,
         now=datetime.now(TAIPEI_TZ),
@@ -646,6 +646,7 @@ def update_signal_watch_returns(
     for stock_id, rows in grouped.items():
         latest_row = rows[-1]
         first_seen_date = rows[0].snapshot_date
+        baseline_row = next((row for row in reversed(rows) if row.baseline_price not in (None, 0)), None)
         price_row = (
             db.query(DailyPrice)
             .filter(
@@ -660,24 +661,31 @@ def update_signal_watch_returns(
             continue
 
         close_price = float(price_row.close_price)
-        if latest_row.baseline_price not in (None, 0) and latest_row.return_pct is not None:
-            latest_row.latest_eval_trade_date = trade_date
-            latest_row.latest_eval_price = close_price
-            latest_row.return_pct = (
-                (close_price - float(latest_row.baseline_price))
-                / float(latest_row.baseline_price)
+        if baseline_row is not None:
+            baseline_trade_date = baseline_row.baseline_trade_date
+            baseline_price = float(baseline_row.baseline_price)
+            return_pct = (
+                (close_price - baseline_price)
+                / baseline_price
                 * 100.0
             )
+            for row in rows:
+                row.baseline_trade_date = baseline_trade_date
+                row.baseline_price = baseline_price
+                row.latest_eval_trade_date = trade_date
+                row.latest_eval_price = close_price
+                row.return_pct = return_pct
             updated += 1
             continue
 
         if first_seen_date < trade_date:
             baseline_price = (float(price_row.open_price) + close_price) / 2.0
-            latest_row.baseline_trade_date = trade_date
-            latest_row.baseline_price = baseline_price
-            latest_row.latest_eval_trade_date = trade_date
-            latest_row.latest_eval_price = baseline_price
-            latest_row.return_pct = 0.0
+            for row in rows:
+                row.baseline_trade_date = trade_date
+                row.baseline_price = baseline_price
+                row.latest_eval_trade_date = trade_date
+                row.latest_eval_price = baseline_price
+                row.return_pct = 0.0
             updated += 1
 
     completed_upserts = refresh_completed_signal_cycles(db, as_of_trade_date=trade_date)
