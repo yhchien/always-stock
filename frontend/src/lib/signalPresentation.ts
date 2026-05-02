@@ -1,5 +1,40 @@
 import type { SignalDecisionType } from "@/lib/api"
 
+const DECISION_LABELS: Record<SignalDecisionType, string> = {
+  LEADER: "領漲",
+  FOLLOWER: "跟漲",
+  LAGGARD: "轉弱",
+}
+
+const VALUE_LABELS: Record<string, string> = {
+  high: "高",
+  medium: "中",
+  low: "低",
+  none: "無",
+  strong: "強",
+  moderate: "中等",
+  weak: "偏弱",
+  accumulating: "籌碼集中",
+  neutral: "中性",
+  weakening: "轉弱",
+  retail_overheated: "散戶過熱",
+  short_squeeze_potential: "軋空潛力",
+  positive: "正向",
+  negative: "負向",
+  breakout: "突破",
+  steady_uptrend: "穩定上升",
+  early_turn: "初步轉強",
+  range_bound: "區間整理",
+  distribution: "出貨",
+  strong_bull: "強多",
+  structural_bull: "結構偏多",
+  range: "盤整",
+  risk_on: "偏多",
+  risk_off: "避險",
+  long: "偏多",
+  short: "偏空",
+}
+
 export function decisionBadgeClass(type: SignalDecisionType | null | undefined): string {
   switch (type) {
     case "LEADER":
@@ -11,6 +46,11 @@ export function decisionBadgeClass(type: SignalDecisionType | null | undefined):
     default:
       return "bg-slate-500/20 text-slate-300 border-slate-500/40"
   }
+}
+
+export function signalDecisionLabel(type: SignalDecisionType | null | undefined): string {
+  if (!type) return "未分類"
+  return DECISION_LABELS[type] ?? type
 }
 
 export function signalValueTone(kind: string, rawValue: string | null | undefined): "green" | "amber" | "red" | "slate" {
@@ -66,5 +106,7 @@ export function toneChipClass(tone: "green" | "amber" | "red" | "slate"): string
 export function signalValueLabel(rawValue: string | null | undefined): string {
   const value = String(rawValue ?? "")
   if (!value) return "—"
+  const normalized = value.toLowerCase()
+  if (VALUE_LABELS[normalized]) return VALUE_LABELS[normalized]
   return value.replaceAll("_", " ").toUpperCase()
 }

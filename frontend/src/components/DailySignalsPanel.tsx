@@ -16,6 +16,7 @@ import { useAuth } from "@/lib/auth"
 import { useSignalJobPolling } from "@/lib/useSignalJobPolling"
 import {
   decisionBadgeClass,
+  signalDecisionLabel,
   signalValueLabel,
   signalValueTone,
   toneChipClass,
@@ -84,7 +85,7 @@ function SignalCard({ item }: { item: SignalWatchlistItem }) {
                 item.type,
               )}`}
             >
-              {item.type}
+              {signalDecisionLabel(item.type)}
             </span>
           )}
           {item.industry && (
@@ -421,39 +422,39 @@ export default function DailySignalsPanel({
                     value="leader"
                     className="data-[state=active]:bg-slate-700 data-[state=active]:text-white text-slate-300"
                   >
-                    LEADER ({leaderCount})
+                    領漲 ({leaderCount})
                   </TabsTrigger>
                   <TabsTrigger
                     value="follower"
                     className="data-[state=active]:bg-slate-700 data-[state=active]:text-white text-slate-300"
                   >
-                    FOLLOWER ({followerCount})
+                    跟漲 ({followerCount})
                   </TabsTrigger>
                   <TabsTrigger
                     value="laggard"
                     className="data-[state=active]:bg-slate-700 data-[state=active]:text-white text-slate-300"
                   >
-                    LAGGARD ({laggardCount})
+                    轉弱 ({laggardCount})
                   </TabsTrigger>
                 </TabsList>
 
                 <TabsContent value="leader" className="mt-3 flex flex-col gap-3">
                   {filteredLeader.length === 0 ? (
-                    <p className="text-sm text-slate-400">本日無 LEADER。</p>
+                    <p className="text-sm text-slate-400">本日無領漲訊號。</p>
                   ) : (
                     filteredLeader.map((item) => <SignalCard key={item.stock} item={item} />)
                   )}
                 </TabsContent>
                 <TabsContent value="follower" className="mt-3 flex flex-col gap-3">
                   {filteredFollower.length === 0 ? (
-                    <p className="text-sm text-slate-400">本日無 FOLLOWER。</p>
+                    <p className="text-sm text-slate-400">本日無跟漲訊號。</p>
                   ) : (
                     filteredFollower.map((item) => <SignalCard key={item.stock} item={item} />)
                   )}
                 </TabsContent>
                 <TabsContent value="laggard" className="mt-3 flex flex-col gap-3">
                   {filteredLaggard.length === 0 ? (
-                    <p className="text-sm text-slate-400">本日無 LAGGARD。</p>
+                    <p className="text-sm text-slate-400">本日無轉弱訊號。</p>
                   ) : (
                     filteredLaggard.map((item) => <SignalCard key={item.stock} item={item} />)
                   )}

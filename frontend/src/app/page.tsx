@@ -20,6 +20,10 @@ import { todayInTaipei } from "@/lib/utils"
 const TradeQualityAnalysis = dynamic(() => import("@/components/TradeQualityAnalysis"), { ssr: false })
 const DailySignalsPanel = dynamic(() => import("@/components/DailySignalsPanel"), { ssr: false })
 const HotMoneyList = dynamic(() => import("@/components/HotMoneyList"), { ssr: false })
+const WatchlistTradeQualityCards = dynamic(
+  () => import("@/components/WatchlistTradeQualityCards"),
+  { ssr: false },
+)
 
 type BootTaskKey = "tradeDate" | "signals" | "job" | "hotMoney" | "industries"
 type BootTaskState = "idle" | "loading" | "done" | "error"
@@ -30,6 +34,28 @@ const BOOT_TASK_LABELS: Record<BootTaskKey, string> = {
   job: "確認訊號生成狀態",
   hotMoney: "載入 20 大買超",
   industries: "載入產業法人流向",
+}
+
+const BOOT_TASK_WEIGHTS: Record<BootTaskKey, number> = {
+  tradeDate: 20,
+  signals: 28,
+  job: 12,
+  hotMoney: 16,
+  industries: 24,
+}
+
+const BOOT_LOADING_CREDIT = 0.58
+
+function getBootProgress(tasks: Record<BootTaskKey, BootTaskState>) {
+  const totalWeight = Object.values(BOOT_TASK_WEIGHTS).reduce((sum, weight) => sum + weight, 0)
+  const completedWeight = (Object.keys(tasks) as BootTaskKey[]).reduce((sum, key) => {
+    const weight = BOOT_TASK_WEIGHTS[key]
+    const state = tasks[key]
+    if (state === "done" || state === "error") return sum + weight
+    if (state === "loading") return sum + weight * BOOT_LOADING_CREDIT
+    return sum
+  }, 0)
+  return Math.round((completedWeight / totalWeight) * 100)
 }
 
 function HomeBootstrapOverlay({
@@ -43,7 +69,8 @@ function HomeBootstrapOverlay({
     state: tasks[key],
   }))
   const settledCount = entries.filter((entry) => entry.state === "done" || entry.state === "error").length
-  const progress = Math.round((settledCount / entries.length) * 100)
+  const loadingCount = entries.filter((entry) => entry.state === "loading").length
+  const progress = getBootProgress(tasks)
   const activeLabel =
     entries.find((entry) => entry.state === "loading")?.label ??
     (progress >= 100 ? "初始化完成" : "準備中")
@@ -53,16 +80,20 @@ function HomeBootstrapOverlay({
       <div className="w-[min(92vw,34rem)] rounded-2xl border border-slate-700 bg-slate-900/95 p-6 shadow-2xl">
         <p className="text-xs font-medium uppercase tracking-[0.28em] text-sky-300/90">Always Stock</p>
         <h1 className="mt-2 text-2xl font-semibold text-slate-100">首頁資料載入中</h1>
-        <p className="mt-2 text-sm text-slate-400">{activeLabel}</p>
+        <div className="mt-3 flex items-center gap-3 text-sm text-slate-400">
+          <span className="h-4 w-4 animate-spin rounded-full border-2 border-sky-300/30 border-t-sky-300" aria-hidden="true" />
+          <span>{activeLabel}</span>
+          {loadingCount > 1 ? <span className="text-slate-500">另外 {loadingCount - 1} 項同步處理中</span> : null}
+        </div>
         <div className="mt-5 h-2 overflow-hidden rounded-full bg-slate-800">
           <div
-            className="h-full rounded-full bg-gradient-to-r from-sky-400 via-cyan-300 to-emerald-300 transition-[width] duration-300"
+            className="h-full rounded-full bg-gradient-to-r from-sky-400 via-cyan-300 to-emerald-300 transition-[width] duration-500"
             style={{ width: `${progress}%` }}
           />
         </div>
         <div className="mt-2 flex items-center justify-between text-xs text-slate-500">
           <span>{progress}%</span>
-          <span>{settledCount} / {entries.length}</span>
+          <span>{settledCount} / {entries.length} 完成</span>
         </div>
         <div className="mt-5 grid gap-2">
           {entries.map((entry) => (
@@ -71,8 +102,13 @@ function HomeBootstrapOverlay({
               className="flex items-center justify-between rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2"
             >
               <span className="text-sm text-slate-300">{entry.label}</span>
-              <span className="text-xs text-slate-500">
-                {entry.state === "done" ? "完成" : entry.state === "error" ? "略過" : entry.state === "loading" ? "載入中" : "等待中"}
+              <span className="flex items-center gap-2 text-xs text-slate-500">
+                {entry.state === "loading" ? (
+                  <span className="h-3 w-3 animate-spin rounded-full border border-cyan-300/30 border-t-cyan-300" aria-hidden="true" />
+                ) : null}
+                <span>
+                  {entry.state === "done" ? "完成" : entry.state === "error" ? "略過" : entry.state === "loading" ? "載入中" : "等待中"}
+                </span>
               </span>
             </div>
           ))}
@@ -225,6 +261,7 @@ function HomeContent() {
         {defaultDate && (
           <>
             <TradeQualityAnalysis initialLatestDate={latestTradeDate ?? defaultDate} />
+            <WatchlistTradeQualityCards />
             <DeferredSection minHeight={180}>
               <DailySignalsPanel
                 initialSnapshot={initialSnapshot}

@@ -11,6 +11,7 @@ import {
 } from "@/lib/api"
 import {
   decisionBadgeClass,
+  signalDecisionLabel,
   signalValueLabel,
   signalValueTone,
   toneChipClass,
@@ -87,16 +88,23 @@ export default function StockSignalSummaryPanel({ stockId }: { stockId: string }
             {market.market_state ?? "—"}
           </span>
           {market.vix_status ? (
-            <span className="text-xs text-slate-500">VIX {market.vix_status}</span>
+            <span className="text-xs text-slate-500">VIX {signalValueLabel(market.vix_status)}</span>
           ) : null}
           {market.futures_bias ? (
-            <span className="text-xs text-slate-500">期貨 {market.futures_bias}</span>
+            <span className="text-xs text-slate-500">期貨 {signalValueLabel(market.futures_bias)}</span>
           ) : null}
         </div>
         {market.market_state_reason ? (
           <p className="mt-2 text-sm leading-relaxed text-slate-300">{market.market_state_reason}</p>
         ) : null}
       </div>
+
+      {snapshot.data.summary?.risk_note ? (
+        <div className="mt-4 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4">
+          <p className="text-xs text-amber-300">風險提示</p>
+          <p className="mt-2 text-sm leading-relaxed text-amber-100">{snapshot.data.summary.risk_note}</p>
+        </div>
+      ) : null}
 
       {item ? (
         <div className="mt-4 rounded-xl border border-slate-700/70 bg-slate-900/40 p-4">
@@ -106,7 +114,7 @@ export default function StockSignalSummaryPanel({ stockId }: { stockId: string }
             </span>
             {item.type ? (
               <span className={`inline-flex items-center rounded border px-2 py-0.5 text-xs font-medium ${decisionBadgeClass(item.type)}`}>
-                {item.type}
+                {signalDecisionLabel(item.type)}
               </span>
             ) : null}
           </div>
@@ -122,6 +130,15 @@ export default function StockSignalSummaryPanel({ stockId }: { stockId: string }
               <span className={`inline-flex items-center rounded border px-2 py-0.5 text-xs font-medium ${toneChipClass(signalValueTone("theme_fit", item.theme_fit))}`}>
                 題材契合 {signalValueLabel(item.theme_fit)}
               </span>
+            </div>
+          ) : null}
+
+          {item.business_summary ? (
+            <div className="mt-4 rounded-lg border border-slate-700/70 bg-slate-950/40 p-3">
+              <p className="text-xs text-slate-500">保留摘要</p>
+              <p className="mt-2 whitespace-pre-line text-sm leading-relaxed text-slate-200">
+                {item.business_summary}
+              </p>
             </div>
           ) : null}
 
