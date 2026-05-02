@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useState } from "react"
 import { fetchRealtimeQuotes, type RealtimeQuote } from "@/lib/api"
 
 /** Returns true if current time is within TWSE trading hours (09:00–13:30, Mon–Fri, UTC+8). */
@@ -25,15 +25,18 @@ export function useRealtimeQuotes(
   intervalMs = 15000,
 ): Map<string, RealtimeQuote> {
   const [quotes, setQuotes] = useState<Map<string, RealtimeQuote>>(new Map())
-  const ids = useMemo(() => [...stockIds], [stockIds])
+  // Stable string key avoids array reference churn — parents that pass [stockId]
+  // as a fresh literal each render won't keep retriggering the effect.
+  const idsKey = stockIds.filter(Boolean).join(",")
 
   useEffect(() => {
-    if (ids.length === 0) return
+    if (!idsKey) return
+    const ids = idsKey.split(",")
 
     let active = true
 
     async function poll() {
-      if (!active || ids.length === 0) return
+      if (!active) return
       try {
         const data = await fetchRealtimeQuotes(ids)
         if (active && data.length > 0) {
@@ -44,10 +47,8 @@ export function useRealtimeQuotes(
       }
     }
 
-    // Always do one initial fetch (shows last known price even outside trading hours)
     poll()
 
-    // Continuous polling only during trading hours
     let timer: ReturnType<typeof setInterval> | null = null
     if (isTradingHours()) {
       timer = setInterval(poll, intervalMs)
@@ -57,7 +58,7 @@ export function useRealtimeQuotes(
       active = false
       if (timer) clearInterval(timer)
     }
-  }, [ids, intervalMs])
+  }, [idsKey, intervalMs])
 
   return quotes
 }

@@ -171,6 +171,7 @@
 - M23 `DailySignalsPanel` 不再顯示 `removed` 候選；後端最終只保留 top 3 `watchlist`，前端卡片直接顯示保留理由
 - M25 自選清單 trade quality 已**重新掛回首頁**（`<TradeQualityAnalysis />` 之後、`<DailySignalsPanel />` 之前）；同時 `/watchlist` 與 L2 個股頁仍保留報告入口；元件未登入時自身回 `null`，不需在外層判斷登入狀態
 - 訊號相關 UI 全面中文化：`signalPresentation.ts` 新增 `signalDecisionLabel`（LEADER → 領漲 / FOLLOWER → 跟漲 / LAGGARD → 轉弱）+ `VALUE_LABELS` 字典翻譯 market_state / VIX / 期貨 / 籌碼狀態（強多 / 結構偏多 / 盤整 / 散戶過熱 / 籌碼集中 / 出貨…）；`signalValueLabel` 命中字典就直譯，未命中才 fallback 到原 `_` → 空白 + upper case
+- `useRealtimeQuotes` 修暴衝 bug：原本 `useMemo(() => [...stockIds], [stockIds])` + `useEffect(..., [ids])` 用 array reference 當 dep，父層每次 render 傳 `[stockId]` 新 literal 導致 effect 不停重啟，盤後仍每秒被打 60+ 次。改用 `idsKey = stockIds.join(",")` stable string + effect 內 `idsKey.split(",")` 重組；同步在 prod log 看見 `/api/realtime/quotes` 上游 502 / RemoteDisconnected 是 TWSE mis 偶發問題，但根因是前端打太頻繁讓問題放大
 - L2 `<StockSignalSummaryPanel />` 新增「風險提示」（吃 `summary.risk_note`）與「保留摘要」（吃 `item.business_summary`）兩塊；先前點進個股頁只剩 `decision` 徽章與 reason，現在保留理由與 LLM research 的業務摘要都會帶下去
 - 首頁 boot loading overlay 改加權進度條：`BOOT_TASK_WEIGHTS` 給每個任務不同權重（signals 28 / industries 24 / tradeDate 20 / hotMoney 16 / job 12）+ `BOOT_LOADING_CREDIT=0.58` 給 in-flight 任務假性進度，避免 0 → 100 跳變；副字顯示「另外 N 項同步處理中」，項目列各自帶迷你 spinner
 - `DELETE /api/watchlist/{entry_id}` / `DELETE /api/watchlist` 會同步刪掉 `watchlist_trade_quality_snapshots`
