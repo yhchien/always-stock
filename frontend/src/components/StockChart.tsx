@@ -86,6 +86,8 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
   const [customStart, setCustomStart] = useState("")
   const [customEnd, setCustomEnd] = useState("")
   const [appliedCustom, setAppliedCustom] = useState<{ start: string; end: string } | null>(null)
+  const externalRangeKey = `${dateRange?.start ?? ""}:${dateRange?.end ?? ""}`
+  const selectedBrokerId = selectedBroker?.broker_id ?? null
 
   // Sync external dateRange prop → appliedCustom
   useEffect(() => {
@@ -112,8 +114,6 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
   const [activeMAs, setActiveMAs] = useState<Set<number>>(DEFAULT_MAS)
   const [customMA, setCustomMA] = useState<string>("")
   const [customMAPeriod, setCustomMAPeriod] = useState<number | null>(null)
-  const externalRangeKey = `${dateRange?.start ?? ""}:${dateRange?.end ?? ""}`
-  const selectedBrokerId = selectedBroker?.broker_id ?? null
 
   const applyCustomRange = () => {
     if (!customStart || !customEnd) return
