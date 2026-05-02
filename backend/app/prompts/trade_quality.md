@@ -573,6 +573,14 @@ BB → 低 PE
 "action": "BUY | HOLD | EXIT | SHORT-TERM-TRADE",
 "core_logic": "基本面 + 預期 + 資金",
 "valuation_status": "LOW | FAIR | HIGH_WITH_GROWTH | OVERVALUED",
+"key_factors": [
+  {"category": "industry",      "level": "A|B|C", "trend": "improving|stable|weakening|deteriorating", "note": "10~25 字"},
+  {"category": "industry_heat", "level": "A|B|C", "trend": "improving|stable|weakening|deteriorating", "note": "10~25 字"},
+  {"category": "return",        "level": "A|B|C", "trend": "improving|stable|weakening|deteriorating", "note": "10~25 字"},
+  {"category": "chip",          "level": "A|B|C", "trend": "improving|stable|weakening|deteriorating", "note": "10~25 字"},
+  {"category": "technical",     "level": "A|B|C", "trend": "improving|stable|weakening|deteriorating", "note": "10~25 字"},
+  {"category": "fundamental",   "level": "A|B|C", "trend": "improving|stable|weakening|deteriorating", "note": "10~25 字"}
+],
 "if_strong": {
 "target_price_range": [min, max],
 "time_horizon_days": number
@@ -582,6 +590,29 @@ BB → 低 PE
 "max_holding_days": number
 }
 }
+
+==================================================
+⚠️ key_factors 規則（M25 條列指標 + 燈號）
+=============
+
+`key_factors` 是「給前端條列展示與燈號用」的結構化指標摘要，6 個 category 必須全部回傳（不可省略）：
+
+1. `industry` — 產業整體：產業位置 / 同業排名 / 產業地位
+2. `industry_heat` — 產業熱度：直接吃 M21 `industry_summary.industry_hot_level`（S→A、A→A、B→B、C→C）
+3. `return` — 報酬：近 5~10 日相對大盤報酬強弱、是 leader 還是 follower
+4. `chip` — 籌碼：直接吃 M21 `chip_summary.chip_strength`（strong→A、moderate→B、weak/none→C）；若 `is_accumulation=true` 且 chip_strength=strong 為 A
+5. `technical` — 技術面：整合 M21 `price_structure.trend / is_breakout / is_consolidation`
+6. `fundamental` — 基本面：整合 M21 `fundamental.revenue_yoy / revenue_mom / guidance`
+
+⚠️ 規則：
+- `level`：`A`（強，綠燈）/ `B`（中，黃燈）/ `C`（弱，紅燈）
+- `trend`：本檔當下狀態相對於「此分析涵蓋的時間軸」的方向；若是首次分析 / 無明確方向 → `stable`
+- `note`：10~25 字繁體中文一句話，敘述本項評斷的 1~2 個關鍵原因
+- `key_factors` 整體必須與 `classification` 一致：
+  - `classification=A` → 至少 4 項 level=A
+  - `classification=C` → 至少 3 項 level=C
+  - `classification=B` → 介於兩者
+- 不可同時出現「6 項全 A 但 classification=C」這類顯著矛盾
 
 ==================================================
 ## PART 2 — 買方分析報告

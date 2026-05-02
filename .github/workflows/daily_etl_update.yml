@@ -15,8 +15,8 @@ on:
 jobs:
   run_etl:
     runs-on: ubuntu-latest
-    # 首次 75 min + sleep 90 min + 重試 75 min = 240 min（含 buffer）
-    timeout-minutes: 240
+    # 首次 75 min + sleep 90 min + 重試 75 min + M25 wtq 60 min = 300 min
+    timeout-minutes: 300
 
     env:
       TZ: Asia/Taipei
@@ -83,14 +83,44 @@ jobs:
           echo "ETL attempt 2 exit code: $ETL_EXIT"
           exit 0
 
-      - name: Evaluate final status
+      - name: Compute final ETL exit code
+        id: etl_final
         if: always()
         run: |
           FINAL_EXIT="${{ steps.etl2.outputs.etl_exit || steps.etl1.outputs.etl_exit }}"
+          echo "final_exit=$FINAL_EXIT" >> "$GITHUB_OUTPUT"
+          echo "Final ETL exit code: $FINAL_EXIT"
+
+      # M25：ETL ok (0) / partial (1) 才跑 watchlist trade quality；
+      # holiday (5) → 沒新交易日資料、wtq 自身會 holiday-skip 但 cron quota 仍會跑無意義；
+      # quota (2) / error (3) → 跳過 wtq 避免在不完整資料上產出快照。
+      - name: Run watchlist trade quality refresh (M25)
+        id: wtq
+        if: steps.etl_final.outputs.final_exit == '0' || steps.etl_final.outputs.final_exit == '1'
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+        run: |
+          set +e
+          python3 run_watchlist_trade_quality.py --date ${{ steps.resolve.outputs.target_date }}
+          WTQ_EXIT=$?
+          echo "wtq_exit=$WTQ_EXIT" >> "$GITHUB_OUTPUT"
+          echo "Watchlist trade quality exit code: $WTQ_EXIT"
+          # 不讓 wtq 失敗影響整個 workflow（ETL 才是 critical；wtq 是 enrichment）
+          exit 0
+
+      - name: Evaluate final status
+        if: always()
+        run: |
+          FINAL_EXIT="${{ steps.etl_final.outputs.final_exit }}"
+          WTQ_EXIT="${{ steps.wtq.outputs.wtq_exit || 'skipped' }}"
           echo "Target date: ${{ steps.resolve.outputs.target_date }}"
           echo "Attempt 1 exit: ${{ steps.etl1.outputs.etl_exit }}"
           echo "Attempt 2 exit: ${{ steps.etl2.outputs.etl_exit || 'N/A' }}"
           echo "Final ETL exit code: $FINAL_EXIT"
+          echo "Watchlist trade quality exit: $WTQ_EXIT"
           case "$FINAL_EXIT" in
             0) echo "Status: ok" ;;
             1) echo "Status: partial" ;;
@@ -98,6 +128,14 @@ jobs:
             3) echo "Status: error" ;;
             5) echo "Status: holiday (non-trading day, skipped)" ;;
             *) echo "Status: unknown (exit=$FINAL_EXIT)" ;;
+          esac
+          case "$WTQ_EXIT" in
+            0) echo "WTQ: ok" ;;
+            1) echo "WTQ: partial (some failed)" ;;
+            2) echo "WTQ: all_failed" ;;
+            5) echo "WTQ: holiday/no-data" ;;
+            skipped) echo "WTQ: skipped (ETL not ok)" ;;
+            *) echo "WTQ: unknown ($WTQ_EXIT)" ;;
           esac
           # 0=ok / 1=partial / 5=holiday → workflow pass
           # 2=quota / 3=error → workflow fail

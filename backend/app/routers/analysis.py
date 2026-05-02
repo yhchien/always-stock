@@ -41,6 +41,12 @@ from app.models import (
 )
 from app.rate_limit import limiter, trade_quality_limit_value
 from app.settings import get_openai_api_key, get_openai_model
+from app.trade_quality_cache import (
+    load_snapshot,
+    resolve_snapshot_trade_date,
+    save_snapshot_ok,
+    snapshot_to_response_dict,
+)
 
 logger = logging.getLogger(__name__)
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
@@ -72,6 +78,22 @@ class TradeQualityRequest(BaseModel):
     buy_date: Optional[date] = None
 
 
+# M25：條列指標 + 燈號 + delta 用的結構化欄位
+class KeyFactor(BaseModel):
+    category: str  # industry | industry_heat | return | chip | technical | fundamental
+    level: str     # A | B | C
+    trend: str     # improving | stable | weakening | deteriorating
+    note: str      # 10~25 字繁體中文一句話
+
+
+# M25 enum 白名單；invalid row 會被 _normalize_key_factors drop 掉，不 raise
+_KEY_FACTOR_CATEGORIES = {
+    "industry", "industry_heat", "return", "chip", "technical", "fundamental",
+}
+_KEY_FACTOR_LEVELS = {"A", "B", "C"}
+_KEY_FACTOR_TRENDS = {"improving", "stable", "weakening", "deteriorating"}
+
+
 class TradeQualityResponse(BaseModel):
     stock_id: str
     stock_name: str
@@ -93,8 +115,9 @@ class TradeQualityResponse(BaseModel):
     exit_price_high: Optional[float] = None
     max_holding_days: Optional[int] = None
     report_markdown: str
+    key_factors: Optional[List[KeyFactor]] = None  # M25 條列 + 燈號用
     warnings: List[str] = []
-    source: str  # "openai" | "unavailable" | "market_not_open"
+    source: str  # "openai" | "unavailable" | "market_not_open" | "cache"
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -441,6 +464,81 @@ def _call_openai(system_prompt: str, user_msg: str) -> Optional[dict]:
         return None
 
 
+def _try_load_db_cache(
+    db: Session,
+    *,
+    user: Optional[User],
+    stock: StockMaster,
+    buy_date: date,
+) -> Optional[TradeQualityResponse]:
+    """M25：登入使用者跑 trade quality 時，先看當日快照表是否已有 ok 結果。
+
+    匿名使用者（user is None）→ 不查 DB（走 in-memory 5 分鐘 cache 即可）。
+    回 None 表示 cache miss / 未登入 / DB 暫無交易日資料 → caller 應繼續打 OpenAI。
+    """
+    if user is None:
+        return None
+    snapshot_trade_date = resolve_snapshot_trade_date(db)
+    if snapshot_trade_date is None:
+        return None
+
+    row = load_snapshot(
+        db,
+        user_id=user.id,
+        stock_id=stock.stock_id,
+        buy_date=buy_date,
+        snapshot_trade_date=snapshot_trade_date,
+    )
+    if row is None or row.status != "ok":
+        return None
+
+    payload = snapshot_to_response_dict(row)
+    payload["stock_name"] = stock.stock_name
+    payload["source"] = "cache"
+    try:
+        return TradeQualityResponse(**payload)
+    except Exception:
+        logger.exception("Failed to deserialize cached snapshot to TradeQualityResponse")
+        return None
+
+
+def _persist_db_cache_if_logged_in(
+    db: Session,
+    *,
+    user: Optional[User],
+    stock: StockMaster,
+    buy_date: date,
+    response: TradeQualityResponse,
+) -> None:
+    """M25：登入使用者跑出 ok 結果時，寫入快照表（source='manual'）。
+
+    匿名使用者不寫（無 user_id 可關聯）。
+    DB 暫無交易日 → 也不寫（snapshot_trade_date 算不出）。
+    寫入失敗 → 吞掉例外，不阻擋既有 response 回傳。
+    """
+    if user is None:
+        return
+    snapshot_trade_date = resolve_snapshot_trade_date(db)
+    if snapshot_trade_date is None:
+        return
+    try:
+        save_snapshot_ok(
+            db,
+            user_id=user.id,
+            stock_id=stock.stock_id,
+            buy_date=buy_date,
+            snapshot_trade_date=snapshot_trade_date,
+            response_payload=response.model_dump(),
+            source="manual",
+        )
+    except Exception:
+        logger.exception(
+            "Failed to persist trade quality snapshot user=%s stock=%s",
+            user.id,
+            stock.stock_id,
+        )
+
+
 def _trade_quality_cache_key(stock_id: str, buy_date: date) -> tuple[str, str]:
     return (stock_id.strip(), buy_date.isoformat())
 
@@ -465,6 +563,44 @@ def _store_cached_trade_quality(
         time_module.time() + _TRADE_QUALITY_CACHE_TTL_SECONDS,
         payload,
     )
+
+
+def _normalize_key_factors(raw: Any) -> Optional[List[KeyFactor]]:
+    """M25：把 LLM 回傳的 key_factors 過濾到合法 enum；不合法 row 直接 drop。
+
+    LLM 偶爾會：
+    - 把 category 寫成大寫或加底線（INDUSTRY_HEAT）
+    - 用 chinese 字（強/中/弱）填 level 而非 A/B/C
+    - 用未列舉的 trend（rising / falling）
+
+    我們不 raise，舊客戶端忽略此欄位仍可用；不合法 row 直接丟。
+    全空回 None 而非 []，前端可用「has key_factors」當渲染條件。
+    """
+    if not isinstance(raw, list):
+        return None
+    out: List[KeyFactor] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        category = str(entry.get("category", "")).strip().lower()
+        level_raw = str(entry.get("level", "")).strip().upper()
+        trend = str(entry.get("trend", "")).strip().lower()
+        note = str(entry.get("note", "")).strip()
+        if category not in _KEY_FACTOR_CATEGORIES:
+            continue
+        if level_raw not in _KEY_FACTOR_LEVELS:
+            continue
+        if trend not in _KEY_FACTOR_TRENDS:
+            trend = "stable"
+        out.append(
+            KeyFactor(
+                category=category,
+                level=level_raw,
+                trend=trend,
+                note=note[:60] if note else "",
+            )
+        )
+    return out or None
 
 
 def _normalize_response(
@@ -500,6 +636,7 @@ def _normalize_response(
         max_holding_days=_to_int(payload.get("max_holding_days")),
         report_markdown=str(payload.get("report_markdown", "")).strip()
         or "（AI 未提供完整報告）",
+        key_factors=_normalize_key_factors(payload.get("key_factors")),
         warnings=warnings,
         source=source,
     )
@@ -523,6 +660,118 @@ def _to_int(x: Any) -> Optional[int]:
         return None
 
 
+# ── Reusable runner（給 endpoint / cron / on-demand refresh 共用）─────────────
+
+
+class TradeQualityRunResult(BaseModel):
+    """Reusable runner 回傳結構，比 TradeQualityResponse 多帶 cache hit metadata。"""
+    response: TradeQualityResponse
+    snapshot_trade_date: Optional[date] = None
+    cache_hit: bool = False
+    market_not_open: bool = False
+
+
+def run_trade_quality_for_user(
+    db: Session,
+    *,
+    user: Optional[User],
+    stock_id: str,
+    buy_date_input: Optional[date],
+    use_db_cache: bool = True,
+    persist_db_cache: bool = True,
+    persist_source: str = "manual",
+) -> TradeQualityRunResult:
+    """跑一次 trade quality 分析，包含 market-closed pre-flight、5min in-memory cache、
+    M25 DB cache 讀寫、OpenAI fallback 與 normalize。
+
+    呼叫者：
+    - routers/analysis.py 的 POST /api/analysis/trade-quality（HTTP endpoint）
+    - routers/watchlist.py 的 POST /api/watchlist/trade-quality/refresh（單檔 on-demand）
+    - backend/run_watchlist_trade_quality.py（cron 對全 watchlist 跑）
+
+    user=None 時不查/寫 DB 快照（沒 user_id 可關聯）。
+    use_db_cache=False / persist_db_cache=False 給 cron 強制重跑用（即使今日已有快照也覆寫）。
+    raise HTTPException(404)：stock 不存在 / 資料庫無交易日資料 / prompt 缺檔（500）。
+    """
+    if buy_date_input and _is_market_not_open_yet(buy_date_input):
+        stock = db.get(StockMaster, stock_id)
+        if not stock:
+            raise HTTPException(status_code=404, detail=f"Stock not found: {stock_id}")
+        return TradeQualityRunResult(
+            response=_build_market_not_open_response(stock, buy_date_input),
+            market_not_open=True,
+        )
+
+    resolved = _resolve_buy_date(db, buy_date_input)
+    if not resolved:
+        raise HTTPException(status_code=404, detail="資料庫無交易日資料")
+
+    cached = _get_cached_trade_quality(stock_id, resolved)
+    if cached is not None:
+        return TradeQualityRunResult(response=cached, cache_hit=True)
+
+    stock, context, warnings = _collect_context(db, stock_id, resolved)
+
+    if use_db_cache:
+        db_cached = _try_load_db_cache(db, user=user, stock=stock, buy_date=resolved)
+        if db_cached is not None:
+            _store_cached_trade_quality(stock_id, resolved, db_cached)
+            return TradeQualityRunResult(
+                response=db_cached,
+                snapshot_trade_date=resolve_snapshot_trade_date(db),
+                cache_hit=True,
+            )
+
+    m21_context = _build_deterministic_context(db, stock_id, resolved, warnings)
+    system_prompt = _load_system_prompt()
+    if not system_prompt:
+        raise HTTPException(status_code=500, detail="分析 prompt 檔案缺失")
+
+    user_msg = _build_user_message(context, m21_context, warnings)
+    payload = _call_openai(system_prompt, user_msg)
+
+    if payload is None:
+        fallback = TradeQualityResponse(
+            stock_id=stock.stock_id,
+            stock_name=stock.stock_name,
+            buy_date=str(resolved),
+            rating="WATCH",
+            rating_label=RATING_LABELS["WATCH"],
+            summary="AI 分析服務目前不可用（OpenAI 未設定或呼叫失敗），無法建立有效交易判斷。",
+            report_markdown="⚠️ 無法連線 AI 分析服務，請稍後再試或檢查 OpenAI 設定。",
+            warnings=warnings + ["OpenAI 服務不可用"],
+            source="unavailable",
+        )
+        return TradeQualityRunResult(response=fallback)
+
+    response = _normalize_response(payload, stock, resolved, warnings, source="openai")
+    _store_cached_trade_quality(stock_id, resolved, response)
+    snapshot_trade_date = None
+    if persist_db_cache and user is not None:
+        snapshot_trade_date = resolve_snapshot_trade_date(db)
+        if snapshot_trade_date is not None:
+            try:
+                save_snapshot_ok(
+                    db,
+                    user_id=user.id,
+                    stock_id=stock.stock_id,
+                    buy_date=resolved,
+                    snapshot_trade_date=snapshot_trade_date,
+                    response_payload=response.model_dump(),
+                    source=persist_source,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to persist trade quality snapshot user=%s stock=%s",
+                    user.id,
+                    stock.stock_id,
+                )
+    return TradeQualityRunResult(
+        response=response,
+        snapshot_trade_date=snapshot_trade_date,
+    )
+
+
 # ── Endpoint ─────────────────────────────────────────────────────────────────
 
 
@@ -539,50 +788,19 @@ def analyze_trade_quality(
     Reconstructs observable market context up to buy_date (OHLC / institutional
     flows / monthly revenue), then calls OpenAI with the bundled prompt in
     backend/app/prompts/trade_quality.md.
+
+    M25：登入使用者跑出 ok 結果會寫入 watchlist_trade_quality_snapshots，
+    後續同 (user, stock, buy_date, snapshot_trade_date) 命中 cache 不重打 OpenAI。
     """
     logger.info("POST /analysis/trade-quality stock=%s buy_date=%s", req.stock_id, req.buy_date)
-
-    if req.buy_date and _is_market_not_open_yet(req.buy_date):
-        stock = db.get(StockMaster, req.stock_id)
-        if not stock:
-            raise HTTPException(status_code=404, detail=f"Stock not found: {req.stock_id}")
-        return _build_market_not_open_response(stock, req.buy_date)
-
-    resolved = _resolve_buy_date(db, req.buy_date)
-    if not resolved:
-        raise HTTPException(status_code=404, detail="資料庫無交易日資料")
-
-    cached = _get_cached_trade_quality(req.stock_id, resolved)
-    if cached is not None:
-        return cached
-
-    stock, context, warnings = _collect_context(db, req.stock_id, resolved)
-    m21_context = _build_deterministic_context(db, req.stock_id, resolved, warnings)
-
-    system_prompt = _load_system_prompt()
-    if not system_prompt:
-        raise HTTPException(status_code=500, detail="分析 prompt 檔案缺失")
-
-    user_msg = _build_user_message(context, m21_context, warnings)
-    payload = _call_openai(system_prompt, user_msg)
-
-    if payload is None:
-        # Fallback: build a minimal "data insufficient" response
-        return TradeQualityResponse(
-            stock_id=stock.stock_id,
-            stock_name=stock.stock_name,
-            buy_date=str(resolved),
-            rating="WATCH",
-            rating_label=RATING_LABELS["WATCH"],
-            summary="AI 分析服務目前不可用（OpenAI 未設定或呼叫失敗），無法建立有效交易判斷。",
-            report_markdown="⚠️ 無法連線 AI 分析服務，請稍後再試或檢查 OpenAI 設定。",
-            warnings=warnings + ["OpenAI 服務不可用"],
-            source="unavailable",
-        )
-
-    response = _normalize_response(payload, stock, resolved, warnings, source="openai")
-    _store_cached_trade_quality(req.stock_id, resolved, response)
-    return response
+    result = run_trade_quality_for_user(
+        db,
+        user=user,
+        stock_id=req.stock_id,
+        buy_date_input=req.buy_date,
+        persist_source="manual",
+    )
+    return result.response
 
 
 # ── Streaming endpoint（progress bar 用）─────────────────────────────────────
@@ -663,6 +881,20 @@ def analyze_trade_quality_stream(
     if not stock_check:
         raise HTTPException(status_code=404, detail=f"Stock not found: {req.stock_id}")
 
+    # M25 DB cache hit（登入使用者）→ 直接走單一 done event，與 in-memory cache 行為一致
+    db_cached_response = _try_load_db_cache(db, user=user, stock=stock_check, buy_date=resolved)
+    if db_cached_response is not None:
+        _store_cached_trade_quality(req.stock_id, resolved, db_cached_response)
+
+        def db_cached_stream():
+            yield _emit("done", "完成（快取）", payload=jsonable_encoder(db_cached_response))
+
+        return StreamingResponse(
+            db_cached_stream(),
+            media_type="application/x-ndjson",
+            headers=_STREAM_HEADERS,
+        )
+
     system_prompt = _load_system_prompt()
     if not system_prompt:
         raise HTTPException(status_code=500, detail="分析 prompt 檔案缺失")
@@ -696,6 +928,9 @@ def analyze_trade_quality_stream(
 
             response = _normalize_response(payload, stock, resolved, warnings, source="openai")
             _store_cached_trade_quality(req.stock_id, resolved, response)
+            _persist_db_cache_if_logged_in(
+                db, user=user, stock=stock, buy_date=resolved, response=response
+            )
             yield _emit("done", "完成", payload=jsonable_encoder(response))
         except Exception:
             # 注意：headers 已 commit，此處 raise HTTPException 不會變 4xx，會變成

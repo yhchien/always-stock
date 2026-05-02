@@ -6,7 +6,8 @@
 - `Trade Quality Analysis`：輸入股票與買進日，還原當時可觀察資訊後給出 5 階交易質量評級（不需登入即可使用，分層 rate limit）
 - `Industry Dashboard`：產業別三大法人資金流向排行
 - `Hot Money List`：首頁底部與 L1 產業頁頂部呈現「近 N 日三大法人累計淨買超」個股排行（L0 Top 20 / L1 Top 10）
-- `Watchlist`：登入後可建立關注買進清單（單一清單上限 20 檔，含未實現損益與一鍵跳 M17 交易分析）
+- `Watchlist`：登入後可建立關注買進清單（單一清單上限 30 檔，含未實現損益與一鍵跳 M17 交易分析）
+- `Watchlist Trade Quality Snapshot`（M25）：登入後首頁顯示自選清單每檔的 5 階動作建議（強烈推薦/推薦/中立/再看看/快跑），由每日 ETL 後 cron 跑 trade quality 寫快照表並前端讀取；Trade Quality 分析新增 `key_factors` 條列指標（產業/熱度/報酬/籌碼/技術/基本面 + A/B/C 燈號）+ delta 比對（上次 → 這次評級變化）
 
 > Daily Brief（盤前摘要）已從首頁移到 Telegram Bot `/brief` 指令。
 
@@ -162,8 +163,10 @@ npm run dev
 
 | Workflow | 排程 | 說明 |
 |----------|------|------|
-| `.github/workflows/daily_etl_update.yml` | 週一~五 18:00（台北） | 每個交易日傍晚全量刷新 Render PostgreSQL（6 個 FinMind 模組：daily_price / inst_flow / daily_valuation / monthly_revenue / financial_statement / broker_trade_agg）。配額耗盡時 1.5h 後自動 retry 一次；假日由 daily_price 空資料 + 配額健康判定自動短路 |
+| `.github/workflows/daily_etl_update.yml` | 週一~五 18:00（台北） | 每個交易日傍晚全量刷新 Render PostgreSQL（6 個 FinMind 模組：daily_price / inst_flow / daily_valuation / monthly_revenue / financial_statement / broker_trade_agg）。配額耗盡時 1.5h 後自動 retry 一次；假日由 daily_price 空資料 + 配額健康判定自動短路。**ETL 結束後串跑 M25 watchlist trade quality refresh**（對全使用者 watchlist 跑 trade quality 並寫入 `watchlist_trade_quality_snapshots`，給 L0 自選清單表格直接讀） |
 | `.github/workflows/broker_trade_backfill.yml` | 每小時第 5 分 | 分點買賣超歷史 backfill，以交易日為單位逐批推進 |
+
+> **M25 cron 時機決策**：watchlist trade quality 不獨立排程，串在 daily_etl_update.yml ETL 完成之後跑，避免兩個 workflow 同時打 OpenAI 與 DB。ETL 完全失敗（exit 2/3）時跳過 wtq；ETL holiday（exit 5）時也跳過。Cron 時間（18:00 台北）不動 —— 18:30~19:30 完成 ETL 後接著跑 wtq，使用者隔天早上看資料；`snapshot_trade_date` resolver 用 `ETL_DONE_TIME=20:00` 當截斷點，確保使用者打點時不會吃到不完整的當日 ETL。
 
 ### 待實作資料表
 

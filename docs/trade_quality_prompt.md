@@ -387,6 +387,14 @@ BB → 低 PE
 "action": "BUY | HOLD | EXIT | SHORT-TERM-TRADE",
 "core_logic": "基本面 + 預期 + 資金",
 "valuation_status": "LOW | FAIR | HIGH_WITH_GROWTH | OVERVALUED",
+"key_factors": [
+  {"category": "industry",      "level": "A|B|C", "trend": "improving|stable|weakening|deteriorating", "note": "10~25 字"},
+  {"category": "industry_heat", "level": "A|B|C", "trend": "improving|stable|weakening|deteriorating", "note": "10~25 字"},
+  {"category": "return",        "level": "A|B|C", "trend": "improving|stable|weakening|deteriorating", "note": "10~25 字"},
+  {"category": "chip",          "level": "A|B|C", "trend": "improving|stable|weakening|deteriorating", "note": "10~25 字"},
+  {"category": "technical",     "level": "A|B|C", "trend": "improving|stable|weakening|deteriorating", "note": "10~25 字"},
+  {"category": "fundamental",   "level": "A|B|C", "trend": "improving|stable|weakening|deteriorating", "note": "10~25 字"}
+],
 "if_strong": {
 "target_price_range": [min, max],
 "time_horizon_days": number
@@ -396,6 +404,8 @@ BB → 低 PE
 "max_holding_days": number
 }
 }
+
+> M25 注記：`key_factors` 是給前端條列指標 + A/B/C 燈號 + delta 比對用的結構化欄位；6 個 category 全部必填；level/trend 必須 enum；canonical 規則寫在 `backend/app/prompts/trade_quality.md`「key_factors 規則」章節，本檔僅為文件鏡像。
 
 ==================================================
 ## PART 2 — 買方分析報告

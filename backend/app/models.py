@@ -412,6 +412,67 @@ class SignalWatchCompletedArchive(Base):
     )
 
 
+class WatchlistTradeQualitySnapshot(Base):
+    """
+    自選清單交易質量快照（M25）
+
+    每日 ETL 完成後，cron 對全使用者 watchlist 跑 trade quality 並寫入此表，
+    L0 首頁自選清單表格直接讀此表（不重打 OpenAI）；
+    使用者手動跑 trade quality（入口 A）也會寫入此表，自動累積歷史快照。
+
+    Unique by (user_id, stock_id, buy_date, snapshot_trade_date)：
+    同一個使用者對同檔同買進日，每個交易日只存一份快照；同日重跑覆蓋。
+
+    source 欄位：
+    - cron: 每日 GitHub Actions 自動跑
+    - manual: 使用者手動跑 /api/analysis/trade-quality
+    - on_demand: 自選清單表格載入時對沒今日快照的個股觸發 refresh
+
+    status='failed' 的 row 仍佔用 unique key（避免重複 retry 寫多筆），
+    前端讀到 failed → fallback 顯示上一筆 ok 快照 + 重試按鈕。
+    """
+    __tablename__ = "watchlist_trade_quality_snapshots"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    stock_id = Column(String(20), nullable=False, index=True)
+    buy_date = Column(Date, nullable=False)
+    snapshot_trade_date = Column(Date, nullable=False, index=True)
+
+    # M17 trade quality payload（與 TradeQualityResponse 對齊）
+    rating = Column(String(20), nullable=True)              # STRONG_BUY/BUY/NEUTRAL/WATCH/RUN
+    rating_label = Column(String(40), nullable=True)
+    classification = Column(String(2), nullable=True)       # A/B/C
+    market_state = Column(String(20), nullable=True)
+    quadrant = Column(String(8), nullable=True)
+    expectation_gap = Column(String(20), nullable=True)
+    action = Column(String(40), nullable=True)
+    summary = Column(Text, nullable=True)
+    core_logic = Column(Text, nullable=True)
+    risk_level = Column(String(20), nullable=True)
+    target_price_low = Column(Float, nullable=True)
+    target_price_high = Column(Float, nullable=True)
+    time_horizon_days = Column(Integer, nullable=True)
+    exit_price_low = Column(Float, nullable=True)
+    exit_price_high = Column(Float, nullable=True)
+    max_holding_days = Column(Integer, nullable=True)
+    report_markdown = Column(Text, nullable=True)
+    key_factors = Column(JSON, nullable=True)               # [{category, level, trend, note}, ...]
+
+    # Cache / 觸發 metadata
+    source = Column(String(16), nullable=False)             # manual / on_demand / cron
+    status = Column(String(16), nullable=False, default="ok")  # ok / failed
+    error_message = Column(Text, nullable=True)
+    generated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "stock_id", "buy_date", "snapshot_trade_date",
+            name="uq_wtqs_user_stock_buy_snapshot",
+        ),
+    )
+
+
 class IndustryMapping(Base):
     """
     產業分類對照表（雙軌驗證用）

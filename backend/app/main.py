@@ -50,17 +50,28 @@ def _seed_admin_user() -> None:
     """啟動時確保 M18 auth 表存在 + admin 帳號存在。失敗不阻擋 app 啟動。"""
     from app.auth import ensure_admin_user
     from app.database import Base, SessionLocal, engine
-    from app.models import User, UserSession, UserWatchlist  # noqa: F401 — 觸發 metadata 註冊
+    from app.models import (  # noqa: F401 — 觸發 metadata 註冊
+        User,
+        UserSession,
+        UserWatchlist,
+        WatchlistTradeQualitySnapshot,
+    )
 
     # create_all 是 CREATE TABLE IF NOT EXISTS，對既有資料 no-op。
     # 原本靠手動跑 backend/migrate_add_users.py 建表，改成 lifespan 自動 idempotent 建。
+    # M25 watchlist_trade_quality_snapshots 也跟進同 pattern，避免 prod 上線時手動 migration。
     try:
         Base.metadata.create_all(
             bind=engine,
-            tables=[User.__table__, UserSession.__table__, UserWatchlist.__table__],
+            tables=[
+                User.__table__,
+                UserSession.__table__,
+                UserWatchlist.__table__,
+                WatchlistTradeQualitySnapshot.__table__,
+            ],
         )
     except Exception:
-        logger.exception("Failed to create M18/M19 auth tables at startup")
+        logger.exception("Failed to create M18/M19/M25 auth & watchlist tables at startup")
         return
 
     db = SessionLocal()

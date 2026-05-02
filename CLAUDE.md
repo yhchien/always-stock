@@ -93,6 +93,7 @@
 - M19: 關注買進清單（單一清單上限 20 檔，加入 popup 填買進日/均價；L0 HotMoneyList、L1 StockList、L2 個股頁右下「加入清單」；Navbar「我的清單」；/watchlist 卡片含未實現損益 + 交易分析深連結 M17；資料綁 user_id）
 - M22: 熱錢湧入個股排行（L0 底部 Top 20 / L1 頂部 Top 10，近 N 日三大法人累計買超；spec 在 [docs/plans/hot_money_list_spec.md](docs/plans/hot_money_list_spec.md)）
 - M21: Trade Quality Context 資料管線（6 個 section 預聚合 JSON：industry/chip/peer_rank/fundamental/price_structure/news_stub；deterministic + no hindsight；入口 `build_trade_quality_context(db, stock_id, buy_date)`；`GET /api/analysis/context` 需登入；實作 [docs/plans/m21_context_pipeline_implementation.md](docs/plans/m21_context_pipeline_implementation.md)）
+- M25: 自選清單 trade quality 快照表 + key_factors 條列指標（2026-05-02 完工；新表 `watchlist_trade_quality_snapshots` 三入口共用：cron / on_demand / manual；首頁新增 `WatchlistTradeQualityTable`；`<TradeQualityAnalysis />` 加 `KeyFactorsList`（A 綠 / B 黃 / C 紅 + delta 箭頭）；`run_watchlist_trade_quality.py` 串在 daily_etl_update.yml ETL 之後；trade_quality.md prompt 加 `key_factors` 6 category 強制欄位；spec [docs/plans/M25.md](docs/plans/M25.md)）
 
 ### 進行中
 - M13 關鍵券商分點：ETL 模組與 `broker_trade_agg` backfill 已完成；L2 券商面板在 2026-04-19 主動隱藏（產品優先序下調），未來視需要復活
@@ -113,6 +114,59 @@
 - 優先考慮資料正確性與 TWSE API rate limiting
 - 前端以深色主題為主
 - Brian 的個人專案，目標是從法人籌碼面輔助台股交易決策
+
+## M25 完工（2026-05-02）
+
+### 範圍
+- 兩個前端大改 + 後端快照表 + cron 串接 + prompt 結構化欄位
+- 全 17 個 M25 backend tests pass + 既有 56 個相關 tests 不退步
+- canonical 計畫：[docs/plans/M25.md](docs/plans/M25.md)
+
+### 後端
+- 新表 `watchlist_trade_quality_snapshots`：UNIQUE `(user_id, stock_id, buy_date, snapshot_trade_date)`；存完整 TradeQualityResponse 欄位 + `key_factors` JSON + status `ok|failed` + source `manual|on_demand|cron`
+- 新模組 `app/trade_quality_cache.py`：`resolve_snapshot_trade_date` / `load_snapshot` / `load_latest_ok_snapshot` / `save_snapshot_ok` / `save_snapshot_failed` / `snapshot_to_response_dict`
+- `routers/analysis.py` 抽出 `run_trade_quality_for_user(db, user, stock_id, buy_date_input, persist_source)` 給 endpoint / cron / refresh 三方共用；in-memory 5min cache 維持給匿名使用者用
+- `routers/analysis.py` `analyze_trade_quality` + `analyze_trade_quality_stream` 都接 DB cache：登入使用者命中 → 不打 OpenAI；source 標 `cache`
+- `routers/watchlist.py` 新增 `GET /api/watchlist/trade-quality`（一次回全清單最新快照 + previous + change_pct）+ `POST /api/watchlist/trade-quality/refresh`（單檔 on-demand 補洞）
+- `backend/run_watchlist_trade_quality.py` cron 入口；exit 0 ok / 1 partial / 2 all_failed / 5 holiday；個別失敗 try/except 寫 `status='failed'` 不中斷整個 job
+
+### Prompt 修改（trade_quality.md）
+- `PART 1` JSON schema 新增 `key_factors` 強制欄位（6 個 category 全部必填：industry / industry_heat / return / chip / technical / fundamental）
+- 每項含 `level`（A/B/C）+ `trend`（improving/stable/weakening/deteriorating）+ `note`（10~25 字）
+- 一致性規則：classification=A → 至少 4 項 level=A；classification=C → 至少 3 項 level=C
+- 鏡像 `docs/trade_quality_prompt.md` 同步更新（標記 canonical 在 backend 那份）
+
+### 前端
+- 新元件 `KeyFactorsList`：6 條 A/B/C 燈號 + 趨勢箭頭 + 與 `previousFactors` 比對顯示「上次 X → 本次 Y」
+- 新元件 `WatchlistTradeQualityTable`：可折疊；表格欄位 = 個股 / 收盤 / 漲跌幅 / 未實現 / 動作建議 5 階徽章 + 重試按鈕；對 `latest=null` 的 row 自動 fire-and-forget on-demand refresh；點 row 跳 `/stocks/{id}`
+- `TradeQualityAnalysis` 在 Summary 之後、Price info 之前插入 `KeyFactorsList`（首版不接 delta，未來從 watchlist context 帶 previousFactors 進來即可）
+- `app/page.tsx` 把 `<WatchlistTradeQualityTable />` 接在 TradeQualityAnalysis 與 DailySignalsPanel 之間
+- `lib/api.ts` 加 `KeyFactor` / `WatchlistTradeQualityItem` / `WatchlistSnapshotPayload` / `fetchWatchlistTradeQuality` / `refreshWatchlistTradeQuality`；`TradeQualityResponse.source` 加 `"cache"` enum
+
+### GitHub Actions
+- `daily_etl_update.yml` 新增 step `Run watchlist trade quality refresh (M25)`；條件 `etl_final.outputs.final_exit in (0, 1)` 才跑（partial 也跑、quota / error / holiday 跳過）
+- `timeout-minutes` 240 → 300（多預留 60 min 給 wtq）
+- wtq 失敗不影響整個 workflow（exit 0 包住）
+
+### Cron 時機決策
+- ETL workflow 維持台北 18:00 不動（既有 cron `0 10 * * 1-5` UTC）
+- watchlist trade quality 串在同一 workflow ETL 之後（避免兩個 workflow 同時打 OpenAI / DB）
+- `snapshot_trade_date` resolver 用 `ETL_DONE_TIME = 20:00` 當截斷點：20:00 前打 trade quality → 用前一交易日；之後 → 用當日
+- 19:00 跑 ETL 不可行：FinMind 同步慢（會大量 no_data retry）+ holiday short-circuit 會誤判（>= 22:00 才允許判 holiday，目前邏輯沒這個條件）
+
+### Gotcha
+- **舊客戶端忽略 `key_factors`**：`_normalize_response` 對 invalid enum / 非 dict row 直接 drop（不 raise）；全空 → 回 None 而非 []，讓前端用 `factors && factors.length > 0` 當渲染條件
+- **匿名使用者不寫 DB 快照**：沒 user_id 可關聯；走原本 5 分鐘 in-memory cache + 每次重打 OpenAI；登入後才會累積歷史快照供 delta 比對
+- **`save_snapshot_failed` 會清掉舊 ok payload**：caller 用 `load_latest_ok_snapshot` 從更早的快照 fallback；UI 標記 `is_stale=True` 提示「資料較舊」
+- **同 stock_id 在 watchlist 唯一**：M19 既有約束；同檔不同 buy_date 會把舊的擋掉（這是 watchlist 的設計）
+- **OpenAI 成本控制**：每使用者 30 檔 × $0.05 ≈ $1.5/天/使用者；觀察期若太貴改成每 3 天跑一次或拔 cron
+- **`analyze_trade_quality` 對外契約凍結**：`rating` / `classification` enum 不變；`key_factors` 只是新增 optional 欄位
+- **重複跑 same-day → cache hit 不重打 OpenAI**：`(user_id, stock_id, buy_date, snapshot_trade_date)` 命中即 return，cron / refresh / manual endpoint 都共用這條 fast path
+
+### 下一步（M25 上線後）
+- 觀察 prod cron 第一次跑（隔日早上 18:30 後檢查 Render log + DB row 數）
+- 觀察使用者 30 檔 OpenAI cost；若超預算考慮：(a) 排除某 rating 的 row 不每天重跑、(b) 改成週一 / 週四只跑兩次、(c) 拔 cron 改純 on-demand
+- 若 prompt 對 6 個 category level/trend 一致性還是偶爾飄，可在 user message 內把 M21 enum 直接 echo 回去當 anchor
 
 ## 最近重要修正（2026-04-09）
 

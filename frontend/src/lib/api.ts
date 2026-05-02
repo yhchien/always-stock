@@ -804,8 +804,28 @@ export interface TradeQualityResponse {
   exit_price_high?: number | null
   max_holding_days?: number | null
   report_markdown: string
+  key_factors?: KeyFactor[] | null
   warnings: string[]
-  source: "openai" | "unavailable" | "market_not_open"
+  source: "openai" | "unavailable" | "market_not_open" | "cache"
+}
+
+// M25 條列指標 + 燈號用
+export type KeyFactorCategory =
+  | "industry"
+  | "industry_heat"
+  | "return"
+  | "chip"
+  | "technical"
+  | "fundamental"
+
+export type KeyFactorLevel = "A" | "B" | "C"
+export type KeyFactorTrend = "improving" | "stable" | "weakening" | "deteriorating"
+
+export interface KeyFactor {
+  category: KeyFactorCategory | string
+  level: KeyFactorLevel | string
+  trend: KeyFactorTrend | string
+  note: string
 }
 
 export type TradeQualityStreamStage =
@@ -1051,6 +1071,68 @@ export async function removeWatchlistEntry(entryId: number): Promise<void> {
 export async function clearWatchlistEntries(): Promise<void> {
   const res = await apiFetch(`${API_BASE}/api/watchlist`, { method: "DELETE" })
   if (!res.ok) throw new Error(await buildErrorMessage(res, "清空清單失敗"))
+}
+
+// ---------------------------------------------------------------------------
+// M25 自選清單 trade quality 快照表
+
+export interface WatchlistSnapshotPayload {
+  snapshot_trade_date: string
+  rating: TradeQualityRating | null
+  rating_label: string | null
+  classification: string | null
+  summary: string | null
+  key_factors: KeyFactor[] | null
+  status: "ok" | "failed"
+  is_stale: boolean
+  generated_at: string
+}
+
+export interface WatchlistTradeQualityItem {
+  stock_id: string
+  stock_name: string
+  industry_name: string | null
+  buy_date: string
+  avg_price: number
+  latest_close: number | null
+  latest_trade_date: string | null
+  change_pct: number | null
+  unrealized_pct: number | null
+  latest: WatchlistSnapshotPayload | null
+  previous: WatchlistSnapshotPayload | null
+}
+
+export interface WatchlistTradeQualityResponse {
+  items: WatchlistTradeQualityItem[]
+  total: number
+  snapshot_trade_date: string | null
+}
+
+export async function fetchWatchlistTradeQuality(
+  options?: FetchOptions,
+): Promise<WatchlistTradeQualityResponse> {
+  const res = await apiFetch(`${API_BASE}/api/watchlist/trade-quality`, {
+    signal: options?.signal,
+  })
+  if (res.status === 401) {
+    return { items: [], total: 0, snapshot_trade_date: null }
+  }
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "自選清單交易質量載入失敗"))
+  return res.json()
+}
+
+export async function refreshWatchlistTradeQuality(
+  stockId: string,
+  options?: FetchOptions,
+): Promise<WatchlistTradeQualityItem> {
+  const res = await apiFetch(`${API_BASE}/api/watchlist/trade-quality/refresh`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ stock_id: stockId }),
+    signal: options?.signal,
+  })
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "重新分析失敗"))
+  return res.json()
 }
 
 export async function fetchIndustryHotMoney(

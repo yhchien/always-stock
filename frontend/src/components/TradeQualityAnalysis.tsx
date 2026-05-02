@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useSearchParams } from "next/navigation"
+import KeyFactorsList from "@/components/KeyFactorsList"
 import {
   fetchLatestTradeDate,
   searchStocks,
@@ -376,6 +377,11 @@ export default function TradeQualityAnalysis({
 
           {/* Summary */}
           <p className="text-sm text-slate-200 leading-relaxed">{result.summary}</p>
+
+          {/* M25：條列指標 + 燈號（A 綠 / B 黃 / C 紅）+ delta 箭頭 */}
+          {result.key_factors && result.key_factors.length > 0 && (
+            <KeyFactorsList factors={result.key_factors} />
+          )}
 
           {/* Price info */}
           <div className="flex flex-wrap gap-4 text-xs">
