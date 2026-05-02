@@ -1091,6 +1091,11 @@ export interface WatchlistSnapshotPayload {
   generated_at: string
 }
 
+export interface WatchlistFactorSnapshot {
+  snapshot_trade_date: string
+  key_factors: KeyFactor[] | null
+}
+
 export interface WatchlistTradeQualityItem {
   stock_id: string
   stock_name: string
@@ -1103,6 +1108,8 @@ export interface WatchlistTradeQualityItem {
   unrealized_pct: number | null
   latest: WatchlistSnapshotPayload | null
   previous: WatchlistSnapshotPayload | null
+  /** 最近 N 個 ok 快照（snapshot_trade_date 倒序，最新在前），給 KeyFactorsTimeline 多日趨勢用 */
+  recent_factors: WatchlistFactorSnapshot[]
 }
 
 export interface WatchlistTradeQualityResponse {

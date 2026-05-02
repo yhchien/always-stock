@@ -39,6 +39,7 @@ from app.models import (
 )
 from app.trade_quality_cache import (
     load_latest_ok_snapshot,
+    load_recent_ok_snapshots,
     load_snapshot,
     resolve_snapshot_trade_date,
 )
@@ -311,6 +312,12 @@ class WatchlistSnapshotPayload(BaseModel):
     generated_at: datetime
 
 
+class WatchlistFactorSnapshot(BaseModel):
+    """精簡版快照：只給 KeyFactorsTimeline 多日趨勢使用，不含 markdown 等大欄位。"""
+    snapshot_trade_date: date
+    key_factors: Optional[List[WatchlistKeyFactor]]
+
+
 class WatchlistTradeQualityItem(BaseModel):
     stock_id: str
     stock_name: str
@@ -323,6 +330,10 @@ class WatchlistTradeQualityItem(BaseModel):
     unrealized_pct: Optional[float]              # 相對 avg_price
     latest: Optional[WatchlistSnapshotPayload]   # 今日 ok 快照（None = 還沒分析過 / 今日 failed）
     previous: Optional[WatchlistSnapshotPayload] # 上一筆 ok 快照（給 delta 比對）
+    recent_factors: List[WatchlistFactorSnapshot] = Field(
+        default_factory=list,
+        description="最近 N 個 ok 快照（snapshot_trade_date 倒序，最新在前），給 KeyFactorsTimeline 多日趨勢用",
+    )
 
 
 class WatchlistTradeQualityResponse(BaseModel):
@@ -331,11 +342,7 @@ class WatchlistTradeQualityResponse(BaseModel):
     snapshot_trade_date: Optional[date]          # 今日預期 snapshot_trade_date（前端比對 latest 是否新鮮）
 
 
-def _row_to_snapshot_payload(
-    row: WatchlistTradeQualitySnapshot,
-    *,
-    expected_trade_date: Optional[date],
-) -> WatchlistSnapshotPayload:
+def _extract_key_factors(row: WatchlistTradeQualitySnapshot) -> List[WatchlistKeyFactor]:
     factors_raw = row.key_factors or []
     factors: List[WatchlistKeyFactor] = []
     if isinstance(factors_raw, list):
@@ -345,6 +352,15 @@ def _row_to_snapshot_payload(
                     factors.append(WatchlistKeyFactor(**f))
                 except Exception:
                     continue
+    return factors
+
+
+def _row_to_snapshot_payload(
+    row: WatchlistTradeQualitySnapshot,
+    *,
+    expected_trade_date: Optional[date],
+) -> WatchlistSnapshotPayload:
+    factors = _extract_key_factors(row)
     is_stale = (
         expected_trade_date is not None
         and row.snapshot_trade_date != expected_trade_date
@@ -463,6 +479,21 @@ def list_watchlist_trade_quality(
         if base and base.latest_trade_date is not None:
             change_pct = _compute_change_pct(db, entry.stock_id, base.latest_trade_date)
 
+        recent_rows = load_recent_ok_snapshots(
+            db,
+            user_id=user.id,
+            stock_id=entry.stock_id,
+            buy_date=entry.buy_date,
+            limit=3,
+        )
+        recent_factors = [
+            WatchlistFactorSnapshot(
+                snapshot_trade_date=r.snapshot_trade_date,
+                key_factors=_extract_key_factors(r) or None,
+            )
+            for r in recent_rows
+        ]
+
         items.append(
             WatchlistTradeQualityItem(
                 stock_id=entry.stock_id,
@@ -476,6 +507,7 @@ def list_watchlist_trade_quality(
                 unrealized_pct=base.unrealized_pct if base else None,
                 latest=latest_payload,
                 previous=previous_payload,
+                recent_factors=recent_factors,
             )
         )
 

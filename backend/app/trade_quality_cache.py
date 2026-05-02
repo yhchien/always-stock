@@ -113,6 +113,38 @@ def load_latest_ok_snapshot(
     return q.order_by(WatchlistTradeQualitySnapshot.snapshot_trade_date.desc()).first()
 
 
+def load_recent_ok_snapshots(
+    db: Session,
+    *,
+    user_id: int,
+    stock_id: str,
+    buy_date: date,
+    limit: int = 3,
+    before_or_eq_trade_date: Optional[date] = None,
+) -> List[WatchlistTradeQualitySnapshot]:
+    """讀取最近 N 筆 status='ok' 快照，給 KeyFactorsTimeline 趨勢顯示用。
+
+    回傳順序：snapshot_trade_date 倒序（最新在前）；caller 若要時間軸由舊→新可自行 reverse。
+    若該股累積快照不足 N 筆，回傳實際筆數（可能空 list）。
+    """
+    q = (
+        db.query(WatchlistTradeQualitySnapshot)
+        .filter(
+            WatchlistTradeQualitySnapshot.user_id == user_id,
+            WatchlistTradeQualitySnapshot.stock_id == stock_id,
+            WatchlistTradeQualitySnapshot.buy_date == buy_date,
+            WatchlistTradeQualitySnapshot.status == "ok",
+        )
+    )
+    if before_or_eq_trade_date is not None:
+        q = q.filter(
+            WatchlistTradeQualitySnapshot.snapshot_trade_date <= before_or_eq_trade_date
+        )
+    return q.order_by(
+        WatchlistTradeQualitySnapshot.snapshot_trade_date.desc()
+    ).limit(max(1, limit)).all()
+
+
 def save_snapshot_ok(
     db: Session,
     *,
