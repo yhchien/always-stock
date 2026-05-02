@@ -1,5 +1,6 @@
 "use client"
 
+import Link from "next/link"
 import { useCallback, useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 
@@ -163,12 +164,12 @@ export default function WatchlistTradeQualityTable({
 
   return (
     <section className="flex flex-col gap-3">
-      <button
-        type="button"
-        className="flex w-full items-baseline justify-between gap-3 rounded-lg border border-zinc-700 bg-zinc-800/40 px-4 py-3 text-left hover:bg-zinc-800/60"
-        onClick={() => setCollapsed((c) => !c)}
-      >
-        <div className="flex items-baseline gap-3">
+      <div className="flex w-full items-baseline justify-between gap-3 rounded-lg border border-zinc-700 bg-zinc-800/40 px-4 py-3">
+        <button
+          type="button"
+          className="flex flex-1 items-baseline gap-3 text-left"
+          onClick={() => setCollapsed((c) => !c)}
+        >
           <span className="text-base font-semibold text-slate-100">
             {collapsed ? "▸" : "▾"} 自選清單表現
           </span>
@@ -182,9 +183,17 @@ export default function WatchlistTradeQualityTable({
               共 {data.total} 檔
             </span>
           ) : null}
+        </button>
+        <div className="flex items-center gap-3">
+          {loading ? <span className="text-xs text-slate-500">載入中…</span> : null}
+          <Link
+            href="/watchlist"
+            className="text-xs text-sky-300 hover:text-sky-200 hover:underline"
+          >
+            看詳細 →
+          </Link>
         </div>
-        <span className="text-xs text-slate-500">{loading ? "載入中…" : ""}</span>
-      </button>
+      </div>
 
       {!collapsed && (
         <>
@@ -223,7 +232,9 @@ export default function WatchlistTradeQualityTable({
                       item={item}
                       isRefreshing={refreshing.has(item.stock_id)}
                       onClick={() =>
-                        router.push(`/stocks/${item.stock_id}`)
+                        router.push(
+                          `/stocks/${encodeURIComponent(item.stock_id)}?buy_date=${item.buy_date}#watchlist-trade-quality`,
+                        )
                       }
                       onRefresh={() => handleManualRefresh(item.stock_id)}
                     />
