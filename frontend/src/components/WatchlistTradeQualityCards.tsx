@@ -194,7 +194,7 @@ export default function WatchlistTradeQualityCards() {
       ) : null}
 
       {items.length > 0 ? (
-        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+        <div className="grid auto-rows-fr grid-cols-1 gap-3 lg:grid-cols-2">
           {items.map((item) => {
             const latest = item.latest
             const isRefreshing = refreshing.has(item.stock_id)
@@ -203,7 +203,7 @@ export default function WatchlistTradeQualityCards() {
             return (
               <article
                 key={item.stock_id}
-                className="rounded-xl border border-slate-700 bg-slate-800/40 p-4"
+                className="flex h-full min-w-0 flex-col rounded-xl border border-slate-700 bg-slate-800/40 p-4"
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
@@ -268,7 +268,7 @@ export default function WatchlistTradeQualityCards() {
                   ) : null}
                 </div>
 
-                <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
+                <div className="mt-auto flex flex-wrap items-center justify-between gap-2 pt-4">
                   <div className="flex flex-wrap gap-2">
                     <Link
                       href={`/stocks/${encodeURIComponent(item.stock_id)}?buy_date=${item.buy_date}#watchlist-trade-quality`}

@@ -119,15 +119,6 @@ function SignalCard({ item }: { item: SignalWatchlistItem }) {
           看細節
         </Link>
       </div>
-
-      {item.reason && (
-        <div className="mt-3 rounded-lg border border-slate-700/70 bg-slate-950/40 p-3">
-          <p className="text-xs text-slate-500">保留理由</p>
-          <p className="mt-2 whitespace-pre-line text-sm leading-relaxed text-slate-200">
-            {item.reason}
-          </p>
-        </div>
-      )}
     </article>
   )
 }
