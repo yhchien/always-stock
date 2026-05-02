@@ -18,10 +18,6 @@ import {
 import { todayInTaipei } from "@/lib/utils"
 
 const TradeQualityAnalysis = dynamic(() => import("@/components/TradeQualityAnalysis"), { ssr: false })
-const WatchlistTradeQualityTable = dynamic(
-  () => import("@/components/WatchlistTradeQualityTable"),
-  { ssr: false },
-)
 const DailySignalsPanel = dynamic(() => import("@/components/DailySignalsPanel"), { ssr: false })
 const HotMoneyList = dynamic(() => import("@/components/HotMoneyList"), { ssr: false })
 
@@ -229,9 +225,6 @@ function HomeContent() {
         {defaultDate && (
           <>
             <TradeQualityAnalysis initialLatestDate={latestTradeDate ?? defaultDate} />
-            <DeferredSection minHeight={120}>
-              <WatchlistTradeQualityTable />
-            </DeferredSection>
             <DeferredSection minHeight={180}>
               <DailySignalsPanel
                 initialSnapshot={initialSnapshot}

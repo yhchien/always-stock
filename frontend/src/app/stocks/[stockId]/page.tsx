@@ -5,6 +5,8 @@ import dynamic from "next/dynamic"
 import Link from "next/link"
 import { useSearchParams } from "next/navigation"
 import RequireAuth from "@/components/RequireAuth"
+import StockSignalSummaryPanel from "@/components/StockSignalSummaryPanel"
+import StockWatchlistTradeQualityPanel from "@/components/StockWatchlistTradeQualityPanel"
 import WatchlistAddButton from "@/components/WatchlistAddButton"
 import { Skeleton } from "@/components/ui/skeleton"
 
@@ -125,12 +127,10 @@ function StockContent({ stockId }: { stockId: string }) {
     [backtestStart, backtestEnd],
   )
 
-  const [showFinancialsPanel, setShowFinancialsPanel] = useState(true)
+  const [showFinancialsPanel, setShowFinancialsPanel] = useState(() =>
+    readStoredToggle(FINANCIALS_TOGGLE_STORAGE_KEY, true),
+  )
   const [chartDays, setChartDays] = useState(90)
-
-  useEffect(() => {
-    setShowFinancialsPanel(readStoredToggle(FINANCIALS_TOGGLE_STORAGE_KEY, true))
-  }, [])
 
   useEffect(() => {
     window.localStorage.setItem(FINANCIALS_TOGGLE_STORAGE_KEY, String(showFinancialsPanel))
@@ -166,13 +166,19 @@ function StockContent({ stockId }: { stockId: string }) {
             <WatchlistAddButton stockId={stockId} defaultDate={date} />
           </div>
 
-          <StockChart
-            stockId={stockId}
-            defaultDate={date}
-            onDaysChange={setChartDays}
-            selectedBroker={null}
-            dateRange={externalDateRange}
-          />
+          <StockSignalSummaryPanel stockId={stockId} />
+
+          <StockWatchlistTradeQualityPanel stockId={stockId} />
+
+          <div id="stock-chart">
+            <StockChart
+              stockId={stockId}
+              defaultDate={date}
+              onDaysChange={setChartDays}
+              selectedBroker={null}
+              dateRange={externalDateRange}
+            />
+          </div>
 
           {showFinancialsPanel && (
             <FinancialsPanel stockId={stockId} chartDays={chartDays} />

@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 # explanation 降到 4 以降低單次 payload。
 DEFAULT_RESEARCH_BATCH_SIZE = 8
 DEFAULT_EXPLANATION_BATCH_SIZE = 4
-MAX_FINAL_WATCHLIST_SIZE = 30
+MAX_FINAL_WATCHLIST_SIZE = 3
 
 # Spec §3.2：第一版模型 fallback；workflow / Render env 可由 OPENAI_MODEL 覆寫。
 # 這裡避免再預設舊的 search-preview model 名稱，改以目前線上可用的 signals model
@@ -279,32 +279,20 @@ def assemble_final_output(
     model: str = DEFAULT_WATCH_REASON_MODEL,
     total_tokens: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Step 9：拆 watchlist / removed、計算 summary、組裝最終 payload。
+    """Step 9：整理最終 top watchlist、計算 summary、組裝最終 payload。
 
     對齊 spec §10.2 完整 schema：
-      market_context / watchlist / removed / summary +
+      market_context / watchlist / summary +
       candidate_pool_size / final_watchlist_size / llm_model / llm_total_tokens
     """
     watchlist_candidates: List[Dict[str, Any]] = []
-    removed: List[Dict[str, Any]] = []
 
     for item in explanation:
         decision = str(item.get("decision") or "REMOVE").upper()
         if decision == "WATCH":
             watchlist_candidates.append(_format_watch_entry(item))
-        else:
-            removed.append(
-                {
-                    "stock": item.get("stock") or item.get("stock_id"),
-                    "name": item.get("name", ""),
-                    "remove_reason": item.get("short_reason")
-                    or item.get("reason")
-                    or item.get("remove_reason")
-                    or "",
-                }
-            )
 
-    watchlist = _cap_final_watchlist(watchlist_candidates, removed)
+    watchlist = _cap_final_watchlist(watchlist_candidates)
 
     type_counts = {"LEADER": 0, "FOLLOWER": 0, "LAGGARD": 0}
     industries: List[str] = []
@@ -329,7 +317,6 @@ def assemble_final_output(
     return {
         "market_context": market_context,
         "watchlist": watchlist,
-        "removed": removed,
         "summary": summary,
         "candidate_pool_size": candidate_pool_size,
         "final_watchlist_size": len(watchlist),
@@ -479,7 +466,7 @@ def _run_decision_chunk(
     user_msg = (
         "[執行 STEP 5 / STEP 6：先對全候選做短 decision]\n"
         "你現在只需要判斷 WATCH / REMOVE，並給 1-2 句短理由。"
-        "最終 WATCH 名單應盡量控制在 30 檔內，條件普通或排序偏後者請直接判 REMOVE。"
+        "最終 WATCH 名單只保留最值得追蹤的 3 檔，條件普通或排序偏後者請直接判 REMOVE。"
         "不要產生長文分析，長理由只留給最後的 WATCH 名單。\n\n"
         f"[market_context]\n"
         f"{json.dumps(market_context, ensure_ascii=False, indent=2)}\n\n"
@@ -632,7 +619,6 @@ def _format_watch_entry(item: Dict[str, Any]) -> Dict[str, Any]:
 
 def _cap_final_watchlist(
     watchlist: List[Dict[str, Any]],
-    removed: List[Dict[str, Any]],
     *,
     limit: int = MAX_FINAL_WATCHLIST_SIZE,
 ) -> List[Dict[str, Any]]:
@@ -640,19 +626,7 @@ def _cap_final_watchlist(
         return watchlist
 
     ranked = sorted(watchlist, key=_watch_rank_key)
-    kept = ranked[:limit]
-    overflow = ranked[limit:]
-
-    for item in overflow:
-        removed.append(
-            {
-                "stock": item.get("stock"),
-                "name": item.get("name", ""),
-                "remove_reason": f"超過最終推薦上限 {limit} 檔，依綜合排序未納入。",
-            }
-        )
-
-    return kept
+    return ranked[:limit]
 
 
 def _watch_rank_key(item: Dict[str, Any]) -> tuple:

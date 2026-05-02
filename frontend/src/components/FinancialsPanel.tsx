@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import ReactECharts from "echarts-for-react"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
@@ -29,26 +29,29 @@ function ValuationChart({ stockId, chartDays }: { stockId: string; chartDays?: n
 
   useEffect(() => {
     const controller = new AbortController()
-    setLoading(true)
-    setError(null)
+    async function run() {
+      setLoading(true)
+      setError(null)
 
-    // Compute date range from chartDays (default 365)
-    const days = chartDays ?? 365
-    const endDate = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei" }).format(new Date())
-    const start = new Date()
-    start.setDate(start.getDate() - days)
-    const startDate = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei" }).format(start)
+      // Compute date range from chartDays (default 365)
+      const days = chartDays ?? 365
+      const endDate = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei" }).format(new Date())
+      const start = new Date()
+      start.setDate(start.getDate() - days)
+      const startDate = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei" }).format(start)
 
-    fetchValuation(stockId, startDate, endDate, { signal: controller.signal })
-      .then((res) => {
-        if (!controller.signal.aborted) setData(res.history)
-      })
-      .catch((e) => {
-        if (!controller.signal.aborted) setError(toDisplayError(e))
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setLoading(false)
-      })
+      fetchValuation(stockId, startDate, endDate, { signal: controller.signal })
+        .then((res) => {
+          if (!controller.signal.aborted) setData(res.history)
+        })
+        .catch((e) => {
+          if (!controller.signal.aborted) setError(toDisplayError(e))
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setLoading(false)
+        })
+    }
+    void run()
     return () => controller.abort()
   }, [stockId, chartDays])
 
@@ -164,18 +167,21 @@ function RevenueChart({ stockId, chartDays }: { stockId: string; chartDays?: num
 
   useEffect(() => {
     const controller = new AbortController()
-    setLoading(true)
-    setError(null)
-    fetchRevenue(stockId, months, { signal: controller.signal })
-      .then((res) => {
-        if (!controller.signal.aborted) setData(res.history)
-      })
-      .catch((e) => {
-        if (!controller.signal.aborted) setError(toDisplayError(e))
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setLoading(false)
-      })
+    async function run() {
+      setLoading(true)
+      setError(null)
+      fetchRevenue(stockId, months, { signal: controller.signal })
+        .then((res) => {
+          if (!controller.signal.aborted) setData(res.history)
+        })
+        .catch((e) => {
+          if (!controller.signal.aborted) setError(toDisplayError(e))
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setLoading(false)
+        })
+    }
+    void run()
     return () => controller.abort()
   }, [stockId, months])
 
@@ -288,18 +294,21 @@ function FinancialsTable({ stockId, chartDays }: { stockId: string; chartDays?: 
 
   useEffect(() => {
     const controller = new AbortController()
-    setLoading(true)
-    setError(null)
-    fetchFinancials(stockId, quarters, KEY_ITEMS, { signal: controller.signal })
-      .then((res) => {
-        if (!controller.signal.aborted) setData(res.items)
-      })
-      .catch((e) => {
-        if (!controller.signal.aborted) setError(toDisplayError(e))
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setLoading(false)
-      })
+    async function run() {
+      setLoading(true)
+      setError(null)
+      fetchFinancials(stockId, quarters, KEY_ITEMS, { signal: controller.signal })
+        .then((res) => {
+          if (!controller.signal.aborted) setData(res.items)
+        })
+        .catch((e) => {
+          if (!controller.signal.aborted) setError(toDisplayError(e))
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setLoading(false)
+        })
+    }
+    void run()
     return () => controller.abort()
   }, [stockId, quarters])
 

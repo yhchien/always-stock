@@ -94,7 +94,7 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
       setCustomStart(dateRange.start)
       setCustomEnd(dateRange.end)
     }
-  }, [dateRange?.start, dateRange?.end])
+  }, [dateRange, externalRangeKey])
 
   // Institutional line toggle state
   const [activeInst, setActiveInst] = useState<Set<InstKey>>(new Set(["foreign", "trust", "dealer"]))
@@ -112,6 +112,8 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
   const [activeMAs, setActiveMAs] = useState<Set<number>>(DEFAULT_MAS)
   const [customMA, setCustomMA] = useState<string>("")
   const [customMAPeriod, setCustomMAPeriod] = useState<number | null>(null)
+  const externalRangeKey = `${dateRange?.start ?? ""}:${dateRange?.end ?? ""}`
+  const selectedBrokerId = selectedBroker?.broker_id ?? null
 
   const applyCustomRange = () => {
     if (!customStart || !customEnd) return
@@ -151,7 +153,7 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
       }
     }
     return () => controller.abort()
-  }, [stockId, defaultDate, appliedCustom])
+  }, [stockId, appliedCustom])
 
   useEffect(() => {
     let cleanup: (() => void) | void
@@ -205,7 +207,7 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
       if (brokerPollRef.current) clearTimeout(brokerPollRef.current)
       lastBrokerCountRef.current = -1
     }
-  }, [selectedBroker?.broker_id, data, stockId])
+  }, [selectedBroker, selectedBrokerId, data, stockId])
 
   const toggleMA = (period: number) => {
     setActiveMAs((prev) => {

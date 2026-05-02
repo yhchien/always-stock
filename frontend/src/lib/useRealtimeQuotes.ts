@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { fetchRealtimeQuotes, type RealtimeQuote } from "@/lib/api"
 
 /** Returns true if current time is within TWSE trading hours (09:00–13:30, Mon–Fri, UTC+8). */
@@ -25,18 +25,17 @@ export function useRealtimeQuotes(
   intervalMs = 15000,
 ): Map<string, RealtimeQuote> {
   const [quotes, setQuotes] = useState<Map<string, RealtimeQuote>>(new Map())
-  const idsRef = useRef(stockIds)
-  idsRef.current = stockIds
+  const ids = useMemo(() => [...stockIds], [stockIds])
 
   useEffect(() => {
-    if (stockIds.length === 0) return
+    if (ids.length === 0) return
 
     let active = true
 
     async function poll() {
-      if (!active || idsRef.current.length === 0) return
+      if (!active || ids.length === 0) return
       try {
-        const data = await fetchRealtimeQuotes(idsRef.current)
+        const data = await fetchRealtimeQuotes(ids)
         if (active && data.length > 0) {
           setQuotes(new Map(data.map((q) => [q.stock_id, q])))
         }
@@ -58,7 +57,7 @@ export function useRealtimeQuotes(
       active = false
       if (timer) clearInterval(timer)
     }
-  }, [stockIds.join(","), intervalMs])
+  }, [ids, intervalMs])
 
   return quotes
 }

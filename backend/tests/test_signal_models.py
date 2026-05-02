@@ -69,10 +69,8 @@ def test_snapshot_persists_json_blobs(db):
                 "reason": "AI 伺服器主軸延續，外資連 5 買 ...",
             },
         ],
-        removed=[
-            {"stock_id": "8069", "category": "LAGGARD_candidate", "reason": "業務無關 AI 主線"},
-        ],
-        summary={"leader": 1, "follower": 0, "laggard": 0, "removed": 1},
+        removed=[],
+        summary={"leader": 1, "follower": 0, "laggard": 0},
         candidate_pool_size=68,
         final_watchlist_size=1,
         llm_model="gpt-4o-search-preview",
@@ -86,7 +84,7 @@ def test_snapshot_persists_json_blobs(db):
     assert rec.snapshot_date == date(2026, 4, 25)
     assert rec.market_context["market_state"] == "STRUCTURAL_BULL"
     assert rec.watchlist[0]["category"] == "LEADER"
-    assert rec.removed[0]["stock_id"] == "8069"
+    assert rec.removed == []
     assert rec.summary["leader"] == 1
     assert rec.candidate_pool_size == 68
     assert rec.llm_model == "gpt-4o-search-preview"
@@ -100,7 +98,7 @@ def test_snapshot_unique_per_date(db):
         market_context={"market_state": "RANGE"},
         watchlist=[],
         removed=[],
-        summary={"leader": 0, "follower": 0, "laggard": 0, "removed": 0},
+        summary={"leader": 0, "follower": 0, "laggard": 0},
     )
     db.add(snap1)
     db.commit()
@@ -110,7 +108,7 @@ def test_snapshot_unique_per_date(db):
         market_context={"market_state": "WEAK"},
         watchlist=[],
         removed=[],
-        summary={"leader": 0, "follower": 0, "laggard": 0, "removed": 0},
+        summary={"leader": 0, "follower": 0, "laggard": 0},
     )
     db.add(snap2)
     with pytest.raises(IntegrityError):
@@ -125,7 +123,7 @@ def test_snapshot_job_id_nullable_for_legacy_or_orphan(db):
         market_context={"market_state": "RANGE"},
         watchlist=[],
         removed=[],
-        summary={"leader": 0, "follower": 0, "laggard": 0, "removed": 0},
+        summary={"leader": 0, "follower": 0, "laggard": 0},
         job_id=None,
     )
     db.add(snap)

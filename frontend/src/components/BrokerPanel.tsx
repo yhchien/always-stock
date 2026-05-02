@@ -91,19 +91,18 @@ export default function BrokerPanel({ stockId, date, days = 1, onSelectBroker, s
   const [errorState, setErrorState] = useState<{ requestKey: string; message: string } | null>(null)
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
-  const [emptyRefreshCount, setEmptyRefreshCount] = useState(0)
+  const [emptyRefreshState, setEmptyRefreshState] = useState<{ baseKey: string; count: number }>({
+    baseKey: "",
+    count: 0,
+  })
 
   const MAX_EMPTY_RETRIES = 3
 
-  const requestKey = `${stockId}:${date ?? ""}:${days}:${reloadKey}`
+  const baseKey = `${stockId}:${date ?? ""}:${days}`
+  const emptyRefreshCount = emptyRefreshState.baseKey === baseKey ? emptyRefreshState.count : 0
+  const requestKey = `${baseKey}:${reloadKey}`
   const error = errorState?.requestKey === requestKey ? errorState.message : null
   const loading = !error && resolvedRequestKey !== requestKey
-
-  // Reset retry counter when stock/date/days changes (but not on reloadKey bump)
-  useEffect(() => {
-    setEmptyRefreshCount(0)
-    setReloadKey(0)
-  }, [stockId, date, days])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -115,9 +114,12 @@ export default function BrokerPanel({ stockId, date, days = 1, onSelectBroker, s
         setTradeDate(String(data.trade_date))
         const stillEmpty = data.buy_top.length === 0 && data.sell_top.length === 0
         if (data.is_refreshing && stillEmpty) {
-          setEmptyRefreshCount((c) => c + 1)
+          setEmptyRefreshState((prev) => ({
+            baseKey,
+            count: prev.baseKey === baseKey ? prev.count + 1 : 1,
+          }))
         } else {
-          setEmptyRefreshCount(0)
+          setEmptyRefreshState({ baseKey, count: 0 })
         }
         setIsRefreshing(Boolean(data.is_refreshing))
         setErrorState(null)
@@ -127,13 +129,14 @@ export default function BrokerPanel({ stockId, date, days = 1, onSelectBroker, s
         if (controller.signal.aborted) return
         if (err instanceof DOMException && err.name === "AbortError") return
         setIsRefreshing(false)
+        setEmptyRefreshState({ baseKey, count: 0 })
         setErrorState({ requestKey, message: toDisplayError(err) })
         setResolvedRequestKey(requestKey)
         console.error(err)
       })
 
     return () => { controller.abort() }
-  }, [stockId, date, days, reloadKey, requestKey])
+  }, [stockId, date, days, reloadKey, requestKey, baseKey])
 
   useEffect(() => {
     if (!isRefreshing || loading || error) return

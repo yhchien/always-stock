@@ -1081,7 +1081,10 @@ export interface WatchlistSnapshotPayload {
   rating: TradeQualityRating | null
   rating_label: string | null
   classification: string | null
+  market_state: string | null
+  action: string | null
   summary: string | null
+  report_markdown: string | null
   key_factors: KeyFactor[] | null
   status: "ok" | "failed"
   is_stale: boolean
@@ -1197,12 +1200,6 @@ export interface SignalWatchlistItem {
   reason?: string | null
 }
 
-export interface SignalRemovedItem {
-  stock: string
-  name?: string | null
-  remove_reason?: string | null
-}
-
 export interface SignalSummary {
   main_hot_industries?: string[] | null
   leader_count?: number | null
@@ -1223,7 +1220,6 @@ export interface SignalMarketContext {
 export interface SignalSnapshotData {
   market_context: SignalMarketContext
   watchlist: SignalWatchlistItem[]
-  removed: SignalRemovedItem[]
   summary: SignalSummary
   candidate_pool_size: number | null
   final_watchlist_size: number | null

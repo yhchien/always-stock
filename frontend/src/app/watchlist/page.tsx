@@ -1,121 +1,13 @@
 "use client"
 
-import Link from "next/link"
-import { useRouter } from "next/navigation"
 import { useState } from "react"
 
 import RequireAuth from "@/components/RequireAuth"
+import WatchlistTradeQualityCards from "@/components/WatchlistTradeQualityCards"
 import { useWatchlist } from "@/lib/watchlist"
-import type { WatchlistItem } from "@/lib/api"
-
-function PctDisplay({ value }: { value: number | null }) {
-  if (value == null) return <span className="text-slate-500 text-sm">—</span>
-  const color = value > 0 ? "text-red-400" : value < 0 ? "text-green-400" : "text-slate-400"
-  const arrow = value > 0 ? "▲" : value < 0 ? "▼" : ""
-  return (
-    <span className={`font-mono text-sm font-semibold ${color}`}>
-      {arrow} {value >= 0 ? "+" : ""}{value.toFixed(2)}%
-    </span>
-  )
-}
-
-function EntryCard({
-  item,
-  onRemove,
-}: {
-  item: WatchlistItem
-  onRemove: (id: number) => Promise<void>
-}) {
-  const router = useRouter()
-  const [removing, setRemoving] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  async function handleRemove(e: React.MouseEvent) {
-    e.stopPropagation()
-    if (removing) return
-    setRemoving(true)
-    setError(null)
-    try {
-      await onRemove(item.id)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "移除失敗")
-      setRemoving(false)
-    }
-  }
-
-  function goAnalysis() {
-    const params = new URLSearchParams({
-      stock_id: item.stock_id,
-      buy_date: item.buy_date,
-    })
-    router.push(`/?${params.toString()}#trade-quality`)
-  }
-
-  return (
-    <div className="rounded-lg border border-slate-700 bg-slate-800/40 p-4 flex flex-col gap-2 relative">
-      {/* Remove X */}
-      <button
-        type="button"
-        onClick={handleRemove}
-        disabled={removing}
-        title="從清單移除"
-        className="absolute right-2 top-2 rounded p-1 text-slate-500 hover:bg-red-900/30 hover:text-red-300 disabled:opacity-50"
-        aria-label="移除"
-      >
-        <span className="text-sm leading-none">✕</span>
-      </button>
-
-      {/* Header */}
-      <Link
-        href={`/stocks/${item.stock_id}`}
-        className="flex items-baseline gap-2 hover:underline"
-      >
-        <span className="font-mono text-sm text-slate-400">{item.stock_id}</span>
-        <span className="text-base font-medium text-slate-100">{item.stock_name}</span>
-      </Link>
-      {item.industry_name && (
-        <span className="text-xs text-slate-500">{item.industry_name}</span>
-      )}
-
-      {/* Price panel */}
-      <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs mt-1">
-        <span className="text-slate-500">買進日</span>
-        <span className="font-mono text-slate-200 text-right">{item.buy_date}</span>
-        <span className="text-slate-500">均價</span>
-        <span className="font-mono text-slate-200 text-right">{item.avg_price.toFixed(2)}</span>
-        <span className="text-slate-500">最新收盤</span>
-        <span className="font-mono text-slate-200 text-right">
-          {item.latest_close != null ? item.latest_close.toFixed(2) : "—"}
-          {item.latest_trade_date && (
-            <span className="text-[10px] text-slate-500 ml-1">({item.latest_trade_date})</span>
-          )}
-        </span>
-      </div>
-
-      {/* Unrealized */}
-      <div className="mt-1 flex items-center justify-between border-t border-slate-700 pt-2">
-        <span className="text-xs text-slate-500">未實現損益</span>
-        <PctDisplay value={item.unrealized_pct} />
-      </div>
-
-      {error && <p className="text-xs text-red-400">{error}</p>}
-
-      {/* Actions */}
-      <div className="mt-1 flex justify-end">
-        <button
-          type="button"
-          onClick={goAnalysis}
-          className="rounded-md bg-sky-600 px-3 py-1 text-xs font-semibold text-white hover:bg-sky-500"
-        >
-          交易分析 →
-        </button>
-      </div>
-    </div>
-  )
-}
 
 function WatchlistPageContent() {
-  const { items, total, capacity, isLoading, error, remove, clear, refresh } = useWatchlist()
+  const { items, total, capacity, isLoading, error, clear, refresh } = useWatchlist()
   const [clearConfirming, setClearConfirming] = useState(false)
   const [clearing, setClearing] = useState(false)
   const [clearError, setClearError] = useState<string | null>(null)
@@ -204,11 +96,7 @@ function WatchlistPageContent() {
       )}
 
       {items.length > 0 && (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {items.map((item) => (
-            <EntryCard key={item.id} item={item} onRemove={remove} />
-          ))}
-        </div>
+        <WatchlistTradeQualityCards />
       )}
     </main>
   )

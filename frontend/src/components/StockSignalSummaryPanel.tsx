@@ -1,0 +1,148 @@
+"use client"
+
+import Link from "next/link"
+import { useEffect, useMemo, useState } from "react"
+
+import {
+  fetchLatestSignalSnapshot,
+  toDisplayError,
+  type SignalSnapshotResponse,
+  type SignalWatchlistItem,
+} from "@/lib/api"
+import {
+  decisionBadgeClass,
+  signalValueLabel,
+  signalValueTone,
+  toneChipClass,
+} from "@/lib/signalPresentation"
+
+function SignalMetric({
+  label,
+  value,
+}: {
+  label: string
+  value: string | null | undefined
+}) {
+  const tone = signalValueTone(label, value)
+  return (
+    <div className="rounded-lg border border-slate-700/70 bg-slate-900/50 px-3 py-2">
+      <p className="text-[11px] text-slate-500">{label}</p>
+      <span className={`mt-1 inline-flex rounded border px-2 py-0.5 text-xs font-medium ${toneChipClass(tone)}`}>
+        {signalValueLabel(value)}
+      </span>
+    </div>
+  )
+}
+
+export default function StockSignalSummaryPanel({ stockId }: { stockId: string }) {
+  const [snapshot, setSnapshot] = useState<SignalSnapshotResponse | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    fetchLatestSignalSnapshot({ bypassCache: true })
+      .then((value) => {
+        if (!cancelled) setSnapshot(value)
+      })
+      .catch((err) => {
+        if (!cancelled) setError(toDisplayError(err))
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const match = useMemo(() => {
+    const watchItem = snapshot?.data.watchlist.find((item) => item.stock === stockId) ?? null
+    return { watchItem }
+  }, [snapshot, stockId])
+
+  if (error || !snapshot) return null
+
+  const market = snapshot.data.market_context
+  const item: SignalWatchlistItem | null = match.watchItem
+
+  if (!item) return null
+
+  return (
+    <section className="rounded-xl border border-slate-700 bg-slate-800/40 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Signal Detail</p>
+          <h2 className="mt-1 text-lg font-semibold text-slate-100">今日異常訊號摘要</h2>
+          <p className="mt-1 text-xs text-slate-500">快照日期 {snapshot.snapshot_date}</p>
+        </div>
+        <Link
+          href="#stock-chart"
+          className="inline-flex items-center rounded border border-sky-500/50 bg-sky-500/10 px-3 py-1 text-xs font-medium text-sky-200 hover:bg-sky-500/20"
+        >
+          看 K 線圖
+        </Link>
+      </div>
+
+      <div className="mt-4 rounded-xl border border-slate-700/70 bg-slate-900/40 p-4">
+        <p className="text-xs text-slate-500">市場狀態</p>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <span className="rounded border border-slate-600/70 bg-slate-800/60 px-2 py-0.5 text-xs font-medium text-slate-200">
+            {market.market_state ?? "—"}
+          </span>
+          {market.vix_status ? (
+            <span className="text-xs text-slate-500">VIX {market.vix_status}</span>
+          ) : null}
+          {market.futures_bias ? (
+            <span className="text-xs text-slate-500">期貨 {market.futures_bias}</span>
+          ) : null}
+        </div>
+        {market.market_state_reason ? (
+          <p className="mt-2 text-sm leading-relaxed text-slate-300">{market.market_state_reason}</p>
+        ) : null}
+      </div>
+
+      {item ? (
+        <div className="mt-4 rounded-xl border border-slate-700/70 bg-slate-900/40 p-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-lg font-semibold text-slate-100">
+              {item.stock} {item.name ?? ""}
+            </span>
+            {item.type ? (
+              <span className={`inline-flex items-center rounded border px-2 py-0.5 text-xs font-medium ${decisionBadgeClass(item.type)}`}>
+                {item.type}
+              </span>
+            ) : null}
+          </div>
+
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-slate-300">
+            <span>{item.industry ?? "未分類"}</span>
+            {item.sub_industry ? <span className="text-slate-500">·</span> : null}
+            {item.sub_industry ? <span>{item.sub_industry}</span> : null}
+          </div>
+
+          {item.theme_fit ? (
+            <div className="mt-3">
+              <span className={`inline-flex items-center rounded border px-2 py-0.5 text-xs font-medium ${toneChipClass(signalValueTone("theme_fit", item.theme_fit))}`}>
+                題材契合 {signalValueLabel(item.theme_fit)}
+              </span>
+            </div>
+          ) : null}
+
+          <div className="mt-4 grid grid-cols-2 gap-2 lg:grid-cols-4">
+            <SignalMetric label="資金" value={item.signals?.capital_flow} />
+            <SignalMetric label="籌碼" value={item.signals?.chip_trend} />
+            <SignalMetric label="融資券" value={item.signals?.margin_short_signal} />
+            <SignalMetric label="技術" value={item.signals?.technical_status} />
+          </div>
+
+          {item.reason ? (
+            <div className="mt-4 rounded-lg border border-slate-700/70 bg-slate-950/40 p-3">
+              <p className="text-xs text-slate-500">入選理由</p>
+              <p className="mt-2 whitespace-pre-line text-sm leading-relaxed text-slate-200">
+                {item.reason}
+              </p>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+    </section>
+  )
+}

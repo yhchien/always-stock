@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import Link from "next/link"
 
 import {
@@ -8,19 +8,23 @@ import {
   fetchLatestSignalSnapshot,
   type SignalJobResponse,
   regenerateSignals,
-  type SignalDecisionType,
   type SignalRegenerateQuotaResponse,
-  type SignalRemovedItem,
   type SignalSnapshotResponse,
   type SignalWatchlistItem,
 } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
 import { useSignalJobPolling } from "@/lib/useSignalJobPolling"
+import {
+  decisionBadgeClass,
+  signalValueLabel,
+  signalValueTone,
+  toneChipClass,
+} from "@/lib/signalPresentation"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
 const LAST_SEEN_KEY = "always-stock:signals:last_seen_snapshot_date"
 const COLLAPSED_KEY = "always-stock:signals:collapsed"
-type SignalsTab = "leader" | "follower" | "laggard" | "removed"
+type SignalsTab = "leader" | "follower" | "laggard"
 
 function formatTpeDateTime(iso: string | null | undefined): string {
   if (!iso) return ""
@@ -41,34 +45,28 @@ function formatTpeDateTime(iso: string | null | undefined): string {
   }
 }
 
-function decisionBadgeClass(type: SignalDecisionType | null | undefined): string {
-  switch (type) {
-    case "LEADER":
-      return "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
-    case "FOLLOWER":
-      return "bg-sky-500/20 text-sky-300 border-sky-500/40"
-    case "LAGGARD":
-      return "bg-amber-500/20 text-amber-300 border-amber-500/40"
-    default:
-      return "bg-slate-500/20 text-slate-300 border-slate-500/40"
-  }
+function SignalMetric({
+  label,
+  value,
+}: {
+  label: string
+  value: string | null | undefined
+}) {
+  return (
+    <div className="rounded-lg border border-slate-700/70 bg-slate-900/50 px-3 py-2">
+      <p className="text-[11px] text-slate-500">{label}</p>
+      <span
+        className={`mt-1 inline-flex rounded border px-2 py-0.5 text-xs font-medium ${toneChipClass(signalValueTone(label, value))}`}
+      >
+        {signalValueLabel(value)}
+      </span>
+    </div>
+  )
 }
 
 function SignalCard({ item }: { item: SignalWatchlistItem }) {
   const stockHref = `/stocks/${encodeURIComponent(item.stock)}`
-  const theme = item.theme?.main_theme
-  const themeReason = item.theme?.theme_reason
   const themeFit = item.theme_fit
-  const signalChips = useMemo(() => {
-    const out: { label: string; value: string }[] = []
-    if (item.signals?.capital_flow) out.push({ label: "資金", value: item.signals.capital_flow })
-    if (item.signals?.chip_trend) out.push({ label: "籌碼", value: item.signals.chip_trend })
-    if (item.signals?.margin_short_signal)
-      out.push({ label: "融資券", value: item.signals.margin_short_signal })
-    if (item.signals?.technical_status)
-      out.push({ label: "技術", value: item.signals.technical_status })
-    return out
-  }, [item.signals])
 
   return (
     <article className="rounded-lg border border-slate-600/60 bg-slate-800/40 p-4">
@@ -97,66 +95,37 @@ function SignalCard({ item }: { item: SignalWatchlistItem }) {
           )}
         </div>
         {themeFit && (
-          <span className="shrink-0 text-xs text-slate-400">題材契合 {themeFit}</span>
+          <span
+            className={`shrink-0 rounded border px-2 py-0.5 text-[11px] font-medium ${toneChipClass(signalValueTone("theme_fit", themeFit))}`}
+          >
+            題材契合 {signalValueLabel(themeFit)}
+          </span>
         )}
       </header>
 
-      {(theme || themeReason) && (
-        <p className="mt-2 text-xs text-slate-300">
-          {theme && <span className="font-medium text-slate-200">主題：{theme}</span>}
-          {theme && themeReason && <span className="mx-1 text-slate-500">·</span>}
-          {themeReason}
-        </p>
-      )}
-
-      {signalChips.length > 0 && (
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {signalChips.map((c) => (
-            <span
-              key={c.label}
-              className="inline-flex items-center gap-1 rounded border border-slate-600/60 bg-slate-700/40 px-1.5 py-0.5 text-[11px] text-slate-300"
-            >
-              <span className="text-slate-500">{c.label}</span>
-              <span>{c.value}</span>
-            </span>
-          ))}
-        </div>
-      )}
-
-      {item.reason && (
-        <p className="mt-3 whitespace-pre-line text-sm leading-relaxed text-slate-200">
-          {item.reason}
-        </p>
-      )}
+      <div className="mt-3 grid grid-cols-2 gap-2 lg:grid-cols-4">
+        <SignalMetric label="資金" value={item.signals?.capital_flow} />
+        <SignalMetric label="籌碼" value={item.signals?.chip_trend} />
+        <SignalMetric label="融資券" value={item.signals?.margin_short_signal} />
+        <SignalMetric label="技術" value={item.signals?.technical_status} />
+      </div>
 
       <div className="mt-3 flex justify-end">
         <Link
           href={stockHref}
           className="inline-flex items-center rounded border border-sky-500/50 bg-sky-500/10 px-2.5 py-1 text-xs font-medium text-sky-200 hover:bg-sky-500/20"
         >
-          看 K 線圖
+          看細節
         </Link>
       </div>
-    </article>
-  )
-}
 
-function RemovedCard({ item }: { item: SignalRemovedItem }) {
-  return (
-    <article className="rounded-lg border border-slate-600/60 bg-slate-800/40 p-3">
-      <header className="flex items-center gap-2">
-        <Link
-          href={`/stocks/${encodeURIComponent(item.stock)}`}
-          className="text-sm font-medium text-slate-200 hover:text-sky-300"
-        >
-          {item.stock} {item.name ?? ""}
-        </Link>
-        <span className="rounded border border-rose-500/40 bg-rose-500/15 px-1.5 py-0.5 text-[11px] font-medium text-rose-300">
-          REMOVED
-        </span>
-      </header>
-      {item.remove_reason && (
-        <p className="mt-2 text-sm text-slate-300">{item.remove_reason}</p>
+      {item.reason && (
+        <div className="mt-3 rounded-lg border border-slate-700/70 bg-slate-950/40 p-3">
+          <p className="text-xs text-slate-500">保留理由</p>
+          <p className="mt-2 whitespace-pre-line text-sm leading-relaxed text-slate-200">
+            {item.reason}
+          </p>
+        </div>
       )}
     </article>
   )
@@ -315,14 +284,12 @@ export default function DailySignalsPanel({
   }, [loadRegenerateQuota])
 
   const watchlist = snapshot?.data.watchlist ?? []
-  const removed = snapshot?.data.removed ?? []
   const summary = snapshot?.data.summary
   const leaderCount = summary?.leader_count ?? watchlist.filter((w) => w.type === "LEADER").length
   const followerCount =
     summary?.follower_count ?? watchlist.filter((w) => w.type === "FOLLOWER").length
   const laggardCount =
     summary?.laggard_count ?? watchlist.filter((w) => w.type === "LAGGARD").length
-  const removedCount = removed.length
 
   const isAuthed = authStatus === "authenticated"
   const isJobActive = jobStatus === "pending" || jobStatus === "running"
@@ -448,15 +415,6 @@ export default function DailySignalsPanel({
           )}
           {!snapshotLoading && !snapshotError && snapshot && (
             <div className="flex flex-col gap-3">
-              {snapshot.data.market_context?.market_state_reason && (
-                <p className="text-xs text-slate-400">
-                  <span className="font-medium text-slate-300">市場狀態：</span>
-                  {snapshot.data.market_context.market_state ?? "—"}
-                  <span className="mx-1 text-slate-600">·</span>
-                  {snapshot.data.market_context.market_state_reason}
-                </p>
-              )}
-
               <Tabs value={tab} onValueChange={(v) => handleTabChange(v as SignalsTab)}>
                 <TabsList className="bg-slate-800/50 border border-slate-600/40">
                   <TabsTrigger
@@ -476,12 +434,6 @@ export default function DailySignalsPanel({
                     className="data-[state=active]:bg-slate-700 data-[state=active]:text-white text-slate-300"
                   >
                     LAGGARD ({laggardCount})
-                  </TabsTrigger>
-                  <TabsTrigger
-                    value="removed"
-                    className="data-[state=active]:bg-slate-700 data-[state=active]:text-white text-slate-300"
-                  >
-                    REMOVED ({removedCount})
                   </TabsTrigger>
                 </TabsList>
 
@@ -504,13 +456,6 @@ export default function DailySignalsPanel({
                     <p className="text-sm text-slate-400">本日無 LAGGARD。</p>
                   ) : (
                     filteredLaggard.map((item) => <SignalCard key={item.stock} item={item} />)
-                  )}
-                </TabsContent>
-                <TabsContent value="removed" className="mt-3 flex flex-col gap-3">
-                  {removed.length === 0 ? (
-                    <p className="text-sm text-slate-400">本日無排除股票。</p>
-                  ) : (
-                    removed.map((item) => <RemovedCard key={item.stock} item={item} />)
                   )}
                 </TabsContent>
               </Tabs>

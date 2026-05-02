@@ -152,6 +152,18 @@ def _build_items(
     return items
 
 
+def _delete_trade_quality_snapshots_for_entry(db: Session, *, user_id: int, stock_id: str, buy_date: date) -> None:
+    (
+        db.query(WatchlistTradeQualitySnapshot)
+        .filter(
+            WatchlistTradeQualitySnapshot.user_id == user_id,
+            WatchlistTradeQualitySnapshot.stock_id == stock_id,
+            WatchlistTradeQualitySnapshot.buy_date == buy_date,
+        )
+        .delete(synchronize_session=False)
+    )
+
+
 @router.get("", response_model=WatchlistResponse)
 def list_watchlist(
     user: User = Depends(require_user),
@@ -241,6 +253,12 @@ def remove_from_watchlist(
     )
     if entry is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="找不到此項目")
+    _delete_trade_quality_snapshots_for_entry(
+        db,
+        user_id=user.id,
+        stock_id=entry.stock_id,
+        buy_date=entry.buy_date,
+    )
     db.delete(entry)
     db.commit()
     logger.info("watchlist remove: user=%s entry=%s", user.id, entry_id)
@@ -252,6 +270,11 @@ def clear_watchlist(
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> None:
+    (
+        db.query(WatchlistTradeQualitySnapshot)
+        .filter(WatchlistTradeQualitySnapshot.user_id == user.id)
+        .delete(synchronize_session=False)
+    )
     deleted = (
         db.query(UserWatchlist)
         .filter(UserWatchlist.user_id == user.id)
@@ -278,7 +301,10 @@ class WatchlistSnapshotPayload(BaseModel):
     rating: Optional[str]
     rating_label: Optional[str]
     classification: Optional[str]
+    market_state: Optional[str]
+    action: Optional[str]
     summary: Optional[str]
+    report_markdown: Optional[str]
     key_factors: Optional[List[WatchlistKeyFactor]]
     status: str  # ok | failed
     is_stale: bool  # True 表示這筆不是今日 snapshot_trade_date（fallback 自舊快照）
@@ -328,7 +354,10 @@ def _row_to_snapshot_payload(
         rating=row.rating,
         rating_label=row.rating_label,
         classification=row.classification,
+        market_state=row.market_state,
+        action=row.action,
         summary=row.summary,
+        report_markdown=row.report_markdown,
         key_factors=factors or None,
         status=row.status,
         is_stale=is_stale,

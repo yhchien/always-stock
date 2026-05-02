@@ -90,10 +90,10 @@
 - M16: AI 盤前摘要（Daily Brief，2026-04-20 起改由 Telegram Bot `/brief` 提供）
 - M17: 交易質量 AI 分析（Trade Quality Analysis，5 階評級 + 四象限 + 目標價）
 - M18: 使用者註冊系統（Email/password + server-side session + RequireAuth；M17 公開但分層 rate limit；admin email / password 由 Render env var `ADMIN_EMAIL` / `ADMIN_PASSWORD` 設定）
-- M19: 關注買進清單（單一清單上限 20 檔，加入 popup 填買進日/均價；L0 HotMoneyList、L1 StockList、L2 個股頁右下「加入清單」；Navbar「我的清單」；/watchlist 卡片含未實現損益 + 交易分析深連結 M17；資料綁 user_id）
+- M19: 關注買進清單（單一清單上限 30 檔，加入 popup 填買進日/均價；L0 HotMoneyList、L1 StockList、L2 個股頁右下「加入清單」；Navbar「我的清單」；/watchlist 顯示未實現損益 + trade quality 卡片 + 個股頁報告入口；資料綁 user_id）
 - M22: 熱錢湧入個股排行（L0 底部 Top 20 / L1 頂部 Top 10，近 N 日三大法人累計買超；spec 在 [docs/plans/hot_money_list_spec.md](docs/plans/hot_money_list_spec.md)）
 - M21: Trade Quality Context 資料管線（6 個 section 預聚合 JSON：industry/chip/peer_rank/fundamental/price_structure/news_stub；deterministic + no hindsight；入口 `build_trade_quality_context(db, stock_id, buy_date)`；`GET /api/analysis/context` 需登入；實作 [docs/plans/m21_context_pipeline_implementation.md](docs/plans/m21_context_pipeline_implementation.md)）
-- M25: 自選清單 trade quality 快照表 + key_factors 條列指標（2026-05-02 完工；新表 `watchlist_trade_quality_snapshots` 三入口共用：cron / on_demand / manual；首頁新增 `WatchlistTradeQualityTable`；`<TradeQualityAnalysis />` 加 `KeyFactorsList`（A 綠 / B 黃 / C 紅 + delta 箭頭）；`run_watchlist_trade_quality.py` 串在 daily_etl_update.yml ETL 之後；trade_quality.md prompt 加 `key_factors` 6 category 強制欄位；spec [docs/plans/M25.md](docs/plans/M25.md)）
+- M25: 自選清單 trade quality 快照表 + key_factors 條列指標（2026-05-02 完工；新表 `watchlist_trade_quality_snapshots` 三入口共用：cron / on_demand / manual；`/watchlist` 顯示卡片、L2 個股頁顯示報告；`<TradeQualityAnalysis />` 加 `KeyFactorsList`（A 綠 / B 黃 / C 紅 + delta 箭頭）；`run_watchlist_trade_quality.py` 串在 daily_etl_update.yml ETL 之後；trade_quality.md prompt 加 `key_factors` 6 category 強制欄位；spec [docs/plans/M25.md](docs/plans/M25.md)）
 
 ### 進行中
 - M13 關鍵券商分點：ETL 模組與 `broker_trade_agg` backfill 已完成；L2 券商面板在 2026-04-19 主動隱藏（產品優先序下調），未來視需要復活
@@ -103,7 +103,7 @@
 - M14 輿情分析
 - M15 Telegram 電子報
 - M20 交易分析擴充（預期 45% 報酬率加碼建議 + 風報比 1:1.75）
-- M23 每日異常訊號清單（**改為使用者手動觸發**；前端 `DailySignalsPanel`「重新產生」按鈕 → POST `/api/signals/regenerate` → FastAPI BackgroundTasks 跑 pipeline；deterministic filter 建候選池 + LLM 上網查公司業務／集團／龍頭；輸出 LEADER / FOLLOWER / LAGGARD 三類；另有 `/signals/archive` 的 40 交易日追蹤總表，並新增 `/api/signals/archive/completed` 封存移出 40 日後的 cycle 摘要；不預測報酬、不出買賣建議；GitHub Actions cron 已停用，`workflow_dispatch` 保留作管理備援；spec [docs/plans/m23_daily_signals_spec.md](docs/plans/m23_daily_signals_spec.md)）
+- M23 每日異常訊號清單（**改為使用者手動觸發**；前端 `DailySignalsPanel`「重新產生」按鈕 → POST `/api/signals/regenerate` → FastAPI BackgroundTasks 跑 pipeline；deterministic filter 建候選池 + LLM 上網查公司業務／集團／龍頭；最終只保留 top 3 檔，輸出 LEADER / FOLLOWER / LAGGARD 三類；另有 `/signals/archive` 的 40 交易日追蹤總表，並新增 `/api/signals/archive/completed` 封存移出 40 日後的 cycle 摘要；不預測報酬、不出買賣建議；GitHub Actions cron 已停用，`workflow_dispatch` 保留作管理備援；spec [docs/plans/m23_daily_signals_spec.md](docs/plans/m23_daily_signals_spec.md)）
 - M24 自訂進出場策略回測（M11 擴充；使用者自設分層進場 / 追價 / 攤平 / 停損停利規則，引擎回測 edge；LLM 為現場判斷層，trigger 觸發時依當下籌碼/產業/技術給「適合執行 yes/no」提示，不替使用者寫規則）
 
 > M18 → M19 → M20 依序執行。M19 已完工（2026-04-23），M20 擴充建立在 M19 卡片帶入 context 之上。
@@ -129,6 +129,7 @@
 - `routers/analysis.py` `analyze_trade_quality` + `analyze_trade_quality_stream` 都接 DB cache：登入使用者命中 → 不打 OpenAI；source 標 `cache`
 - `routers/watchlist.py` 新增 `GET /api/watchlist/trade-quality`（一次回全清單最新快照 + previous + change_pct）+ `POST /api/watchlist/trade-quality/refresh`（單檔 on-demand 補洞）
 - `backend/run_watchlist_trade_quality.py` cron 入口；exit 0 ok / 1 partial / 2 all_failed / 5 holiday；個別失敗 try/except 寫 `status='failed'` 不中斷整個 job
+- `DELETE /api/watchlist/{entry_id}` 與 `DELETE /api/watchlist` 會同步刪除該使用者對應的 `watchlist_trade_quality_snapshots`，避免股票移出清單後舊快照繼續殘留
 
 ### Prompt 修改（trade_quality.md）
 - `PART 1` JSON schema 新增 `key_factors` 強制欄位（6 個 category 全部必填：industry / industry_heat / return / chip / technical / fundamental）
@@ -138,9 +139,10 @@
 
 ### 前端
 - 新元件 `KeyFactorsList`：6 條 A/B/C 燈號 + 趨勢箭頭 + 與 `previousFactors` 比對顯示「上次 X → 本次 Y」
-- 新元件 `WatchlistTradeQualityTable`：可折疊；表格欄位 = 個股 / 收盤 / 漲跌幅 / 未實現 / 動作建議 5 階徽章 + 重試按鈕；對 `latest=null` 的 row 自動 fire-and-forget on-demand refresh；點 row 跳 `/stocks/{id}`
+- 新元件 `WatchlistTradeQualityCards`：`/watchlist` 直接顯示個股卡片；欄位 = 個股 / 收盤 / 漲跌幅 / 未實現 / 動作建議 5 階徽章 + 保留摘要 + 重試按鈕；對 `latest=null` 的 row 自動 fire-and-forget on-demand refresh；可直接點進個股頁看完整報告
 - `TradeQualityAnalysis` 在 Summary 之後、Price info 之前插入 `KeyFactorsList`（首版不接 delta，未來從 watchlist context 帶 previousFactors 進來即可）
-- `app/page.tsx` 把 `<WatchlistTradeQualityTable />` 接在 TradeQualityAnalysis 與 DailySignalsPanel 之間
+- L2 個股頁新增 `StockSignalSummaryPanel` + `StockWatchlistTradeQualityPanel`：先顯示 M23 市場狀態 / 題材契合 / 資金籌碼燈號 / 保留理由，再接 M25 自選清單報告
+- 首頁 `DailySignalsPanel` 改為乾淨卡片：不再顯示 `removed` 分頁，只保留 top 3 訊號卡片與保留理由
 - `lib/api.ts` 加 `KeyFactor` / `WatchlistTradeQualityItem` / `WatchlistSnapshotPayload` / `fetchWatchlistTradeQuality` / `refreshWatchlistTradeQuality`；`TradeQualityResponse.source` 加 `"cache"` enum
 
 ### GitHub Actions
@@ -162,6 +164,14 @@
 - **OpenAI 成本控制**：每使用者 30 檔 × $0.05 ≈ $1.5/天/使用者；觀察期若太貴改成每 3 天跑一次或拔 cron
 - **`analyze_trade_quality` 對外契約凍結**：`rating` / `classification` enum 不變；`key_factors` 只是新增 optional 欄位
 - **重複跑 same-day → cache hit 不重打 OpenAI**：`(user_id, stock_id, buy_date, snapshot_trade_date)` 命中即 return，cron / refresh / manual endpoint 都共用這條 fast path
+- **股票移出 watchlist 後快照也要一起刪**：否則資料表會留孤兒快照，且之後使用者回頭看個股頁可能誤以為仍在追蹤
+
+## 最近重要修正（2026-05-02）
+
+- M23 `DailySignalsPanel` 不再顯示 `removed` 候選；後端最終只保留 top 3 `watchlist`，前端卡片直接顯示保留理由
+- M25 自選清單 trade quality 從首頁移到 `/watchlist`；L2 個股頁新增自選清單完整報告區塊
+- `DELETE /api/watchlist/{entry_id}` / `DELETE /api/watchlist` 會同步刪掉 `watchlist_trade_quality_snapshots`
+- 本輪已順手清掉數個 React hooks / memoization lint 問題（`useRealtimeQuotes`、`BrokerPanel`、`FinancialsPanel`、`StockChart`）
 
 ### 下一步（M25 上線後）
 - 觀察 prod cron 第一次跑（隔日早上 18:30 後檢查 Render log + DB row 數）

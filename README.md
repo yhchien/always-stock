@@ -6,8 +6,8 @@
 - `Trade Quality Analysis`：輸入股票與買進日，還原當時可觀察資訊後給出 5 階交易質量評級（不需登入即可使用，分層 rate limit）
 - `Industry Dashboard`：產業別三大法人資金流向排行
 - `Hot Money List`：首頁底部與 L1 產業頁頂部呈現「近 N 日三大法人累計淨買超」個股排行（L0 Top 20 / L1 Top 10）
-- `Watchlist`：登入後可建立關注買進清單（單一清單上限 30 檔，含未實現損益與一鍵跳 M17 交易分析）
-- `Watchlist Trade Quality Snapshot`（M25）：登入後首頁顯示自選清單每檔的 5 階動作建議（強烈推薦/推薦/中立/再看看/快跑），由每日 ETL 後 cron 跑 trade quality 寫快照表並前端讀取；Trade Quality 分析新增 `key_factors` 條列指標（產業/熱度/報酬/籌碼/技術/基本面 + A/B/C 燈號）+ delta 比對（上次 → 這次評級變化）
+- `Watchlist`：登入後可建立關注買進清單（單一清單上限 30 檔，含未實現損益、交易質量快照卡片與個股頁報告入口）
+- `Watchlist Trade Quality Snapshot`（M25）：登入後 `/watchlist` 直接顯示自選清單每檔的 5 階動作建議（強烈推薦/推薦/中立/再看看/快跑），由每日 ETL 後 cron 跑 trade quality 寫快照表並前端讀取；Trade Quality 分析新增 `key_factors` 條列指標（產業/熱度/報酬/籌碼/技術/基本面 + A/B/C 燈號）+ delta 比對（上次 → 這次評級變化）
 
 > Daily Brief（盤前摘要）已從首頁移到 Telegram Bot `/brief` 指令。
 
@@ -163,7 +163,7 @@ npm run dev
 
 | Workflow | 排程 | 說明 |
 |----------|------|------|
-| `.github/workflows/daily_etl_update.yml` | 週一~五 18:00（台北） | 每個交易日傍晚全量刷新 Render PostgreSQL（6 個 FinMind 模組：daily_price / inst_flow / daily_valuation / monthly_revenue / financial_statement / broker_trade_agg）。配額耗盡時 1.5h 後自動 retry 一次；假日由 daily_price 空資料 + 配額健康判定自動短路。**ETL 結束後串跑 M25 watchlist trade quality refresh**（對全使用者 watchlist 跑 trade quality 並寫入 `watchlist_trade_quality_snapshots`，給 L0 自選清單表格直接讀） |
+| `.github/workflows/daily_etl_update.yml` | 週一~五 18:00（台北） | 每個交易日傍晚全量刷新 Render PostgreSQL（6 個 FinMind 模組：daily_price / inst_flow / daily_valuation / monthly_revenue / financial_statement / broker_trade_agg）。配額耗盡時 1.5h 後自動 retry 一次；假日由 daily_price 空資料 + 配額健康判定自動短路。**ETL 結束後串跑 M25 watchlist trade quality refresh**（對全使用者 watchlist 跑 trade quality 並寫入 `watchlist_trade_quality_snapshots`，給 `/watchlist` 卡片與個股頁報告直接讀） |
 | `.github/workflows/broker_trade_backfill.yml` | 每小時第 5 分 | 分點買賣超歷史 backfill，以交易日為單位逐批推進 |
 
 > **M25 cron 時機決策**：watchlist trade quality 不獨立排程，串在 daily_etl_update.yml ETL 完成之後跑，避免兩個 workflow 同時打 OpenAI 與 DB。ETL 完全失敗（exit 2/3）時跳過 wtq；ETL holiday（exit 5）時也跳過。Cron 時間（18:00 台北）不動 —— 18:30~19:30 完成 ETL 後接著跑 wtq，使用者隔天早上看資料；`snapshot_trade_date` resolver 用 `ETL_DONE_TIME=20:00` 當截斷點，確保使用者打點時不會吃到不完整的當日 ETL。
@@ -211,7 +211,7 @@ npm run dev
 | POST | `/api/auth/logout` | M18：登出 |
 | GET | `/api/auth/me` | M18：取得當前登入使用者 |
 | GET | `/api/watchlist` | M19：取回關注清單（含未實現損益） |
-| POST | `/api/watchlist` | M19：新增持股（`stock_id` / `buy_date` / `avg_price`，上限 20 檔） |
+| POST | `/api/watchlist` | M19：新增持股（`stock_id` / `buy_date` / `avg_price`，上限 30 檔） |
 | DELETE | `/api/watchlist/{entry_id}` | M19：移除單筆持股 |
 | DELETE | `/api/watchlist` | M19：清空整份清單 |
 
@@ -236,11 +236,11 @@ npm run dev
 | M16 | 首頁 AI 盤前摘要（Daily Brief） | ✅ |
 | M17 | 交易質量 AI 分析（Trade Quality Analysis，5 階評級 + 四象限 + 目標價；**2026-04-24** 起吃 M21 deterministic 預聚合訊號） | ✅ |
 | M18 | 使用者註冊系統（Email/password + server-side session + RequireAuth；M17 公開但 3/day/30/day 分層 rate limit） | ✅ |
-| M19 | 關注買進清單（單一清單上限 20 檔、加入 popup 填買進日/均價、`/watchlist` 卡片含未實現損益 + M17 深連結、Navbar「我的清單 N/20」） | ✅ |
+| M19 | 關注買進清單（單一清單上限 30 檔、加入 popup 填買進日/均價、`/watchlist` 顯示 trade quality 卡片與個股頁報告入口、Navbar「我的清單 N/30」） | ✅ |
 | M20 | 交易分析擴充（預期 45% 報酬率加碼建議 + 風報比 1:1.75） | ⬜ 規劃中（M19 完成後） |
 | M21 | Trade Quality Context 資料管線（6 section 預聚合 JSON + `GET /api/analysis/context`；deterministic + no-hindsight） | ✅ |
 | M22 | 熱錢湧入個股排行（L0 底部 Top 20 / L1 頂部 Top 10，近 N 日三大法人累計買超） | ✅ |
-| M23 | 每日異常訊號清單（deterministic filter 建候選池 + LLM 上網查公司業務／集團／龍頭比對；輸出 LEADER / FOLLOWER / LAGGARD 三類；L0 tab bar + pulse 通知 + 多工背景重新產生 + 進度條；全候選先做短 decision，只有 WATCH 補長理由；另含 40 交易日訊號追蹤清單、命中次數、報酬率與報告時間軸，並新增移出 40 日後的 completed archive 封存表；不預測報酬、不出買賣建議） | 🚧 持續優化中（[core spec](docs/plans/m23_daily_signals_spec.md) / [archive spec](docs/plans/m23_signal_archive_spec.md)） |
+| M23 | 每日異常訊號清單（deterministic filter 建候選池 + LLM 上網查公司業務／集團／龍頭比對；最終只保留 top 3 檔，輸出 LEADER / FOLLOWER / LAGGARD 三類；L0 tab bar + pulse 通知 + 多工背景重新產生 + 進度條；全候選先做短 decision，只有 WATCH 補長理由；另含 40 交易日訊號追蹤清單、命中次數、報酬率與報告時間軸，並新增移出 40 日後的 completed archive 封存表；不預測報酬、不出買賣建議） | 🚧 持續優化中（[core spec](docs/plans/m23_daily_signals_spec.md) / [archive spec](docs/plans/m23_signal_archive_spec.md)） |
 
 M23 診斷約定：
 - `market_context` 與 research / decision / watch-reason 各階段 fallback 都會附帶 `llm_diagnostic`
@@ -252,6 +252,7 @@ M23 診斷約定：
 - 交易分析 `/api/analysis/trade-quality` 與 `/stream` 目前對同 stock+buy_date 有 5 分鐘短時快取，重複分析可直接回 cache
 - 觀察清單上限已由 20 調整為 30
 - M23 候選來源已縮窄：`TOP_INDUSTRIES_LIMIT=6`、`TOP_STOCKS_LIMIT=30`、`TOP_STOCKS_INNER=6`
+- M23 前端不再顯示 `removed` 候選；最終只保留 top 3 檔，卡片直接顯示保留理由
 - M23 laggard 候選維持 `hits >= 2`，但額外要求 `total_institution_flow_1d > 0`
 - M23 在 `after_hard` 後新增 `LLM_INPUT_HARD_LIMIT=50`，依 `prelim_type -> top_stock/top_industry -> flow score` 排序後截斷，再送進 LLM
 | M24 | 自訂進出場策略回測（M11 擴充；使用者自設規則 + 歷史回測驗證 edge + LLM 在 trigger 當下給「適合執行」現場判斷） | ⬜ 規劃中 |

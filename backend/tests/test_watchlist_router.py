@@ -13,7 +13,7 @@ from sqlalchemy.pool import StaticPool
 from app.auth import hash_password
 from app.database import get_db
 from app.main import app
-from app.models import Base, DailyPrice, StockMaster, User, UserWatchlist
+from app.models import Base, DailyPrice, StockMaster, User, UserWatchlist, WatchlistTradeQualitySnapshot
 from app.routers.watchlist import WATCHLIST_MAX_ENTRIES
 
 
@@ -196,6 +196,40 @@ def test_delete_single_entry(api):
     assert client.get("/api/watchlist").json()["total"] == 0
 
 
+def test_delete_single_entry_also_deletes_trade_quality_snapshots(api):
+    client, db = api
+    _seed_stock(db, "2330", "台積電")
+    _register_and_login(client)
+
+    created = client.post(
+        "/api/watchlist",
+        json={"stock_id": "2330", "buy_date": "2026-04-01", "avg_price": 900.0},
+    )
+    entry = created.json()
+    db.add(
+        WatchlistTradeQualitySnapshot(
+            user_id=1,
+            stock_id="2330",
+            buy_date=date(2026, 4, 1),
+            snapshot_trade_date=date(2026, 4, 30),
+            rating="BUY",
+            rating_label="推薦",
+            source="cron",
+            status="ok",
+            generated_at=datetime.utcnow(),
+        )
+    )
+    db.commit()
+
+    res = client.delete(f"/api/watchlist/{entry['id']}")
+    assert res.status_code == 204
+    assert (
+        db.query(WatchlistTradeQualitySnapshot)
+        .filter(WatchlistTradeQualitySnapshot.user_id == 1)
+        .count()
+    ) == 0
+
+
 def test_delete_unknown_entry(api):
     client, _ = api
     _register_and_login(client)
@@ -242,6 +276,52 @@ def test_clear_watchlist(api):
     res = client.delete("/api/watchlist")
     assert res.status_code == 204
     assert client.get("/api/watchlist").json()["total"] == 0
+
+
+def test_clear_watchlist_also_deletes_trade_quality_snapshots(api):
+    client, db = api
+    _seed_stock(db, "2330", "台積電")
+    _seed_stock(db, "2303", "聯電")
+    _register_and_login(client)
+
+    client.post("/api/watchlist", json={"stock_id": "2330", "buy_date": "2026-04-01", "avg_price": 900.0})
+    client.post("/api/watchlist", json={"stock_id": "2303", "buy_date": "2026-04-02", "avg_price": 50.0})
+
+    db.add_all(
+        [
+            WatchlistTradeQualitySnapshot(
+                user_id=1,
+                stock_id="2330",
+                buy_date=date(2026, 4, 1),
+                snapshot_trade_date=date(2026, 4, 30),
+                rating="BUY",
+                rating_label="推薦",
+                source="cron",
+                status="ok",
+                generated_at=datetime.utcnow(),
+            ),
+            WatchlistTradeQualitySnapshot(
+                user_id=1,
+                stock_id="2303",
+                buy_date=date(2026, 4, 2),
+                snapshot_trade_date=date(2026, 4, 30),
+                rating="WATCH",
+                rating_label="再看看",
+                source="cron",
+                status="ok",
+                generated_at=datetime.utcnow(),
+            ),
+        ]
+    )
+    db.commit()
+
+    res = client.delete("/api/watchlist")
+    assert res.status_code == 204
+    assert (
+        db.query(WatchlistTradeQualitySnapshot)
+        .filter(WatchlistTradeQualitySnapshot.user_id == 1)
+        .count()
+    ) == 0
 
 
 def test_clear_only_affects_current_user(api):

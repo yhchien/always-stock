@@ -487,8 +487,7 @@ def test_assemble_final_output_splits_watch_and_remove():
     market_context = {"market_state": "STRUCTURAL_BULL", "market_state_reason": "盤面健康"}
     out = llm_caller.assemble_final_output(market_context, explanation, candidate_pool_size=80)
     assert len(out["watchlist"]) == 2
-    assert len(out["removed"]) == 1
-    assert out["removed"][0]["stock"] == "2412"
+    assert "removed" not in out
     assert out["candidate_pool_size"] == 80
     assert out["final_watchlist_size"] == 2
 
@@ -503,9 +502,9 @@ def test_assemble_final_output_summary_counts_by_type():
     out = llm_caller.assemble_final_output({"market_state": "RANGE"}, explanation, candidate_pool_size=10)
     assert out["summary"]["leader_count"] == 2
     assert out["summary"]["follower_count"] == 1
-    assert out["summary"]["laggard_count"] == 1
-    # main_hot_industries 依 watchlist 出現順序去重，前 5
-    assert out["summary"]["main_hot_industries"][:3] == ["半導體業", "電子業", "金融業"]
+    assert out["summary"]["laggard_count"] == 0
+    # 只保留 top 3，因此不含第 4 檔 laggard
+    assert out["summary"]["main_hot_industries"][:2] == ["半導體業", "電子業"]
 
 
 def test_assemble_final_output_includes_total_tokens_when_provided():
@@ -521,25 +520,23 @@ def test_assemble_final_output_handles_empty_explanation():
         {"market_state": "WEAK", "market_state_reason": "下跌"}, [], candidate_pool_size=0
     )
     assert out["watchlist"] == []
-    assert out["removed"] == []
     assert out["summary"]["leader_count"] == 0
     assert out["summary"]["risk_note"] == "下跌"
 
 
-def test_assemble_final_output_unknown_decision_treated_as_remove():
-    """非 WATCH 的 decision（含空字串 / 大小寫變異）一律進 removed。"""
+def test_assemble_final_output_unknown_decision_is_dropped():
+    """非 WATCH 的 decision（含空字串 / 大小寫變異）不進最終 watchlist。"""
     explanation = [
         {"stock": "X", "name": "X", "decision": "MAYBE", "reason": "??"},
         {"stock": "Y", "name": "Y"},  # 完全沒 decision key
     ]
     out = llm_caller.assemble_final_output({"market_state": "RANGE"}, explanation, candidate_pool_size=2)
     assert out["watchlist"] == []
-    assert len(out["removed"]) == 2
 
 
-def test_assemble_final_output_caps_watchlist_to_30_and_moves_overflow_to_removed(monkeypatch):
+def test_assemble_final_output_caps_watchlist_to_top_3(monkeypatch):
     explanation = []
-    for i in range(35):
+    for i in range(8):
         explanation.append(
             {
                 **_watch_item(
@@ -564,9 +561,6 @@ def test_assemble_final_output_caps_watchlist_to_30_and_moves_overflow_to_remove
         candidate_pool_size=80,
     )
 
-    assert len(out["watchlist"]) == 30
-    assert out["final_watchlist_size"] == 30
-    assert len(out["removed"]) == 5
-    assert all(item["stock"] not in {str(1030), str(1031), str(1032), str(1033), str(1034)} for item in out["watchlist"])
-    overflow_removed = [item for item in out["removed"] if "上限 30 檔" in item["remove_reason"]]
-    assert len(overflow_removed) == 5
+    assert len(out["watchlist"]) == 3
+    assert out["final_watchlist_size"] == 3
+    assert [item["stock"] for item in out["watchlist"]] == ["1000", "1001", "1002"]
