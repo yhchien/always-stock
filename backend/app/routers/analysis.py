@@ -42,8 +42,11 @@ from app.models import (
 from app.rate_limit import limiter, trade_quality_limit_value
 from app.settings import get_openai_api_key, get_openai_model
 from app.trade_quality_cache import (
+    REQUIRED_KEY_FACTOR_CATEGORIES,
+    is_snapshot_complete,
     load_snapshot,
     resolve_snapshot_trade_date,
+    save_snapshot_failed,
     save_snapshot_ok,
     snapshot_to_response_dict,
 )
@@ -470,16 +473,19 @@ def _try_load_db_cache(
     user: Optional[User],
     stock: StockMaster,
     buy_date: date,
+    snapshot_trade_date: Optional[date] = None,
 ) -> Optional[TradeQualityResponse]:
-    """M25：登入使用者跑 trade quality 時，先看當日快照表是否已有 ok 結果。
+    """M25：登入使用者跑 trade quality 時，先看當日快照表是否已有完整 ok 結果。
 
+    完整性 = status='ok' 且 6 個 key_factors category 都有；缺項視為 cache miss
+    強制重打 LLM 補洞（避免「假 ok」row 永遠卡在沒燈號狀態）。
     匿名使用者（user is None）→ 不查 DB（走 in-memory 5 分鐘 cache 即可）。
     回 None 表示 cache miss / 未登入 / DB 暫無交易日資料 → caller 應繼續打 OpenAI。
     """
     if user is None:
         return None
-    snapshot_trade_date = resolve_snapshot_trade_date(db)
-    if snapshot_trade_date is None:
+    snapshot_date = snapshot_trade_date or resolve_snapshot_trade_date(db)
+    if snapshot_date is None:
         return None
 
     row = load_snapshot(
@@ -487,9 +493,9 @@ def _try_load_db_cache(
         user_id=user.id,
         stock_id=stock.stock_id,
         buy_date=buy_date,
-        snapshot_trade_date=snapshot_trade_date,
+        snapshot_trade_date=snapshot_date,
     )
-    if row is None or row.status != "ok":
+    if not is_snapshot_complete(row):
         return None
 
     payload = snapshot_to_response_dict(row)
@@ -509,34 +515,66 @@ def _persist_db_cache_if_logged_in(
     stock: StockMaster,
     buy_date: date,
     response: TradeQualityResponse,
-) -> None:
-    """M25：登入使用者跑出 ok 結果時，寫入快照表（source='manual'）。
+    source: str = "manual",
+    snapshot_trade_date_override: Optional[date] = None,
+) -> Optional[date]:
+    """M25：登入使用者跑出結果後，寫入快照表。
+
+    - key_factors 6 個 category 齊全 → save_snapshot_ok（status='ok'）
+    - 缺項 → save_snapshot_failed（status='failed'）+ 在 response.warnings 加註
+      （目的：避免「假 ok」row 累積，下次 cron / refresh 會自然補洞）
 
     匿名使用者不寫（無 user_id 可關聯）。
     DB 暫無交易日 → 也不寫（snapshot_trade_date 算不出）。
     寫入失敗 → 吞掉例外，不阻擋既有 response 回傳。
+    回傳實際使用的 snapshot_trade_date（沒寫入時回 None）。
     """
     if user is None:
-        return
-    snapshot_trade_date = resolve_snapshot_trade_date(db)
+        return None
+    snapshot_trade_date = snapshot_trade_date_override or resolve_snapshot_trade_date(db)
     if snapshot_trade_date is None:
-        return
+        return None
+
+    if _key_factors_complete(response.key_factors):
+        try:
+            save_snapshot_ok(
+                db,
+                user_id=user.id,
+                stock_id=stock.stock_id,
+                buy_date=buy_date,
+                snapshot_trade_date=snapshot_trade_date,
+                response_payload=response.model_dump(),
+                source=source,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to persist ok trade quality snapshot user=%s stock=%s",
+                user.id,
+                stock.stock_id,
+            )
+        return snapshot_trade_date
+
+    # 不完整 → 標 failed；前端可 fallback 到上一筆 ok，下次 cron 會重打
+    response.warnings.append(
+        "AI 未提供完整燈號（6 個 category 缺項），本筆已標記 failed"
+    )
     try:
-        save_snapshot_ok(
+        save_snapshot_failed(
             db,
             user_id=user.id,
             stock_id=stock.stock_id,
             buy_date=buy_date,
             snapshot_trade_date=snapshot_trade_date,
-            response_payload=response.model_dump(),
-            source="manual",
+            error_message="LLM 未提供完整 key_factors（6 category 不齊）",
+            source=source,
         )
     except Exception:
         logger.exception(
-            "Failed to persist trade quality snapshot user=%s stock=%s",
+            "Failed to persist failed trade quality snapshot user=%s stock=%s",
             user.id,
             stock.stock_id,
         )
+    return snapshot_trade_date
 
 
 def _trade_quality_cache_key(stock_id: str, buy_date: date) -> tuple[str, str]:
@@ -563,6 +601,66 @@ def _store_cached_trade_quality(
         time_module.time() + _TRADE_QUALITY_CACHE_TTL_SECONDS,
         payload,
     )
+
+
+def _key_factors_complete(factors: Optional[List[KeyFactor]]) -> bool:
+    """6 個必備 category 全部到齊才算完整（沿用 trade_quality_cache 的 set）。"""
+    if not factors:
+        return False
+    return REQUIRED_KEY_FACTOR_CATEGORIES.issubset({f.category for f in factors})
+
+
+def _build_factors_retry_user_msg(user_msg: str) -> str:
+    """LLM 第一輪沒給齊 6 個 category 時，retry 用的補強提醒。
+
+    把原 user_msg 完整貼回（保留 buy_date / context / M21 訊號），再追加說明，
+    免得 LLM 只看補強段就忘了 buy_date。
+    """
+    return (
+        f"{user_msg}\n\n"
+        "[重要補充：上一版輸出的 key_factors 缺少必備 category]\n"
+        "請務必在 JSON 的 `key_factors` 陣列裡輸出 6 個 category 全部燈號：\n"
+        "- industry / industry_heat / return / chip / technical / fundamental\n"
+        "每個 category 必須含 `level` (A/B/C)、`trend` "
+        "(improving/stable/weakening/deteriorating) 與一句 10~25 字的 `note`。\n"
+        "缺一不可，否則整份分析會被視為失敗並丟棄。\n"
+        "其他欄位（rating / classification / report_markdown 等）保持原一致判斷。"
+    )
+
+
+def _call_openai_with_factors_retry(
+    system_prompt: str,
+    user_msg: str,
+) -> Optional[dict]:
+    """打 OpenAI；若 normalize 後 key_factors 不齊 6 category，再 retry 一次補強。
+
+    第一輪結果即使不完整也會作為 fallback：retry 完全失敗時退回第一輪。
+    完全沒拿到任何 payload → 回 None（caller 走 unavailable fallback）。
+    """
+    payload = _call_openai(system_prompt, user_msg)
+    if payload is None:
+        return None
+
+    factors = _normalize_key_factors(payload.get("key_factors"))
+    if _key_factors_complete(factors):
+        return payload
+
+    logger.info(
+        "key_factors incomplete after first call (got=%d/6); retrying once with reminder",
+        len(factors or []),
+    )
+    retry_payload = _call_openai(system_prompt, _build_factors_retry_user_msg(user_msg))
+    if retry_payload is None:
+        return payload
+
+    retry_factors = _normalize_key_factors(retry_payload.get("key_factors"))
+    if _key_factors_complete(retry_factors):
+        return retry_payload
+
+    # retry 結果也不齊：兩輪比一下，回 factor 多的那筆，避免 retry 連 factor 都吐少
+    if len(retry_factors or []) >= len(factors or []):
+        return retry_payload
+    return payload
 
 
 def _normalize_key_factors(raw: Any) -> Optional[List[KeyFactor]]:
@@ -680,6 +778,7 @@ def run_trade_quality_for_user(
     use_db_cache: bool = True,
     persist_db_cache: bool = True,
     persist_source: str = "manual",
+    snapshot_trade_date_override: Optional[date] = None,
 ) -> TradeQualityRunResult:
     """跑一次 trade quality 分析，包含 market-closed pre-flight、5min in-memory cache、
     M25 DB cache 讀寫、OpenAI fallback 與 normalize。
@@ -687,10 +786,13 @@ def run_trade_quality_for_user(
     呼叫者：
     - routers/analysis.py 的 POST /api/analysis/trade-quality（HTTP endpoint）
     - routers/watchlist.py 的 POST /api/watchlist/trade-quality/refresh（單檔 on-demand）
-    - backend/run_watchlist_trade_quality.py（cron 對全 watchlist 跑）
+    - backend/run_watchlist_trade_quality.py（每日 cron）
 
     user=None 時不查/寫 DB 快照（沒 user_id 可關聯）。
     use_db_cache=False / persist_db_cache=False 給 cron 強制重跑用（即使今日已有快照也覆寫）。
+    snapshot_trade_date_override：cron `--date YYYY-MM-DD` 用，繞過 resolve 直接寫指定 snapshot 日。
+    LLM 第一輪沒給齊 6 個 key_factors category 時，會自動 retry 一次補強提醒；retry
+    仍不齊則寫 status='failed'（不再產生「假 ok」row），response 回給 caller 並補 warning。
     raise HTTPException(404)：stock 不存在 / 資料庫無交易日資料 / prompt 缺檔（500）。
     """
     if buy_date_input and _is_market_not_open_yet(buy_date_input):
@@ -713,12 +815,19 @@ def run_trade_quality_for_user(
     stock, context, warnings = _collect_context(db, stock_id, resolved)
 
     if use_db_cache:
-        db_cached = _try_load_db_cache(db, user=user, stock=stock, buy_date=resolved)
+        db_cached = _try_load_db_cache(
+            db,
+            user=user,
+            stock=stock,
+            buy_date=resolved,
+            snapshot_trade_date=snapshot_trade_date_override,
+        )
         if db_cached is not None:
             _store_cached_trade_quality(stock_id, resolved, db_cached)
             return TradeQualityRunResult(
                 response=db_cached,
-                snapshot_trade_date=resolve_snapshot_trade_date(db),
+                snapshot_trade_date=snapshot_trade_date_override
+                or resolve_snapshot_trade_date(db),
                 cache_hit=True,
             )
 
@@ -728,7 +837,7 @@ def run_trade_quality_for_user(
         raise HTTPException(status_code=500, detail="分析 prompt 檔案缺失")
 
     user_msg = _build_user_message(context, m21_context, warnings)
-    payload = _call_openai(system_prompt, user_msg)
+    payload = _call_openai_with_factors_retry(system_prompt, user_msg)
 
     if payload is None:
         fallback = TradeQualityResponse(
@@ -747,25 +856,16 @@ def run_trade_quality_for_user(
     response = _normalize_response(payload, stock, resolved, warnings, source="openai")
     _store_cached_trade_quality(stock_id, resolved, response)
     snapshot_trade_date = None
-    if persist_db_cache and user is not None:
-        snapshot_trade_date = resolve_snapshot_trade_date(db)
-        if snapshot_trade_date is not None:
-            try:
-                save_snapshot_ok(
-                    db,
-                    user_id=user.id,
-                    stock_id=stock.stock_id,
-                    buy_date=resolved,
-                    snapshot_trade_date=snapshot_trade_date,
-                    response_payload=response.model_dump(),
-                    source=persist_source,
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to persist trade quality snapshot user=%s stock=%s",
-                    user.id,
-                    stock.stock_id,
-                )
+    if persist_db_cache:
+        snapshot_trade_date = _persist_db_cache_if_logged_in(
+            db,
+            user=user,
+            stock=stock,
+            buy_date=resolved,
+            response=response,
+            source=persist_source,
+            snapshot_trade_date_override=snapshot_trade_date_override,
+        )
     return TradeQualityRunResult(
         response=response,
         snapshot_trade_date=snapshot_trade_date,
@@ -909,7 +1009,7 @@ def analyze_trade_quality_stream(
 
             yield _emit("openai_call", "AI 分析中（依 prompt 推論評級與目標價）")
             user_msg = _build_user_message(context, m21_context, warnings)
-            payload = _call_openai(system_prompt, user_msg)
+            payload = _call_openai_with_factors_retry(system_prompt, user_msg)
 
             if payload is None:
                 fallback = TradeQualityResponse(

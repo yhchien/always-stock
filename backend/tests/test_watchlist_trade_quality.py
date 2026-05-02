@@ -23,12 +23,23 @@ from app.models import (
 )
 from app.trade_quality_cache import (
     ETL_DONE_TIME,
+    is_snapshot_complete,
     load_latest_ok_snapshot,
     load_snapshot,
     resolve_snapshot_trade_date,
     save_snapshot_failed,
     save_snapshot_ok,
 )
+
+
+_FULL_KEY_FACTORS = [
+    {"category": "industry", "level": "A", "trend": "stable", "note": "n1"},
+    {"category": "industry_heat", "level": "A", "trend": "stable", "note": "n2"},
+    {"category": "return", "level": "A", "trend": "stable", "note": "n3"},
+    {"category": "chip", "level": "A", "trend": "stable", "note": "n4"},
+    {"category": "technical", "level": "A", "trend": "stable", "note": "n5"},
+    {"category": "fundamental", "level": "A", "trend": "stable", "note": "n6"},
+]
 
 
 @pytest.fixture
@@ -210,6 +221,72 @@ def test_load_latest_ok_snapshot_returns_most_recent(api):
         before_or_eq_trade_date=date(2026, 4, 28),
     )
     assert row28.snapshot_trade_date == date(2026, 4, 28)
+
+
+def test_is_snapshot_complete_requires_status_ok_and_six_categories(api):
+    """完整 ok 快照 = status='ok' 且 6 個 category 全部齊。
+
+    這是 4/30「假 ok」row 出現後加的防呆判定：避免 LLM 沒給 key_factors 卻寫成
+    status='ok' 的 row 被當成有效快照、永遠卡在沒燈號狀態。
+    """
+    client, db = api
+    user_id = _register_and_login(client)
+    _seed_stock(db, "2330")
+
+    # Case 1: status='ok' + 6 個 category → 完整
+    save_snapshot_ok(
+        db, user_id=user_id, stock_id="2330",
+        buy_date=date(2026, 4, 1), snapshot_trade_date=date(2026, 4, 28),
+        response_payload={
+            "rating": "BUY", "rating_label": "推薦", "summary": "x",
+            "key_factors": _FULL_KEY_FACTORS,
+        },
+        source="manual",
+    )
+    row_full = load_snapshot(db, user_id=user_id, stock_id="2330",
+                             buy_date=date(2026, 4, 1), snapshot_trade_date=date(2026, 4, 28))
+    assert is_snapshot_complete(row_full) is True
+
+    # Case 2: status='ok' 但 key_factors=None（4/30 那種「假 ok」）→ 不完整
+    save_snapshot_ok(
+        db, user_id=user_id, stock_id="2330",
+        buy_date=date(2026, 4, 1), snapshot_trade_date=date(2026, 4, 29),
+        response_payload={
+            "rating": "BUY", "rating_label": "推薦", "summary": "x",
+            "key_factors": None,
+        },
+        source="manual",
+    )
+    row_null = load_snapshot(db, user_id=user_id, stock_id="2330",
+                             buy_date=date(2026, 4, 1), snapshot_trade_date=date(2026, 4, 29))
+    assert is_snapshot_complete(row_null) is False
+
+    # Case 3: status='ok' 但 key_factors 缺 1 個 category → 不完整
+    save_snapshot_ok(
+        db, user_id=user_id, stock_id="2330",
+        buy_date=date(2026, 4, 1), snapshot_trade_date=date(2026, 4, 30),
+        response_payload={
+            "rating": "BUY", "rating_label": "推薦", "summary": "x",
+            "key_factors": _FULL_KEY_FACTORS[:5],  # 只 5 個
+        },
+        source="manual",
+    )
+    row_short = load_snapshot(db, user_id=user_id, stock_id="2330",
+                              buy_date=date(2026, 4, 1), snapshot_trade_date=date(2026, 4, 30))
+    assert is_snapshot_complete(row_short) is False
+
+    # Case 4: status='failed' 即使 key_factors 齊也算不完整
+    save_snapshot_failed(
+        db, user_id=user_id, stock_id="2330",
+        buy_date=date(2026, 4, 1), snapshot_trade_date=date(2026, 5, 1),
+        error_message="x", source="cron",
+    )
+    row_failed = load_snapshot(db, user_id=user_id, stock_id="2330",
+                               buy_date=date(2026, 4, 1), snapshot_trade_date=date(2026, 5, 1))
+    assert is_snapshot_complete(row_failed) is False
+
+    # Case 5: row=None → False
+    assert is_snapshot_complete(None) is False
 
 
 def test_load_latest_ok_snapshot_skips_failed(api):
@@ -455,3 +532,183 @@ def test_refresh_invokes_runner_and_returns_item(api, monkeypatch):
     assert body["stock_id"] == "2330"
     assert body["latest"]["rating"] == "BUY"
     assert body["latest"]["is_stale"] is False
+
+
+# ── runner 防呆：incomplete key_factors 自動標 failed ────────────────────────
+
+
+def _seed_min_runner_context(db, *, stock_id: str = "2330") -> None:
+    """run_trade_quality_for_user 跑 OpenAI 需要的最小 DB context。"""
+    _seed_stock(db, stock_id, "台積電")
+    _seed_price(db, stock_id, date(2026, 4, 30), 1000.0)
+
+
+def _patch_runner_dependencies(monkeypatch, payloads: list):
+    """把 runner 內 OpenAI 與 context-building 換成 in-memory stub。
+
+    payloads: list[dict | None] — 對應每次 _call_openai 回傳；用完丟空 list 後續回 None。
+    """
+    from app.routers import analysis as analysis_module
+
+    call_log: list[dict] = []
+
+    def fake_call_openai(system_prompt: str, user_msg: str):
+        call_log.append({"system": system_prompt, "user_msg": user_msg})
+        if not payloads:
+            return None
+        return payloads.pop(0)
+
+    # 清掉 module-level 5min in-memory cache，避免測試之間互相串到
+    analysis_module._trade_quality_cache.clear()
+
+    monkeypatch.setattr(analysis_module, "_call_openai", fake_call_openai)
+    monkeypatch.setattr(analysis_module, "_load_system_prompt", lambda: "stub-prompt")
+
+    def fake_collect_context(db, sid, bd):
+        stock = db.get(StockMaster, sid)
+        ctx = {
+            "stock_id": sid,
+            "stock_name": stock.stock_name if stock else sid,
+            "industry_name": "半導體",
+            "sub_industry": None,
+            "buy_date": str(bd),
+            "latest_close": 1000.0,
+            "prices_text": "(stub)",
+            "flows_text": "(stub)",
+            "revenue_text": "(stub)",
+        }
+        return stock, ctx, []
+
+    monkeypatch.setattr(analysis_module, "_collect_context", fake_collect_context)
+    monkeypatch.setattr(
+        analysis_module, "_build_deterministic_context",
+        lambda db, sid, bd, warnings: {"m21": True},
+    )
+    return call_log
+
+
+def test_runner_writes_failed_when_key_factors_stay_incomplete_after_retry(api, monkeypatch):
+    """LLM 兩次都不給齊 6 個 category → runner 寫 status='failed'，不留「假 ok」。"""
+    client, db = api
+    user_id = _register_and_login(client)
+    _seed_min_runner_context(db)
+
+    incomplete = {
+        "rating": "BUY", "summary": "缺燈", "report_markdown": "r",
+        "key_factors": _FULL_KEY_FACTORS[:3],  # 只給 3 個 category
+    }
+    call_log = _patch_runner_dependencies(monkeypatch, [incomplete, incomplete])
+
+    after_etl = datetime(2026, 4, 30, 21, 0, tzinfo=ZoneInfo("Asia/Taipei"))
+    with patch("app.trade_quality_cache.datetime") as mock_dt:
+        mock_dt.now.return_value = after_etl
+        mock_dt.utcnow = datetime.utcnow
+        from app.models import User
+        from app.routers.analysis import run_trade_quality_for_user
+        user = db.get(User, user_id)
+        result = run_trade_quality_for_user(
+            db,
+            user=user,
+            stock_id="2330",
+            buy_date_input=date(2026, 4, 1),
+            persist_source="cron",
+        )
+
+    # OpenAI 被打了兩次（第一次 incomplete → factors-retry 補強提醒）
+    assert len(call_log) == 2
+    # 第二次 user_msg 應含補強提醒
+    assert "缺少必備 category" in call_log[1]["user_msg"]
+
+    # DB 應該寫 failed（不是 ok）
+    row = load_snapshot(
+        db, user_id=user_id, stock_id="2330",
+        buy_date=date(2026, 4, 1), snapshot_trade_date=date(2026, 4, 30),
+    )
+    assert row is not None
+    assert row.status == "failed"
+    assert row.rating is None  # failed 會清 payload 欄位
+    assert "未提供完整" in (row.error_message or "")
+    # response 仍有回給 caller，加上 warning
+    assert any("完整燈號" in w for w in result.response.warnings)
+
+
+def test_runner_writes_ok_when_first_call_already_complete(api, monkeypatch):
+    """第一次就齊 6 category → 不 retry、寫 status='ok'。"""
+    client, db = api
+    user_id = _register_and_login(client)
+    _seed_min_runner_context(db)
+
+    full_payload = {
+        "rating": "BUY", "summary": "完整", "report_markdown": "r",
+        "key_factors": _FULL_KEY_FACTORS,
+    }
+    call_log = _patch_runner_dependencies(monkeypatch, [full_payload])
+
+    after_etl = datetime(2026, 4, 30, 21, 0, tzinfo=ZoneInfo("Asia/Taipei"))
+    with patch("app.trade_quality_cache.datetime") as mock_dt:
+        mock_dt.now.return_value = after_etl
+        mock_dt.utcnow = datetime.utcnow
+        from app.models import User
+        from app.routers.analysis import run_trade_quality_for_user
+        user = db.get(User, user_id)
+        run_trade_quality_for_user(
+            db,
+            user=user,
+            stock_id="2330",
+            buy_date_input=date(2026, 4, 1),
+            persist_source="cron",
+        )
+
+    # 完整 → 不 retry，OpenAI 只被打一次
+    assert len(call_log) == 1
+
+    row = load_snapshot(
+        db, user_id=user_id, stock_id="2330",
+        buy_date=date(2026, 4, 1), snapshot_trade_date=date(2026, 4, 30),
+    )
+    assert row is not None
+    assert row.status == "ok"
+    assert isinstance(row.key_factors, list)
+    assert len(row.key_factors) == 6
+
+
+def test_runner_honors_snapshot_trade_date_override(api, monkeypatch):
+    """cron `--date 2026-04-30` 應透傳給 runner，把快照寫到指定日（不被 resolve 蓋掉）。"""
+    client, db = api
+    user_id = _register_and_login(client)
+    _seed_min_runner_context(db)
+    # 還補一個更近期的價格，讓 resolve 不會剛好等於 4/30
+    _seed_price(db, "2330", date(2026, 5, 2), 1010.0)
+
+    full_payload = {
+        "rating": "BUY", "summary": "back", "report_markdown": "r",
+        "key_factors": _FULL_KEY_FACTORS,
+    }
+    _patch_runner_dependencies(monkeypatch, [full_payload])
+
+    from app.models import User
+    from app.routers.analysis import run_trade_quality_for_user
+    user = db.get(User, user_id)
+    run_trade_quality_for_user(
+        db,
+        user=user,
+        stock_id="2330",
+        buy_date_input=date(2026, 4, 1),
+        persist_source="cron",
+        use_db_cache=False,
+        snapshot_trade_date_override=date(2026, 4, 30),
+    )
+
+    # 寫入應該落在 4/30，不是 resolve 出來的 5/2
+    row_4_30 = load_snapshot(
+        db, user_id=user_id, stock_id="2330",
+        buy_date=date(2026, 4, 1), snapshot_trade_date=date(2026, 4, 30),
+    )
+    assert row_4_30 is not None
+    assert row_4_30.status == "ok"
+
+    row_5_2 = load_snapshot(
+        db, user_id=user_id, stock_id="2330",
+        buy_date=date(2026, 4, 1), snapshot_trade_date=date(2026, 5, 2),
+    )
+    assert row_5_2 is None

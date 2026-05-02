@@ -2,17 +2,21 @@
 Daily watchlist trade quality refresh (M25).
 
 執行流程：
-1. resolve_snapshot_trade_date(db) — 看 DB 最近交易日（同 signal archive 規則）
+1. resolve_snapshot_trade_date(db) — 看 DB 最近交易日（同 signal archive 規則）；
+   `--date` 可手動覆寫，會直接傳給 runner 當 snapshot_trade_date 寫入。
 2. SELECT DISTINCT user_id, stock_id, buy_date FROM user_watchlist
 3. 對每組 (user_id, stock_id, buy_date)：
-   - 若 (user_id, stock_id, buy_date, snapshot_trade_date) 已有 ok 快照 → skip
+   - 若 (user_id, stock_id, buy_date, snapshot_trade_date) 已有「完整 ok」快照
+     （status='ok' 且 6 個 key_factors category 齊全）→ skip。`--force` 強制重跑。
    - 否則跑 trade quality（透過 routers/analysis.run_trade_quality_for_user）→ 寫快照表（source='cron'）
-   - 個別檔失敗 → 寫一筆 status='failed' 紀錄 + 繼續下一檔（不中斷整個 job）
+   - LLM 沒給齊燈號 → runner 自動 retry 一次；仍不齊就標 status='failed'（不再產生「假 ok」）
+   - 個別檔執行例外 → 寫一筆 status='failed' 紀錄 + 繼續下一檔（不中斷整個 job）
 4. exit code: 0 ok / 1 partial（有 ok 但有 failed）/ 2 全失敗 / 5 holiday（DB 無交易日資料）
 
 使用方式：
-    python3 run_watchlist_trade_quality.py                    # 自動 resolve
-    python3 run_watchlist_trade_quality.py --date 2026-04-30  # 手動指定 snapshot_trade_date
+    python3 run_watchlist_trade_quality.py                          # 自動 resolve
+    python3 run_watchlist_trade_quality.py --date 2026-04-30        # 指定 snapshot_trade_date
+    python3 run_watchlist_trade_quality.py --date 2026-04-30 --force  # 強制覆寫舊 ok row（補跑）
 """
 
 from __future__ import annotations
@@ -49,6 +53,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="只列出會跑哪些 (user, stock, buy_date)，不實際呼叫 OpenAI",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="強制重跑：忽略既有完整 ok 快照（用於 prompt 改版後補跑）",
+    )
     return parser.parse_args(argv)
 
 
@@ -64,6 +73,8 @@ def main(argv: list[str] | None = None) -> int:
         from app.models import UserWatchlist, WatchlistTradeQualitySnapshot
         from app.routers.analysis import run_trade_quality_for_user
         from app.trade_quality_cache import (
+            REQUIRED_KEY_FACTOR_CATEGORIES,
+            is_snapshot_complete,
             load_snapshot,
             resolve_snapshot_trade_date,
             save_snapshot_failed,
@@ -137,23 +148,40 @@ def main(argv: list[str] | None = None) -> int:
                 buy_date=entry.buy_date,
                 snapshot_trade_date=snapshot_trade_date,
             )
-            if existing is not None and existing.status == "ok":
+            # 完整 ok = status='ok' 且 6 個 key_factors category 齊；不完整視為要重跑
+            # （auto-heal 早期沒帶 key_factors 的「假 ok」row）。--force 一律重跑
+            if not args.force and is_snapshot_complete(existing):
                 skip_count += 1
                 continue
 
             try:
-                run_trade_quality_for_user(
+                result = run_trade_quality_for_user(
                     db,
                     user=user,
                     stock_id=entry.stock_id,
                     buy_date_input=entry.buy_date,
                     persist_source="cron",
+                    use_db_cache=False,  # cron 重跑不要被 db cache 攔住
+                    snapshot_trade_date_override=snapshot_trade_date,
                 )
-                ok_count += 1
-                logger.info(
-                    "ok user=%s stock=%s buy_date=%s",
-                    user.id, entry.stock_id, entry.buy_date,
-                )
+                # runner 對 incomplete key_factors 已自寫 status='failed'；
+                # 這裡用 response.key_factors 判斷是否真正完整 ok（影響 exit code）
+                seen = {
+                    f.category for f in (result.response.key_factors or [])
+                }
+                if REQUIRED_KEY_FACTOR_CATEGORIES.issubset(seen):
+                    ok_count += 1
+                    logger.info(
+                        "ok user=%s stock=%s buy_date=%s",
+                        user.id, entry.stock_id, entry.buy_date,
+                    )
+                else:
+                    failed_count += 1
+                    logger.warning(
+                        "incomplete key_factors (already marked failed) user=%s stock=%s buy_date=%s missing=%s",
+                        user.id, entry.stock_id, entry.buy_date,
+                        sorted(REQUIRED_KEY_FACTOR_CATEGORIES - seen),
+                    )
             except Exception as exc:
                 failed_count += 1
                 logger.exception(

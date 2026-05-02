@@ -35,6 +35,35 @@ TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 ETL_DONE_TIME = time(hour=20, minute=0)
 
 
+# M25 燈號完整性：6 個 category 全部齊備才算合格 ok 快照。
+# Why: 早期 cron run 偶爾會留下 status='ok' 但 key_factors=null 的「假 ok」row
+#      (LLM 沒回 key_factors，但其他欄位齊全)；前端會顯示日期但所有燈號都灰，
+#      使用者體感是「燈沒亮」。下游用 is_snapshot_complete 視為 cache miss，
+#      強制下次 cron / refresh 重打 LLM 補洞。
+REQUIRED_KEY_FACTOR_CATEGORIES = frozenset({
+    "industry", "industry_heat", "return", "chip", "technical", "fundamental",
+})
+
+
+def is_snapshot_complete(row: Optional[WatchlistTradeQualitySnapshot]) -> bool:
+    """status='ok' 且 key_factors 涵蓋 6 個必備 category 才算完整。
+
+    給 cron skip-check 與 HTTP cache lookup 共用，避免「假 ok」row 被當成有效快照。
+    """
+    if row is None or row.status != "ok":
+        return False
+    factors = row.key_factors
+    if not isinstance(factors, list):
+        return False
+    seen: set[str] = set()
+    for f in factors:
+        if isinstance(f, dict):
+            cat = str(f.get("category", "")).strip().lower()
+            if cat:
+                seen.add(cat)
+    return REQUIRED_KEY_FACTOR_CATEGORIES.issubset(seen)
+
+
 def resolve_snapshot_trade_date(
     db: Session,
     *,

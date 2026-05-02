@@ -27,6 +27,20 @@ from app.routers import analysis as analysis_router
 from app.routers.analysis import _is_market_not_open_yet, _load_system_prompt
 
 
+# 6 個 category 齊備的 key_factors fixture：避免測試裡的 mock OpenAI 回應觸發
+# `_call_openai_with_factors_retry` 內建的「補燈號」retry（會多打一次 mock）。
+# 只有要驗證「first-call 成功 + call_count == 1」的測試需要塞這個；驗證 retry 行為
+# 的測試本來就會自然呼叫多次。
+_FULL_KEY_FACTORS = [
+    {"category": "industry", "level": "A", "trend": "stable", "note": "n1"},
+    {"category": "industry_heat", "level": "A", "trend": "stable", "note": "n2"},
+    {"category": "return", "level": "A", "trend": "stable", "note": "n3"},
+    {"category": "chip", "level": "A", "trend": "stable", "note": "n4"},
+    {"category": "technical", "level": "A", "trend": "stable", "note": "n5"},
+    {"category": "fundamental", "level": "A", "trend": "stable", "note": "n6"},
+]
+
+
 @pytest.fixture
 def api():
     engine = create_engine(
@@ -345,6 +359,8 @@ def test_trade_quality_retries_once_when_openai_returns_invalid_json(api):
         "rating": "BUY",
         "summary": "重試後成功",
         "report_markdown": "retry-ok",
+        # 帶完整 key_factors 避免又觸發 factors-retry 多打一次 OpenAI
+        "key_factors": _FULL_KEY_FACTORS,
     }
 
     mock_client = MagicMock()
@@ -550,6 +566,7 @@ def test_trade_quality_uses_short_ttl_cache_for_same_stock_and_date(api):
         "rating": "BUY",
         "summary": "cached",
         "report_markdown": "cached-report",
+        "key_factors": _FULL_KEY_FACTORS,  # 完整燈號避免 factors-retry 多打一次
     }
     mock_client = MagicMock()
     mock_client.chat.completions.create.return_value = MagicMock(
@@ -629,6 +646,7 @@ def test_trade_quality_stream_returns_cached_done_event(api):
         "rating": "BUY",
         "summary": "stream cached",
         "report_markdown": "cached",
+        "key_factors": _FULL_KEY_FACTORS,  # 完整燈號避免 factors-retry 多打一次
     }
     mock_client = MagicMock()
     mock_client.chat.completions.create.return_value = MagicMock(
