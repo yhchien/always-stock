@@ -11,6 +11,15 @@ const CATEGORY_LABELS: Record<string, string> = {
   fundamental: "基本面",
 }
 
+const CATEGORY_LABELS_SHORT: Record<string, string> = {
+  industry: "產",
+  industry_heat: "熱",
+  return: "報",
+  chip: "籌",
+  technical: "技",
+  fundamental: "基",
+}
+
 const CATEGORY_ORDER = ["industry", "industry_heat", "return", "chip", "technical", "fundamental"] as const
 
 const LEVEL_DOT: Record<string, string> = {
@@ -39,11 +48,16 @@ function findFactor(snapshot: WatchlistFactorSnapshot | undefined, category: str
  * 視覺上把它反轉為「左舊 → 右新」更符合時間軸閱讀習慣。
  *
  * 不足 3 筆時剩餘格子顯示為灰點（無資料）。
+ *
+ * @param compact 緊湊版（給首頁 table cell 用）：3 列 × 6 因素轉置；
+ *   日期在左、因素縮寫當欄頭、無外框。
  */
 export default function KeyFactorsTimeline({
   recent,
+  compact = false,
 }: {
   recent: WatchlistFactorSnapshot[] | null | undefined
+  compact?: boolean
 }) {
   if (!recent || recent.length === 0) return null
 
@@ -53,6 +67,44 @@ export default function KeyFactorsTimeline({
     ...Array(Math.max(0, 3 - ordered.length)).fill(null),
     ...ordered,
   ]
+
+  if (compact) {
+    return (
+      <table className="text-[11px]">
+        <thead>
+          <tr className="text-slate-500">
+            <th className="pr-2 text-left font-normal"></th>
+            {CATEGORY_ORDER.map((category) => (
+              <th key={category} className="px-1 text-center font-normal" title={CATEGORY_LABELS[category]}>
+                {CATEGORY_LABELS_SHORT[category]}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {padded.map((snapshot, idx) => (
+            <tr key={idx}>
+              <td className="pr-2 text-slate-500" title={snapshot?.snapshot_trade_date ?? "無資料"}>
+                {snapshot ? shortDate(snapshot.snapshot_trade_date) : "—"}
+              </td>
+              {CATEGORY_ORDER.map((category) => {
+                const factor = findFactor(snapshot ?? undefined, category)
+                const dot = factor ? LEVEL_DOT[factor.level] ?? FALLBACK_DOT : FALLBACK_DOT
+                const tooltip = factor
+                  ? `${snapshot?.snapshot_trade_date ?? ""} · ${CATEGORY_LABELS[category]} · ${factor.level}${factor.note ? ` · ${factor.note}` : ""}`
+                  : "無資料"
+                return (
+                  <td key={category} className="px-1 py-0.5 text-center">
+                    <span className={`inline-block h-2 w-2 rounded-full ${dot}`} title={tooltip} />
+                  </td>
+                )
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    )
+  }
 
   return (
     <div className="rounded-lg border border-slate-700/60 bg-slate-900/40 p-3">

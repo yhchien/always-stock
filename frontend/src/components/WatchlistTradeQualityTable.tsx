@@ -13,6 +13,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Skeleton } from "@/components/ui/skeleton"
+import KeyFactorsTimeline from "@/components/KeyFactorsTimeline"
 import {
   fetchWatchlistTradeQuality,
   refreshWatchlistTradeQuality,
@@ -142,22 +143,6 @@ export default function WatchlistTradeQualityTable({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data?.snapshot_trade_date, data?.total])
 
-  const handleManualRefresh = async (stockId: string) => {
-    setRefreshing((prev) => new Set(prev).add(stockId))
-    try {
-      await refreshWatchlistTradeQuality(stockId)
-      await reload()
-    } catch (err) {
-      setError(toDisplayError(err))
-    } finally {
-      setRefreshing((prev) => {
-        const next = new Set(prev)
-        next.delete(stockId)
-        return next
-      })
-    }
-  }
-
   if (status !== "authenticated") return null
 
   const items = data?.items ?? []
@@ -222,7 +207,7 @@ export default function WatchlistTradeQualityTable({
                     <TableHead className="text-slate-300 text-right">漲跌幅</TableHead>
                     <TableHead className="text-slate-300 text-right hidden sm:table-cell">未實現</TableHead>
                     <TableHead className="text-slate-300">動作建議</TableHead>
-                    <TableHead className="text-slate-300 w-20 text-right">操作</TableHead>
+                    <TableHead className="text-slate-300 hidden md:table-cell">近 3 日燈號</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -236,7 +221,6 @@ export default function WatchlistTradeQualityTable({
                           `/stocks/${encodeURIComponent(item.stock_id)}?buy_date=${item.buy_date}#watchlist-trade-quality`,
                         )
                       }
-                      onRefresh={() => handleManualRefresh(item.stock_id)}
                     />
                   ))}
                 </TableBody>
@@ -253,17 +237,14 @@ function Row({
   item,
   isRefreshing,
   onClick,
-  onRefresh,
 }: {
   item: WatchlistTradeQualityItem
   isRefreshing: boolean
   onClick: () => void
-  onRefresh: () => void
 }) {
   const latest = item.latest
   const previous = item.previous
   const isFailed = latest?.status === "failed"
-  const showRetry = isFailed || latest === null || latest?.is_stale
 
   return (
     <TableRow
@@ -303,21 +284,9 @@ function Row({
           <span className="text-xs text-slate-500">尚未分析</span>
         )}
       </TableCell>
-      <TableCell
-        className="text-right"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {showRetry && !isRefreshing ? (
-          <button
-            type="button"
-            onClick={onRefresh}
-            className="rounded border border-slate-600 bg-slate-700/40 px-2 py-1 text-[11px] text-slate-200 hover:bg-slate-700"
-            title="重新分析"
-          >
-            重試
-          </button>
-        ) : isRefreshing ? (
-          <span className="text-[11px] text-slate-400">…</span>
+      <TableCell className="hidden md:table-cell">
+        {item.recent_factors?.length ? (
+          <KeyFactorsTimeline recent={item.recent_factors} compact />
         ) : (
           <span className="text-[11px] text-slate-600">—</span>
         )}
