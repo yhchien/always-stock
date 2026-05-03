@@ -18,8 +18,6 @@ import { useAuth } from "@/lib/auth"
 import { useRealtimeQuotes } from "@/lib/useRealtimeQuotes"
 import { useSignalJobPolling } from "@/lib/useSignalJobPolling"
 import {
-  decisionBadgeClass,
-  signalDecisionLabel,
   signalValueLabel,
   signalValueTone,
   toneChipClass,
@@ -124,8 +122,9 @@ function SignalCard({
       onClick={() => router.push(stockHref)}
       className="cursor-pointer rounded-lg border border-slate-600/60 bg-slate-800/40 px-4 py-3 transition-colors hover:bg-slate-800/70"
     >
-      {/* 各欄位給 min-w，多張卡片同欄會對齊；conditional 欄位（題材/產業）缺值時用 placeholder 佔位。 */}
-      <div className="-mx-1 flex flex-nowrap items-center gap-4 overflow-x-auto px-1">
+      {/* 各欄位給 min-w，多張卡片同欄會對齊；conditional 欄位（題材/產業）缺值時用 placeholder 佔位。
+          類型徽章拔掉，因為外層 tab 已經分好 LEADER/FOLLOWER/LAGGARD。 */}
+      <div className="flex flex-nowrap items-center gap-4">
         <Link
           href={stockHref}
           onClick={(e) => e.stopPropagation()}
@@ -133,17 +132,6 @@ function SignalCard({
         >
           {item.stock} {item.name ?? ""}
         </Link>
-        <div className="shrink-0 min-w-[64px]">
-          {item.type ? (
-            <span
-              className={`inline-flex items-center whitespace-nowrap rounded border px-1.5 py-0.5 text-xs font-medium ${decisionBadgeClass(
-                item.type,
-              )}`}
-            >
-              {signalDecisionLabel(item.type)}
-            </span>
-          ) : null}
-        </div>
         <div className="shrink-0 min-w-[110px]">
           <InlinePrice quote={quote} />
         </div>
@@ -510,31 +498,37 @@ export default function DailySignalsPanel({
                   </TabsTrigger>
                 </TabsList>
 
-                <TabsContent value="leader" className="mt-3 flex flex-col gap-3">
+                <TabsContent value="leader" className="mt-3 overflow-x-auto pb-2">
                   {filteredLeader.length === 0 ? (
                     <p className="text-sm text-slate-400">本日無領漲訊號。</p>
                   ) : (
-                    filteredLeader.map((item) => (
-                      <SignalCard key={item.stock} item={item} quote={realtimeQuotes.get(item.stock)} />
-                    ))
+                    <div className="flex min-w-max flex-col gap-3">
+                      {filteredLeader.map((item) => (
+                        <SignalCard key={item.stock} item={item} quote={realtimeQuotes.get(item.stock)} />
+                      ))}
+                    </div>
                   )}
                 </TabsContent>
-                <TabsContent value="follower" className="mt-3 flex flex-col gap-3">
+                <TabsContent value="follower" className="mt-3 overflow-x-auto pb-2">
                   {filteredFollower.length === 0 ? (
                     <p className="text-sm text-slate-400">本日無跟漲訊號。</p>
                   ) : (
-                    filteredFollower.map((item) => (
-                      <SignalCard key={item.stock} item={item} quote={realtimeQuotes.get(item.stock)} />
-                    ))
+                    <div className="flex min-w-max flex-col gap-3">
+                      {filteredFollower.map((item) => (
+                        <SignalCard key={item.stock} item={item} quote={realtimeQuotes.get(item.stock)} />
+                      ))}
+                    </div>
                   )}
                 </TabsContent>
-                <TabsContent value="laggard" className="mt-3 flex flex-col gap-3">
+                <TabsContent value="laggard" className="mt-3 overflow-x-auto pb-2">
                   {filteredLaggard.length === 0 ? (
                     <p className="text-sm text-slate-400">本日無補漲訊號。</p>
                   ) : (
-                    filteredLaggard.map((item) => (
-                      <SignalCard key={item.stock} item={item} quote={realtimeQuotes.get(item.stock)} />
-                    ))
+                    <div className="flex min-w-max flex-col gap-3">
+                      {filteredLaggard.map((item) => (
+                        <SignalCard key={item.stock} item={item} quote={realtimeQuotes.get(item.stock)} />
+                      ))}
+                    </div>
                   )}
                 </TabsContent>
               </Tabs>

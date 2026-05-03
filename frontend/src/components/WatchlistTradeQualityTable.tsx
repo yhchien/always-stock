@@ -111,8 +111,9 @@ function WatchlistCard({
       onClick={() => router.push(detailHref)}
       className="cursor-pointer rounded-lg border border-slate-600/60 bg-slate-800/40 px-4 py-3 transition-colors hover:bg-slate-800/70"
     >
-      {/* 整列 inline：所有資訊（含按鈕）都排同一行；每個欄位給 min-w 讓多張卡片同欄對齊。 */}
-      <div className="-mx-1 flex flex-nowrap items-center gap-4 overflow-x-auto px-1">
+      {/* 整列 inline：所有資訊（含按鈕）都排同一行；每個欄位給 min-w 讓多張卡片同欄對齊。
+          外層 list 共用單一 overflow-x-auto，所以這裡不再 overflow。 */}
+      <div className="flex flex-nowrap items-center gap-4">
         <Link
           href={detailHref}
           onClick={(e) => e.stopPropagation()}
@@ -281,14 +282,16 @@ export default function WatchlistTradeQualityTable({
           )}
 
           {!loading && !error && items.length > 0 && (
-            <div className="flex flex-col gap-3">
-              {items.map((item) => (
-                <WatchlistCard
-                  key={item.stock_id}
-                  item={item}
-                  isRefreshing={refreshing.has(item.stock_id)}
-                />
-              ))}
+            <div className="overflow-x-auto pb-2">
+              <div className="flex min-w-max flex-col gap-3">
+                {items.map((item) => (
+                  <WatchlistCard
+                    key={item.stock_id}
+                    item={item}
+                    isRefreshing={refreshing.has(item.stock_id)}
+                  />
+                ))}
+              </div>
             </div>
           )}
         </div>
