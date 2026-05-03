@@ -80,8 +80,8 @@ function PriceLine({
         ? "▼"
         : ""
   return (
-    <div className="mt-1 flex items-baseline gap-2">
-      <span className="font-mono text-base text-slate-100">{value.toFixed(2)}</span>
+    <div className="inline-flex items-baseline gap-1.5">
+      <span className="font-mono text-sm text-slate-100">{value.toFixed(2)}</span>
       {hasChange ? (
         <span className={`font-mono text-xs ${color}`}>
           {arrow} {(change as number) >= 0 ? "+" : ""}
@@ -105,19 +105,19 @@ function WatchlistCard({
   const detailHref = `/stocks/${encodeURIComponent(item.stock_id)}?buy_date=${item.buy_date}#watchlist-trade-quality`
 
   return (
-    <article className="rounded-lg border border-slate-600/60 bg-slate-800/40 p-4">
-      {/* 單列水平排版：手機螢幕窄時整列可左右拉，避免燈號被擠到下一行。 */}
-      <div className="-mx-1 flex flex-nowrap items-stretch gap-3 overflow-x-auto px-1 pb-1">
-        <div className="flex shrink-0 flex-col justify-between gap-2 whitespace-nowrap pr-3 sm:min-w-[180px]">
-          <div className="flex flex-col">
-            <Link
-              href={detailHref}
-              className="text-base font-semibold text-slate-100 hover:text-sky-300"
-            >
-              {item.stock_id} {item.stock_name}
-            </Link>
-            <span className="font-mono text-[11px] text-slate-500">買進 {item.buy_date}</span>
-          </div>
+    <article className="rounded-lg border border-slate-600/60 bg-slate-800/40 px-3 py-2">
+      {/* 整列 inline：所有資訊（含按鈕）都排同一行，窄螢幕左右拉；不再額外用深色 box 包股價/燈號。 */}
+      <div className="-mx-1 flex flex-nowrap items-center gap-3 overflow-x-auto px-1">
+        <Link
+          href={detailHref}
+          className="shrink-0 whitespace-nowrap text-sm font-semibold text-slate-100 hover:text-sky-300"
+        >
+          {item.stock_id} {item.stock_name}
+        </Link>
+        <div className="shrink-0 whitespace-nowrap font-mono text-[11px] text-slate-500">
+          買進 {item.buy_date}
+        </div>
+        <div className="shrink-0">
           {latest && latest.rating ? (
             <RatingPill
               rating={latest.rating}
@@ -133,29 +133,22 @@ function WatchlistCard({
             <span className="text-xs text-slate-500">尚未分析</span>
           )}
         </div>
-
-        <div className="flex shrink-0 flex-col justify-center whitespace-nowrap rounded-lg border border-slate-700/70 bg-slate-900/50 px-3 py-2 sm:min-w-[140px]">
-          <p className="text-[11px] text-slate-500">今日股價</p>
+        <div className="shrink-0 whitespace-nowrap">
           <PriceLine value={item.latest_close} change={item.change_pct} />
         </div>
-
-        <div className="flex shrink-0 flex-col whitespace-nowrap rounded-lg border border-slate-700/70 bg-slate-900/50 px-3 py-2">
-          <p className="text-[11px] text-slate-500">燈號趨勢</p>
+        <div className="shrink-0 whitespace-nowrap">
           {item.recent_factors?.length ? (
             <KeyFactorsTimeline recent={item.recent_factors} compact />
           ) : (
-            <p className="mt-2 text-xs text-slate-600">尚無燈號</p>
+            <span className="text-xs text-slate-600">尚無燈號</span>
           )}
         </div>
-
-        <div className="flex shrink-0 items-end">
-          <Link
-            href={detailHref}
-            className="inline-flex items-center whitespace-nowrap rounded border border-sky-500/50 bg-sky-500/10 px-2.5 py-1 text-xs font-medium text-sky-200 hover:bg-sky-500/20"
-          >
-            點我看更多分析結果
-          </Link>
-        </div>
+        <Link
+          href={detailHref}
+          className="shrink-0 inline-flex items-center whitespace-nowrap rounded border border-sky-500/50 bg-sky-500/10 px-2.5 py-1 text-xs font-medium text-sky-200 hover:bg-sky-500/20"
+        >
+          點我看更多分析結果
+        </Link>
       </div>
     </article>
   )

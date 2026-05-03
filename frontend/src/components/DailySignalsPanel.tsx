@@ -49,7 +49,7 @@ function formatTpeDateTime(iso: string | null | undefined): string {
   }
 }
 
-function SignalMetric({
+function InlineMetric({
   label,
   value,
 }: {
@@ -57,27 +57,25 @@ function SignalMetric({
   value: string | null | undefined
 }) {
   return (
-    <div className="flex shrink-0 flex-col gap-1 whitespace-nowrap rounded-lg border border-slate-700/70 bg-slate-900/50 px-3 py-2">
-      <p className="text-[11px] text-slate-500">{label}</p>
+    <span className="inline-flex shrink-0 items-baseline gap-1.5 whitespace-nowrap text-xs">
+      <span className="text-slate-500">{label}</span>
       <span
-        className={`inline-flex w-fit rounded border px-2 py-0.5 text-xs font-medium ${toneChipClass(signalValueTone(label, value))}`}
+        className={`inline-flex rounded border px-1.5 py-0.5 font-medium ${toneChipClass(signalValueTone(label, value))}`}
       >
         {signalValueLabel(value)}
       </span>
-    </div>
+    </span>
   )
 }
 
-function PriceChip({
+function InlinePrice({
   quote,
 }: {
   quote: RealtimeQuote | undefined
 }) {
   if (!quote || quote.price == null) {
     return (
-      <span className="shrink-0 whitespace-nowrap rounded border border-slate-700/60 bg-slate-900/40 px-2 py-0.5 text-[11px] text-slate-500">
-        報價載入中
-      </span>
+      <span className="shrink-0 whitespace-nowrap text-xs text-slate-500">報價載入中</span>
     )
   }
   const change = quote.change_pct
@@ -97,7 +95,7 @@ function PriceChip({
         ? "▼"
         : ""
   return (
-    <span className="shrink-0 inline-flex items-baseline gap-1.5 whitespace-nowrap rounded border border-slate-700/60 bg-slate-900/40 px-2 py-0.5">
+    <span className="inline-flex shrink-0 items-baseline gap-1.5 whitespace-nowrap">
       <span className="font-mono text-sm text-slate-100">{quote.price.toFixed(2)}</span>
       {hasChange ? (
         <span className={`font-mono text-xs ${color}`}>
@@ -120,60 +118,52 @@ function SignalCard({
   const themeFit = item.theme_fit
 
   return (
-    <article className="rounded-lg border border-slate-600/60 bg-slate-800/40 p-4">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <Link
-            href={stockHref}
-            className="text-base font-semibold text-slate-100 hover:text-sky-300"
+    <article className="rounded-lg border border-slate-600/60 bg-slate-800/40 px-3 py-2">
+      <div className="-mx-1 flex flex-nowrap items-center gap-3 overflow-x-auto px-1">
+        <Link
+          href={stockHref}
+          className="shrink-0 whitespace-nowrap text-sm font-semibold text-slate-100 hover:text-sky-300"
+        >
+          {item.stock} {item.name ?? ""}
+        </Link>
+        {item.type && (
+          <span
+            className={`shrink-0 inline-flex items-center whitespace-nowrap rounded border px-1.5 py-0.5 text-xs font-medium ${decisionBadgeClass(
+              item.type,
+            )}`}
           >
-            {item.stock} {item.name ?? ""}
-          </Link>
-          {item.type && (
-            <span
-              className={`inline-flex items-center rounded border px-1.5 py-0.5 text-xs font-medium ${decisionBadgeClass(
-                item.type,
-              )}`}
-            >
-              {signalDecisionLabel(item.type)}
-            </span>
-          )}
-          <PriceChip quote={quote} />
-          {item.industry && (
-            <span className="text-xs text-slate-400">
-              {item.industry}
-              {item.sub_industry ? ` · ${item.sub_industry}` : ""}
-            </span>
-          )}
-        </div>
-        <div className="flex shrink-0 flex-wrap items-center gap-2">
-          {themeFit && (
-            <span
-              className={`rounded border px-2 py-0.5 text-[11px] font-medium ${toneChipClass(signalValueTone("theme_fit", themeFit))}`}
-            >
-              題材契合 {signalValueLabel(themeFit)}
-            </span>
-          )}
+            {signalDecisionLabel(item.type)}
+          </span>
+        )}
+        <InlinePrice quote={quote} />
+        {themeFit && (
+          <span
+            className={`shrink-0 whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px] font-medium ${toneChipClass(signalValueTone("theme_fit", themeFit))}`}
+          >
+            題材 {signalValueLabel(themeFit)}
+          </span>
+        )}
+        <InlineMetric label="資金" value={item.signals?.capital_flow} />
+        <InlineMetric label="籌碼" value={item.signals?.chip_trend} />
+        <InlineMetric label="融券" value={item.signals?.margin_short_signal} />
+        <InlineMetric label="技術" value={item.signals?.technical_status} />
+        {item.industry && (
+          <span className="shrink-0 whitespace-nowrap text-xs text-slate-400">
+            {item.industry}
+            {item.sub_industry ? ` · ${item.sub_industry}` : ""}
+          </span>
+        )}
+        <span className="shrink-0">
           <WatchlistAddButton
             stockId={item.stock}
             stockName={item.name ?? undefined}
             defaultAvgPrice={quote?.price ?? null}
             variant="compact"
           />
-        </div>
-      </header>
-
-      <div className="mt-3 -mx-1 flex flex-nowrap gap-2 overflow-x-auto px-1 pb-1">
-        <SignalMetric label="資金" value={item.signals?.capital_flow} />
-        <SignalMetric label="籌碼" value={item.signals?.chip_trend} />
-        <SignalMetric label="融券" value={item.signals?.margin_short_signal} />
-        <SignalMetric label="技術" value={item.signals?.technical_status} />
-      </div>
-
-      <div className="mt-3 flex justify-end">
+        </span>
         <Link
           href={stockHref}
-          className="inline-flex items-center rounded border border-sky-500/50 bg-sky-500/10 px-2.5 py-1 text-xs font-medium text-sky-200 hover:bg-sky-500/20"
+          className="shrink-0 inline-flex items-center whitespace-nowrap rounded border border-sky-500/50 bg-sky-500/10 px-2.5 py-1 text-xs font-medium text-sky-200 hover:bg-sky-500/20"
         >
           點我看更多分析結果
         </Link>
