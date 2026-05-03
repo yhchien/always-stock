@@ -105,19 +105,19 @@ function WatchlistCard({
   const detailHref = `/stocks/${encodeURIComponent(item.stock_id)}?buy_date=${item.buy_date}#watchlist-trade-quality`
 
   return (
-    <article className="rounded-lg border border-slate-600/60 bg-slate-800/40 px-3 py-2">
-      {/* 整列 inline：所有資訊（含按鈕）都排同一行，窄螢幕左右拉；不再額外用深色 box 包股價/燈號。 */}
-      <div className="-mx-1 flex flex-nowrap items-center gap-3 overflow-x-auto px-1">
+    <article className="rounded-lg border border-slate-600/60 bg-slate-800/40 px-4 py-3">
+      {/* 整列 inline：所有資訊（含按鈕）都排同一行；每個欄位給 min-w 讓多張卡片同欄對齊。 */}
+      <div className="-mx-1 flex flex-nowrap items-center gap-4 overflow-x-auto px-1">
         <Link
           href={detailHref}
-          className="shrink-0 whitespace-nowrap text-sm font-semibold text-slate-100 hover:text-sky-300"
+          className="shrink-0 min-w-[160px] whitespace-nowrap text-sm font-semibold text-slate-100 hover:text-sky-300"
         >
           {item.stock_id} {item.stock_name}
         </Link>
-        <div className="shrink-0 whitespace-nowrap font-mono text-[11px] text-slate-500">
+        <div className="shrink-0 min-w-[110px] whitespace-nowrap font-mono text-[11px] text-slate-500">
           買進 {item.buy_date}
         </div>
-        <div className="shrink-0">
+        <div className="shrink-0 min-w-[170px]">
           {latest && latest.rating ? (
             <RatingPill
               rating={latest.rating}
@@ -133,10 +133,10 @@ function WatchlistCard({
             <span className="text-xs text-slate-500">尚未分析</span>
           )}
         </div>
-        <div className="shrink-0 whitespace-nowrap">
+        <div className="shrink-0 min-w-[120px] whitespace-nowrap">
           <PriceLine value={item.latest_close} change={item.change_pct} />
         </div>
-        <div className="shrink-0 whitespace-nowrap">
+        <div className="shrink-0 min-w-[170px] whitespace-nowrap">
           {item.recent_factors?.length ? (
             <KeyFactorsTimeline recent={item.recent_factors} compact />
           ) : (
@@ -274,7 +274,7 @@ export default function WatchlistTradeQualityTable({
           )}
 
           {!loading && !error && items.length > 0 && (
-            <div className="grid gap-3 lg:grid-cols-2">
+            <div className="flex flex-col gap-3">
               {items.map((item) => (
                 <WatchlistCard
                   key={item.stock_id}

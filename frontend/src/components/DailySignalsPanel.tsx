@@ -118,49 +118,66 @@ function SignalCard({
   const themeFit = item.theme_fit
 
   return (
-    <article className="rounded-lg border border-slate-600/60 bg-slate-800/40 px-3 py-2">
-      <div className="-mx-1 flex flex-nowrap items-center gap-3 overflow-x-auto px-1">
+    <article className="rounded-lg border border-slate-600/60 bg-slate-800/40 px-4 py-3">
+      {/* 各欄位給 min-w，多張卡片同欄會對齊；conditional 欄位（題材/產業）缺值時用 placeholder 佔位。 */}
+      <div className="-mx-1 flex flex-nowrap items-center gap-4 overflow-x-auto px-1">
         <Link
           href={stockHref}
-          className="shrink-0 whitespace-nowrap text-sm font-semibold text-slate-100 hover:text-sky-300"
+          className="shrink-0 min-w-[140px] whitespace-nowrap text-sm font-semibold text-slate-100 hover:text-sky-300"
         >
           {item.stock} {item.name ?? ""}
         </Link>
-        {item.type && (
-          <span
-            className={`shrink-0 inline-flex items-center whitespace-nowrap rounded border px-1.5 py-0.5 text-xs font-medium ${decisionBadgeClass(
-              item.type,
-            )}`}
-          >
-            {signalDecisionLabel(item.type)}
-          </span>
-        )}
-        <InlinePrice quote={quote} />
-        {themeFit && (
-          <span
-            className={`shrink-0 whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px] font-medium ${toneChipClass(signalValueTone("theme_fit", themeFit))}`}
-          >
-            題材 {signalValueLabel(themeFit)}
-          </span>
-        )}
-        <InlineMetric label="資金" value={item.signals?.capital_flow} />
-        <InlineMetric label="籌碼" value={item.signals?.chip_trend} />
-        <InlineMetric label="融券" value={item.signals?.margin_short_signal} />
-        <InlineMetric label="技術" value={item.signals?.technical_status} />
-        {item.industry && (
-          <span className="shrink-0 whitespace-nowrap text-xs text-slate-400">
-            {item.industry}
-            {item.sub_industry ? ` · ${item.sub_industry}` : ""}
-          </span>
-        )}
-        <span className="shrink-0">
+        <div className="shrink-0 min-w-[64px]">
+          {item.type ? (
+            <span
+              className={`inline-flex items-center whitespace-nowrap rounded border px-1.5 py-0.5 text-xs font-medium ${decisionBadgeClass(
+                item.type,
+              )}`}
+            >
+              {signalDecisionLabel(item.type)}
+            </span>
+          ) : null}
+        </div>
+        <div className="shrink-0 min-w-[110px]">
+          <InlinePrice quote={quote} />
+        </div>
+        <div className="shrink-0 min-w-[100px]">
+          {themeFit ? (
+            <span
+              className={`whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px] font-medium ${toneChipClass(signalValueTone("theme_fit", themeFit))}`}
+            >
+              題材 {signalValueLabel(themeFit)}
+            </span>
+          ) : null}
+        </div>
+        <div className="shrink-0 min-w-[110px]">
+          <InlineMetric label="資金" value={item.signals?.capital_flow} />
+        </div>
+        <div className="shrink-0 min-w-[110px]">
+          <InlineMetric label="籌碼" value={item.signals?.chip_trend} />
+        </div>
+        <div className="shrink-0 min-w-[110px]">
+          <InlineMetric label="融券" value={item.signals?.margin_short_signal} />
+        </div>
+        <div className="shrink-0 min-w-[110px]">
+          <InlineMetric label="技術" value={item.signals?.technical_status} />
+        </div>
+        <div className="shrink-0 min-w-[140px] whitespace-nowrap text-xs text-slate-400">
+          {item.industry ? (
+            <>
+              {item.industry}
+              {item.sub_industry ? ` · ${item.sub_industry}` : ""}
+            </>
+          ) : null}
+        </div>
+        <div className="shrink-0 min-w-[88px]">
           <WatchlistAddButton
             stockId={item.stock}
             stockName={item.name ?? undefined}
             defaultAvgPrice={quote?.price ?? null}
             variant="compact"
           />
-        </span>
+        </div>
         <Link
           href={stockHref}
           className="shrink-0 inline-flex items-center whitespace-nowrap rounded border border-sky-500/50 bg-sky-500/10 px-2.5 py-1 text-xs font-medium text-sky-200 hover:bg-sky-500/20"
