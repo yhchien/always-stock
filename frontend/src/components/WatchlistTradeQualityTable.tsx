@@ -1,6 +1,7 @@
 "use client"
 
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 import { useCallback, useEffect, useState } from "react"
 
 import { Skeleton } from "@/components/ui/skeleton"
@@ -99,17 +100,22 @@ function WatchlistCard({
   item: WatchlistTradeQualityItem
   isRefreshing: boolean
 }) {
+  const router = useRouter()
   const latest = item.latest
   const previous = item.previous
   const isFailed = latest?.status === "failed"
   const detailHref = `/stocks/${encodeURIComponent(item.stock_id)}?buy_date=${item.buy_date}#watchlist-trade-quality`
 
   return (
-    <article className="rounded-lg border border-slate-600/60 bg-slate-800/40 px-4 py-3">
+    <article
+      onClick={() => router.push(detailHref)}
+      className="cursor-pointer rounded-lg border border-slate-600/60 bg-slate-800/40 px-4 py-3 transition-colors hover:bg-slate-800/70"
+    >
       {/* 整列 inline：所有資訊（含按鈕）都排同一行；每個欄位給 min-w 讓多張卡片同欄對齊。 */}
       <div className="-mx-1 flex flex-nowrap items-center gap-4 overflow-x-auto px-1">
         <Link
           href={detailHref}
+          onClick={(e) => e.stopPropagation()}
           className="shrink-0 min-w-[160px] whitespace-nowrap text-sm font-semibold text-slate-100 hover:text-sky-300"
         >
           {item.stock_id} {item.stock_name}
@@ -145,6 +151,7 @@ function WatchlistCard({
         </div>
         <Link
           href={detailHref}
+          onClick={(e) => e.stopPropagation()}
           className="shrink-0 inline-flex items-center whitespace-nowrap rounded border border-sky-500/50 bg-sky-500/10 px-2.5 py-1 text-xs font-medium text-sky-200 hover:bg-sky-500/20"
         >
           點我看更多分析結果

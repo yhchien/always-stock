@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 
 import {
   fetchSignalRegenerateQuota,
@@ -114,15 +115,20 @@ function SignalCard({
   item: SignalWatchlistItem
   quote: RealtimeQuote | undefined
 }) {
+  const router = useRouter()
   const stockHref = `/stocks/${encodeURIComponent(item.stock)}`
   const themeFit = item.theme_fit
 
   return (
-    <article className="rounded-lg border border-slate-600/60 bg-slate-800/40 px-4 py-3">
+    <article
+      onClick={() => router.push(stockHref)}
+      className="cursor-pointer rounded-lg border border-slate-600/60 bg-slate-800/40 px-4 py-3 transition-colors hover:bg-slate-800/70"
+    >
       {/* 各欄位給 min-w，多張卡片同欄會對齊；conditional 欄位（題材/產業）缺值時用 placeholder 佔位。 */}
       <div className="-mx-1 flex flex-nowrap items-center gap-4 overflow-x-auto px-1">
         <Link
           href={stockHref}
+          onClick={(e) => e.stopPropagation()}
           className="shrink-0 min-w-[140px] whitespace-nowrap text-sm font-semibold text-slate-100 hover:text-sky-300"
         >
           {item.stock} {item.name ?? ""}
@@ -180,6 +186,7 @@ function SignalCard({
         </div>
         <Link
           href={stockHref}
+          onClick={(e) => e.stopPropagation()}
           className="shrink-0 inline-flex items-center whitespace-nowrap rounded border border-sky-500/50 bg-sky-500/10 px-2.5 py-1 text-xs font-medium text-sky-200 hover:bg-sky-500/20"
         >
           點我看更多分析結果
