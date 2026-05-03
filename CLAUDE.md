@@ -1561,3 +1561,13 @@ slice 1~9 完成後 review 出 3 個小瑕疵，集中於 slice 11 修掉，讓�
 - **`_classify_exit_code` 已 covered**：`backend/tests/test_run_daily_signals.py:47` 已斷言 `_classify_exit_code(ValueError("no candidate stocks for date")) == 1`，本切片不需新增 cron 端測試
 
 **狀態**：9/10 + slice 11 patches，剩 slice 10（prod smoke test）。slice 7~9 + slice 11 整條同 branch (`claude/angry-cerf-8755da`)，merge 上 main 後即可手動觸發 cron 驗證。
+
+## 最近重要修正（2026-05-03）
+
+- **M23 LAGGARD 中文標籤從「轉弱」改為「補漲」**：`signalPresentation.ts` 的 `DECISION_LABELS.LAGGARD` + `DailySignalsPanel.tsx` tab 標籤與「本日無 X 訊號」空狀態文案三處同步；KeyFactor trend 的 `weakening: "轉弱"` 維持不動（trend 跟 signal decision 是兩種語義，不要混淆）
+- **自選清單 `WatchlistTradeQualityTable` 改成 2 欄響應式卡片網格**：原本 `<Table>` 在手機版 `sm:hidden` / `md:hidden` 把「未實現」/「燈號」欄擠到神秘空間，改 `grid gap-3 lg:grid-cols-2` 後手機自動單欄堆疊；外框對齊 `<DailySignalsPanel />`（`rounded-lg border border-zinc-700 bg-zinc-700/50` + 折疊 header）
+- **每張卡片精簡欄位**：股號+名稱（buy_date 縮小副字）/ 動作建議（`RatingPill` + 上次 → 本次 delta + 資料較舊 flag）/ 今日股價（`PriceLine` 收盤價 + 漲跌 %，紅漲綠跌台股慣例）/ 燈號趨勢（`KeyFactorsTimeline compact`）+ 每張卡片自帶「看細節」按鈕導向 `/stocks/{id}?buy_date=X#watchlist-trade-quality`
+- **移除整體 row click 跳頁**：原本整個 `<TableRow>` 是 cursor-pointer，現在卡片只有 stock 名稱 link 與「看細節」按鈕兩個導航入口；header 上「我的清單 →」（指向 `/watchlist` 完整頁）保留
+- **`<TradeQualityAnalysis />` 加 `<PricePredictionBar />`**：在「目標價/出場價」純文字之上加視覺化價位帶，自動軸範圍 `[min × 0.95, max × 1.05]`、紅色 `bg-rose-500/40` 出場區間 + 綠色 `bg-emerald-500/40` 目標區間，下方 tick label 對齊四個價位（exit_low/high + target_low/high）；上方有 legend「出場區間」/「目標區間」說明
+- **第一版不畫當前價 marker**：`TradeQualityResponse` 後端契約沒回 latest_close / buy_date close；要加得改 backend，下一輪再做
+- **Gotcha**：`PricePredictionBar` 在 `values.length < 2` 或 `min === max` 時直接 return null（純文字仍會顯示）；padding 用 `(max - min) * 0.1` 退化為 `max * 0.05`，避免 max==min 時 padding 為 0 導致 div by zero

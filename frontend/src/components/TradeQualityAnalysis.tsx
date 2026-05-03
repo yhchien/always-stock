@@ -40,6 +40,77 @@ function formatPriceRange(low?: number | null, high?: number | null): string | n
   return null
 }
 
+function PricePredictionBar({
+  targetLow,
+  targetHigh,
+  exitLow,
+  exitHigh,
+}: {
+  targetLow: number | null | undefined
+  targetHigh: number | null | undefined
+  exitLow: number | null | undefined
+  exitHigh: number | null | undefined
+}) {
+  const values = [targetLow, targetHigh, exitLow, exitHigh].filter(
+    (v): v is number => typeof v === "number" && !Number.isNaN(v),
+  )
+  if (values.length < 2) return null
+
+  const min = Math.min(...values)
+  const max = Math.max(...values)
+  if (min === max) return null
+  const padding = (max - min) * 0.1 || max * 0.05
+  const domainMin = min - padding
+  const domainMax = max + padding
+  const range = domainMax - domainMin
+  const mapX = (v: number) => ((v - domainMin) / range) * 100
+
+  const ticks: { pct: number; label: string; tone: string }[] = []
+  if (exitLow != null) ticks.push({ pct: mapX(exitLow), label: exitLow.toFixed(1), tone: "text-rose-300" })
+  if (exitHigh != null) ticks.push({ pct: mapX(exitHigh), label: exitHigh.toFixed(1), tone: "text-rose-300" })
+  if (targetLow != null) ticks.push({ pct: mapX(targetLow), label: targetLow.toFixed(1), tone: "text-emerald-300" })
+  if (targetHigh != null) ticks.push({ pct: mapX(targetHigh), label: targetHigh.toFixed(1), tone: "text-emerald-300" })
+  ticks.sort((a, b) => a.pct - b.pct)
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex flex-wrap items-center gap-3 text-[10px] text-slate-400">
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block h-2 w-3 rounded-sm bg-rose-500/60" /> 出場區間
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block h-2 w-3 rounded-sm bg-emerald-500/60" /> 目標區間
+        </span>
+      </div>
+      <div className="relative h-6 overflow-hidden rounded border border-slate-700 bg-slate-900/60">
+        {exitLow != null && exitHigh != null && exitHigh > exitLow && (
+          <div
+            className="absolute top-0 bottom-0 bg-rose-500/40"
+            style={{ left: `${mapX(exitLow)}%`, width: `${mapX(exitHigh) - mapX(exitLow)}%` }}
+          />
+        )}
+        {targetLow != null && targetHigh != null && targetHigh > targetLow && (
+          <div
+            className="absolute top-0 bottom-0 bg-emerald-500/40"
+            style={{ left: `${mapX(targetLow)}%`, width: `${mapX(targetHigh) - mapX(targetLow)}%` }}
+          />
+        )}
+      </div>
+      <div className="relative h-3 text-[10px] font-mono">
+        {ticks.map((t, i) => (
+          <span
+            key={i}
+            className={`absolute top-0 -translate-x-1/2 whitespace-nowrap ${t.tone}`}
+            style={{ left: `${t.pct}%` }}
+          >
+            {t.label}
+          </span>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export default function TradeQualityAnalysis({
   initialLatestDate,
 }: {
@@ -383,24 +454,38 @@ export default function TradeQualityAnalysis({
             <KeyFactorsList factors={result.key_factors} />
           )}
 
-          {/* Price info */}
+          {/* Price prediction：視覺化價位帶 + 純文字數字 */}
+          {(targetRange || exitRange) && (
+            <div className="flex flex-col gap-2 rounded-md border border-slate-700/40 bg-slate-900/30 p-3">
+              <PricePredictionBar
+                targetLow={result.target_price_low}
+                targetHigh={result.target_price_high}
+                exitLow={result.exit_price_low}
+                exitHigh={result.exit_price_high}
+              />
+              <div className="flex flex-wrap gap-4 text-xs">
+                {targetRange && (
+                  <span className="text-slate-300">
+                    目標價：<span className="font-semibold text-emerald-300">{targetRange}</span>
+                    {result.time_horizon_days ? (
+                      <span className="text-slate-500">（{result.time_horizon_days} 天）</span>
+                    ) : null}
+                  </span>
+                )}
+                {exitRange && (
+                  <span className="text-slate-300">
+                    出場價：<span className="font-semibold text-red-300">{exitRange}</span>
+                    {result.max_holding_days ? (
+                      <span className="text-slate-500">（最多 {result.max_holding_days} 天）</span>
+                    ) : null}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Other metadata */}
           <div className="flex flex-wrap gap-4 text-xs">
-            {targetRange && (
-              <span className="text-slate-300">
-                目標價：<span className="font-semibold text-emerald-300">{targetRange}</span>
-                {result.time_horizon_days ? (
-                  <span className="text-slate-500">（{result.time_horizon_days} 天）</span>
-                ) : null}
-              </span>
-            )}
-            {exitRange && (
-              <span className="text-slate-300">
-                出場價：<span className="font-semibold text-red-300">{exitRange}</span>
-                {result.max_holding_days ? (
-                  <span className="text-slate-500">（最多 {result.max_holding_days} 天）</span>
-                ) : null}
-              </span>
-            )}
             {result.market_state && (
               <span className="text-slate-400">市場：{result.market_state}</span>
             )}

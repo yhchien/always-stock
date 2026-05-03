@@ -2,16 +2,7 @@
 
 import Link from "next/link"
 import { useCallback, useEffect, useState } from "react"
-import { useRouter } from "next/navigation"
 
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table"
 import { Skeleton } from "@/components/ui/skeleton"
 import KeyFactorsTimeline from "@/components/KeyFactorsTimeline"
 import {
@@ -35,17 +26,6 @@ const RATING_STYLES: Record<
   RUN:        { dot: "bg-rose-500",    chip: "bg-rose-700/30 border-rose-600/40 text-rose-200",          label: "快跑" },
 }
 
-function PctCell({ value }: { value: number | null | undefined }) {
-  if (value == null || Number.isNaN(value)) return <span className="text-slate-500 text-xs">—</span>
-  const color = value > 0 ? "text-red-400" : value < 0 ? "text-green-400" : "text-slate-400"
-  const arrow = value > 0 ? "▲" : value < 0 ? "▼" : ""
-  return (
-    <span className={`font-mono text-xs ${color}`}>
-      {arrow} {value >= 0 ? "+" : ""}{value.toFixed(2)}%
-    </span>
-  )
-}
-
 interface RatingPillProps {
   rating: TradeQualityRating
   label: string | null
@@ -57,7 +37,7 @@ function RatingPill({ rating, label, isStale, prevRating }: RatingPillProps) {
   const style = RATING_STYLES[rating] ?? RATING_STYLES.NEUTRAL
   const display = label ?? style.label
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex flex-wrap items-center gap-2">
       <span className={`h-2.5 w-2.5 rounded-full ${style.dot}`} />
       <span
         className={`inline-flex items-center rounded border px-2 py-0.5 text-xs font-medium ${style.chip}`}
@@ -76,6 +56,114 @@ function RatingPill({ rating, label, isStale, prevRating }: RatingPillProps) {
   )
 }
 
+function PriceLine({
+  value,
+  change,
+}: {
+  value: number | null | undefined
+  change: number | null | undefined
+}) {
+  if (value == null) return <span className="text-sm text-slate-500">—</span>
+  const hasChange = change != null && !Number.isNaN(change)
+  const color = !hasChange
+    ? "text-slate-400"
+    : (change as number) > 0
+      ? "text-red-400"
+      : (change as number) < 0
+        ? "text-green-400"
+        : "text-slate-400"
+  const arrow = !hasChange
+    ? ""
+    : (change as number) > 0
+      ? "▲"
+      : (change as number) < 0
+        ? "▼"
+        : ""
+  return (
+    <div className="mt-1 flex items-baseline gap-2">
+      <span className="font-mono text-base text-slate-100">{value.toFixed(2)}</span>
+      {hasChange ? (
+        <span className={`font-mono text-xs ${color}`}>
+          {arrow} {(change as number) >= 0 ? "+" : ""}
+          {(change as number).toFixed(2)}%
+        </span>
+      ) : null}
+    </div>
+  )
+}
+
+function WatchlistCard({
+  item,
+  isRefreshing,
+}: {
+  item: WatchlistTradeQualityItem
+  isRefreshing: boolean
+}) {
+  const latest = item.latest
+  const previous = item.previous
+  const isFailed = latest?.status === "failed"
+  const detailHref = `/stocks/${encodeURIComponent(item.stock_id)}?buy_date=${item.buy_date}#watchlist-trade-quality`
+
+  return (
+    <article className="rounded-lg border border-slate-600/60 bg-slate-800/40 p-4">
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex flex-wrap items-baseline gap-2">
+          <Link
+            href={detailHref}
+            className="text-base font-semibold text-slate-100 hover:text-sky-300"
+          >
+            {item.stock_id} {item.stock_name}
+          </Link>
+          <span className="font-mono text-[11px] text-slate-500">買進 {item.buy_date}</span>
+        </div>
+        <div className="shrink-0">
+          {latest && latest.rating ? (
+            <RatingPill
+              rating={latest.rating}
+              label={latest.rating_label}
+              isStale={latest.is_stale}
+              prevRating={previous?.rating ?? null}
+            />
+          ) : isRefreshing ? (
+            <span className="text-xs text-slate-400">分析中…</span>
+          ) : isFailed ? (
+            <span className="text-xs text-rose-300">分析失敗</span>
+          ) : (
+            <span className="text-xs text-slate-500">尚未分析</span>
+          )}
+        </div>
+      </header>
+
+      <div className="mt-3 grid gap-3 sm:grid-cols-[auto_1fr]">
+        <div className="rounded-lg border border-slate-700/70 bg-slate-900/50 px-3 py-2 sm:min-w-[140px]">
+          <p className="text-[11px] text-slate-500">今日股價</p>
+          <PriceLine value={item.latest_close} change={item.change_pct} />
+        </div>
+
+        <div className="rounded-lg border border-slate-700/70 bg-slate-900/50 px-3 py-2">
+          <p className="text-[11px] text-slate-500">燈號趨勢</p>
+          {item.recent_factors?.length ? (
+            <div className="mt-1 overflow-x-auto">
+              <KeyFactorsTimeline recent={item.recent_factors} compact />
+            </div>
+          ) : (
+            <p className="mt-2 text-xs text-slate-600">尚無燈號</p>
+          )}
+        </div>
+      </div>
+
+      <div className="mt-3 flex justify-end">
+        <Link
+          href={detailHref}
+          className="inline-flex items-center rounded border border-sky-500/50 bg-sky-500/10 px-2.5 py-1 text-xs font-medium text-sky-200 hover:bg-sky-500/20"
+        >
+          看細節
+        </Link>
+      </div>
+    </article>
+  )
+}
+
 interface WatchlistTradeQualityTableProps {
   /** 預設折疊；點 header 展開 */
   defaultCollapsed?: boolean
@@ -85,7 +173,6 @@ export default function WatchlistTradeQualityTable({
   defaultCollapsed = false,
 }: WatchlistTradeQualityTableProps) {
   const { status } = useAuth()
-  const router = useRouter()
   const [data, setData] = useState<WatchlistTradeQualityResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -148,25 +235,25 @@ export default function WatchlistTradeQualityTable({
   const items = data?.items ?? []
 
   return (
-    <section className="flex flex-col gap-3">
-      <div className="flex w-full items-baseline justify-between gap-3 rounded-lg border border-zinc-700 bg-zinc-800/40 px-4 py-3">
+    <section className="rounded-lg border border-zinc-700 bg-zinc-700/50">
+      <header className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
         <button
           type="button"
-          className="flex flex-1 items-baseline gap-3 text-left"
           onClick={() => setCollapsed((c) => !c)}
+          className="flex flex-wrap items-baseline gap-2 text-base font-semibold text-slate-100 hover:text-sky-300"
+          aria-expanded={!collapsed}
         >
-          <span className="text-base font-semibold text-slate-100">
-            {collapsed ? "▸" : "▾"} 自選清單表現
+          <span aria-hidden className="text-slate-400">
+            {collapsed ? "▸" : "▾"}
           </span>
+          <span>自選清單表現</span>
           {data?.snapshot_trade_date ? (
-            <span className="text-xs text-slate-500">
-              快照日期 {data.snapshot_trade_date}
+            <span className="text-xs font-normal text-slate-500">
+              快照 {data.snapshot_trade_date}
             </span>
           ) : null}
           {data ? (
-            <span className="text-xs text-slate-500">
-              共 {data.total} 檔
-            </span>
+            <span className="text-xs font-normal text-slate-500">共 {data.total} 檔</span>
           ) : null}
         </button>
         <div className="flex items-center gap-3">
@@ -175,21 +262,20 @@ export default function WatchlistTradeQualityTable({
             href="/watchlist"
             className="text-xs text-sky-300 hover:text-sky-200 hover:underline"
           >
-            看詳細 →
+            我的清單 →
           </Link>
         </div>
-      </div>
+      </header>
 
       {!collapsed && (
-        <>
+        <div className="border-t border-zinc-700 px-4 py-4">
           {loading && (
-            <div className="flex flex-col gap-2">
-              <Skeleton className="h-10 w-full" />
-              <Skeleton className="h-10 w-full" />
-              <Skeleton className="h-10 w-full" />
+            <div className="grid gap-3 lg:grid-cols-2">
+              <Skeleton className="h-32 w-full" />
+              <Skeleton className="h-32 w-full" />
             </div>
           )}
-          {error && <p className="text-sm text-red-400">{error}</p>}
+          {error && <p className="text-sm text-rose-300">{error}</p>}
 
           {!loading && !error && items.length === 0 && (
             <p className="text-sm text-slate-500">
@@ -198,99 +284,18 @@ export default function WatchlistTradeQualityTable({
           )}
 
           {!loading && !error && items.length > 0 && (
-            <div className="rounded-lg border border-slate-700 overflow-hidden">
-              <Table>
-                <TableHeader>
-                  <TableRow className="border-slate-700 hover:bg-transparent">
-                    <TableHead className="text-slate-300">個股</TableHead>
-                    <TableHead className="text-slate-300 text-right">最新收盤</TableHead>
-                    <TableHead className="text-slate-300 text-right">漲跌幅</TableHead>
-                    <TableHead className="text-slate-300 text-right hidden sm:table-cell">未實現</TableHead>
-                    <TableHead className="text-slate-300">動作建議</TableHead>
-                    <TableHead className="text-slate-300 hidden md:table-cell">近 2 日燈號</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {items.map((item) => (
-                    <Row
-                      key={item.stock_id}
-                      item={item}
-                      isRefreshing={refreshing.has(item.stock_id)}
-                      onClick={() =>
-                        router.push(
-                          `/stocks/${encodeURIComponent(item.stock_id)}?buy_date=${item.buy_date}#watchlist-trade-quality`,
-                        )
-                      }
-                    />
-                  ))}
-                </TableBody>
-              </Table>
+            <div className="grid gap-3 lg:grid-cols-2">
+              {items.map((item) => (
+                <WatchlistCard
+                  key={item.stock_id}
+                  item={item}
+                  isRefreshing={refreshing.has(item.stock_id)}
+                />
+              ))}
             </div>
           )}
-        </>
+        </div>
       )}
     </section>
-  )
-}
-
-function Row({
-  item,
-  isRefreshing,
-  onClick,
-}: {
-  item: WatchlistTradeQualityItem
-  isRefreshing: boolean
-  onClick: () => void
-}) {
-  const latest = item.latest
-  const previous = item.previous
-  const isFailed = latest?.status === "failed"
-
-  return (
-    <TableRow
-      className="border-slate-700 cursor-pointer hover:bg-slate-800/40"
-      onClick={onClick}
-    >
-      <TableCell>
-        <div className="flex flex-col">
-          <span className="text-sm font-medium text-slate-100">{item.stock_name}</span>
-          <span className="font-mono text-xs text-slate-500">
-            {item.stock_id} · 買進 {item.buy_date}
-          </span>
-        </div>
-      </TableCell>
-      <TableCell className="text-right font-mono text-xs text-slate-200">
-        {item.latest_close != null ? item.latest_close.toFixed(2) : "—"}
-      </TableCell>
-      <TableCell className="text-right">
-        <PctCell value={item.change_pct} />
-      </TableCell>
-      <TableCell className="text-right hidden sm:table-cell">
-        <PctCell value={item.unrealized_pct} />
-      </TableCell>
-      <TableCell>
-        {latest && latest.rating ? (
-          <RatingPill
-            rating={latest.rating}
-            label={latest.rating_label}
-            isStale={latest.is_stale}
-            prevRating={previous?.rating ?? null}
-          />
-        ) : isRefreshing ? (
-          <span className="text-xs text-slate-400">分析中…</span>
-        ) : isFailed ? (
-          <span className="text-xs text-rose-300">分析失敗</span>
-        ) : (
-          <span className="text-xs text-slate-500">尚未分析</span>
-        )}
-      </TableCell>
-      <TableCell className="hidden md:table-cell">
-        {item.recent_factors?.length ? (
-          <KeyFactorsTimeline recent={item.recent_factors} compact />
-        ) : (
-          <span className="text-[11px] text-slate-600">—</span>
-        )}
-      </TableCell>
-    </TableRow>
   )
 }

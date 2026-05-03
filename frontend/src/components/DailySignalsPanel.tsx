@@ -425,7 +425,7 @@ export default function DailySignalsPanel({
                     value="laggard"
                     className="data-[state=active]:bg-slate-700 data-[state=active]:text-white text-slate-300"
                   >
-                    轉弱 ({laggardCount})
+                    補漲 ({laggardCount})
                   </TabsTrigger>
                 </TabsList>
 
@@ -445,7 +445,7 @@ export default function DailySignalsPanel({
                 </TabsContent>
                 <TabsContent value="laggard" className="mt-3 flex flex-col gap-3">
                   {filteredLaggard.length === 0 ? (
-                    <p className="text-sm text-slate-400">本日無轉弱訊號。</p>
+                    <p className="text-sm text-slate-400">本日無補漲訊號。</p>
                   ) : (
                     filteredLaggard.map((item) => <SignalCard key={item.stock} item={item} />)
                   )}

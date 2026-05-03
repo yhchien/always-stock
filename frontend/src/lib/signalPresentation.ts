@@ -3,7 +3,7 @@ import type { SignalDecisionType } from "@/lib/api"
 const DECISION_LABELS: Record<SignalDecisionType, string> = {
   LEADER: "領漲",
   FOLLOWER: "跟漲",
-  LAGGARD: "轉弱",
+  LAGGARD: "補漲",
 }
 
 const VALUE_LABELS: Record<string, string> = {
