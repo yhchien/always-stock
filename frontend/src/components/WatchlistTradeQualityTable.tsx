@@ -207,7 +207,7 @@ export default function WatchlistTradeQualityTable({
                     <TableHead className="text-slate-300 text-right">漲跌幅</TableHead>
                     <TableHead className="text-slate-300 text-right hidden sm:table-cell">未實現</TableHead>
                     <TableHead className="text-slate-300">動作建議</TableHead>
-                    <TableHead className="text-slate-300 hidden md:table-cell">近 3 日燈號</TableHead>
+                    <TableHead className="text-slate-300 hidden md:table-cell">近 2 日燈號</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>

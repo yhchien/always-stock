@@ -484,7 +484,7 @@ def list_watchlist_trade_quality(
             user_id=user.id,
             stock_id=entry.stock_id,
             buy_date=entry.buy_date,
-            limit=3,
+            limit=2,
         )
         recent_factors = [
             WatchlistFactorSnapshot(
