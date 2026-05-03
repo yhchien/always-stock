@@ -1582,3 +1582,15 @@ slice 1~9 完成後 review 出 3 個小瑕疵，集中於 slice 11 修掉，讓�
 - **40日追蹤頁加 LEADER/FOLLOWER/LAGGARD 定義說明卡**：header 下方 3 欄 `sm:grid-cols-3` 卡片，分別介紹「領漲」/「跟漲」/「補漲」三種訊號類型；綠/藍/琥珀色點對應燈號樣式，給使用者第一次進頁面就有 onboarding 說明
 - **Gotcha**：`useRealtimeQuotes` 內部已用 `idsKey = stockIds.join(",")` 做 stable string dep，所以 `watchlistStockIds` 即使每次 render 是新 array 也不會 effect churn；但 ESLint `react-hooks/exhaustive-deps` 仍會警告 `watchlist` 沒被 memo（即使函式語意正確），所以仍要 `useMemo` 包 `snapshot?.data.watchlist ?? []`
 - **Gotcha**：`WatchlistTradeQualityTable` 外層保留 `grid gap-3 lg:grid-cols-2`，所以桌機仍是兩欄卡片網格；單列水平拉發生在每張卡內部，不會出現「外層格子滾動條 + 內層卡片滾動條」雙重滾動
+
+### 訊號清單表格 chip 標籤對齊（2026-05-03 第三輪）
+- **每欄字數對齊**：`DailySignalsPanel` 表格的 5 個訊號欄位 chip，後端 enum → 中文標籤改用「同欄字數一致」的對照：
+  - 題材（theme_fit）：`強 / 中 / 弱`
+  - 資金（capital_flow）：`強 / 中 / 弱 / 無`
+  - 籌碼（chip_trend）：`集中 / 中性 / 轉弱 / 出貨`
+  - 融券（margin_short_signal）：`過熱 / 軋空 / 中性 / 無感`
+  - 技術（technical_status）：`突破 / 上升 / 轉強 / 盤整 / 出貨 / 偏弱`
+- **Chip 前綴文字移除**：`InlineMetric` 不再額外印「資金 / 籌碼 / 融券 / 技術」前綴；表格 header 已標欄位名，cell 只留色塊 chip，整列視覺乾淨且寬度可控
+- **`signalPresentation.ts` 新增 `FIELD_VALUE_LABELS`**：欄位專屬字典；`signalValueLabel(rawValue, kind?)` 加 optional 第二個參數，給定 kind 時優先吃 field-specific，否則 fallback 到原本的全域 `VALUE_LABELS`
+- **`StockSignalSummaryPanel` 不動**：那邊 chip 周圍還有「VIX」「期貨」「題材契合」等中文 prefix，沒傳 kind 走原本 fallback；本輪只影響 L0 訊號表格
+- **Gotcha**：`InlineMetric` 的 prop 從 `label` 改名為 `kind`（語意是 enum field 而非顯示字串）；`signalValueTone(kind, value)` 內部僅在 `kind === "type"` 時走特殊分支，其他 kind 字串對 tone 計算無影響，所以從中文 `"資金"` 換成 `"capital_flow"` 行為等價

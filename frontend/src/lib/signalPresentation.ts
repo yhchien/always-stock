@@ -35,6 +35,32 @@ const VALUE_LABELS: Record<string, string> = {
   short: "偏空",
 }
 
+// 訊號清單表格用的欄位專屬標籤；同欄字數刻意對齊，避免 chip 寬度不一致。
+const FIELD_VALUE_LABELS: Record<string, Record<string, string>> = {
+  theme_fit: { high: "強", medium: "中", low: "弱" },
+  capital_flow: { strong: "強", moderate: "中", weak: "弱", none: "無" },
+  chip_trend: {
+    accumulating: "集中",
+    neutral: "中性",
+    weakening: "轉弱",
+    distribution: "出貨",
+  },
+  margin_short_signal: {
+    retail_overheated: "過熱",
+    short_squeeze_potential: "軋空",
+    neutral: "中性",
+    none: "無感",
+  },
+  technical_status: {
+    breakout: "突破",
+    steady_uptrend: "上升",
+    early_turn: "轉強",
+    range_bound: "盤整",
+    distribution: "出貨",
+    weak: "偏弱",
+  },
+}
+
 export function decisionBadgeClass(type: SignalDecisionType | null | undefined): string {
   switch (type) {
     case "LEADER":
@@ -103,10 +129,16 @@ export function toneChipClass(tone: "green" | "amber" | "red" | "slate"): string
   }
 }
 
-export function signalValueLabel(rawValue: string | null | undefined): string {
+export function signalValueLabel(
+  rawValue: string | null | undefined,
+  kind?: string,
+): string {
   const value = String(rawValue ?? "")
   if (!value) return "—"
   const normalized = value.toLowerCase()
+  if (kind && FIELD_VALUE_LABELS[kind]?.[normalized]) {
+    return FIELD_VALUE_LABELS[kind][normalized]
+  }
   if (VALUE_LABELS[normalized]) return VALUE_LABELS[normalized]
   return value.replaceAll("_", " ").toUpperCase()
 }

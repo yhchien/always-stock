@@ -57,20 +57,17 @@ function formatTpeDateTime(iso: string | null | undefined): string {
 }
 
 function InlineMetric({
-  label,
+  kind,
   value,
 }: {
-  label: string
+  kind: string
   value: string | null | undefined
 }) {
   return (
-    <span className="inline-flex shrink-0 items-baseline gap-1.5 whitespace-nowrap text-xs">
-      <span className="text-slate-500">{label}</span>
-      <span
-        className={`inline-flex rounded border px-1.5 py-0.5 font-medium ${toneChipClass(signalValueTone(label, value))}`}
-      >
-        {signalValueLabel(value)}
-      </span>
+    <span
+      className={`inline-flex shrink-0 whitespace-nowrap rounded border px-1.5 py-0.5 text-xs font-medium ${toneChipClass(signalValueTone(kind, value))}`}
+    >
+      {signalValueLabel(value, kind)}
     </span>
   )
 }
@@ -145,25 +142,25 @@ function SignalRow({
       <TableCell>
         {themeFit ? (
           <span
-            className={`whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px] font-medium ${toneChipClass(signalValueTone("theme_fit", themeFit))}`}
+            className={`inline-flex whitespace-nowrap rounded border px-1.5 py-0.5 text-xs font-medium ${toneChipClass(signalValueTone("theme_fit", themeFit))}`}
           >
-            {signalValueLabel(themeFit)}
+            {signalValueLabel(themeFit, "theme_fit")}
           </span>
         ) : (
           <span className="text-slate-600">—</span>
         )}
       </TableCell>
       <TableCell>
-        <InlineMetric label="資金" value={item.signals?.capital_flow} />
+        <InlineMetric kind="capital_flow" value={item.signals?.capital_flow} />
       </TableCell>
       <TableCell>
-        <InlineMetric label="籌碼" value={item.signals?.chip_trend} />
+        <InlineMetric kind="chip_trend" value={item.signals?.chip_trend} />
       </TableCell>
       <TableCell>
-        <InlineMetric label="融券" value={item.signals?.margin_short_signal} />
+        <InlineMetric kind="margin_short_signal" value={item.signals?.margin_short_signal} />
       </TableCell>
       <TableCell>
-        <InlineMetric label="技術" value={item.signals?.technical_status} />
+        <InlineMetric kind="technical_status" value={item.signals?.technical_status} />
       </TableCell>
       <TableCell className="text-xs text-slate-400">
         {item.industry ? (
