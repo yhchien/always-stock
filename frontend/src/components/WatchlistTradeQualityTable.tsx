@@ -106,17 +106,18 @@ function WatchlistCard({
 
   return (
     <article className="rounded-lg border border-slate-600/60 bg-slate-800/40 p-4">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div className="flex flex-wrap items-baseline gap-2">
-          <Link
-            href={detailHref}
-            className="text-base font-semibold text-slate-100 hover:text-sky-300"
-          >
-            {item.stock_id} {item.stock_name}
-          </Link>
-          <span className="font-mono text-[11px] text-slate-500">買進 {item.buy_date}</span>
-        </div>
-        <div className="shrink-0">
+      {/* 單列水平排版：手機螢幕窄時整列可左右拉，避免燈號被擠到下一行。 */}
+      <div className="-mx-1 flex flex-nowrap items-stretch gap-3 overflow-x-auto px-1 pb-1">
+        <div className="flex shrink-0 flex-col justify-between gap-2 whitespace-nowrap pr-3 sm:min-w-[180px]">
+          <div className="flex flex-col">
+            <Link
+              href={detailHref}
+              className="text-base font-semibold text-slate-100 hover:text-sky-300"
+            >
+              {item.stock_id} {item.stock_name}
+            </Link>
+            <span className="font-mono text-[11px] text-slate-500">買進 {item.buy_date}</span>
+          </div>
           {latest && latest.rating ? (
             <RatingPill
               rating={latest.rating}
@@ -132,33 +133,29 @@ function WatchlistCard({
             <span className="text-xs text-slate-500">尚未分析</span>
           )}
         </div>
-      </header>
 
-      <div className="mt-3 grid gap-3 sm:grid-cols-[auto_1fr]">
-        <div className="rounded-lg border border-slate-700/70 bg-slate-900/50 px-3 py-2 sm:min-w-[140px]">
+        <div className="flex shrink-0 flex-col justify-center whitespace-nowrap rounded-lg border border-slate-700/70 bg-slate-900/50 px-3 py-2 sm:min-w-[140px]">
           <p className="text-[11px] text-slate-500">今日股價</p>
           <PriceLine value={item.latest_close} change={item.change_pct} />
         </div>
 
-        <div className="rounded-lg border border-slate-700/70 bg-slate-900/50 px-3 py-2">
+        <div className="flex shrink-0 flex-col whitespace-nowrap rounded-lg border border-slate-700/70 bg-slate-900/50 px-3 py-2">
           <p className="text-[11px] text-slate-500">燈號趨勢</p>
           {item.recent_factors?.length ? (
-            <div className="mt-1 overflow-x-auto">
-              <KeyFactorsTimeline recent={item.recent_factors} compact />
-            </div>
+            <KeyFactorsTimeline recent={item.recent_factors} compact />
           ) : (
             <p className="mt-2 text-xs text-slate-600">尚無燈號</p>
           )}
         </div>
-      </div>
 
-      <div className="mt-3 flex justify-end">
-        <Link
-          href={detailHref}
-          className="inline-flex items-center rounded border border-sky-500/50 bg-sky-500/10 px-2.5 py-1 text-xs font-medium text-sky-200 hover:bg-sky-500/20"
-        >
-          看細節
-        </Link>
+        <div className="flex shrink-0 items-end">
+          <Link
+            href={detailHref}
+            className="inline-flex items-center whitespace-nowrap rounded border border-sky-500/50 bg-sky-500/10 px-2.5 py-1 text-xs font-medium text-sky-200 hover:bg-sky-500/20"
+          >
+            點我看更多分析結果
+          </Link>
+        </div>
       </div>
     </article>
   )

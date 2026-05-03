@@ -1,11 +1,12 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 
 import {
   fetchSignalRegenerateQuota,
   fetchLatestSignalSnapshot,
+  type RealtimeQuote,
   type SignalJobResponse,
   regenerateSignals,
   type SignalRegenerateQuotaResponse,
@@ -13,6 +14,7 @@ import {
   type SignalWatchlistItem,
 } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
+import { useRealtimeQuotes } from "@/lib/useRealtimeQuotes"
 import { useSignalJobPolling } from "@/lib/useSignalJobPolling"
 import {
   decisionBadgeClass,
@@ -21,6 +23,7 @@ import {
   signalValueTone,
   toneChipClass,
 } from "@/lib/signalPresentation"
+import WatchlistAddButton from "@/components/WatchlistAddButton"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
 const LAST_SEEN_KEY = "always-stock:signals:last_seen_snapshot_date"
@@ -54,10 +57,10 @@ function SignalMetric({
   value: string | null | undefined
 }) {
   return (
-    <div className="rounded-lg border border-slate-700/70 bg-slate-900/50 px-3 py-2">
+    <div className="flex shrink-0 flex-col gap-1 whitespace-nowrap rounded-lg border border-slate-700/70 bg-slate-900/50 px-3 py-2">
       <p className="text-[11px] text-slate-500">{label}</p>
       <span
-        className={`mt-1 inline-flex rounded border px-2 py-0.5 text-xs font-medium ${toneChipClass(signalValueTone(label, value))}`}
+        className={`inline-flex w-fit rounded border px-2 py-0.5 text-xs font-medium ${toneChipClass(signalValueTone(label, value))}`}
       >
         {signalValueLabel(value)}
       </span>
@@ -65,13 +68,60 @@ function SignalMetric({
   )
 }
 
-function SignalCard({ item }: { item: SignalWatchlistItem }) {
+function PriceChip({
+  quote,
+}: {
+  quote: RealtimeQuote | undefined
+}) {
+  if (!quote || quote.price == null) {
+    return (
+      <span className="shrink-0 whitespace-nowrap rounded border border-slate-700/60 bg-slate-900/40 px-2 py-0.5 text-[11px] text-slate-500">
+        報價載入中
+      </span>
+    )
+  }
+  const change = quote.change_pct
+  const hasChange = change != null && !Number.isNaN(change)
+  const color = !hasChange
+    ? "text-slate-300"
+    : (change as number) > 0
+      ? "text-red-400"
+      : (change as number) < 0
+        ? "text-green-400"
+        : "text-slate-300"
+  const arrow = !hasChange
+    ? ""
+    : (change as number) > 0
+      ? "▲"
+      : (change as number) < 0
+        ? "▼"
+        : ""
+  return (
+    <span className="shrink-0 inline-flex items-baseline gap-1.5 whitespace-nowrap rounded border border-slate-700/60 bg-slate-900/40 px-2 py-0.5">
+      <span className="font-mono text-sm text-slate-100">{quote.price.toFixed(2)}</span>
+      {hasChange ? (
+        <span className={`font-mono text-xs ${color}`}>
+          {arrow} {(change as number) >= 0 ? "+" : ""}
+          {(change as number).toFixed(2)}%
+        </span>
+      ) : null}
+    </span>
+  )
+}
+
+function SignalCard({
+  item,
+  quote,
+}: {
+  item: SignalWatchlistItem
+  quote: RealtimeQuote | undefined
+}) {
   const stockHref = `/stocks/${encodeURIComponent(item.stock)}`
   const themeFit = item.theme_fit
 
   return (
     <article className="rounded-lg border border-slate-600/60 bg-slate-800/40 p-4">
-      <header className="flex items-start justify-between gap-3">
+      <header className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2">
           <Link
             href={stockHref}
@@ -88,6 +138,7 @@ function SignalCard({ item }: { item: SignalWatchlistItem }) {
               {signalDecisionLabel(item.type)}
             </span>
           )}
+          <PriceChip quote={quote} />
           {item.industry && (
             <span className="text-xs text-slate-400">
               {item.industry}
@@ -95,19 +146,27 @@ function SignalCard({ item }: { item: SignalWatchlistItem }) {
             </span>
           )}
         </div>
-        {themeFit && (
-          <span
-            className={`shrink-0 rounded border px-2 py-0.5 text-[11px] font-medium ${toneChipClass(signalValueTone("theme_fit", themeFit))}`}
-          >
-            題材契合 {signalValueLabel(themeFit)}
-          </span>
-        )}
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          {themeFit && (
+            <span
+              className={`rounded border px-2 py-0.5 text-[11px] font-medium ${toneChipClass(signalValueTone("theme_fit", themeFit))}`}
+            >
+              題材契合 {signalValueLabel(themeFit)}
+            </span>
+          )}
+          <WatchlistAddButton
+            stockId={item.stock}
+            stockName={item.name ?? undefined}
+            defaultAvgPrice={quote?.price ?? null}
+            variant="compact"
+          />
+        </div>
       </header>
 
-      <div className="mt-3 grid grid-cols-2 gap-2 lg:grid-cols-4">
+      <div className="mt-3 -mx-1 flex flex-nowrap gap-2 overflow-x-auto px-1 pb-1">
         <SignalMetric label="資金" value={item.signals?.capital_flow} />
         <SignalMetric label="籌碼" value={item.signals?.chip_trend} />
-        <SignalMetric label="融資券" value={item.signals?.margin_short_signal} />
+        <SignalMetric label="融券" value={item.signals?.margin_short_signal} />
         <SignalMetric label="技術" value={item.signals?.technical_status} />
       </div>
 
@@ -116,7 +175,7 @@ function SignalCard({ item }: { item: SignalWatchlistItem }) {
           href={stockHref}
           className="inline-flex items-center rounded border border-sky-500/50 bg-sky-500/10 px-2.5 py-1 text-xs font-medium text-sky-200 hover:bg-sky-500/20"
         >
-          看細節
+          點我看更多分析結果
         </Link>
       </div>
     </article>
@@ -275,7 +334,7 @@ export default function DailySignalsPanel({
     }
   }, [loadRegenerateQuota])
 
-  const watchlist = snapshot?.data.watchlist ?? []
+  const watchlist = useMemo(() => snapshot?.data.watchlist ?? [], [snapshot])
   const summary = snapshot?.data.summary
   const leaderCount = summary?.leader_count ?? watchlist.filter((w) => w.type === "LEADER").length
   const followerCount =
@@ -311,6 +370,14 @@ export default function DailySignalsPanel({
   const filteredFollower = watchlist.filter((w) => w.type === "FOLLOWER")
   const filteredLaggard = watchlist.filter((w) => w.type === "LAGGARD")
 
+  // 收集所有 SignalCard 顯示的股票 ID，一次抓 batch realtime quote。
+  // 折疊狀態下不抓（避免無謂打 API），展開後 hook 會自動觸發。
+  const watchlistStockIds = useMemo(
+    () => (collapsed ? [] : watchlist.map((w) => w.stock).filter(Boolean)),
+    [collapsed, watchlist],
+  )
+  const realtimeQuotes = useRealtimeQuotes(watchlistStockIds)
+
   return (
     <section className="rounded-lg border border-zinc-700 bg-zinc-700/50">
       <header className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
@@ -324,7 +391,7 @@ export default function DailySignalsPanel({
             <span aria-hidden className="text-slate-400">
               {collapsed ? "▸" : "▾"}
             </span>
-            <span>今日異常訊號清單</span>
+            <span>今日捕獲的大魚尾</span>
           </button>
           {hasNewSignals && (
             <span className="ml-1 inline-flex items-center gap-1">
@@ -433,21 +500,27 @@ export default function DailySignalsPanel({
                   {filteredLeader.length === 0 ? (
                     <p className="text-sm text-slate-400">本日無領漲訊號。</p>
                   ) : (
-                    filteredLeader.map((item) => <SignalCard key={item.stock} item={item} />)
+                    filteredLeader.map((item) => (
+                      <SignalCard key={item.stock} item={item} quote={realtimeQuotes.get(item.stock)} />
+                    ))
                   )}
                 </TabsContent>
                 <TabsContent value="follower" className="mt-3 flex flex-col gap-3">
                   {filteredFollower.length === 0 ? (
                     <p className="text-sm text-slate-400">本日無跟漲訊號。</p>
                   ) : (
-                    filteredFollower.map((item) => <SignalCard key={item.stock} item={item} />)
+                    filteredFollower.map((item) => (
+                      <SignalCard key={item.stock} item={item} quote={realtimeQuotes.get(item.stock)} />
+                    ))
                   )}
                 </TabsContent>
                 <TabsContent value="laggard" className="mt-3 flex flex-col gap-3">
                   {filteredLaggard.length === 0 ? (
                     <p className="text-sm text-slate-400">本日無補漲訊號。</p>
                   ) : (
-                    filteredLaggard.map((item) => <SignalCard key={item.stock} item={item} />)
+                    filteredLaggard.map((item) => (
+                      <SignalCard key={item.stock} item={item} quote={realtimeQuotes.get(item.stock)} />
+                    ))
                   )}
                 </TabsContent>
               </Tabs>

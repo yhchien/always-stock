@@ -279,7 +279,7 @@ export default function WatchlistTradeQualityCards() {
                       href={`/stocks/${encodeURIComponent(item.stock_id)}?buy_date=${item.buy_date}#watchlist-trade-quality`}
                       className="rounded border border-sky-500/50 bg-sky-500/10 px-3 py-1 text-xs font-medium text-sky-200 hover:bg-sky-500/20"
                     >
-                      看報告
+                      點我看更多分析結果
                     </Link>
                     {showRetry ? (
                       <button

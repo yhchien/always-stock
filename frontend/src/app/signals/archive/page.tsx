@@ -153,10 +153,39 @@ export default function SignalArchivePage() {
     <main className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-8">
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight text-slate-100">M23 40日訊號追蹤</h1>
+          <h1 className="text-xl font-semibold tracking-tight text-slate-100">抓到的股票觀察總覽（40日）</h1>
           <p className="mt-1 text-sm text-slate-400">
-            追蹤最近 {summary?.retention_trade_days ?? 40} 個交易日內，被納入每日異常訊號清單的股票。
+            追蹤最近 {summary?.retention_trade_days ?? 40} 個交易日內，被納入每日大魚尾清單的股票。
           </p>
+          <div className="mt-3 grid gap-2 rounded-lg border border-slate-800 bg-slate-900/60 p-3 text-xs leading-6 text-slate-400 sm:grid-cols-3">
+            <div>
+              <p className="text-slate-200">
+                <span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-emerald-400 align-middle" />
+                <span className="font-medium">領漲（LEADER）</span>
+              </p>
+              <p className="mt-1 text-slate-400">
+                產業裡最早上漲、漲幅領先、資金排名靠前、法人連續買超、量能放大且題材明確的個股。市場帶頭往上的火車頭。
+              </p>
+            </div>
+            <div>
+              <p className="text-slate-200">
+                <span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-sky-400 align-middle" />
+                <span className="font-medium">跟漲（FOLLOWER）</span>
+              </p>
+              <p className="mt-1 text-slate-400">
+                與 LEADER 同產業或同供應鏈、已同步上漲但漲幅不如 LEADER、籌碼仍支持。題材擴散下被資金接力推升的個股。
+              </p>
+            </div>
+            <div>
+              <p className="text-slate-200">
+                <span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-amber-400 align-middle" />
+                <span className="font-medium">補漲（LAGGARD）</span>
+              </p>
+              <p className="mt-1 text-slate-400">
+                同產業 LEADER 已先漲、該股漲幅落後、業務題材高度相關、法人或量能開始轉強、技術出現 early_turn 訊號。落後段位開始補漲的個股。
+              </p>
+            </div>
+          </div>
           <div className="mt-2 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs leading-6 text-slate-400">
             <p>報酬率規則說明：</p>
             <p>第一個交易日抓到：報酬率顯示 `--`，當天不計算。</p>
@@ -261,7 +290,7 @@ export default function SignalArchivePage() {
                           onClick={() => setSelectedStockId(item.stock_id)}
                           className="rounded border border-slate-600 bg-slate-800/50 px-2 py-1 text-xs text-slate-200 hover:bg-slate-700"
                         >
-                          看報告
+                          點我看更多分析結果
                         </button>
                       </div>
                     </TableCell>

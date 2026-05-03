@@ -1571,3 +1571,14 @@ slice 1~9 完成後 review 出 3 個小瑕疵，集中於 slice 11 修掉，讓�
 - **`<TradeQualityAnalysis />` 加 `<PricePredictionBar />`**：在「目標價/出場價」純文字之上加視覺化價位帶，自動軸範圍 `[min × 0.95, max × 1.05]`、紅色 `bg-rose-500/40` 出場區間 + 綠色 `bg-emerald-500/40` 目標區間，下方 tick label 對齊四個價位（exit_low/high + target_low/high）；上方有 legend「出場區間」/「目標區間」說明
 - **第一版不畫當前價 marker**：`TradeQualityResponse` 後端契約沒回 latest_close / buy_date close；要加得改 backend，下一輪再做
 - **Gotcha**：`PricePredictionBar` 在 `values.length < 2` 或 `min === max` 時直接 return null（純文字仍會顯示）；padding 用 `(max - min) * 0.1` 退化為 `max * 0.05`，避免 max==min 時 padding 為 0 導致 div by zero
+
+### 手機版 UX + 訊號清單命名收斂（2026-05-03 第二輪）
+- **手機版燈號自動換行修正**：`WatchlistTradeQualityTable` 卡片從 `grid sm:grid-cols-[auto_1fr]` 改成 `flex flex-nowrap items-stretch gap-3 overflow-x-auto`；個股資訊（名稱+建議 / 今日股價 / 燈號趨勢 / 看詳細按鈕）整列水平排，不夠寬時整列左右拉。`DailySignalsPanel` SignalCard 的 4 個 SignalMetric 也從 `grid grid-cols-2 lg:grid-cols-4` 改成 `flex flex-nowrap overflow-x-auto`，每個 metric `shrink-0 whitespace-nowrap`
+- **DailySignalsPanel SignalCard 加即時報價**：用 `useRealtimeQuotes(watchlistStockIds)` 一次抓 batch；`watchlist` 用 `useMemo` 包住避免 hook dep churn；`watchlistStockIds` 在折疊狀態下回 `[]`（折疊時不打 API）
+- **DailySignalsPanel SignalCard 加 `<WatchlistAddButton variant="compact" />`**：使用者可直接從 L0 異常訊號清單把個股加進自選清單，不必先點進 L1/L2；`defaultAvgPrice={quote?.price ?? null}` 把即時價當預設均價帶進 dialog
+- **SignalMetric label 瘦身**：「融資券」→「融券」（其他維持「資金 / 籌碼 / 技術」），讓 4 個 chip 在窄螢幕也能單列水平拉
+- **訊號清單命名收斂**：「今日異常訊號清單」→「今日捕獲的大魚尾」（`DailySignalsPanel.tsx` header）；「今日異常訊號摘要」→「今日捕獲的大魚尾摘要」（`StockSignalSummaryPanel.tsx`）；「M23 40日訊號追蹤」→「抓到的股票觀察總覽（40日）」（`signals/archive/page.tsx` h1）
+- **「看細節 / 看報告」按鈕統一**：4 處（DailySignalsPanel SignalCard / WatchlistTradeQualityTable / WatchlistTradeQualityCards / signals/archive 兩處）統一改成「點我看更多分析結果」
+- **40日追蹤頁加 LEADER/FOLLOWER/LAGGARD 定義說明卡**：header 下方 3 欄 `sm:grid-cols-3` 卡片，分別介紹「領漲」/「跟漲」/「補漲」三種訊號類型；綠/藍/琥珀色點對應燈號樣式，給使用者第一次進頁面就有 onboarding 說明
+- **Gotcha**：`useRealtimeQuotes` 內部已用 `idsKey = stockIds.join(",")` 做 stable string dep，所以 `watchlistStockIds` 即使每次 render 是新 array 也不會 effect churn；但 ESLint `react-hooks/exhaustive-deps` 仍會警告 `watchlist` 沒被 memo（即使函式語意正確），所以仍要 `useMemo` 包 `snapshot?.data.watchlist ?? []`
+- **Gotcha**：`WatchlistTradeQualityTable` 外層保留 `grid gap-3 lg:grid-cols-2`，所以桌機仍是兩欄卡片網格；單列水平拉發生在每張卡內部，不會出現「外層格子滾動條 + 內層卡片滾動條」雙重滾動

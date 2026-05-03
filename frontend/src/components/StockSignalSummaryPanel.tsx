@@ -70,7 +70,7 @@ export default function StockSignalSummaryPanel({ stockId }: { stockId: string }
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Signal Detail</p>
-          <h2 className="mt-1 text-lg font-semibold text-slate-100">今日異常訊號摘要</h2>
+          <h2 className="mt-1 text-lg font-semibold text-slate-100">今日捕獲的大魚尾摘要</h2>
           <p className="mt-1 text-xs text-slate-500">快照日期 {snapshot.snapshot_date}</p>
         </div>
         <Link
