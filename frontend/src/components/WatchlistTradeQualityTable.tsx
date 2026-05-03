@@ -112,7 +112,7 @@ function WatchlistRow({
   const latest = item.latest
   const previous = item.previous
   const isFailed = latest?.status === "failed"
-  const detailHref = `/stocks/${encodeURIComponent(item.stock_id)}?buy_date=${item.buy_date}#watchlist-trade-quality`
+  const detailHref = `/stocks/${encodeURIComponent(item.stock_id)}#watchlist-trade-quality`
 
   return (
     <TableRow
@@ -128,7 +128,6 @@ function WatchlistRow({
           {item.stock_id} {item.stock_name}
         </Link>
       </TableCell>
-      <TableCell className="font-mono text-xs text-slate-400">{item.buy_date}</TableCell>
       <TableCell>
         {latest && latest.rating ? (
           <RatingPill
@@ -293,7 +292,6 @@ export default function WatchlistTradeQualityTable({
                 <TableHeader>
                   <TableRow className="border-slate-700 hover:bg-transparent">
                     <TableHead className="text-slate-300">個股</TableHead>
-                    <TableHead className="text-slate-300">買進日</TableHead>
                     <TableHead className="text-slate-300">動作建議</TableHead>
                     <TableHead className="text-slate-300">今日股價</TableHead>
                     <TableHead className="text-slate-300">燈號趨勢</TableHead>

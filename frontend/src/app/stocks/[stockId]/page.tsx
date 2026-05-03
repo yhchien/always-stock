@@ -163,7 +163,7 @@ function StockContent({ stockId }: { stockId: string }) {
             <h1 className="text-xl font-semibold tracking-tight text-slate-100">
               <span className="font-mono text-slate-400 mr-2">{stockId}</span>
             </h1>
-            <WatchlistAddButton stockId={stockId} defaultDate={date} />
+            <WatchlistAddButton stockId={stockId} />
           </div>
 
           <StockSignalSummaryPanel stockId={stockId} />

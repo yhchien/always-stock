@@ -178,13 +178,7 @@ export default function HotMoneyList({
                     className="text-right"
                     onClick={(e) => e.stopPropagation()}
                   >
-                    <WatchlistAddButton
-                      stockId={item.stock_id}
-                      stockName={item.stock_name}
-                      defaultDate={date}
-                      defaultAvgPrice={item.end_close_price}
-                      variant="compact"
-                    />
+                    <WatchlistAddButton stockId={item.stock_id} variant="compact" />
                   </TableCell>
                 </TableRow>
               ))}

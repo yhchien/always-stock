@@ -59,34 +59,56 @@ def _today_taipei() -> date:
     return datetime.now(TAIPEI_TZ).date()
 
 
+def _latest_open_close(db: Session, stock_id: str) -> Optional[tuple]:
+    """取該股最新一筆 daily_price 的 (open, close)；找不到回 None。"""
+    row = (
+        db.query(DailyPrice.open_price, DailyPrice.close_price)
+        .filter(DailyPrice.stock_id == stock_id)
+        .order_by(DailyPrice.trade_date.desc())
+        .first()
+    )
+    if row is None:
+        return None
+    return (row.open_price, row.close_price)
+
+
+def _compute_default_avg_price(db: Session, stock_id: str) -> Optional[float]:
+    """加入清單時自動填的均價：最新交易日 (open + close) / 2。
+
+    open / close 任一缺值時退回另一個；皆缺則回 None（caller 應 reject）。
+    """
+    pair = _latest_open_close(db, stock_id)
+    if pair is None:
+        return None
+    open_p, close_p = pair
+    if open_p is None and close_p is None:
+        return None
+    if open_p is None:
+        return float(close_p)
+    if close_p is None:
+        return float(open_p)
+    return (float(open_p) + float(close_p)) / 2
+
+
 class WatchlistCreateRequest(BaseModel):
+    """加入清單只需股票代號；buy_date / avg_price 由後端自動填（2026-05-03）。"""
     stock_id: str = Field(min_length=1, max_length=20)
-    buy_date: date
-    avg_price: float = Field(gt=0)
 
 
 class WatchlistItem(BaseModel):
+    """清單項目對外 schema；買進日期 / 均價 / 未實現損益 不對外暴露（後端內部用）。"""
     id: int
     stock_id: str
     stock_name: str
     industry_name: Optional[str]
-    buy_date: date
-    avg_price: float
     latest_close: Optional[float]
     latest_trade_date: Optional[date]
-    unrealized_pct: Optional[float]
 
 
 class WatchlistResponse(BaseModel):
     items: List[WatchlistItem]
     total: int
     capacity: int
-
-
-def _compute_pct(avg_price: float, latest_close: Optional[float]) -> Optional[float]:
-    if latest_close is None or avg_price <= 0:
-        return None
-    return (latest_close - avg_price) / avg_price * 100
 
 
 def _build_items(
@@ -143,11 +165,8 @@ def _build_items(
                 stock_id=e.stock_id,
                 stock_name=master.stock_name if master else e.stock_id,
                 industry_name=master.industry_name if master else None,
-                buy_date=e.buy_date,
-                avg_price=float(e.avg_price),
                 latest_close=float(latest_close) if latest_close is not None else None,
                 latest_trade_date=latest_trade_date,
-                unrealized_pct=_compute_pct(float(e.avg_price), float(latest_close) if latest_close is not None else None),
             )
         )
     return items
@@ -194,9 +213,6 @@ def add_to_watchlist(
     if not stock_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="stock_id 不能為空")
 
-    if payload.buy_date > _today_taipei():
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="買進日期不能是未來")
-
     master = db.query(StockMaster).filter(StockMaster.stock_id == stock_id).first()
     if master is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="找不到此股票代號")
@@ -223,16 +239,30 @@ def add_to_watchlist(
             detail=f"清單已達上限 {WATCHLIST_MAX_ENTRIES} 檔，請先移除部分股票再加入",
         )
 
+    avg_price = _compute_default_avg_price(db, stock_id)
+    if avg_price is None or avg_price <= 0:
+        # 該股 stocks_master 有但 daily_price 沒資料（新上市 / ETL 漏抓）→ 不能算均價
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="尚無此股票的價格資料，無法加入清單",
+        )
+
     entry = UserWatchlist(
         user_id=user.id,
         stock_id=stock_id,
-        buy_date=payload.buy_date,
-        avg_price=payload.avg_price,
+        buy_date=_today_taipei(),
+        avg_price=avg_price,
     )
     db.add(entry)
     db.commit()
     db.refresh(entry)
-    logger.info("watchlist add: user=%s stock=%s", user.id, stock_id)
+    logger.info(
+        "watchlist add: user=%s stock=%s buy_date=%s avg_price=%s (auto)",
+        user.id,
+        stock_id,
+        entry.buy_date,
+        avg_price,
+    )
 
     items = _build_items(db, [entry])
     return items[0]
@@ -322,12 +352,9 @@ class WatchlistTradeQualityItem(BaseModel):
     stock_id: str
     stock_name: str
     industry_name: Optional[str]
-    buy_date: date
-    avg_price: float
     latest_close: Optional[float]
     latest_trade_date: Optional[date]
     change_pct: Optional[float]                  # 相對前一交易日的漲跌幅 %
-    unrealized_pct: Optional[float]              # 相對 avg_price
     latest: Optional[WatchlistSnapshotPayload]   # 今日 ok 快照（None = 還沒分析過 / 今日 failed）
     previous: Optional[WatchlistSnapshotPayload] # 上一筆 ok 快照（給 delta 比對）
     recent_factors: List[WatchlistFactorSnapshot] = Field(
@@ -499,12 +526,9 @@ def list_watchlist_trade_quality(
                 stock_id=entry.stock_id,
                 stock_name=base.stock_name if base else entry.stock_id,
                 industry_name=base.industry_name if base else None,
-                buy_date=entry.buy_date,
-                avg_price=float(entry.avg_price),
                 latest_close=base.latest_close if base else None,
                 latest_trade_date=base.latest_trade_date if base else None,
                 change_pct=change_pct,
-                unrealized_pct=base.unrealized_pct if base else None,
                 latest=latest_payload,
                 previous=previous_payload,
                 recent_factors=recent_factors,

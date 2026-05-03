@@ -1,7 +1,6 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { useSearchParams } from "next/navigation"
 
 import KeyFactorsList from "@/components/KeyFactorsList"
 import {
@@ -26,8 +25,6 @@ const RATING_STYLES: Record<
 
 export default function StockWatchlistTradeQualityPanel({ stockId }: { stockId: string }) {
   const { status } = useAuth()
-  const searchParams = useSearchParams()
-  const buyDate = searchParams.get("buy_date")
   const [items, setItems] = useState<WatchlistTradeQualityItem[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -52,11 +49,11 @@ export default function StockWatchlistTradeQualityPanel({ stockId }: { stockId: 
     void reload()
   }, [reload])
 
-  const item = useMemo(() => {
-    const candidates = items.filter((candidate) => candidate.stock_id === stockId)
-    if (!buyDate) return candidates[0] ?? null
-    return candidates.find((candidate) => candidate.buy_date === buyDate) ?? candidates[0] ?? null
-  }, [buyDate, items, stockId])
+  // 同 user × 同 stock 在 watchlist 是 unique（DB constraint），直接拿第一筆即可。
+  const item = useMemo(
+    () => items.find((candidate) => candidate.stock_id === stockId) ?? null,
+    [items, stockId],
+  )
 
   useEffect(() => {
     if (!item || item.latest || refreshing) return
@@ -92,9 +89,9 @@ export default function StockWatchlistTradeQualityPanel({ stockId }: { stockId: 
         <div>
           <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Watchlist Report</p>
           <h2 className="mt-1 text-lg font-semibold text-slate-100">自選清單交易質量報告</h2>
-          {item ? (
+          {item && latest?.snapshot_trade_date ? (
             <p className="mt-1 text-xs text-slate-500">
-              買進日 {item.buy_date} {latest?.snapshot_trade_date ? `· 快照 ${latest.snapshot_trade_date}` : ""}
+              快照 {latest.snapshot_trade_date}
             </p>
           ) : null}
         </div>

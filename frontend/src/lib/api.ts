@@ -1025,11 +1025,8 @@ export interface WatchlistItem {
   stock_id: string
   stock_name: string
   industry_name: string | null
-  buy_date: string
-  avg_price: number
   latest_close: number | null
   latest_trade_date: string | null
-  unrealized_pct: number | null
 }
 
 export interface WatchlistResponse {
@@ -1040,8 +1037,6 @@ export interface WatchlistResponse {
 
 export interface WatchlistCreateRequest {
   stock_id: string
-  buy_date: string
-  avg_price: number
 }
 
 export async function fetchWatchlist(options?: FetchOptions): Promise<WatchlistResponse> {
@@ -1100,12 +1095,9 @@ export interface WatchlistTradeQualityItem {
   stock_id: string
   stock_name: string
   industry_name: string | null
-  buy_date: string
-  avg_price: number
   latest_close: number | null
   latest_trade_date: string | null
   change_pct: number | null
-  unrealized_pct: number | null
   latest: WatchlistSnapshotPayload | null
   previous: WatchlistSnapshotPayload | null
   /** 最近 N 個 ok 快照（snapshot_trade_date 倒序，最新在前），給 KeyFactorsTimeline 多日趨勢用 */

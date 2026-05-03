@@ -15,7 +15,6 @@ import {
   clearWatchlistEntries,
   fetchWatchlist,
   removeWatchlistEntry,
-  type WatchlistCreateRequest,
   type WatchlistItem,
 } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
@@ -31,7 +30,8 @@ interface WatchlistContextValue {
   error: string | null
   has: (stockId: string) => boolean
   entryIdOf: (stockId: string) => number | null
-  add: (payload: WatchlistCreateRequest) => Promise<WatchlistItem>
+  /** 加入清單只需 stock_id；buy_date / avg_price 由後端自動填（2026-05-03 起）。 */
+  add: (stockId: string) => Promise<WatchlistItem>
   remove: (entryId: number) => Promise<void>
   clear: () => Promise<void>
   refresh: () => Promise<void>
@@ -81,8 +81,8 @@ export function WatchlistProvider({ children }: { children: ReactNode }) {
     [items],
   )
 
-  const add = useCallback(async (payload: WatchlistCreateRequest) => {
-    const created = await addWatchlistEntry(payload)
+  const add = useCallback(async (stockId: string) => {
+    const created = await addWatchlistEntry({ stock_id: stockId })
     setItems((prev) => [...prev, created])
     return created
   }, [])

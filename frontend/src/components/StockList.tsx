@@ -376,13 +376,7 @@ export default function StockList({ industryName, defaultDate, defaultSubFilter 
 
                     {/* Watchlist action — 右下角 */}
                     <div className="mt-3 flex justify-end">
-                      <WatchlistAddButton
-                        stockId={stock.stock_id}
-                        stockName={stock.stock_name}
-                        defaultDate={date}
-                        defaultAvgPrice={displayPrice ?? null}
-                        variant="compact"
-                      />
+                      <WatchlistAddButton stockId={stock.stock_id} variant="compact" />
                     </div>
                   </div>
                   )

@@ -5,15 +5,9 @@ import Link from "next/link"
 
 import { useAuth } from "@/lib/auth"
 import { useWatchlist } from "@/lib/watchlist"
-import WatchlistAddDialog from "@/components/WatchlistAddDialog"
 
 interface Props {
   stockId: string
-  stockName?: string
-  /** 預設買進日期（通常是目前頁面情境日期） */
-  defaultDate?: string
-  /** 預設均價（通常為該日收盤價） */
-  defaultAvgPrice?: number | null
   /** 樣式變體：緊湊 (`compact`) 用於表格列、一般 (`default`) 用於卡片角落 */
   variant?: "default" | "compact"
   className?: string
@@ -21,26 +15,21 @@ interface Props {
 
 export default function WatchlistAddButton({
   stockId,
-  stockName,
-  defaultDate,
-  defaultAvgPrice,
-  variant = "default",
+  variant: _variant = "default",
   className,
 }: Props) {
   const { status } = useAuth()
-  const { has, isReady, total, capacity } = useWatchlist()
-  const [open, setOpen] = useState(false)
+  const { has, isReady, total, capacity, add } = useWatchlist()
+  const [submitting, setSubmitting] = useState(false)
+  const [errorMsg, setErrorMsg] = useState<string | null>(null)
 
   const inList = has(stockId)
   const atCap = total >= capacity
   const isLoggedIn = status === "authenticated"
 
-  // compact（列表欄位）故意比以前大：之前 px-2 py-0.5 text-xs 在深色表格幾乎看不見；
-  // 現在用 inline-flex + 固定 min-width，確保四個字不被擠掉且點擊區夠大。
+  // 兩種 variant 樣式相同，沿用既有 inline-flex 設計，確保四個字不被擠掉且點擊區夠大。
   const baseClass =
-    variant === "compact"
-      ? "inline-flex items-center justify-center whitespace-nowrap rounded-md border px-3 py-1 text-xs font-medium transition-colors"
-      : "inline-flex items-center justify-center whitespace-nowrap rounded-md border px-3 py-1 text-xs font-medium transition-colors"
+    "inline-flex items-center justify-center whitespace-nowrap rounded-md border px-3 py-1 text-xs font-medium transition-colors"
 
   if (!isLoggedIn) {
     return (
@@ -86,26 +75,35 @@ export default function WatchlistAddButton({
     )
   }
 
+  const handleClick = async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (submitting) return
+    setSubmitting(true)
+    setErrorMsg(null)
+    try {
+      await add(stockId)
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : "加入清單失敗")
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
   return (
-    <>
+    <span className="inline-flex flex-col items-end gap-0.5">
       <button
         type="button"
-        onClick={(e) => {
-          e.stopPropagation()
-          setOpen(true)
-        }}
-        className={`${baseClass} border-sky-500/70 bg-sky-600 text-white hover:bg-sky-500 ${className ?? ""}`}
+        onClick={handleClick}
+        disabled={submitting}
+        className={`${baseClass} border-sky-500/70 bg-sky-600 text-white hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-60 ${className ?? ""}`}
       >
-        加入清單
+        {submitting ? "加入中…" : "加入清單"}
       </button>
-      <WatchlistAddDialog
-        open={open}
-        onOpenChange={setOpen}
-        stockId={stockId}
-        stockName={stockName}
-        defaultDate={defaultDate}
-        defaultAvgPrice={defaultAvgPrice}
-      />
-    </>
+      {errorMsg && (
+        <span className="text-[11px] text-rose-300" onClick={(e) => e.stopPropagation()}>
+          {errorMsg}
+        </span>
+      )}
+    </span>
   )
 }

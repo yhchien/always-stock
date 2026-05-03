@@ -261,6 +261,11 @@ class UserWatchlist(Base):
     """
     使用者關注買進清單（M19）
     每個使用者一個清單，上限 30 檔（由 API 層強制）
+
+    2026-05-03 起前端不再輸入 buy_date / avg_price；後端在 POST handler 自動填：
+    - buy_date = 加入當天（台北 TZ）
+    - avg_price = 該股最新 daily_price 的 (open + close) / 2
+    這兩欄仍是 NOT NULL，作為 trade quality 分析的後端內部資料；不對外暴露。
     """
     __tablename__ = "user_watchlist"
 

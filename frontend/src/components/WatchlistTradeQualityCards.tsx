@@ -209,14 +209,14 @@ export default function WatchlistTradeQualityCards() {
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <Link
-                      href={`/stocks/${encodeURIComponent(item.stock_id)}?buy_date=${item.buy_date}`}
+                      href={`/stocks/${encodeURIComponent(item.stock_id)}`}
                       className="flex flex-wrap items-baseline gap-2 hover:underline"
                     >
                       <span className="font-mono text-sm text-slate-400">{item.stock_id}</span>
                       <span className="text-base font-semibold text-slate-100">{item.stock_name}</span>
                     </Link>
                     <p className="mt-1 text-xs text-slate-500">
-                      {item.industry_name ?? "未分類"} · 買進 {item.buy_date}
+                      {item.industry_name ?? "未分類"}
                     </p>
                   </div>
                   <button
@@ -238,10 +238,6 @@ export default function WatchlistTradeQualityCards() {
                   <span className="text-slate-500">單日漲跌</span>
                   <span className="text-right">
                     <PctDisplay value={item.change_pct} />
-                  </span>
-                  <span className="text-slate-500">未實現損益</span>
-                  <span className="text-right">
-                    <PctDisplay value={item.unrealized_pct} />
                   </span>
                 </div>
 
@@ -276,7 +272,7 @@ export default function WatchlistTradeQualityCards() {
                 <div className="mt-auto flex flex-wrap items-center justify-between gap-2 pt-4">
                   <div className="flex flex-wrap gap-2">
                     <Link
-                      href={`/stocks/${encodeURIComponent(item.stock_id)}?buy_date=${item.buy_date}#watchlist-trade-quality`}
+                      href={`/stocks/${encodeURIComponent(item.stock_id)}#watchlist-trade-quality`}
                       className="rounded border border-sky-500/50 bg-sky-500/10 px-3 py-1 text-xs font-medium text-sky-200 hover:bg-sky-500/20"
                     >
                       點我看更多分析結果

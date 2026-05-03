@@ -173,12 +173,7 @@ function SignalRow({
         )}
       </TableCell>
       <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
-        <WatchlistAddButton
-          stockId={item.stock}
-          stockName={item.name ?? undefined}
-          defaultAvgPrice={quote?.price ?? null}
-          variant="compact"
-        />
+        <WatchlistAddButton stockId={item.stock} variant="compact" />
       </TableCell>
       <TableCell className="text-right">
         <Link
