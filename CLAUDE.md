@@ -1594,3 +1594,16 @@ slice 1~9 完成後 review 出 3 個小瑕疵，集中於 slice 11 修掉，讓�
 - **`signalPresentation.ts` 新增 `FIELD_VALUE_LABELS`**：欄位專屬字典；`signalValueLabel(rawValue, kind?)` 加 optional 第二個參數，給定 kind 時優先吃 field-specific，否則 fallback 到原本的全域 `VALUE_LABELS`
 - **`StockSignalSummaryPanel` 不動**：那邊 chip 周圍還有「VIX」「期貨」「題材契合」等中文 prefix，沒傳 kind 走原本 fallback；本輪只影響 L0 訊號表格
 - **Gotcha**：`InlineMetric` 的 prop 從 `label` 改名為 `kind`（語意是 enum field 而非顯示字串）；`signalValueTone(kind, value)` 內部僅在 `kind === "type"` 時走特殊分支，其他 kind 字串對 tone 計算無影響，所以從中文 `"資金"` 換成 `"capital_flow"` 行為等價
+
+### 加入清單流程簡化（2026-05-04）
+- **使用者只需點按鈕**：`WatchlistAddButton` 不再開 dialog；按下去直接 POST `/api/watchlist`，body 只帶 `stock_id`。不再要求填買進日期 / 均價
+- **後端自動填值**：`POST /api/watchlist` handler 在 server-side stamp：
+  - `buy_date` = 加入當天台北日曆日（既有 `_today_taipei()` helper）
+  - `avg_price` = 該股最新一筆 `daily_price` 的 `(open_price + close_price) / 2`；任一缺值退回另一個；皆缺時 raise 400「尚無此股票的價格資料，無法加入清單」
+- **DB schema 不動**：`UserWatchlist.buy_date` / `avg_price` 兩個 NOT NULL column **保留**。trade quality cron / on-demand refresh / `(user_id, stock_id, buy_date, snapshot_trade_date)` snapshot unique key、KeyFactor delta 比對全部走原路徑零改動
+- **對外 schema 收斂**：`WatchlistItem` 與 `WatchlistTradeQualityItem` 拿掉 `buy_date` / `avg_price` / `unrealized_pct` 三欄；卡片不再顯示「未實現損益」「買進日」；個股頁深連結不再帶 `?buy_date=X`（`StockWatchlistTradeQualityPanel` 同 user×stock 唯一，直接拿第一筆）
+- **`WatchlistAddDialog.tsx` 整檔刪除**；4 處 caller（`HotMoneyList`、`DailySignalsPanel`、`StockList`、個股頁 header）拿掉 `defaultDate` / `defaultAvgPrice` props；`WatchlistAddButton` 內部不再開 dialog、改顯示行內錯誤
+- **provider `add()` signature 簡化**：`useWatchlist().add(stockId: string)`，不再吃 `WatchlistCreateRequest`；caller 從 `add({ stock_id, buy_date, avg_price })` 變成 `add(stockId)`
+- **`TradeQualityAnalysis.tsx` 不動**：那是首頁獨立的 AI 交易質量分析「工具」，使用者自由選 stock + buy_date 跑分析，跟 watchlist 加入流程無關；watchlist 卡片深連結不再帶 `?buy_date=X` 但 URL prefill 邏輯保留（未來人為貼 URL 仍可工作）
+- **Gotcha**：`POST /api/watchlist` 需要該股至少一筆 `daily_price` 才能算 `avg_price`；新上市 / ETL 漏抓的個股會撞 400。`stocks_master` 有但 `daily_price` 沒資料的邊界情境是真的會發生的（特別在新股當日加入），錯誤訊息已含「價格資料」關鍵字方便使用者理解
+- **Gotcha**：DB legacy column 保留代表 trade quality 的 `(user_id, stock_id, buy_date, snapshot_trade_date)` unique key 維持「每個 entry 一個固定 buy_date、每天一筆 snapshot」的語義；如果未來真的要砍 column，必須同時改 snapshot 表 schema 與 cache lookup 條件
