@@ -5,6 +5,14 @@ import { useRouter } from "next/navigation"
 import { useCallback, useEffect, useState } from "react"
 
 import { Skeleton } from "@/components/ui/skeleton"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
 import KeyFactorsTimeline from "@/components/KeyFactorsTimeline"
 import {
   fetchWatchlistTradeQuality,
@@ -93,7 +101,7 @@ function PriceLine({
   )
 }
 
-function WatchlistCard({
+function WatchlistRow({
   item,
   isRefreshing,
 }: {
@@ -107,58 +115,56 @@ function WatchlistCard({
   const detailHref = `/stocks/${encodeURIComponent(item.stock_id)}?buy_date=${item.buy_date}#watchlist-trade-quality`
 
   return (
-    <article
+    <TableRow
+      className="cursor-pointer border-slate-700 hover:bg-slate-800/40"
       onClick={() => router.push(detailHref)}
-      className="cursor-pointer rounded-lg border border-slate-600/60 bg-slate-800/40 px-4 py-3 transition-colors hover:bg-slate-800/70"
     >
-      {/* 整列 inline：所有資訊（含按鈕）都排同一行；每個欄位給 min-w 讓多張卡片同欄對齊。
-          外層 list 共用單一 overflow-x-auto，所以這裡不再 overflow。 */}
-      <div className="flex flex-nowrap items-center gap-4">
+      <TableCell>
         <Link
           href={detailHref}
           onClick={(e) => e.stopPropagation()}
-          className="shrink-0 min-w-[160px] whitespace-nowrap text-sm font-semibold text-slate-100 hover:text-sky-300"
+          className="text-sm font-semibold text-slate-100 hover:text-sky-300"
         >
           {item.stock_id} {item.stock_name}
         </Link>
-        <div className="shrink-0 min-w-[110px] whitespace-nowrap font-mono text-[11px] text-slate-500">
-          買進 {item.buy_date}
-        </div>
-        <div className="shrink-0 min-w-[170px]">
-          {latest && latest.rating ? (
-            <RatingPill
-              rating={latest.rating}
-              label={latest.rating_label}
-              isStale={latest.is_stale}
-              prevRating={previous?.rating ?? null}
-            />
-          ) : isRefreshing ? (
-            <span className="text-xs text-slate-400">分析中…</span>
-          ) : isFailed ? (
-            <span className="text-xs text-rose-300">分析失敗</span>
-          ) : (
-            <span className="text-xs text-slate-500">尚未分析</span>
-          )}
-        </div>
-        <div className="shrink-0 min-w-[120px] whitespace-nowrap">
-          <PriceLine value={item.latest_close} change={item.change_pct} />
-        </div>
-        <div className="shrink-0 min-w-[170px] whitespace-nowrap">
-          {item.recent_factors?.length ? (
-            <KeyFactorsTimeline recent={item.recent_factors} compact />
-          ) : (
-            <span className="text-xs text-slate-600">尚無燈號</span>
-          )}
-        </div>
+      </TableCell>
+      <TableCell className="font-mono text-xs text-slate-400">{item.buy_date}</TableCell>
+      <TableCell>
+        {latest && latest.rating ? (
+          <RatingPill
+            rating={latest.rating}
+            label={latest.rating_label}
+            isStale={latest.is_stale}
+            prevRating={previous?.rating ?? null}
+          />
+        ) : isRefreshing ? (
+          <span className="text-xs text-slate-400">分析中…</span>
+        ) : isFailed ? (
+          <span className="text-xs text-rose-300">分析失敗</span>
+        ) : (
+          <span className="text-xs text-slate-500">尚未分析</span>
+        )}
+      </TableCell>
+      <TableCell>
+        <PriceLine value={item.latest_close} change={item.change_pct} />
+      </TableCell>
+      <TableCell>
+        {item.recent_factors?.length ? (
+          <KeyFactorsTimeline recent={item.recent_factors} compact />
+        ) : (
+          <span className="text-xs text-slate-600">尚無燈號</span>
+        )}
+      </TableCell>
+      <TableCell className="text-right">
         <Link
           href={detailHref}
           onClick={(e) => e.stopPropagation()}
-          className="shrink-0 inline-flex items-center whitespace-nowrap rounded border border-sky-500/50 bg-sky-500/10 px-2.5 py-1 text-xs font-medium text-sky-200 hover:bg-sky-500/20"
+          className="inline-flex items-center whitespace-nowrap rounded border border-sky-500/50 bg-sky-500/10 px-2.5 py-1 text-xs font-medium text-sky-200 hover:bg-sky-500/20"
         >
           點我看更多分析結果
         </Link>
-      </div>
-    </article>
+      </TableCell>
+    </TableRow>
   )
 }
 
@@ -282,16 +288,28 @@ export default function WatchlistTradeQualityTable({
           )}
 
           {!loading && !error && items.length > 0 && (
-            <div className="overflow-x-auto pb-2">
-              <div className="flex min-w-max flex-col gap-3">
-                {items.map((item) => (
-                  <WatchlistCard
-                    key={item.stock_id}
-                    item={item}
-                    isRefreshing={refreshing.has(item.stock_id)}
-                  />
-                ))}
-              </div>
+            <div className="overflow-hidden rounded-lg border border-slate-700">
+              <Table>
+                <TableHeader>
+                  <TableRow className="border-slate-700 hover:bg-transparent">
+                    <TableHead className="text-slate-300">個股</TableHead>
+                    <TableHead className="text-slate-300">買進日</TableHead>
+                    <TableHead className="text-slate-300">動作建議</TableHead>
+                    <TableHead className="text-slate-300">今日股價</TableHead>
+                    <TableHead className="text-slate-300">燈號趨勢</TableHead>
+                    <TableHead className="text-right text-slate-300">操作</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {items.map((item) => (
+                    <WatchlistRow
+                      key={item.stock_id}
+                      item={item}
+                      isRefreshing={refreshing.has(item.stock_id)}
+                    />
+                  ))}
+                </TableBody>
+              </Table>
             </div>
           )}
         </div>

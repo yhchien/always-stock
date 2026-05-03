@@ -24,6 +24,14 @@ import {
 } from "@/lib/signalPresentation"
 import WatchlistAddButton from "@/components/WatchlistAddButton"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
 
 const LAST_SEEN_KEY = "always-stock:signals:last_seen_snapshot_date"
 const COLLAPSED_KEY = "always-stock:signals:collapsed"
@@ -106,7 +114,7 @@ function InlinePrice({
   )
 }
 
-function SignalCard({
+function SignalRow({
   item,
   quote,
 }: {
@@ -118,69 +126,112 @@ function SignalCard({
   const themeFit = item.theme_fit
 
   return (
-    <article
+    <TableRow
+      className="cursor-pointer border-slate-700 hover:bg-slate-800/40"
       onClick={() => router.push(stockHref)}
-      className="cursor-pointer rounded-lg border border-slate-600/60 bg-slate-800/40 px-4 py-3 transition-colors hover:bg-slate-800/70"
     >
-      {/* 各欄位給 min-w，多張卡片同欄會對齊；conditional 欄位（題材/產業）缺值時用 placeholder 佔位。
-          類型徽章拔掉，因為外層 tab 已經分好 LEADER/FOLLOWER/LAGGARD。 */}
-      <div className="flex flex-nowrap items-center gap-4">
+      <TableCell>
         <Link
           href={stockHref}
           onClick={(e) => e.stopPropagation()}
-          className="shrink-0 min-w-[140px] whitespace-nowrap text-sm font-semibold text-slate-100 hover:text-sky-300"
+          className="text-sm font-semibold text-slate-100 hover:text-sky-300"
         >
           {item.stock} {item.name ?? ""}
         </Link>
-        <div className="shrink-0 min-w-[110px]">
-          <InlinePrice quote={quote} />
-        </div>
-        <div className="shrink-0 min-w-[100px]">
-          {themeFit ? (
-            <span
-              className={`whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px] font-medium ${toneChipClass(signalValueTone("theme_fit", themeFit))}`}
-            >
-              題材 {signalValueLabel(themeFit)}
-            </span>
-          ) : null}
-        </div>
-        <div className="shrink-0 min-w-[110px]">
-          <InlineMetric label="資金" value={item.signals?.capital_flow} />
-        </div>
-        <div className="shrink-0 min-w-[110px]">
-          <InlineMetric label="籌碼" value={item.signals?.chip_trend} />
-        </div>
-        <div className="shrink-0 min-w-[110px]">
-          <InlineMetric label="融券" value={item.signals?.margin_short_signal} />
-        </div>
-        <div className="shrink-0 min-w-[110px]">
-          <InlineMetric label="技術" value={item.signals?.technical_status} />
-        </div>
-        <div className="shrink-0 min-w-[140px] whitespace-nowrap text-xs text-slate-400">
-          {item.industry ? (
-            <>
-              {item.industry}
-              {item.sub_industry ? ` · ${item.sub_industry}` : ""}
-            </>
-          ) : null}
-        </div>
-        <div className="shrink-0 min-w-[88px]">
-          <WatchlistAddButton
-            stockId={item.stock}
-            stockName={item.name ?? undefined}
-            defaultAvgPrice={quote?.price ?? null}
-            variant="compact"
-          />
-        </div>
+      </TableCell>
+      <TableCell>
+        <InlinePrice quote={quote} />
+      </TableCell>
+      <TableCell>
+        {themeFit ? (
+          <span
+            className={`whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px] font-medium ${toneChipClass(signalValueTone("theme_fit", themeFit))}`}
+          >
+            {signalValueLabel(themeFit)}
+          </span>
+        ) : (
+          <span className="text-slate-600">—</span>
+        )}
+      </TableCell>
+      <TableCell>
+        <InlineMetric label="資金" value={item.signals?.capital_flow} />
+      </TableCell>
+      <TableCell>
+        <InlineMetric label="籌碼" value={item.signals?.chip_trend} />
+      </TableCell>
+      <TableCell>
+        <InlineMetric label="融券" value={item.signals?.margin_short_signal} />
+      </TableCell>
+      <TableCell>
+        <InlineMetric label="技術" value={item.signals?.technical_status} />
+      </TableCell>
+      <TableCell className="text-xs text-slate-400">
+        {item.industry ? (
+          <>
+            {item.industry}
+            {item.sub_industry ? ` · ${item.sub_industry}` : ""}
+          </>
+        ) : (
+          <span className="text-slate-600">—</span>
+        )}
+      </TableCell>
+      <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+        <WatchlistAddButton
+          stockId={item.stock}
+          stockName={item.name ?? undefined}
+          defaultAvgPrice={quote?.price ?? null}
+          variant="compact"
+        />
+      </TableCell>
+      <TableCell className="text-right">
         <Link
           href={stockHref}
           onClick={(e) => e.stopPropagation()}
-          className="shrink-0 inline-flex items-center whitespace-nowrap rounded border border-sky-500/50 bg-sky-500/10 px-2.5 py-1 text-xs font-medium text-sky-200 hover:bg-sky-500/20"
+          className="inline-flex items-center whitespace-nowrap rounded border border-sky-500/50 bg-sky-500/10 px-2.5 py-1 text-xs font-medium text-sky-200 hover:bg-sky-500/20"
         >
           點我看更多分析結果
         </Link>
-      </div>
-    </article>
+      </TableCell>
+    </TableRow>
+  )
+}
+
+function SignalTable({
+  items,
+  realtimeQuotes,
+  emptyText,
+}: {
+  items: SignalWatchlistItem[]
+  realtimeQuotes: Map<string, RealtimeQuote>
+  emptyText: string
+}) {
+  if (items.length === 0) {
+    return <p className="text-sm text-slate-400">{emptyText}</p>
+  }
+  return (
+    <div className="overflow-hidden rounded-lg border border-slate-700">
+      <Table>
+        <TableHeader>
+          <TableRow className="border-slate-700 hover:bg-transparent">
+            <TableHead className="text-slate-300">個股</TableHead>
+            <TableHead className="text-slate-300">即時價</TableHead>
+            <TableHead className="text-slate-300">題材</TableHead>
+            <TableHead className="text-slate-300">資金</TableHead>
+            <TableHead className="text-slate-300">籌碼</TableHead>
+            <TableHead className="text-slate-300">融券</TableHead>
+            <TableHead className="text-slate-300">技術</TableHead>
+            <TableHead className="text-slate-300">產業</TableHead>
+            <TableHead className="w-28 text-right text-slate-300">清單</TableHead>
+            <TableHead className="text-right text-slate-300">操作</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {items.map((item) => (
+            <SignalRow key={item.stock} item={item} quote={realtimeQuotes.get(item.stock)} />
+          ))}
+        </TableBody>
+      </Table>
+    </div>
   )
 }
 
@@ -498,38 +549,26 @@ export default function DailySignalsPanel({
                   </TabsTrigger>
                 </TabsList>
 
-                <TabsContent value="leader" className="mt-3 overflow-x-auto pb-2">
-                  {filteredLeader.length === 0 ? (
-                    <p className="text-sm text-slate-400">本日無領漲訊號。</p>
-                  ) : (
-                    <div className="flex min-w-max flex-col gap-3">
-                      {filteredLeader.map((item) => (
-                        <SignalCard key={item.stock} item={item} quote={realtimeQuotes.get(item.stock)} />
-                      ))}
-                    </div>
-                  )}
+                <TabsContent value="leader" className="mt-3">
+                  <SignalTable
+                    items={filteredLeader}
+                    realtimeQuotes={realtimeQuotes}
+                    emptyText="本日無領漲訊號。"
+                  />
                 </TabsContent>
-                <TabsContent value="follower" className="mt-3 overflow-x-auto pb-2">
-                  {filteredFollower.length === 0 ? (
-                    <p className="text-sm text-slate-400">本日無跟漲訊號。</p>
-                  ) : (
-                    <div className="flex min-w-max flex-col gap-3">
-                      {filteredFollower.map((item) => (
-                        <SignalCard key={item.stock} item={item} quote={realtimeQuotes.get(item.stock)} />
-                      ))}
-                    </div>
-                  )}
+                <TabsContent value="follower" className="mt-3">
+                  <SignalTable
+                    items={filteredFollower}
+                    realtimeQuotes={realtimeQuotes}
+                    emptyText="本日無跟漲訊號。"
+                  />
                 </TabsContent>
-                <TabsContent value="laggard" className="mt-3 overflow-x-auto pb-2">
-                  {filteredLaggard.length === 0 ? (
-                    <p className="text-sm text-slate-400">本日無補漲訊號。</p>
-                  ) : (
-                    <div className="flex min-w-max flex-col gap-3">
-                      {filteredLaggard.map((item) => (
-                        <SignalCard key={item.stock} item={item} quote={realtimeQuotes.get(item.stock)} />
-                      ))}
-                    </div>
-                  )}
+                <TabsContent value="laggard" className="mt-3">
+                  <SignalTable
+                    items={filteredLaggard}
+                    realtimeQuotes={realtimeQuotes}
+                    emptyText="本日無補漲訊號。"
+                  />
                 </TabsContent>
               </Tabs>
 
