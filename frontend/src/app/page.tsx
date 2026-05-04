@@ -219,7 +219,7 @@ function HomeContent() {
   const [initialIndustriesDate, setInitialIndustriesDate] = useState<string | null>(null)
   const defaultDate = queryDate ?? latestTradeDate ?? (latestTradeDateReady ? todayInTaipei() : null)
   const [showTradeQuality, setShowTradeQuality] = useState(() =>
-    readStoredToggle(TRADE_QUALITY_TOGGLE_STORAGE_KEY, true),
+    readStoredToggle(TRADE_QUALITY_TOGGLE_STORAGE_KEY, false),
   )
 
   useEffect(() => {
