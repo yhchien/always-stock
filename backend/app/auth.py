@@ -16,6 +16,7 @@ import logging
 import secrets
 from datetime import datetime, timedelta
 from typing import Optional
+from urllib.parse import urlparse
 
 import bcrypt
 from fastapi import Cookie, Depends, HTTPException, Request, Response, status
@@ -124,11 +125,38 @@ def _lookup_active_user(db: Session, session_id: Optional[str]) -> Optional[User
 # Cookie helpers
 # ---------------------------------------------------------------------------
 
-def set_session_cookie(response: Response, session_id: str) -> None:
+def _request_uses_https(request: Optional[Request]) -> bool:
+    if request is None:
+        return False
+
+    forwarded_proto = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
+    if forwarded_proto == "https":
+        return True
+    if forwarded_proto == "http":
+        return False
+
+    if request.url.scheme == "https":
+        return True
+
+    origin = (request.headers.get("origin") or "").strip()
+    if origin:
+        try:
+            return urlparse(origin).scheme.lower() == "https"
+        except Exception:
+            return False
+    return False
+
+
+def set_session_cookie(
+    response: Response,
+    session_id: str,
+    *,
+    request: Optional[Request] = None,
+) -> None:
     # 跨站部署（Vercel 前端 + Render 後端）需要 SameSite=None + Secure，
     # 否則瀏覽器不會把 session cookie 帶到跨站 fetch，登入狀態在 /api/watchlist 等端點就會失效。
     # 本地 dev 兩端同為 localhost（same-site）時用 Lax 即可。
-    secure = is_cookie_secure()
+    secure = is_cookie_secure() or _request_uses_https(request)
     response.set_cookie(
         key=get_session_cookie_name(),
         value=session_id,

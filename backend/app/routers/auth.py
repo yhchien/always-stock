@@ -95,7 +95,7 @@ def register(
     db.refresh(user)
 
     session = create_session(db, user, request=request)
-    set_session_cookie(response, session.session_id)
+    set_session_cookie(response, session.session_id, request=request)
     logger.info("User registered: %s (id=%s)", user.email, user.id)
     return UserResponse.from_user(user)
 
@@ -117,7 +117,7 @@ def login(
         )
 
     session = create_session(db, user, request=request)
-    set_session_cookie(response, session.session_id)
+    set_session_cookie(response, session.session_id, request=request)
     logger.info("User logged in: %s (id=%s)", user.email, user.id)
     return UserResponse.from_user(user)
 

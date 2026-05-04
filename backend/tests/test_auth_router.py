@@ -221,11 +221,12 @@ def test_invalid_email_format_rejected(api):
     assert res.status_code == 422
 
 
-def test_admin_seeder_default_email_passes_pydantic_emailstr(api):
+def test_admin_seeder_default_email_passes_pydantic_emailstr(api, monkeypatch):
     """
     Regression: 預設 ADMIN_EMAIL 必須含 TLD，否則 /api/auth/login 的 Pydantic EmailStr 會直接 422 拒絕，
     即使 seeder 已經把 admin 寫進 DB，也永遠登不進來。
     """
+    monkeypatch.setenv("ADMIN_PASSWORD", "admin-passw0rd!")
     client, db = api
     admin = ensure_admin_user(db)
     assert admin.is_admin is True
@@ -275,3 +276,33 @@ def test_session_cookie_samesite_follows_secure_flag(api, monkeypatch):
     assert res2.status_code == 200
     set_cookie2 = res2.headers.get("set-cookie", "")
     assert "samesite=lax" in set_cookie2.lower()
+
+
+def test_session_cookie_auto_uses_secure_when_forwarded_proto_is_https(api, monkeypatch):
+    """
+    Regression: prod 常在反向代理後面終止 TLS；若漏設 COOKIE_SECURE=true，
+    backend 仍應從 X-Forwarded-Proto=https 推斷 Secure + SameSite=None，
+    否則 login 200 後 /api/auth/me、/api/watchlist 仍會 401。
+    """
+    from app import auth as auth_module
+
+    monkeypatch.setattr(auth_module, "is_cookie_secure", lambda: False)
+    client, db = api
+    db.add(
+        User(
+            email="proxy@example.com",
+            password_hash=hash_password("passw0rd!"),
+            is_active=True,
+        )
+    )
+    db.commit()
+
+    res = client.post(
+        "/api/auth/login",
+        json={"email": "proxy@example.com", "password": "passw0rd!"},
+        headers={"x-forwarded-proto": "https"},
+    )
+    assert res.status_code == 200
+    set_cookie = res.headers.get("set-cookie", "").lower()
+    assert "samesite=none" in set_cookie
+    assert "secure" in set_cookie
