@@ -11,6 +11,8 @@ PROJECT_ROOT = BACKEND_DIR.parent
 load_dotenv(BACKEND_DIR / ".env")
 load_dotenv(PROJECT_ROOT / ".env")
 
+DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
+
 
 def get_openai_api_key() -> str:
     # strip trailing whitespace / newline — GitHub Secrets web UI 貼值時容易帶到 \n，
@@ -20,7 +22,8 @@ def get_openai_api_key() -> str:
 
 
 def get_openai_model() -> str:
-    return os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip()
+    value = os.getenv("OPENAI_MODEL", "").strip()
+    return value or DEFAULT_OPENAI_MODEL
 
 
 def get_admin_email() -> str:
