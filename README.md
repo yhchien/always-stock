@@ -259,6 +259,45 @@ M23 診斷約定：
 
 ---
 
+## 實驗性 / 待決策分支
+
+這些 branch 已 commit 完整實作但**未合進 main**，視需要再決定推或棄。
+
+### `feature/disable-auth-gating`（2026-05-04）
+
+**目的**：把註冊/登入功能「取消但不移除」——讓使用者不必登入就能用全部功能，未來想恢復強制登入只要把 env flag 翻回去即可，零程式碼改動。
+
+**啟用方式**（兩端要一起設，缺一邊會出現「前端放行但後端 401」或反之的不一致）：
+
+```bash
+# Backend (Render env)
+DISABLE_AUTH=true
+DEMO_USER_EMAIL=demo@always-stock.dev   # optional, default 同此值
+
+# Frontend (Vercel env，build-time，需重新 build 才生效)
+NEXT_PUBLIC_DISABLE_AUTH=true
+```
+
+**行為**：
+- `require_user` / `get_optional_user` 略過 cookie 檢查，直接回全站共用 demo user（lifespan 啟動時 idempotent 建立）
+- 前端 `<RequireAuth>` 直接放行，Navbar 隱藏登入/註冊/登出按鈕，`/login` 顯示「已停用」提示
+- 所有 endpoint 的 `Depends(require_user)` 一行不動；`/login` / `/register` / `/logout` 路由保留可直接呼叫
+
+**Trade-offs**：
+- watchlist / trade-quality 5 分鐘 cache / signals/regenerate 每日 10 次配額會**全站共用一個 demo user**
+- demo user `password_hash` 是無對應原文的 placeholder，無法被當作正常帳號登入
+- 兩個 env 都關掉 → 行為完全回到強制登入，無資料遷移成本
+
+**取出來跑**：
+```bash
+git checkout feature/disable-auth-gating
+# 設好兩端的 DISABLE_AUTH / NEXT_PUBLIC_DISABLE_AUTH 後重啟 / rebuild
+```
+
+要正式上線時再開 PR merge；不要時 `git branch -D feature/disable-auth-gating` 刪掉即可。
+
+---
+
 ## 文件
 
 ### 架構
