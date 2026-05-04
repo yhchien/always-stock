@@ -25,6 +25,45 @@ const WatchlistTradeQualityTable = dynamic(
   { ssr: false },
 )
 
+const TRADE_QUALITY_TOGGLE_STORAGE_KEY = "always-stock:show-trade-quality"
+
+function readStoredToggle(key: string, defaultValue: boolean): boolean {
+  if (typeof window === "undefined") return defaultValue
+  const stored = window.localStorage.getItem(key)
+  if (stored === null) return defaultValue
+  return stored === "true"
+}
+
+function HomeSidebar({
+  showTradeQuality,
+  onToggleTradeQuality,
+}: {
+  showTradeQuality: boolean
+  onToggleTradeQuality: () => void
+}) {
+  return (
+    <nav className="fixed left-0 top-12 flex flex-col items-center gap-1 py-4 w-12 border-r border-slate-700/30 h-[calc(100dvh-3rem)] z-40 bg-slate-900">
+      <button
+        type="button"
+        onClick={onToggleTradeQuality}
+        className={`relative flex items-center justify-center w-10 h-20 rounded-md transition-colors ${
+          showTradeQuality
+            ? "bg-slate-800/60 text-slate-200"
+            : "text-slate-600 hover:bg-slate-800/40 hover:text-slate-400"
+        }`}
+        title="交易質量分析"
+      >
+        {showTradeQuality && (
+          <span className="absolute left-0.5 top-1/2 -translate-y-1/2 h-4 w-0.5 rounded-full bg-emerald-400" />
+        )}
+        <span className="writing-vertical text-[11px] font-medium">
+          交易質量
+        </span>
+      </button>
+    </nav>
+  )
+}
+
 type BootTaskKey = "tradeDate" | "signals" | "job" | "hotMoney" | "industries"
 type BootTaskState = "idle" | "loading" | "done" | "error"
 
@@ -179,6 +218,21 @@ function HomeContent() {
   const [initialIndustries, setInitialIndustries] = useState<IndustryFlowItem[] | null>(null)
   const [initialIndustriesDate, setInitialIndustriesDate] = useState<string | null>(null)
   const defaultDate = queryDate ?? latestTradeDate ?? (latestTradeDateReady ? todayInTaipei() : null)
+  const [showTradeQuality, setShowTradeQuality] = useState(() =>
+    readStoredToggle(TRADE_QUALITY_TOGGLE_STORAGE_KEY, true),
+  )
+
+  useEffect(() => {
+    window.localStorage.setItem(TRADE_QUALITY_TOGGLE_STORAGE_KEY, String(showTradeQuality))
+  }, [showTradeQuality])
+
+  // M19 watchlist 卡片深連結帶 stock_id+buy_date → 強制展開分析欄位，
+  // 避免使用者跳過來但畫面看不到分析。
+  const stockIdParam = searchParams.get("stock_id")
+  const buyDateParam = searchParams.get("buy_date")
+  useEffect(() => {
+    if (stockIdParam && buyDateParam) setShowTradeQuality(true)
+  }, [stockIdParam, buyDateParam])
 
   function markTask(task: BootTaskKey, state: BootTaskState) {
     setTasks((prev) => (prev[task] === state ? prev : { ...prev, [task]: state }))
@@ -257,10 +311,17 @@ function HomeContent() {
   return (
     <>
       {showBootOverlay && <HomeBootstrapOverlay tasks={tasks} />}
-      <main className="mx-auto w-full max-w-5xl px-4 py-8 flex flex-col gap-6">
+      <HomeSidebar
+        showTradeQuality={showTradeQuality}
+        onToggleTradeQuality={() => setShowTradeQuality((v) => !v)}
+      />
+      <main className="ml-12">
+        <div className="mx-auto w-full max-w-5xl px-4 py-8 flex flex-col gap-6">
         {defaultDate && (
           <>
-            <TradeQualityAnalysis initialLatestDate={latestTradeDate ?? defaultDate} />
+            {showTradeQuality && (
+              <TradeQualityAnalysis initialLatestDate={latestTradeDate ?? defaultDate} />
+            )}
             <WatchlistTradeQualityTable />
             <DeferredSection minHeight={180}>
               <DailySignalsPanel
@@ -292,6 +353,7 @@ function HomeContent() {
             </DeferredSection>
           </>
         )}
+        </div>
       </main>
     </>
   )
