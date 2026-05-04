@@ -120,7 +120,7 @@ def load_latest_ok_snapshot(
     buy_date: date,
     before_or_eq_trade_date: Optional[date] = None,
 ) -> Optional[WatchlistTradeQualitySnapshot]:
-    """讀取使用者該檔股票 buy_date 對應的最近一筆 status='ok' 快照。
+    """讀取使用者該檔股票 buy_date 對應的最近一筆「完整 ok」快照。
 
     用途：
     - failed 今日快照時 fallback 顯示舊快照
@@ -139,7 +139,11 @@ def load_latest_ok_snapshot(
         q = q.filter(
             WatchlistTradeQualitySnapshot.snapshot_trade_date <= before_or_eq_trade_date
         )
-    return q.order_by(WatchlistTradeQualitySnapshot.snapshot_trade_date.desc()).first()
+    rows = q.order_by(WatchlistTradeQualitySnapshot.snapshot_trade_date.desc()).all()
+    for row in rows:
+        if is_snapshot_complete(row):
+            return row
+    return None
 
 
 def load_recent_ok_snapshots(
@@ -151,7 +155,7 @@ def load_recent_ok_snapshots(
     limit: int = 3,
     before_or_eq_trade_date: Optional[date] = None,
 ) -> List[WatchlistTradeQualitySnapshot]:
-    """讀取最近 N 筆 status='ok' 快照，給 KeyFactorsTimeline 趨勢顯示用。
+    """讀取最近 N 筆「完整 ok」快照，給 KeyFactorsTimeline 趨勢顯示用。
 
     回傳順序：snapshot_trade_date 倒序（最新在前）；caller 若要時間軸由舊→新可自行 reverse。
     若該股累積快照不足 N 筆，回傳實際筆數（可能空 list）。
@@ -169,9 +173,14 @@ def load_recent_ok_snapshots(
         q = q.filter(
             WatchlistTradeQualitySnapshot.snapshot_trade_date <= before_or_eq_trade_date
         )
-    return q.order_by(
-        WatchlistTradeQualitySnapshot.snapshot_trade_date.desc()
-    ).limit(max(1, limit)).all()
+    rows = q.order_by(WatchlistTradeQualitySnapshot.snapshot_trade_date.desc()).all()
+    complete_rows: List[WatchlistTradeQualitySnapshot] = []
+    for row in rows:
+        if is_snapshot_complete(row):
+            complete_rows.append(row)
+            if len(complete_rows) >= max(1, limit):
+                break
+    return complete_rows
 
 
 def save_snapshot_ok(

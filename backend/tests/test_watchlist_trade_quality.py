@@ -42,6 +42,18 @@ _FULL_KEY_FACTORS = [
 ]
 
 
+def _complete_payload(**overrides):
+    payload = {
+        "rating": "BUY",
+        "rating_label": "推薦",
+        "summary": "x",
+        "report_markdown": "r",
+        "key_factors": _FULL_KEY_FACTORS,
+    }
+    payload.update(overrides)
+    return payload
+
+
 @pytest.fixture
 def api():
     engine = create_engine(
@@ -163,8 +175,8 @@ def test_save_snapshot_ok_upserts_on_same_key(api):
         buy_date=date(2026, 4, 1), snapshot_trade_date=date(2026, 4, 30),
         source="manual",
     )
-    save_snapshot_ok(db, **base, response_payload={"rating": "BUY", "rating_label": "推薦"})
-    save_snapshot_ok(db, **base, response_payload={"rating": "RUN", "rating_label": "快跑"})
+    save_snapshot_ok(db, **base, response_payload=_complete_payload())
+    save_snapshot_ok(db, **base, response_payload=_complete_payload(rating="RUN", rating_label="快跑"))
 
     rows = db.query(WatchlistTradeQualitySnapshot).all()
     assert len(rows) == 1  # UPSERT 而非新增
@@ -205,9 +217,9 @@ def test_load_latest_ok_snapshot_returns_most_recent(api):
         buy_date=date(2026, 4, 1), source="cron",
     )
     save_snapshot_ok(db, **common, snapshot_trade_date=date(2026, 4, 28),
-                     response_payload={"rating": "BUY", "rating_label": "推薦"})
+                     response_payload=_complete_payload())
     save_snapshot_ok(db, **common, snapshot_trade_date=date(2026, 4, 29),
-                     response_payload={"rating": "NEUTRAL", "rating_label": "中立"})
+                     response_payload=_complete_payload(rating="NEUTRAL", rating_label="中立"))
 
     row = load_latest_ok_snapshot(
         db, user_id=user_id, stock_id="2330", buy_date=date(2026, 4, 1)
@@ -221,6 +233,43 @@ def test_load_latest_ok_snapshot_returns_most_recent(api):
         before_or_eq_trade_date=date(2026, 4, 28),
     )
     assert row28.snapshot_trade_date == date(2026, 4, 28)
+
+
+def test_load_latest_ok_snapshot_skips_incomplete_ok_rows(api):
+    client, db = api
+    user_id = _register_and_login(client)
+    _seed_stock(db, "2330")
+
+    common = dict(
+        user_id=user_id, stock_id="2330",
+        buy_date=date(2026, 4, 1), source="cron",
+    )
+    save_snapshot_ok(
+        db, **common, snapshot_trade_date=date(2026, 4, 29),
+        response_payload={
+            "rating": "BUY",
+            "rating_label": "推薦",
+            "summary": "fake ok",
+            "report_markdown": "has report but no lights",
+            "key_factors": None,
+        },
+    )
+    save_snapshot_ok(
+        db, **common, snapshot_trade_date=date(2026, 4, 28),
+        response_payload={
+            "rating": "NEUTRAL",
+            "rating_label": "中立",
+            "summary": "complete",
+            "report_markdown": "complete row",
+            "key_factors": _FULL_KEY_FACTORS,
+        },
+    )
+
+    row = load_latest_ok_snapshot(
+        db, user_id=user_id, stock_id="2330", buy_date=date(2026, 4, 1)
+    )
+    assert row is not None
+    assert row.snapshot_trade_date == date(2026, 4, 28)
 
 
 def test_is_snapshot_complete_requires_status_ok_and_six_categories(api):
@@ -297,7 +346,7 @@ def test_load_latest_ok_snapshot_skips_failed(api):
     save_snapshot_ok(
         db, user_id=user_id, stock_id="2330",
         buy_date=date(2026, 4, 1), snapshot_trade_date=date(2026, 4, 28),
-        response_payload={"rating": "BUY", "rating_label": "推薦"}, source="cron",
+        response_payload=_complete_payload(), source="cron",
     )
     save_snapshot_failed(
         db, user_id=user_id, stock_id="2330",
@@ -387,7 +436,7 @@ def test_list_trade_quality_falls_back_to_old_when_no_today_snapshot(api):
     save_snapshot_ok(
         db, user_id=user_id, stock_id="2330",
         buy_date=date(2026, 4, 1), snapshot_trade_date=date(2026, 4, 28),
-        response_payload={"rating": "NEUTRAL", "rating_label": "中立", "summary": "x"},
+        response_payload=_complete_payload(rating="NEUTRAL", rating_label="中立"),
         source="cron",
     )
     after_etl = datetime(2026, 4, 30, 21, 0, tzinfo=ZoneInfo("Asia/Taipei"))
@@ -400,6 +449,42 @@ def test_list_trade_quality_falls_back_to_old_when_no_today_snapshot(api):
     assert item["latest"]["snapshot_trade_date"] == "2026-04-28"
     assert item["latest"]["is_stale"] is True
     assert item["previous"] is None  # 沒有更早的 ok
+
+
+def test_list_trade_quality_does_not_fallback_to_incomplete_ok_row(api):
+    client, db = api
+    user_id = _register_and_login(client)
+    _seed_stock(db, "2330")
+    _seed_price(db, "2330", date(2026, 4, 30), 1000.0)
+    db.add(UserWatchlist(
+        user_id=user_id, stock_id="2330",
+        buy_date=date(2026, 4, 1), avg_price=950.0,
+    ))
+    db.commit()
+
+    save_snapshot_ok(
+        db, user_id=user_id, stock_id="2330",
+        buy_date=date(2026, 4, 1), snapshot_trade_date=date(2026, 4, 29),
+        response_payload={
+            "rating": "BUY",
+            "rating_label": "推薦",
+            "summary": "有報告但沒燈號",
+            "report_markdown": "old fake ok row",
+            "key_factors": None,
+        },
+        source="cron",
+    )
+
+    after_etl = datetime(2026, 4, 30, 21, 0, tzinfo=ZoneInfo("Asia/Taipei"))
+    with patch("app.trade_quality_cache.datetime") as mock_dt:
+        mock_dt.now.return_value = after_etl
+        mock_dt.utcnow = datetime.utcnow
+        res = client.get("/api/watchlist/trade-quality")
+
+    assert res.status_code == 200, res.text
+    item = res.json()["items"][0]
+    assert item["latest"] is None
+    assert item["recent_factors"] == []
 
 
 def test_list_trade_quality_provides_previous_for_delta(api):
@@ -418,9 +503,9 @@ def test_list_trade_quality_provides_previous_for_delta(api):
         buy_date=date(2026, 4, 1), source="cron",
     )
     save_snapshot_ok(db, **common, snapshot_trade_date=date(2026, 4, 29),
-                     response_payload={"rating": "BUY", "rating_label": "推薦", "classification": "B"})
+                     response_payload=_complete_payload(classification="B"))
     save_snapshot_ok(db, **common, snapshot_trade_date=date(2026, 4, 30),
-                     response_payload={"rating": "RUN", "rating_label": "快跑", "classification": "C"})
+                     response_payload=_complete_payload(rating="RUN", rating_label="快跑", classification="C"))
 
     after_etl = datetime(2026, 4, 30, 21, 0, tzinfo=ZoneInfo("Asia/Taipei"))
     with patch("app.trade_quality_cache.datetime") as mock_dt:
