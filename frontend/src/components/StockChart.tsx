@@ -74,7 +74,17 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
   const [data, setData] = useState<StockHistoryResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [isMobile, setIsMobile] = useState(false)
   const realtimeQuotes = useRealtimeQuotes([stockId])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const mq = window.matchMedia("(max-width: 640px)")
+    const update = () => setIsMobile(mq.matches)
+    update()
+    mq.addEventListener("change", update)
+    return () => mq.removeEventListener("change", update)
+  }, [])
 
   // Broker sub-panel state
   const [brokerHistory, setBrokerHistory] = useState<BrokerDailyItem[]>([])
@@ -372,24 +382,25 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
       },
       legend: {
         data: legendData,
-        textStyle: { color: "#94a3b8", fontSize: 11 },
+        textStyle: { color: "#94a3b8", fontSize: isMobile ? 10 : 11 },
         top: 0,
-        itemWidth: 16,
-        itemHeight: 10,
+        itemWidth: isMobile ? 12 : 16,
+        itemHeight: isMobile ? 8 : 10,
+        itemGap: isMobile ? 6 : 10,
       },
       grid: hasBroker
         ? [
-            { left: 60, right: 70, top: 40, bottom: "30%" },
-            { left: 60, right: 70, top: "74%", bottom: 60 },
+            { left: isMobile ? 38 : 60, right: isMobile ? 42 : 70, top: isMobile ? 70 : 40, bottom: "30%" },
+            { left: isMobile ? 38 : 60, right: isMobile ? 42 : 70, top: "74%", bottom: isMobile ? 50 : 60 },
           ]
-        : { left: 60, right: 70, top: 40, bottom: 70 },
+        : { left: isMobile ? 38 : 60, right: isMobile ? 42 : 70, top: isMobile ? 70 : 40, bottom: isMobile ? 56 : 70 },
       dataZoom: [
         {
           type: "slider",
           xAxisIndex: xAxisIndexes,
           start: zoomStart,
           end: zoomEnd,
-          height: 20,
+          height: isMobile ? 16 : 20,
           bottom: 10,
           borderColor: "#334155",
           backgroundColor: "#27272a",
@@ -414,7 +425,7 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
               type: "category" as const,
               data: dates,
               gridIndex: 0,
-              axisLabel: { color: "#64748b", fontSize: 11, formatter: (v: string) => v.slice(5) },
+              axisLabel: { color: "#64748b", fontSize: isMobile ? 10 : 11, formatter: (v: string) => v.slice(5) },
               axisLine: { lineStyle: { color: "#334155" } },
               splitLine: { show: false },
             },
@@ -430,7 +441,7 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
             data: dates,
             axisLabel: {
               color: "#64748b",
-              fontSize: 11,
+              fontSize: isMobile ? 10 : 11,
               formatter: (v: string) => v.slice(5),
             },
             axisLine: { lineStyle: { color: "#334155" } },
@@ -440,9 +451,9 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
         {
           gridIndex: hasBroker ? 0 : undefined,
           type: "value" as const,
-          name: hasOHLC ? "股價" : "收盤價",
+          name: isMobile ? undefined : (hasOHLC ? "股價" : "收盤價"),
           nameTextStyle: { color: "#94a3b8", fontSize: 11 },
-          axisLabel: { color: "#94a3b8", fontSize: 11 },
+          axisLabel: { color: "#94a3b8", fontSize: isMobile ? 10 : 11 },
           axisLine: { lineStyle: { color: "#334155" } },
           splitLine: { lineStyle: { color: "#27272a" } },
           scale: true,
@@ -450,11 +461,11 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
         {
           gridIndex: hasBroker ? 0 : undefined,
           type: "value" as const,
-          name: "累積張數",
+          name: isMobile ? undefined : "累積張數",
           nameTextStyle: { color: "#94a3b8", fontSize: 11 },
           axisLabel: {
             color: "#94a3b8",
-            fontSize: 11,
+            fontSize: isMobile ? 10 : 11,
             formatter: (v: number) => fmtShares(v),
           },
           axisLine: { lineStyle: { color: "#334155" } },
@@ -465,7 +476,7 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
               {
                 gridIndex: 1,
                 type: "value" as const,
-                name: `${selectedBroker!.display_name}(張)`,
+                name: isMobile ? undefined : `${selectedBroker!.display_name}(張)`,
                 nameTextStyle: { color: "#94a3b8", fontSize: 10 },
                 axisLabel: {
                   color: "#94a3b8",
@@ -529,7 +540,7 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
           : []),
       ],
     }
-  }, [data, activeMAs, activeInst, days, appliedCustom, defaultDate, brokerHistory, brokerLoading, selectedBroker])
+  }, [data, activeMAs, activeInst, days, appliedCustom, defaultDate, brokerHistory, brokerLoading, selectedBroker, isMobile])
 
   return (
     <div className="flex flex-col gap-4">
@@ -732,7 +743,7 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
       {loading && (
         <div className="flex flex-col gap-4">
           <Skeleton className="h-8 w-48" />
-          <Skeleton className="h-[70vh] min-h-[500px] w-full rounded-lg" />
+          <Skeleton className="h-[60vh] sm:h-[70vh] min-h-[360px] sm:min-h-[500px] w-full rounded-lg" />
         </div>
       )}
       {error && <p className="text-sm text-red-400">{error}</p>}
@@ -747,11 +758,15 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
 
       {/* Chart — responsive height via CSS */}
       {!loading && !error && chartOption && (
-        <div ref={chartRef} className="rounded-lg border border-slate-600 p-4">
+        <div ref={chartRef} className="rounded-lg border border-slate-600 p-2 sm:p-4">
           <ReactECharts
             option={chartOption}
             notMerge
-            style={{ height: chartHeight ?? "70vh", minHeight: chartHeight ? 320 : 500, width: "100%" }}
+            style={{
+              height: chartHeight ?? (isMobile ? "60vh" : "70vh"),
+              minHeight: chartHeight ? 320 : (isMobile ? 360 : 500),
+              width: "100%",
+            }}
             opts={{ renderer: "svg" }}
           />
         </div>
