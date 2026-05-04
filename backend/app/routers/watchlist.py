@@ -355,7 +355,7 @@ class WatchlistTradeQualityItem(BaseModel):
     latest_close: Optional[float]
     latest_trade_date: Optional[date]
     change_pct: Optional[float]                  # 相對前一交易日的漲跌幅 %
-    latest: Optional[WatchlistSnapshotPayload]   # 今日 ok 快照（None = 還沒分析過 / 今日 failed）
+    latest: Optional[WatchlistSnapshotPayload]   # 今日快照；若今日 failed 且無舊快照可 fallback，也會回 failed payload
     previous: Optional[WatchlistSnapshotPayload] # 上一筆 ok 快照（給 delta 比對）
     recent_factors: List[WatchlistFactorSnapshot] = Field(
         default_factory=list,
@@ -443,7 +443,9 @@ def list_watchlist_trade_quality(
     - previous = 在 latest 之前最近一筆 ok 快照（給 delta 用）
     - is_stale = latest snapshot_trade_date != 今日預期 → 提示 UI「資料較舊」
 
-    沒有任何 ok 快照的個股 latest=None；前端應對這種 row 觸發 POST refresh 補洞。
+    沒有任何快照的個股 latest=None；前端可對這種 row 觸發 POST refresh 補洞。
+    若今日 refresh 已失敗但沒有舊快照可 fallback，latest 會回 failed payload，
+    避免前端誤判成「從未分析」而無限重試。
     """
     entries = (
         db.query(UserWatchlist)
@@ -468,7 +470,9 @@ def list_watchlist_trade_quality(
         latest_payload: Optional[WatchlistSnapshotPayload] = None
         previous_payload: Optional[WatchlistSnapshotPayload] = None
 
-        # 今日 snapshot 命中（status 不限 ok/failed，給前端顯示「分析失敗」狀態）
+        # 今日 snapshot 命中（status 可能是 ok/failed）。
+        # failed 且沒有舊快照時，也要把 failed payload 回給前端，
+        # 避免 UI 把它誤判成 latest=None 而不停重試。
         if expected_snapshot_date is not None:
             today_row = load_snapshot(
                 db,
@@ -477,14 +481,14 @@ def list_watchlist_trade_quality(
                 buy_date=entry.buy_date,
                 snapshot_trade_date=expected_snapshot_date,
             )
-            if today_row is not None and today_row.status == "ok":
+            if today_row is not None:
                 latest_payload = _row_to_snapshot_payload(today_row, expected_trade_date=expected_snapshot_date)
 
         # latest=None 時 fallback 找上一筆 ok（資料較舊的快照）
         # latest!=None 時也找前一筆 ok（給 delta layer 用）
         before_eq = (
             (latest_payload.snapshot_trade_date - timedelta(days=1))
-            if latest_payload is not None
+            if latest_payload is not None and latest_payload.status == "ok"
             else expected_snapshot_date
         )
         prev_row = load_latest_ok_snapshot(
@@ -499,6 +503,10 @@ def list_watchlist_trade_quality(
             if latest_payload is None:
                 # 沒有今日成功快照 → 把 prev 當成 latest 顯示，並標 is_stale=True 提示 UI
                 latest_payload = payload
+            elif latest_payload.status == "failed":
+                # 今日分析失敗時，保留 failed payload 讓前端可停止自動重試，
+                # 舊的成功快照放 previous 供 detail / delta 使用。
+                previous_payload = payload
             else:
                 previous_payload = payload
 

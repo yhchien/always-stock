@@ -359,6 +359,41 @@ def test_list_trade_quality_provides_previous_for_delta(api):
     assert item["previous"]["classification"] == "B"
 
 
+def test_list_trade_quality_returns_failed_latest_when_no_fallback_ok(api):
+    client, db = api
+    user_id = _register_and_login(client)
+    _seed_stock(db, "2330")
+    _seed_price(db, "2330", date(2026, 4, 30), 1000.0)
+    db.add(UserWatchlist(
+        user_id=user_id, stock_id="2330",
+        buy_date=date(2026, 4, 30), avg_price=1000.0,
+    ))
+    db.commit()
+    save_snapshot_failed(
+        db,
+        user_id=user_id,
+        stock_id="2330",
+        buy_date=date(2026, 4, 30),
+        snapshot_trade_date=date(2026, 4, 30),
+        error_message="on-demand refresh failed",
+        source="on_demand",
+    )
+
+    after_etl = datetime(2026, 4, 30, 21, 0, tzinfo=ZoneInfo("Asia/Taipei"))
+    with patch("app.trade_quality_cache.datetime") as mock_dt:
+        mock_dt.now.return_value = after_etl
+        mock_dt.utcnow = datetime.utcnow
+        res = client.get("/api/watchlist/trade-quality")
+
+    assert res.status_code == 200
+    item = res.json()["items"][0]
+    assert item["latest"] is not None
+    assert item["latest"]["status"] == "failed"
+    assert item["latest"]["snapshot_trade_date"] == "2026-04-30"
+    assert item["latest"]["is_stale"] is False
+    assert item["previous"] is None
+
+
 # ── POST /api/watchlist/trade-quality/refresh ────────────────────────────────
 
 
