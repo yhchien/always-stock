@@ -28,8 +28,10 @@ from app.settings import (
     get_admin_email,
     get_admin_password,
     get_cookie_domain,
+    get_demo_user_email,
     get_session_cookie_name,
     get_session_ttl_days,
+    is_auth_disabled,
     is_cookie_secure,
 )
 
@@ -193,7 +195,14 @@ def get_optional_user(
 
     同時把 user.id 存進 request.state.auth_user_id，rate limiter 的 key_func
     與 limit_value 依此判斷使用者是否已登入。
+
+    DISABLE_AUTH=true 時：略過 cookie 查詢，直接回傳全站共用 demo user。
     """
+    if is_auth_disabled():
+        demo = ensure_demo_user(db)
+        request.state.auth_user_id = demo.id
+        return demo
+
     user = _lookup_active_user(db, _read_session_cookie(request))
     request.state.auth_user_id = user.id if user else None
     return user
@@ -203,7 +212,15 @@ def require_user(
     request: Request,
     db: Session = Depends(get_db),
 ) -> User:
-    """要求已登入，否則 401"""
+    """要求已登入，否則 401。
+
+    DISABLE_AUTH=true 時：不檢查 cookie，回傳全站共用 demo user。
+    """
+    if is_auth_disabled():
+        demo = ensure_demo_user(db)
+        request.state.auth_user_id = demo.id
+        return demo
+
     user = _lookup_active_user(db, _read_session_cookie(request))
     if user is None:
         raise HTTPException(
@@ -226,6 +243,35 @@ def require_admin(user: User = Depends(require_user)) -> User:
 # ---------------------------------------------------------------------------
 # Seeder
 # ---------------------------------------------------------------------------
+
+_DEMO_USER_PASSWORD_PLACEHOLDER = "disabled-auth-demo-user"
+
+
+def ensure_demo_user(db: Session) -> User:
+    """DISABLE_AUTH=true 時所有 user-bound 流量都綁到這個 user 上。
+    密碼欄位塞 hashed placeholder（沒有對應原文，無法登入），避免被當作正常帳號使用。
+    """
+    email = get_demo_user_email()
+    existing = db.query(User).filter(User.email == email).first()
+    if existing:
+        if not existing.is_active:
+            existing.is_active = True
+            db.commit()
+        return existing
+
+    demo = User(
+        email=email,
+        password_hash=hash_password(_DEMO_USER_PASSWORD_PLACEHOLDER),
+        name="Demo",
+        is_admin=False,
+        is_active=True,
+    )
+    db.add(demo)
+    db.commit()
+    db.refresh(demo)
+    logger.info("Seeded demo user (auth disabled mode): %s", email)
+    return demo
+
 
 def ensure_admin_user(db: Session) -> User:
     """若 admin 帳號不存在則建立；密碼從 ADMIN_PASSWORD 讀取"""

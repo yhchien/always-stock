@@ -4,8 +4,28 @@ import { Suspense, useEffect, useState } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 
 import { useAuth } from "@/lib/auth"
+import { isAuthDisabled } from "@/lib/feature_flags"
 
 type Mode = "login" | "register"
+
+function DisabledNotice() {
+  return (
+    <main className="mx-auto flex w-full max-w-md flex-col items-center gap-4 px-4 py-20 text-center">
+      <h1 className="text-lg font-semibold text-slate-100">登入功能已停用</h1>
+      <p className="text-sm text-slate-400">
+        目前處於免登入模式，所有功能都不需要註冊或登入即可使用。
+        <br />
+        直接回首頁開始操作即可。
+      </p>
+      <a
+        href="/"
+        className="rounded-md bg-sky-600 px-4 py-2 text-sm font-medium text-slate-50 transition-colors hover:bg-sky-500"
+      >
+        回首頁
+      </a>
+    </main>
+  )
+}
 
 function LoginForm() {
   const router = useRouter()
@@ -152,6 +172,9 @@ function LoginForm() {
 }
 
 export default function LoginPage() {
+  if (isAuthDisabled()) {
+    return <DisabledNotice />
+  }
   return (
     <Suspense>
       <LoginForm />

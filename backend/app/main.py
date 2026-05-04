@@ -83,6 +83,27 @@ def _seed_admin_user() -> None:
         db.close()
 
 
+def _seed_demo_user_if_disabled() -> None:
+    """DISABLE_AUTH=true 時啟動先 seed 一個 demo user，避免第一個 request 才建。
+    啟動 log 也會明確標出目前在 disabled 模式，方便確認部署狀態。
+    """
+    from app.auth import ensure_demo_user
+    from app.database import SessionLocal
+    from app.settings import is_auth_disabled
+
+    if not is_auth_disabled():
+        return
+
+    logger.warning("DISABLE_AUTH=true → 註冊/登入功能已停用，全站共用 demo user")
+    db = SessionLocal()
+    try:
+        ensure_demo_user(db)
+    except Exception:
+        logger.exception("Failed to ensure demo user at startup")
+    finally:
+        db.close()
+
+
 def _ensure_m23_tables() -> None:
     """啟動時確保 M23 訊號管線新表存在（margin_trade / signal_snapshots / signal_generation_jobs）。
 
@@ -122,6 +143,7 @@ async def lifespan(app: FastAPI):
     when TELEGRAM_BOT_TOKEN is absent so local dev without a token still runs.
     """
     _seed_admin_user()
+    _seed_demo_user_if_disabled()
     _ensure_m23_tables()
     _ensure_industry_flow_schema()
     _ensure_signal_watch_schema()

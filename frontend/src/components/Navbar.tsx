@@ -6,6 +6,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation"
 
 import { searchStocks, type StockSearchItem } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
+import { isAuthDisabled } from "@/lib/feature_flags"
 import { useWatchlist } from "@/lib/watchlist"
 
 const SEARCH_DEBOUNCE_MS = 200
@@ -213,8 +214,22 @@ export default function Navbar() {
           )}
 
           {/* Auth 狀態：loading 期間也顯示登入按鈕（半透明 + pulse dot），
-              避免冷啟動時 /api/auth/me 慢回導致按鈕長時間卡在「…」看不見 */}
-          {user ? (
+              避免冷啟動時 /api/auth/me 慢回導致按鈕長時間卡在「…」看不見。
+              DISABLE_AUTH=true 模式：完全隱藏 user 名稱 / 登出 / 登入註冊，
+              只保留「我的清單」（demo user 仍綁 watchlist）。 */}
+          {isAuthDisabled() ? (
+            !isWatchlistPage && (
+              <Link
+                href="/watchlist"
+                className="text-xs text-slate-300 hover:text-white transition-colors border border-slate-700/40 hover:border-slate-500 rounded-md px-3 py-1"
+              >
+                我的清單
+                <span className="ml-1 font-mono text-slate-500">
+                  {total}/{capacity}
+                </span>
+              </Link>
+            )
+          ) : user ? (
             <div className="flex items-center gap-2">
               {!isWatchlistPage && (
                 <Link

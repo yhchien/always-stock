@@ -56,3 +56,15 @@ def get_session_ttl_days() -> int:
         return int(os.getenv("SESSION_TTL_DAYS", "30"))
     except ValueError:
         return 30
+
+
+def is_auth_disabled() -> bool:
+    """是否完全停用註冊/登入。啟用時 require_user / get_optional_user 會回傳一個
+    全站共用的 demo user，所有 user-bound 資料（watchlist、trade-quality cache 等）
+    都會綁在這個 user 上。env 翻回 false 即可恢復強制登入。
+    """
+    return os.getenv("DISABLE_AUTH", "false").strip().lower() in {"1", "true", "yes"}
+
+
+def get_demo_user_email() -> str:
+    return os.getenv("DEMO_USER_EMAIL", "demo@always-stock.dev").strip().lower()

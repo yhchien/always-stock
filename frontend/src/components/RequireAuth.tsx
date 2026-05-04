@@ -4,10 +4,16 @@ import { usePathname } from "next/navigation"
 import type { ReactNode } from "react"
 
 import { useAuth } from "@/lib/auth"
+import { isAuthDisabled } from "@/lib/feature_flags"
 
 export default function RequireAuth({ children }: { children: ReactNode }) {
   const { user, status } = useAuth()
   const pathname = usePathname()
+
+  // DISABLE_AUTH=true 模式：直接放行；不等 useAuth 結算，避免冷啟動時閃載入畫面。
+  if (isAuthDisabled()) {
+    return <>{children}</>
+  }
 
   if (status === "loading") {
     return (
