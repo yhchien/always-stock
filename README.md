@@ -161,10 +161,15 @@ npm run dev
 
 ### 自動化排程（GitHub Actions）
 
-| Workflow | 排程 | 說明 |
-|----------|------|------|
-| `.github/workflows/daily_etl_update.yml` | 週一~五 18:00（台北） | 每個交易日傍晚全量刷新 Render PostgreSQL（6 個 FinMind 模組：daily_price / inst_flow / daily_valuation / monthly_revenue / financial_statement / broker_trade_agg）。配額耗盡時 1.5h 後自動 retry 一次；假日由 daily_price 空資料 + 配額健康判定自動短路。**ETL 結束後串跑 M25 watchlist trade quality refresh**（對全使用者 watchlist 跑 trade quality 並寫入 `watchlist_trade_quality_snapshots`，給 `/watchlist` 卡片與個股頁報告直接讀） |
-| `.github/workflows/broker_trade_backfill.yml` | 每小時第 5 分 | 分點買賣超歷史 backfill，以交易日為單位逐批推進 |
+> 共 5 個 workflow：3 個有排程 + 2 個僅手動。每日 cron 串成一條資料流水線：**18:00 ETL（抓資料）→ 19:00 LLM 訊號（產出今日異常訊號）→ 20:00 更新追蹤報酬**。GitHub Actions cron 設定為 UTC 但對齊台北時間；遇國定假日由 ETL 自動短路（exit 5）。
+
+| Workflow | 何時做（台北時間） | 做什麼 |
+|----------|------------------|--------|
+| [`daily_etl_update.yml`](.github/workflows/daily_etl_update.yml) | 週一~五 **18:00**（cron）+ 手動 | 每個交易日傍晚全量刷新 Render PostgreSQL（FinMind ETL：stocks_master / daily_price / inst_flow / daily_valuation / monthly_revenue / financial_statement / margin_trade / industry_flow 聚合；broker_trade_agg 已拆到獨立 workflow）。配額耗盡（exit 2）時 sleep 1.5h 後自動 retry 一次；假日由 daily_price 空資料 + 配額健康判定自動短路（exit 5）。**ETL 結束（exit 0/1）後串跑 M25 watchlist trade quality refresh**，對全使用者 watchlist 跑 trade quality 寫入 `watchlist_trade_quality_snapshots`，給 `/watchlist` 卡片與個股頁報告直接讀 |
+| [`daily_signals.yml`](.github/workflows/daily_signals.yml) | 週一~五 **19:00**（cron）+ 手動 | M23 每日異常訊號 pipeline（`run_daily_signals.py`）：deterministic filter 建候選池 → LLM batch 分析公司業務／集團／龍頭比對 → 寫入 `signal_snapshots`，產出 LEADER / FOLLOWER / LAGGARD 三類訊號清單。exit 0/1（ok / no_data）→ workflow pass；exit 2/3（llm_error / db_error）→ workflow fail |
+| [`signal_archive_returns.yml`](.github/workflows/signal_archive_returns.yml) | 週一~五 **20:00**（cron）+ 手動 | M23 40 日訊號追蹤報酬率更新（`run_signal_archive_returns.py`）：對 active hits 同步 `latest_eval_price` / `return_pct`；完成 40 交易日 cycle 後封存到 `signal_watch_completed_archives`。可帶 `target_date` 手動補跑 |
+| [`broker_trade_backfill.yml`](.github/workflows/broker_trade_backfill.yml) | **手動觸發**（cron 已停用，2026-04-21 起） | 找出 `broker_trade_agg` 在 `[min_backfill_date, end_date]` 範圍內缺漏的週一~五交易日，每批 N 天（預設 3）補資料；FinMind 6000 req/hr 限制下，1 日 ≈ 1588 req |
+| [`aggregate_industry_flow.yml`](.github/workflows/aggregate_industry_flow.yml) | **手動觸發** | 純本地 DB 聚合 `industry_daily_flow`（不打 FinMind）；用於 `daily_etl_update` 在 inst_flow 後斷掉（quota / timeout）時補聚合，或歷史資料 backfill 後重算 industry 層 |
 
 > **M25 cron 時機決策**：watchlist trade quality 不獨立排程，串在 daily_etl_update.yml ETL 完成之後跑，避免兩個 workflow 同時打 OpenAI 與 DB。ETL 完全失敗（exit 2/3）時跳過 wtq；ETL holiday（exit 5）時也跳過。Cron 時間（18:00 台北）不動 —— 18:30~19:30 完成 ETL 後接著跑 wtq，使用者隔天早上看資料；`snapshot_trade_date` resolver 用 `ETL_DONE_TIME=20:00` 當截斷點，確保使用者打點時不會吃到不完整的當日 ETL。
 
