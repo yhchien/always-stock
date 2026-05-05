@@ -24,7 +24,14 @@ from app.models import (
 )
 from app.rate_limit import limiter
 from app.routers import analysis as analysis_router
-from app.routers.analysis import _is_market_not_open_yet, _load_system_prompt
+from app.routers.analysis import (
+    _apply_key_factor_fallback,
+    _build_user_message,
+    _is_market_not_open_yet,
+    _load_system_prompt,
+    _synthesize_key_factors_from_context,
+    TradeQualityResponse,
+)
 
 
 # 6 個 category 齊備的 key_factors fixture：避免測試裡的 mock OpenAI 回應觸發
@@ -110,6 +117,116 @@ def _seed_industry_flow(db, d: date, industry: str) -> None:
             total_net_amount=0,
         )
     )
+
+
+def test_build_user_message_requires_key_factors():
+    text = _build_user_message(
+        {
+            "stock_id": "2330",
+            "stock_name": "台積電",
+            "industry_name": "半導體",
+            "sub_industry": "晶圓代工",
+            "buy_date": "2026-05-04",
+            "latest_close": 1000.0,
+            "prices_text": "x",
+            "flows_text": "y",
+            "revenue_text": "z",
+        },
+        m21_context=None,
+        warnings=[],
+    )
+    assert '"key_factors": [' in text
+    assert "`key_factors` 為必填欄位" in text
+
+
+def test_synthesize_key_factors_from_context_returns_complete_set():
+    factors = _synthesize_key_factors_from_context(
+        {
+            "industry_summary": {
+                "industry_hot_level": "A",
+                "industry_price_strength": "strong",
+                "industry_volume_trend": "expanding_3d",
+                "industry_institution_flow": "strong_buy",
+                "is_false_hot": False,
+            },
+            "chip_summary": {
+                "chip_strength": "strong",
+                "is_accumulation": True,
+                "volume_trend": "increasing",
+                "investment_trust_buy_days": 2,
+                "foreign_buy_days": 2,
+            },
+            "peer_rank": {
+                "leader_or_follower": "leader",
+                "return_5d_percentile": 0.1,
+            },
+            "fundamental": {
+                "revenue_yoy": 25.0,
+                "revenue_mom": 6.0,
+            },
+            "price_structure": {
+                "trend": "uptrend",
+                "is_breakout": True,
+                "is_consolidation": False,
+                "is_accelerating": True,
+            },
+        }
+    )
+    assert factors is not None
+    assert len(factors) == 6
+    assert {f.category for f in factors} == {
+        "industry", "industry_heat", "return", "chip", "technical", "fundamental"
+    }
+
+
+def test_apply_key_factor_fallback_uses_deterministic_context():
+    response = TradeQualityResponse(
+        stock_id="2330",
+        stock_name="台積電",
+        buy_date="2026-05-04",
+        rating="BUY",
+        rating_label="推薦",
+        summary="x",
+        report_markdown="y",
+        warnings=[],
+        source="openai",
+    )
+    out = _apply_key_factor_fallback(
+        response,
+        m21_context={
+            "industry_summary": {
+                "industry_hot_level": "B",
+                "industry_price_strength": "medium",
+                "industry_volume_trend": "intermittent",
+                "industry_institution_flow": "mixed",
+                "is_false_hot": False,
+            },
+            "chip_summary": {
+                "chip_strength": "neutral",
+                "is_accumulation": False,
+                "volume_trend": "flat",
+                "investment_trust_buy_days": 0,
+                "foreign_buy_days": 1,
+            },
+            "peer_rank": {
+                "leader_or_follower": "follower",
+                "return_5d_percentile": 0.4,
+            },
+            "fundamental": {
+                "revenue_yoy": 5.0,
+                "revenue_mom": 1.0,
+            },
+            "price_structure": {
+                "trend": "sideways",
+                "is_breakout": False,
+                "is_consolidation": True,
+                "is_accelerating": False,
+            },
+        },
+    )
+    assert out.key_factors is not None
+    assert len(out.key_factors) == 6
+    assert "已用 deterministic context 補齊 key_factors" in out.warnings
 
 
 # ── /api/stocks/search ──────────────────────────────────────────────────────

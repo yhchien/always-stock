@@ -377,6 +377,14 @@ def _build_user_message(
   "risk_level": "LOW" | "MEDIUM" | "HIGH",
   "rating": "STRONG_BUY" | "BUY" | "NEUTRAL" | "WATCH" | "RUN",
   "summary": "約 60~100 字的段落摘要，綜合判斷原因",
+  "key_factors": [
+    {{"category": "industry", "level": "A|B|C", "trend": "improving|stable|weakening|deteriorating", "note": "10~25 字"}},
+    {{"category": "industry_heat", "level": "A|B|C", "trend": "improving|stable|weakening|deteriorating", "note": "10~25 字"}},
+    {{"category": "return", "level": "A|B|C", "trend": "improving|stable|weakening|deteriorating", "note": "10~25 字"}},
+    {{"category": "chip", "level": "A|B|C", "trend": "improving|stable|weakening|deteriorating", "note": "10~25 字"}},
+    {{"category": "technical", "level": "A|B|C", "trend": "improving|stable|weakening|deteriorating", "note": "10~25 字"}},
+    {{"category": "fundamental", "level": "A|B|C", "trend": "improving|stable|weakening|deteriorating", "note": "10~25 字"}}
+  ],
   "target_price_low": number 或 null,
   "target_price_high": number 或 null,
   "time_horizon_days": number 或 null,
@@ -405,6 +413,8 @@ rating 對應規則（由你依分析強度自行判斷，不依死板 A/B/C 映
   - 總長盡量控制在 800~1200 個中文字內
   - 不要重複 JSON 已經表達過的欄位
 - classification 與 rating 邏輯需一致（C 不可對應 STRONG_BUY）
+- `key_factors` 為必填欄位，6 個 category 不可省略
+- 每個 `key_factors` item 都必須含 `category` / `level` / `trend` / `note`
 
 ⚠️ 輸出值域（強制，避免與系統 prompt 內部分類混淆）：
 - `classification` 僅能是 `A` / `B` / `C` —— 這是「個股整體交易質量」分類。
@@ -701,6 +711,133 @@ def _normalize_key_factors(raw: Any) -> Optional[List[KeyFactor]]:
     return out or None
 
 
+def _trend_label(*, improving: bool = False, weakening: bool = False) -> str:
+    if improving and not weakening:
+        return "improving"
+    if weakening and not improving:
+        return "weakening"
+    return "stable"
+
+
+def _make_key_factor(category: str, level: str, trend: str, note: str) -> KeyFactor:
+    return KeyFactor(
+        category=category,
+        level=level,
+        trend=trend,
+        note=note[:60],
+    )
+
+
+def _synthesize_key_factors_from_context(m21_context: Optional[dict]) -> Optional[List[KeyFactor]]:
+    """用 M21 deterministic context 補齊 6 個 key_factors，避免 cron 完全卡在模型漏欄位。"""
+    if not isinstance(m21_context, dict):
+        return None
+
+    industry = m21_context.get("industry_summary") or {}
+    chip = m21_context.get("chip_summary") or {}
+    peer = m21_context.get("peer_rank") or {}
+    fundamental = m21_context.get("fundamental") or {}
+    technical = m21_context.get("price_structure") or {}
+
+    hot_level = str(industry.get("industry_hot_level") or "").upper()
+    price_strength = str(industry.get("industry_price_strength") or "").lower()
+    volume_trend = str(industry.get("industry_volume_trend") or "").lower()
+    inst_flow = str(industry.get("industry_institution_flow") or "").lower()
+    is_false_hot = bool(industry.get("is_false_hot"))
+    leader_or_follower = str(peer.get("leader_or_follower") or "").lower()
+    return_pctile = peer.get("return_5d_percentile")
+    chip_strength = str(chip.get("chip_strength") or "").lower()
+    is_accumulation = chip.get("is_accumulation")
+    chip_volume_trend = str(chip.get("volume_trend") or "").lower()
+    trust_days = int(chip.get("investment_trust_buy_days") or 0)
+    foreign_days = int(chip.get("foreign_buy_days") or 0)
+    trend = str(technical.get("trend") or "").lower()
+    is_breakout = bool(technical.get("is_breakout"))
+    is_consolidation = bool(technical.get("is_consolidation"))
+    is_accelerating = bool(technical.get("is_accelerating"))
+    revenue_yoy = fundamental.get("revenue_yoy")
+    revenue_mom = fundamental.get("revenue_mom")
+
+    industry_level = "B"
+    if leader_or_follower == "leader" and price_strength == "strong":
+        industry_level = "A"
+    elif price_strength == "weak" or is_false_hot:
+        industry_level = "C"
+    industry_trend = _trend_label(
+        improving=price_strength == "strong" and volume_trend == "expanding_3d",
+        weakening=price_strength == "weak" or is_false_hot,
+    )
+
+    industry_heat_level = "C"
+    if hot_level in {"S", "A"}:
+        industry_heat_level = "A"
+    elif hot_level == "B":
+        industry_heat_level = "B"
+    industry_heat_trend = _trend_label(
+        improving=volume_trend in {"expanding_3d", "intermittent"} and inst_flow == "strong_buy",
+        weakening=is_false_hot or inst_flow == "none",
+    )
+
+    return_level = "B"
+    if isinstance(return_pctile, (int, float)):
+        if return_pctile <= 0.3:
+            return_level = "A"
+        elif return_pctile > 0.7:
+            return_level = "C"
+    if leader_or_follower == "leader" and return_level != "C":
+        return_level = "A"
+    return_trend = _trend_label(
+        improving=leader_or_follower == "leader" and (is_breakout or is_accelerating),
+        weakening=leader_or_follower == "follower" and trend == "downtrend",
+    )
+
+    chip_level = "C"
+    if chip_strength == "strong" or (is_accumulation is True and chip_strength in {"strong", "neutral"}):
+        chip_level = "A"
+    elif chip_strength == "neutral":
+        chip_level = "B"
+    chip_trend = _trend_label(
+        improving=(is_accumulation is True) or chip_volume_trend == "increasing" or (trust_days + foreign_days) >= 2,
+        weakening=chip_volume_trend == "declining" and chip_strength == "weak",
+    )
+
+    technical_level = "B"
+    if is_breakout or (trend == "uptrend" and is_accelerating):
+        technical_level = "A"
+    elif trend == "downtrend":
+        technical_level = "C"
+    technical_trend = _trend_label(
+        improving=is_breakout or is_accelerating,
+        weakening=trend == "downtrend",
+    )
+
+    fundamental_level = "B"
+    if isinstance(revenue_yoy, (int, float)) and revenue_yoy >= 20:
+        fundamental_level = "A"
+    elif (
+        isinstance(revenue_yoy, (int, float)) and revenue_yoy < 0
+        and isinstance(revenue_mom, (int, float)) and revenue_mom < 0
+    ):
+        fundamental_level = "C"
+    elif revenue_yoy is None and revenue_mom is None:
+        fundamental_level = "C"
+    fundamental_trend = _trend_label(
+        improving=(isinstance(revenue_yoy, (int, float)) and revenue_yoy > 0)
+        and (isinstance(revenue_mom, (int, float)) and revenue_mom > 0),
+        weakening=(isinstance(revenue_yoy, (int, float)) and revenue_yoy < 0)
+        and (isinstance(revenue_mom, (int, float)) and revenue_mom < 0),
+    )
+
+    return [
+        _make_key_factor("industry", industry_level, industry_trend, "族群地位明確且同業表現分化"),
+        _make_key_factor("industry_heat", industry_heat_level, industry_heat_trend, "產業熱度與資金關注度同步變化"),
+        _make_key_factor("return", return_level, return_trend, "近段相對報酬反映強弱差距"),
+        _make_key_factor("chip", chip_level, chip_trend, "法人買盤與量價結構支持程度"),
+        _make_key_factor("technical", technical_level, technical_trend, "趨勢突破與加速狀態決定強弱"),
+        _make_key_factor("fundamental", fundamental_level, fundamental_trend, "營收年增月增透露基本面方向"),
+    ]
+
+
 def _normalize_response(
     payload: dict,
     stock: StockMaster,
@@ -738,6 +875,24 @@ def _normalize_response(
         warnings=warnings,
         source=source,
     )
+
+
+def _apply_key_factor_fallback(
+    response: TradeQualityResponse,
+    *,
+    m21_context: Optional[dict],
+) -> TradeQualityResponse:
+    if _key_factors_complete(response.key_factors):
+        return response
+
+    synthesized = _synthesize_key_factors_from_context(m21_context)
+    if not _key_factors_complete(synthesized):
+        return response
+
+    if "已用 deterministic context 補齊 key_factors" not in response.warnings:
+        response.warnings.append("已用 deterministic context 補齊 key_factors")
+    response.key_factors = synthesized
+    return response
 
 
 def _to_float(x: Any) -> Optional[float]:
@@ -854,6 +1009,7 @@ def run_trade_quality_for_user(
         return TradeQualityRunResult(response=fallback)
 
     response = _normalize_response(payload, stock, resolved, warnings, source="openai")
+    response = _apply_key_factor_fallback(response, m21_context=m21_context)
     _store_cached_trade_quality(stock_id, resolved, response)
     snapshot_trade_date = None
     if persist_db_cache:
