@@ -502,9 +502,8 @@ def test_assemble_final_output_summary_counts_by_type():
     out = llm_caller.assemble_final_output({"market_state": "RANGE"}, explanation, candidate_pool_size=10)
     assert out["summary"]["leader_count"] == 2
     assert out["summary"]["follower_count"] == 1
-    assert out["summary"]["laggard_count"] == 0
-    # 只保留 top 3，因此不含第 4 檔 laggard
-    assert out["summary"]["main_hot_industries"][:2] == ["半導體業", "電子業"]
+    assert out["summary"]["laggard_count"] == 1
+    assert out["summary"]["main_hot_industries"][:3] == ["半導體業", "電子業", "金融業"]
 
 
 def test_assemble_final_output_includes_total_tokens_when_provided():
@@ -534,7 +533,7 @@ def test_assemble_final_output_unknown_decision_is_dropped():
     assert out["watchlist"] == []
 
 
-def test_assemble_final_output_caps_watchlist_to_top_3(monkeypatch):
+def test_assemble_final_output_keeps_all_watch_items(monkeypatch):
     explanation = []
     for i in range(8):
         explanation.append(
@@ -561,6 +560,6 @@ def test_assemble_final_output_caps_watchlist_to_top_3(monkeypatch):
         candidate_pool_size=80,
     )
 
-    assert len(out["watchlist"]) == 3
-    assert out["final_watchlist_size"] == 3
-    assert [item["stock"] for item in out["watchlist"]] == ["1000", "1001", "1002"]
+    assert len(out["watchlist"]) == 8
+    assert out["final_watchlist_size"] == 8
+    assert [item["stock"] for item in out["watchlist"]] == [str(1000 + i) for i in range(8)]

@@ -279,7 +279,7 @@ def assemble_final_output(
     model: str = DEFAULT_WATCH_REASON_MODEL,
     total_tokens: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Step 9：整理最終 top watchlist、計算 summary、組裝最終 payload。
+    """Step 9：整理最終 watchlist、計算 summary、組裝最終 payload。
 
     對齊 spec §10.2 完整 schema：
       market_context / watchlist / summary +
@@ -292,7 +292,10 @@ def assemble_final_output(
         if decision == "WATCH":
             watchlist_candidates.append(_format_watch_entry(item))
 
-    watchlist = _cap_final_watchlist(watchlist_candidates)
+    # 2026-05-05：先取消程式端 top-N 裁切，改由 prompt / LLM 自己決定保留幾檔。
+    # 若之後要恢復「最後再硬裁前 3 檔」的產品策略，可直接打開下一行：
+    # watchlist = _cap_final_watchlist(watchlist_candidates)
+    watchlist = watchlist_candidates
 
     type_counts = {"LEADER": 0, "FOLLOWER": 0, "LAGGARD": 0}
     industries: List[str] = []
