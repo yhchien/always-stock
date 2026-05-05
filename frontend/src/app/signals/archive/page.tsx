@@ -47,6 +47,13 @@ function formatPrice(value: number | null): string {
   return value.toFixed(2)
 }
 
+function formatShortDate(value: string | null): string {
+  if (!value) return "--"
+  const parts = value.split("-")
+  if (parts.length !== 3) return value
+  return `${Number(parts[1])}/${Number(parts[2])}`
+}
+
 function ReturnCell({ value }: { value: number | null }) {
   if (value == null) {
     return <span className="font-mono text-sm text-slate-500">--</span>
@@ -58,6 +65,23 @@ function ReturnCell({ value }: { value: number | null }) {
     <span className={`font-mono text-sm font-semibold ${color}`}>
       {arrow ? `${arrow} ` : ""}
       {formatPct(value)}
+    </span>
+  )
+}
+
+function ExtremeReturnCell({
+  value,
+  tradeDate,
+}: {
+  value: number | null
+  tradeDate: string | null
+}) {
+  if (value == null || !tradeDate) {
+    return <span className="font-mono text-sm text-slate-500">--</span>
+  }
+  return (
+    <span className="font-mono text-sm text-slate-200">
+      {formatPct(value)} ({formatShortDate(tradeDate)})
     </span>
   )
 }
@@ -233,6 +257,8 @@ export default function SignalArchivePage() {
                 <TableHead className="text-slate-300">命中次數</TableHead>
                 <TableHead className="text-slate-300">最新類型</TableHead>
                 <TableHead className="text-slate-300">報酬率</TableHead>
+                <TableHead className="text-slate-300">最大正報酬</TableHead>
+                <TableHead className="text-slate-300">最大負報酬</TableHead>
                 <TableHead className="text-slate-300">操作</TableHead>
               </TableRow>
             </TableHeader>
@@ -276,6 +302,18 @@ export default function SignalArchivePage() {
                     </TableCell>
                     <TableCell>
                       <ReturnCell value={item.return_pct} />
+                    </TableCell>
+                    <TableCell>
+                      <ExtremeReturnCell
+                        value={item.max_positive_return_pct}
+                        tradeDate={item.max_positive_return_trade_date}
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <ExtremeReturnCell
+                        value={item.max_negative_return_pct}
+                        tradeDate={item.max_negative_return_trade_date}
+                      />
                     </TableCell>
                     <TableCell>
                       <div className="flex flex-wrap gap-2">
@@ -327,6 +365,8 @@ export default function SignalArchivePage() {
                 <TableHead className="text-slate-300">第20天</TableHead>
                 <TableHead className="text-slate-300">第30天</TableHead>
                 <TableHead className="text-slate-300">第40天</TableHead>
+                <TableHead className="text-slate-300">最大正報酬</TableHead>
+                <TableHead className="text-slate-300">最大負報酬</TableHead>
                 <TableHead className="text-slate-300">移出日</TableHead>
                 <TableHead className="text-slate-300">操作</TableHead>
               </TableRow>
@@ -365,6 +405,18 @@ export default function SignalArchivePage() {
                   </TableCell>
                   <TableCell>
                     <ReturnCell value={item.return_day_40_pct} />
+                  </TableCell>
+                  <TableCell>
+                    <ExtremeReturnCell
+                      value={item.max_positive_return_pct}
+                      tradeDate={item.max_positive_return_trade_date}
+                    />
+                  </TableCell>
+                  <TableCell>
+                    <ExtremeReturnCell
+                      value={item.max_negative_return_pct}
+                      tradeDate={item.max_negative_return_trade_date}
+                    />
                   </TableCell>
                   <TableCell className="font-mono text-xs text-slate-300">
                     {item.completed_trade_date}
@@ -421,6 +473,20 @@ export default function SignalArchivePage() {
                 </span>
                 <span>報酬率</span>
                 <ReturnCell value={detail.return_pct} />
+                <span>最大正報酬</span>
+                <span className="text-slate-200">
+                  <ExtremeReturnCell
+                    value={detail.max_positive_return_pct}
+                    tradeDate={detail.max_positive_return_trade_date}
+                  />
+                </span>
+                <span>最大負報酬</span>
+                <span className="text-slate-200">
+                  <ExtremeReturnCell
+                    value={detail.max_negative_return_pct}
+                    tradeDate={detail.max_negative_return_trade_date}
+                  />
+                </span>
               </div>
             </header>
 

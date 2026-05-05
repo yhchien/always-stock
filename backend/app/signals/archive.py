@@ -38,6 +38,10 @@ class ArchiveSummaryItem:
     latest_eval_trade_date: Optional[date]
     latest_eval_price: Optional[float]
     return_pct: Optional[float]
+    max_positive_return_pct: Optional[float]
+    max_positive_return_trade_date: Optional[date]
+    max_negative_return_pct: Optional[float]
+    max_negative_return_trade_date: Optional[date]
 
 
 @dataclass
@@ -56,6 +60,10 @@ class CompletedArchiveItem:
     return_day_20_pct: Optional[float]
     return_day_30_pct: Optional[float]
     return_day_40_pct: Optional[float]
+    max_positive_return_pct: Optional[float]
+    max_positive_return_trade_date: Optional[date]
+    max_negative_return_pct: Optional[float]
+    max_negative_return_trade_date: Optional[date]
     completed_trade_date: date
 
 
@@ -101,6 +109,10 @@ def persist_signal_watch_hits(
                 latest_eval_trade_date=prior.get("latest_eval_trade_date"),
                 latest_eval_price=prior.get("latest_eval_price"),
                 return_pct=prior.get("return_pct"),
+                max_positive_return_pct=prior.get("max_positive_return_pct"),
+                max_positive_return_trade_date=prior.get("max_positive_return_trade_date"),
+                max_negative_return_pct=prior.get("max_negative_return_pct"),
+                max_negative_return_trade_date=prior.get("max_negative_return_trade_date"),
                 snapshot_generated_at=generated_at,
                 job_id=job_id,
             )
@@ -238,6 +250,10 @@ def list_completed_archive_summary(
                     return_day_20_pct=row.return_day_20_pct,
                     return_day_30_pct=row.return_day_30_pct,
                     return_day_40_pct=row.return_day_40_pct,
+                    max_positive_return_pct=row.max_positive_return_pct,
+                    max_positive_return_trade_date=row.max_positive_return_trade_date,
+                    max_negative_return_pct=row.max_negative_return_pct,
+                    max_negative_return_trade_date=row.max_negative_return_trade_date,
                     completed_trade_date=row.completed_trade_date,
                 )
             )
@@ -328,6 +344,10 @@ def refresh_completed_signal_cycles(
                     return_day_20_pct=completed_item.return_day_20_pct,
                     return_day_30_pct=completed_item.return_day_30_pct,
                     return_day_40_pct=completed_item.return_day_40_pct,
+                    max_positive_return_pct=completed_item.max_positive_return_pct,
+                    max_positive_return_trade_date=completed_item.max_positive_return_trade_date,
+                    max_negative_return_pct=completed_item.max_negative_return_pct,
+                    max_negative_return_trade_date=completed_item.max_negative_return_trade_date,
                     completed_trade_date=completed_item.completed_trade_date,
                 )
             )
@@ -344,6 +364,10 @@ def refresh_completed_signal_cycles(
             existing.return_day_20_pct = completed_item.return_day_20_pct
             existing.return_day_30_pct = completed_item.return_day_30_pct
             existing.return_day_40_pct = completed_item.return_day_40_pct
+            existing.max_positive_return_pct = completed_item.max_positive_return_pct
+            existing.max_positive_return_trade_date = completed_item.max_positive_return_trade_date
+            existing.max_negative_return_pct = completed_item.max_negative_return_pct
+            existing.max_negative_return_trade_date = completed_item.max_negative_return_trade_date
             existing.completed_trade_date = completed_item.completed_trade_date
             existing.updated_at = datetime.utcnow()
         upserted += 1
@@ -386,6 +410,10 @@ def _load_latest_return_state_by_stock(
             "latest_eval_trade_date": row.latest_eval_trade_date,
             "latest_eval_price": row.latest_eval_price,
             "return_pct": row.return_pct,
+            "max_positive_return_pct": row.max_positive_return_pct,
+            "max_positive_return_trade_date": row.max_positive_return_trade_date,
+            "max_negative_return_pct": row.max_negative_return_pct,
+            "max_negative_return_trade_date": row.max_negative_return_trade_date,
         }
     return state_by_stock
 
@@ -418,6 +446,18 @@ def _build_completed_archive_item(
         stock_id=stock_id,
         baseline_trade_date=baseline_trade_date,
         cache=price_cache,
+    )
+    (
+        max_positive_return_pct,
+        max_positive_return_trade_date,
+        max_negative_return_pct,
+        max_negative_return_trade_date,
+    ) = _resolve_return_extrema(
+        db,
+        stock_id=stock_id,
+        baseline_trade_date=baseline_trade_date,
+        baseline_price=baseline_price,
+        through_trade_date=completed_trade_date,
     )
     return CompletedArchiveItem(
         stock_id=stock_id,
@@ -466,6 +506,10 @@ def _build_completed_archive_item(
             trade_date_cache=trade_date_cache,
             price_cache=price_cache,
         ),
+        max_positive_return_pct=max_positive_return_pct,
+        max_positive_return_trade_date=max_positive_return_trade_date,
+        max_negative_return_pct=max_negative_return_pct,
+        max_negative_return_trade_date=max_negative_return_trade_date,
         completed_trade_date=completed_trade_date,
     )
 
@@ -504,6 +548,10 @@ def _build_archive_summary_item(
         latest_eval_trade_date=latest_row.latest_eval_trade_date,
         latest_eval_price=latest_row.latest_eval_price,
         return_pct=latest_row.return_pct,
+        max_positive_return_pct=latest_row.max_positive_return_pct,
+        max_positive_return_trade_date=latest_row.max_positive_return_trade_date,
+        max_negative_return_pct=latest_row.max_negative_return_pct,
+        max_negative_return_trade_date=latest_row.max_negative_return_trade_date,
     )
 
 
@@ -625,6 +673,56 @@ def _resolve_return_for_tracking_day(
     return (float(row.close_price) - float(baseline_price)) / float(baseline_price) * 100.0
 
 
+def _resolve_return_extrema(
+    db: Session,
+    *,
+    stock_id: str,
+    baseline_trade_date: Optional[date],
+    baseline_price: Optional[float],
+    through_trade_date: Optional[date],
+) -> tuple[Optional[float], Optional[date], Optional[float], Optional[date]]:
+    if baseline_trade_date is None or baseline_price in (None, 0) or through_trade_date is None:
+        return (None, None, None, None)
+    if through_trade_date <= baseline_trade_date:
+        return (None, None, None, None)
+
+    rows = (
+        db.query(DailyPrice.trade_date, DailyPrice.close_price)
+        .filter(
+            DailyPrice.stock_id == stock_id,
+            DailyPrice.trade_date > baseline_trade_date,
+            DailyPrice.trade_date <= through_trade_date,
+            DailyPrice.close_price.isnot(None),
+        )
+        .order_by(DailyPrice.trade_date.asc())
+        .all()
+    )
+    if not rows:
+        return (None, None, None, None)
+
+    max_positive_return_pct: Optional[float] = None
+    max_positive_return_trade_date: Optional[date] = None
+    max_negative_return_pct: Optional[float] = None
+    max_negative_return_trade_date: Optional[date] = None
+    baseline = float(baseline_price)
+
+    for row in rows:
+        pct = ((float(row.close_price) - baseline) / baseline) * 100.0
+        if pct > 0 and (max_positive_return_pct is None or pct > max_positive_return_pct):
+            max_positive_return_pct = pct
+            max_positive_return_trade_date = row.trade_date
+        if pct < 0 and (max_negative_return_pct is None or pct < max_negative_return_pct):
+            max_negative_return_pct = pct
+            max_negative_return_trade_date = row.trade_date
+
+    return (
+        max_positive_return_pct,
+        max_positive_return_trade_date,
+        max_negative_return_pct,
+        max_negative_return_trade_date,
+    )
+
+
 def update_signal_watch_returns(
     db: Session,
     *,
@@ -674,12 +772,28 @@ def update_signal_watch_returns(
                     / baseline_price
                     * 100.0
                 )
+            (
+                max_positive_return_pct,
+                max_positive_return_trade_date,
+                max_negative_return_pct,
+                max_negative_return_trade_date,
+            ) = _resolve_return_extrema(
+                db,
+                stock_id=stock_id,
+                baseline_trade_date=baseline_trade_date,
+                baseline_price=baseline_price,
+                through_trade_date=trade_date,
+            )
             for row in rows:
                 row.baseline_trade_date = baseline_trade_date
                 row.baseline_price = baseline_price
                 row.latest_eval_trade_date = trade_date
                 row.latest_eval_price = latest_eval_price
                 row.return_pct = return_pct
+                row.max_positive_return_pct = max_positive_return_pct
+                row.max_positive_return_trade_date = max_positive_return_trade_date
+                row.max_negative_return_pct = max_negative_return_pct
+                row.max_negative_return_trade_date = max_negative_return_trade_date
             updated += 1
             continue
 
@@ -691,6 +805,10 @@ def update_signal_watch_returns(
                 row.latest_eval_trade_date = trade_date
                 row.latest_eval_price = baseline_price
                 row.return_pct = 0.0
+                row.max_positive_return_pct = None
+                row.max_positive_return_trade_date = None
+                row.max_negative_return_pct = None
+                row.max_negative_return_trade_date = None
             updated += 1
 
     completed_upserts = refresh_completed_signal_cycles(db, as_of_trade_date=trade_date)
@@ -715,6 +833,10 @@ def _serialize_summary_item(item: ArchiveSummaryItem) -> dict[str, Any]:
         "latest_eval_trade_date": item.latest_eval_trade_date,
         "latest_eval_price": item.latest_eval_price,
         "return_pct": item.return_pct,
+        "max_positive_return_pct": item.max_positive_return_pct,
+        "max_positive_return_trade_date": item.max_positive_return_trade_date,
+        "max_negative_return_pct": item.max_negative_return_pct,
+        "max_negative_return_trade_date": item.max_negative_return_trade_date,
     }
 
 
@@ -734,6 +856,10 @@ def _serialize_completed_archive_item(item: CompletedArchiveItem) -> dict[str, A
         "return_day_20_pct": item.return_day_20_pct,
         "return_day_30_pct": item.return_day_30_pct,
         "return_day_40_pct": item.return_day_40_pct,
+        "max_positive_return_pct": item.max_positive_return_pct,
+        "max_positive_return_trade_date": item.max_positive_return_trade_date,
+        "max_negative_return_pct": item.max_negative_return_pct,
+        "max_negative_return_trade_date": item.max_negative_return_trade_date,
         "completed_trade_date": item.completed_trade_date,
     }
 

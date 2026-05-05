@@ -202,6 +202,10 @@ def test_update_signal_watch_returns_applies_requested_rules():
         assert tsmc.latest_eval_trade_date == date(2026, 4, 30)
         assert tsmc.latest_eval_price == 120.0
         assert tsmc.return_pct == ((120.0 - 105.0) / 105.0) * 100.0
+        assert tsmc.max_positive_return_pct == ((120.0 - 105.0) / 105.0) * 100.0
+        assert tsmc.max_positive_return_trade_date == date(2026, 4, 30)
+        assert tsmc.max_negative_return_pct is None
+        assert tsmc.max_negative_return_trade_date is None
 
         mtk_rows = (
             db.query(SignalWatchHit)
@@ -216,6 +220,8 @@ def test_update_signal_watch_returns_applies_requested_rules():
             assert mtk.latest_eval_trade_date == date(2026, 4, 30)
             assert mtk.latest_eval_price == 210.0
             assert mtk.return_pct == 0.0
+            assert mtk.max_positive_return_pct is None
+            assert mtk.max_negative_return_pct is None
 
         honhai = db.query(SignalWatchHit).filter(SignalWatchHit.stock_id == "2317").one()
         assert honhai.baseline_trade_date is None
@@ -250,6 +256,10 @@ def test_archive_summary_uses_persisted_return_fields():
                 latest_eval_trade_date=date(2026, 4, 30),
                 latest_eval_price=120.0,
                 return_pct=((120.0 - 105.0) / 105.0) * 100.0,
+                max_positive_return_pct=((120.0 - 105.0) / 105.0) * 100.0,
+                max_positive_return_trade_date=date(2026, 4, 30),
+                max_negative_return_pct=None,
+                max_negative_return_trade_date=None,
             )
         )
         db.commit()
@@ -264,6 +274,10 @@ def test_archive_summary_uses_persisted_return_fields():
         assert item["latest_eval_trade_date"] == date(2026, 4, 30)
         assert item["latest_eval_price"] == 120.0
         assert item["return_pct"] == ((120.0 - 105.0) / 105.0) * 100.0
+        assert item["max_positive_return_pct"] == ((120.0 - 105.0) / 105.0) * 100.0
+        assert item["max_positive_return_trade_date"] == date(2026, 4, 30)
+        assert item["max_negative_return_pct"] is None
+        assert item["max_negative_return_trade_date"] is None
 
 
 def test_update_signal_watch_returns_keeps_baseline_day_at_zero_on_rerun():
@@ -338,6 +352,74 @@ def test_update_signal_watch_returns_keeps_baseline_day_at_zero_on_rerun():
             assert row.return_pct == 0.0
 
 
+def test_update_signal_watch_returns_tracks_cycle_extrema_from_first_seen():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+
+    with Session() as db:
+        db.add_all(
+            [
+                SignalWatchHit(
+                    snapshot_date=date(2026, 4, 28),
+                    stock_id="2330",
+                    stock_name="台積電",
+                    signal_type="LEADER",
+                    industry_name="半導體業",
+                    sub_industry="晶圓代工",
+                    business_summary="a",
+                    reason="a",
+                    theme={},
+                    group_info={},
+                    leader_check={},
+                    signals={},
+                    baseline_trade_date=date(2026, 4, 29),
+                    baseline_price=100.0,
+                    latest_eval_trade_date=date(2026, 4, 29),
+                    latest_eval_price=100.0,
+                    return_pct=0.0,
+                ),
+                SignalWatchHit(
+                    snapshot_date=date(2026, 5, 1),
+                    stock_id="2330",
+                    stock_name="台積電",
+                    signal_type="FOLLOWER",
+                    industry_name="半導體業",
+                    sub_industry="晶圓代工",
+                    business_summary="b",
+                    reason="b",
+                    theme={},
+                    group_info={},
+                    leader_check={},
+                    signals={},
+                ),
+            ]
+        )
+        db.commit()
+        _seed_price(db, "2330", date(2026, 4, 30), 90.0, 95.0)
+        _seed_price(db, "2330", date(2026, 5, 2), 140.0, 145.0)
+
+        updated = archive.update_signal_watch_returns(
+            db,
+            as_of_trade_date=date(2026, 5, 2),
+        )
+        assert updated == 1
+
+        rows = (
+            db.query(SignalWatchHit)
+            .filter(SignalWatchHit.stock_id == "2330")
+            .order_by(SignalWatchHit.snapshot_date.asc())
+            .all()
+        )
+        assert len(rows) == 2
+        for row in rows:
+            assert row.baseline_trade_date == date(2026, 4, 29)
+            assert row.max_positive_return_pct == 45.0
+            assert row.max_positive_return_trade_date == date(2026, 5, 2)
+            assert row.max_negative_return_pct == -5.0
+            assert row.max_negative_return_trade_date == date(2026, 4, 30)
+
+
 def test_refresh_completed_signal_cycles_upserts_40_day_archive_rows():
     engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
     Base.metadata.create_all(bind=engine)
@@ -408,7 +490,12 @@ def test_refresh_completed_signal_cycles_upserts_40_day_archive_rows():
         assert row.return_day_20_pct is not None
         assert row.return_day_30_pct is not None
         assert row.return_day_40_pct is not None
+        assert row.max_positive_return_pct is not None
+        assert row.max_positive_return_trade_date is not None
+        assert row.max_negative_return_pct is None
+        assert row.max_negative_return_trade_date is None
 
         payload = archive.list_completed_archive_summary(db)
         assert payload["items"][0]["stock_id"] == "2330"
         assert payload["items"][0]["completed_trade_date"] == first_seen + timedelta(days=39)
+        assert payload["items"][0]["max_positive_return_pct"] is not None

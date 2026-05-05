@@ -494,6 +494,10 @@ def test_archive_summary_returns_aggregated_rows_and_return_pct(api, monkeypatch
                 latest_eval_trade_date=date(2026, 4, 29),
                 latest_eval_price=121.0,
                 return_pct=(121.0 - 105.0) / 105.0 * 100.0,
+                max_positive_return_pct=(121.0 - 105.0) / 105.0 * 100.0,
+                max_positive_return_trade_date=date(2026, 4, 29),
+                max_negative_return_pct=-3.0,
+                max_negative_return_trade_date=date(2026, 4, 26),
             ),
         ]
     )
@@ -520,6 +524,10 @@ def test_archive_summary_returns_aggregated_rows_and_return_pct(api, monkeypatch
     assert item["latest_eval_trade_date"] == "2026-04-29"
     assert item["latest_eval_price"] == 121.0
     assert round(item["return_pct"], 2) == round((121.0 - 105.0) / 105.0 * 100.0, 2)
+    assert round(item["max_positive_return_pct"], 2) == round((121.0 - 105.0) / 105.0 * 100.0, 2)
+    assert item["max_positive_return_trade_date"] == "2026-04-29"
+    assert item["max_negative_return_pct"] == -3.0
+    assert item["max_negative_return_trade_date"] == "2026-04-26"
 
 
 def test_archive_detail_returns_reports_in_desc_date_order(api, monkeypatch):
@@ -602,6 +610,10 @@ def test_completed_archive_summary_returns_rows(api):
             return_day_20_pct=4.5,
             return_day_30_pct=6.5,
             return_day_40_pct=8.5,
+            max_positive_return_pct=12.25,
+            max_positive_return_trade_date=date(2026, 3, 20),
+            max_negative_return_pct=-4.75,
+            max_negative_return_trade_date=date(2026, 3, 6),
             completed_trade_date=date(2026, 4, 29),
         )
     )
@@ -617,6 +629,10 @@ def test_completed_archive_summary_returns_rows(api):
     assert item["first_seen_date"] == "2026-03-03"
     assert item["hit_count"] == 3
     assert item["return_day_40_pct"] == 8.5
+    assert item["max_positive_return_pct"] == 12.25
+    assert item["max_positive_return_trade_date"] == "2026-03-20"
+    assert item["max_negative_return_pct"] == -4.75
+    assert item["max_negative_return_trade_date"] == "2026-03-06"
     assert item["completed_trade_date"] == "2026-04-29"
 
 

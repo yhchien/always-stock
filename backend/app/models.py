@@ -372,6 +372,10 @@ class SignalWatchHit(Base):
     latest_eval_trade_date = Column(Date, nullable=True)
     latest_eval_price = Column(Float, nullable=True)
     return_pct = Column(Float, nullable=True)
+    max_positive_return_pct = Column(Float, nullable=True)
+    max_positive_return_trade_date = Column(Date, nullable=True)
+    max_negative_return_pct = Column(Float, nullable=True)
+    max_negative_return_trade_date = Column(Date, nullable=True)
     snapshot_generated_at = Column(DateTime, nullable=True)
     job_id = Column(
         String(36),
@@ -408,6 +412,10 @@ class SignalWatchCompletedArchive(Base):
     return_day_20_pct = Column(Float, nullable=True)
     return_day_30_pct = Column(Float, nullable=True)
     return_day_40_pct = Column(Float, nullable=True)
+    max_positive_return_pct = Column(Float, nullable=True)
+    max_positive_return_trade_date = Column(Date, nullable=True)
+    max_negative_return_pct = Column(Float, nullable=True)
+    max_negative_return_trade_date = Column(Date, nullable=True)
     completed_trade_date = Column(Date, nullable=False, index=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)

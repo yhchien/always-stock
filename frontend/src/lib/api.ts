@@ -1281,6 +1281,10 @@ export interface SignalArchiveSummaryItem {
   latest_eval_trade_date: string | null
   latest_eval_price: number | null
   return_pct: number | null
+  max_positive_return_pct: number | null
+  max_positive_return_trade_date: string | null
+  max_negative_return_pct: number | null
+  max_negative_return_trade_date: string | null
 }
 
 export interface SignalArchiveSummaryResponse {
@@ -1304,6 +1308,10 @@ export interface SignalArchiveCompletedItem {
   return_day_20_pct: number | null
   return_day_30_pct: number | null
   return_day_40_pct: number | null
+  max_positive_return_pct: number | null
+  max_positive_return_trade_date: string | null
+  max_negative_return_pct: number | null
+  max_negative_return_trade_date: string | null
   completed_trade_date: string
 }
 
