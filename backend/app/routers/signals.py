@@ -257,6 +257,14 @@ def _run_pipeline_safely(job_id: str, target_date: date) -> None:
             target_date=target_date,
             session_factory=SessionLocal,
         )
+        db = SessionLocal()
+        try:
+            signal_archive.update_signal_watch_returns(
+                db,
+                as_of_trade_date=target_date,
+            )
+        finally:
+            db.close()
     except Exception:
         logger.exception(
             "Background signal pipeline raised: job_id=%s target=%s",

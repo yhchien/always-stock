@@ -285,6 +285,41 @@ def test_regenerate_happy_path_202_and_kicks_off_background(api):
     assert calls == [(body["job_id"], date(2026, 4, 25))]
 
 
+def test_run_pipeline_safely_refreshes_archive_returns(monkeypatch):
+    calls = []
+
+    class DummySession:
+        def close(self):
+            calls.append(("close",))
+
+    dummy_session = DummySession()
+
+    def fake_pipeline(job_id, target_date, session_factory):
+        calls.append(("pipeline", job_id, target_date, session_factory))
+
+    def fake_update(db, *, as_of_trade_date=None):
+        calls.append(("returns", db, as_of_trade_date))
+        return 1
+
+    fake_session_factory = lambda: dummy_session
+
+    monkeypatch.setattr(signals_router, "run_signal_pipeline_sync", fake_pipeline)
+    monkeypatch.setattr(signals_router, "SessionLocal", fake_session_factory)
+    monkeypatch.setattr(
+        signals_router.signal_archive,
+        "update_signal_watch_returns",
+        fake_update,
+    )
+
+    signals_router._run_pipeline_safely("job-1", date(2026, 4, 25))
+
+    assert calls == [
+        ("pipeline", "job-1", date(2026, 4, 25), fake_session_factory),
+        ("returns", dummy_session, date(2026, 4, 25)),
+        ("close",),
+    ]
+
+
 def test_regenerate_returns_409_when_running_job_exists_same_date(api):
     client, db, _ = api
     _seed_trade_date(db, date(2026, 4, 25))
