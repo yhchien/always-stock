@@ -264,42 +264,30 @@ M23 診斷約定：
 
 ---
 
-## 實驗性 / 待決策分支
+## 訪問控制：免登入 + 單一密碼閘門（2026-05-06）
 
-這些 branch 已 commit 完整實作但**未合進 main**，視需要再決定推或棄。
+註冊/登入功能已**永久停用**（程式碼保留可逆，`settings.is_auth_disabled()` 與前端 `feature_flags.isAuthDisabled()` 都 hardcode 回 `True`）。所有 user-bound 資料（watchlist、trade-quality 5 分鐘 cache、signals 每日 10 次配額…）全站共用一個 demo user（lifespan 啟動時 idempotent seed）。
 
-### `feature/disable-auth-gating`（2026-05-04）
-
-**目的**：把註冊/登入功能「取消但不移除」——讓使用者不必登入就能用全部功能，未來想恢復強制登入只要把 env flag 翻回去即可，零程式碼改動。
-
-**啟用方式**（兩端要一起設，缺一邊會出現「前端放行但後端 401」或反之的不一致）：
+進入儀表板前須通過**單一密碼閘門**（`<SiteGate />`）：
 
 ```bash
-# Backend (Render env)
-DISABLE_AUTH=true
-DEMO_USER_EMAIL=demo@always-stock.dev   # optional, default 同此值
-
-# Frontend (Vercel env，build-time，需重新 build 才生效)
-NEXT_PUBLIC_DISABLE_AUTH=true
+# Backend env（必填）
+SITE_GATE_PASSWORD=<請改成自己的密碼>
+SITE_GATE_MAX_ATTEMPTS=3       # optional, default 3
+SITE_GATE_LOCKOUT_SECONDS=300  # optional, default 300（5 分鐘）
 ```
 
 **行為**：
-- `require_user` / `get_optional_user` 略過 cookie 檢查，直接回全站共用 demo user（lifespan 啟動時 idempotent 建立）
-- 前端 `<RequireAuth>` 直接放行，Navbar 隱藏登入/註冊/登出按鈕，`/login` 顯示「已停用」提示
-- 所有 endpoint 的 `Depends(require_user)` 一行不動；`/login` / `/register` / `/logout` 路由保留可直接呼叫
+- 第一次造訪 → 顯示密碼輸入畫面，主頁面完全不渲染
+- 答對 → localStorage 寫 `unlocked_until = now + 7 天`，期間直接放行
+- 答錯 → 計數 +1（存 localStorage），達上限寫 `locked_until = now + 5 分鐘`，期間只顯示鎖定畫面
+- 鎖定到期 → 自動回密碼輸入；嘗試次數重置
+- 後端 `POST /api/gate/verify` 用 `hmac.compare_digest` 比對；`SITE_GATE_PASSWORD` 未設時回 503（不會洞開）
 
 **Trade-offs**：
-- watchlist / trade-quality 5 分鐘 cache / signals/regenerate 每日 10 次配額會**全站共用一個 demo user**
-- demo user `password_hash` 是無對應原文的 placeholder，無法被當作正常帳號登入
-- 兩個 env 都關掉 → 行為完全回到強制登入，無資料遷移成本
-
-**取出來跑**：
-```bash
-git checkout feature/disable-auth-gating
-# 設好兩端的 DISABLE_AUTH / NEXT_PUBLIC_DISABLE_AUTH 後重啟 / rebuild
-```
-
-要正式上線時再開 PR merge；不要時 `git branch -D feature/disable-auth-gating` 刪掉即可。
+- 鎖定計數存 localStorage，使用者主動清掉就能繞過。個人專案信任使用者，這個強度夠用。要更嚴需改成後端按 IP rate limit
+- 解鎖維持 7 天；想短/長就改 `SiteGate.tsx` 的 `UNLOCK_DURATION_MS`
+- 密碼放 backend env，不會 leak 進 frontend bundle
 
 ---
 

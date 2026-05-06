@@ -62,12 +62,33 @@ def get_session_ttl_days() -> int:
 
 
 def is_auth_disabled() -> bool:
-    """是否完全停用註冊/登入。啟用時 require_user / get_optional_user 會回傳一個
-    全站共用的 demo user，所有 user-bound 資料（watchlist、trade-quality cache 等）
-    都會綁在這個 user 上。env 翻回 false 即可恢復強制登入。
+    """全站永遠免註冊/登入：require_user / get_optional_user 一律回傳全站共用 demo user，
+    所有 user-bound 資料（watchlist、trade-quality cache 等）都綁在這個 user 上。
+    入站訪問改由 SITE_GATE_PASSWORD 單一密碼閘門控管。
     """
-    return os.getenv("DISABLE_AUTH", "false").strip().lower() in {"1", "true", "yes"}
+    return True
 
 
 def get_demo_user_email() -> str:
     return os.getenv("DEMO_USER_EMAIL", "demo@always-stock.dev").strip().lower()
+
+
+def get_site_gate_password() -> str:
+    """單一密碼閘門：使用者進入主頁面前須輸入此密碼。
+    未設時回空字串；router 層會在空字串時回 503，避免無密碼狀態下整站洞開。
+    """
+    return os.getenv("SITE_GATE_PASSWORD", "").strip()
+
+
+def get_site_gate_max_attempts() -> int:
+    try:
+        return max(1, int(os.getenv("SITE_GATE_MAX_ATTEMPTS", "3")))
+    except ValueError:
+        return 3
+
+
+def get_site_gate_lockout_seconds() -> int:
+    try:
+        return max(1, int(os.getenv("SITE_GATE_LOCKOUT_SECONDS", "300")))
+    except ValueError:
+        return 300

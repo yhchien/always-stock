@@ -1607,3 +1607,37 @@ slice 1~9 完成後 review 出 3 個小瑕疵，集中於 slice 11 修掉，讓�
 - **`TradeQualityAnalysis.tsx` 不動**：那是首頁獨立的 AI 交易質量分析「工具」，使用者自由選 stock + buy_date 跑分析，跟 watchlist 加入流程無關；watchlist 卡片深連結不再帶 `?buy_date=X` 但 URL prefill 邏輯保留（未來人為貼 URL 仍可工作）
 - **Gotcha**：`POST /api/watchlist` 需要該股至少一筆 `daily_price` 才能算 `avg_price`；新上市 / ETL 漏抓的個股會撞 400。`stocks_master` 有但 `daily_price` 沒資料的邊界情境是真的會發生的（特別在新股當日加入），錯誤訊息已含「價格資料」關鍵字方便使用者理解
 - **Gotcha**：DB legacy column 保留代表 trade quality 的 `(user_id, stock_id, buy_date, snapshot_trade_date)` unique key 維持「每個 entry 一個固定 buy_date、每天一筆 snapshot」的語義；如果未來真的要砍 column，必須同時改 snapshot 表 schema 與 cache lookup 條件
+
+## 全面免登入 + 單一密碼閘門（2026-05-06）
+
+把原本的「DISABLE_AUTH=true 可選 flag」直接 hardcode：`backend/app/settings.py::is_auth_disabled()` 與 `frontend/src/lib/feature_flags.ts::isAuthDisabled()` **永遠回 True**。`feature/disable-auth-gating` 分支 merge 進 main 後，去掉 flag 環境變數，邏輯一行不動就達成「全站免註冊免登入」。
+
+### 後端
+- **`require_user` / `get_optional_user`**：disable-auth merge 帶進來的邏輯——一律回傳全站共用 demo user（`demo@always-stock.dev`，lifespan `_seed_demo_user_if_disabled` 啟動時 idempotent seed）
+- **新 router `backend/app/routers/gate.py`**：
+  - `POST /api/gate/verify { password }` — 用 `hmac.compare_digest` 比對 `SITE_GATE_PASSWORD` env，正確 200 / 錯誤 403 / 未設 env 503（不洞開）
+  - `GET /api/gate/config` — 回 `{ max_attempts, lockout_seconds }`，給前端 mount 時讀取避免閘門參數寫死兩邊
+- **`settings.py` 新增 4 個 helper**：`get_site_gate_password()` / `get_site_gate_max_attempts()` / `get_site_gate_lockout_seconds()` + 重寫 `is_auth_disabled()` 回 True
+- **舊測試刪 4 個**：`test_me_requires_session` / `test_me_returns_current_user` / `test_logout_revokes_session` / `test_expired_session_is_rejected`——永久免登入後系統不再讀 cookie，這 4 個測試的契約失效
+
+### 前端
+- **`<SiteGate>`**（`frontend/src/components/SiteGate.tsx`）：包在 `AppProviders` 最外層，未通過密碼前 Navbar / 主內容完全不渲染
+  - 四狀態：`boot`（SSR 中性畫面，避免 hydration mismatch）/ `prompt`（密碼輸入）/ `locked`（鎖定畫面）/ `unlocked`（render children）
+  - localStorage keys：`always-stock:gate:unlocked_until` / `always-stock:gate:locked_until` / `always-stock:gate:attempts`
+  - 鎖定 setInterval tick 每秒重算，到時自動切回 prompt + 重置 attempts
+- **`feature_flags.isAuthDisabled()` hardcode true**：保留函式名讓既有 caller (`<RequireAuth />` / `Navbar` / `/login`) 一行不動
+
+### Env 必填 / 選填
+- `SITE_GATE_PASSWORD`（必填，未設 → verify 永遠 503）
+- `SITE_GATE_MAX_ATTEMPTS`（選填，default 3）
+- `SITE_GATE_LOCKOUT_SECONDS`（選填，default 300 = 5 分鐘）
+- 舊的 `DISABLE_AUTH=true` env 可從 Render dashboard 拿掉（`is_auth_disabled()` 已 hardcode）
+
+### Gotcha
+- **鎖定狀態存 localStorage 可被主動清掉繞過**：個人專案信任使用者，這個強度夠用；要更嚴需改成後端按 IP rate limit
+- **解鎖維持 7 天**：寫死在 `SiteGate.tsx::UNLOCK_DURATION_MS`，不走 env（避免增加部署複雜度）
+- **SSR boot phase 必要**：`useState("boot")` 初值讓 server / client first render 都顯示「載入中」中性畫面，避免 hydration mismatch；mount 後 useEffect 才讀 localStorage 切換到實際狀態
+- **`hmac.compare_digest`**：constant-time 比對，避免 timing attack
+- **`SITE_GATE_PASSWORD` 用 `.strip()`**：環境變數取值 strip trailing whitespace；前端送進來的 password **不** strip，複製貼上多空白會驗失敗（刻意 — 避免 false positive）
+- **demo user `password_hash` 是無對應原文 placeholder**：`disabled-auth-demo-user` 經 bcrypt，無 plaintext 對應，無法當正常帳號登入
+- **既有 `Depends(require_user)` 一行不動**：所有 endpoint 認證寫法保留，未來恢復多帳號只需把 `is_auth_disabled()` 改回 env-driven，零 endpoint 改動

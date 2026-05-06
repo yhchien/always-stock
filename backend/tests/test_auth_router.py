@@ -143,55 +143,12 @@ def test_login_inactive_user(api):
     assert res.status_code == 401
 
 
-def test_me_requires_session(api):
-    client, _ = api
-    res = client.get("/api/auth/me")
-    assert res.status_code == 401
-
-
-def test_me_returns_current_user(api):
-    client, _ = api
-    client.post(
-        "/api/auth/register",
-        json={"email": "alice@example.com", "password": "passw0rd!"},
-    )
-    res = client.get("/api/auth/me")
-    assert res.status_code == 200
-    assert res.json()["email"] == "alice@example.com"
-
-
-def test_logout_revokes_session(api):
-    client, db = api
-    client.post(
-        "/api/auth/register",
-        json={"email": "alice@example.com", "password": "passw0rd!"},
-    )
-    assert client.get("/api/auth/me").status_code == 200
-
-    logout = client.post("/api/auth/logout")
-    assert logout.status_code == 200
-
-    # TestClient 會保留 cookie jar，但 session 已 revoked，/me 應回 401
-    assert client.get("/api/auth/me").status_code == 401
-
-    # DB 層面 revoked_at 已設定
-    session_row = db.query(UserSession).first()
-    assert session_row is not None
-    assert session_row.revoked_at is not None
-
-
-def test_expired_session_is_rejected(api):
-    client, db = api
-    client.post(
-        "/api/auth/register",
-        json={"email": "alice@example.com", "password": "passw0rd!"},
-    )
-    # 手動把 expires_at 設到過去
-    session_row = db.query(UserSession).first()
-    session_row.expires_at = datetime.utcnow() - timedelta(days=1)
-    db.commit()
-
-    assert client.get("/api/auth/me").status_code == 401
+# NOTE: 移除 4 個既有測試（test_me_requires_session / test_me_returns_current_user /
+# test_logout_revokes_session / test_expired_session_is_rejected）。
+# 全站永久 DISABLE_AUTH=true 後 require_user / get_optional_user 不再讀 cookie，
+# 「沒帶 cookie / session 過期 / revoked」皆會回 demo user，原契約已失效。
+# 對應 disabled 模式的正向測試在 test_disable_auth_makes_me_endpoint_return_demo_user
+# 與 test_disable_auth_allows_protected_endpoints_without_cookie。
 
 
 def test_email_is_normalized_to_lowercase(api):

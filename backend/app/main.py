@@ -15,6 +15,7 @@ from app.routers import (
     backtest,
     brokers,
     financials,
+    gate,
     industries,
     market,
     realtime,
@@ -220,6 +221,7 @@ app.add_middleware(
 )
 
 app.include_router(auth_router.router, prefix="/api")
+app.include_router(gate.router, prefix="/api")
 app.include_router(industries.router, prefix="/api")
 app.include_router(market.router, prefix="/api")
 app.include_router(stocks.router, prefix="/api")
