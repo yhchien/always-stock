@@ -306,3 +306,32 @@ def test_session_cookie_auto_uses_secure_when_forwarded_proto_is_https(api, monk
     set_cookie = res.headers.get("set-cookie", "").lower()
     assert "samesite=none" in set_cookie
     assert "secure" in set_cookie
+
+
+def test_disable_auth_makes_me_endpoint_return_demo_user(api, monkeypatch):
+    """DISABLE_AUTH=true → 即使沒有 session cookie，/api/auth/me 也回 demo user。"""
+    from app import auth as auth_module
+    from app.settings import get_demo_user_email
+
+    monkeypatch.setattr(auth_module, "is_auth_disabled", lambda: True)
+    client, _db = api
+
+    res = client.get("/api/auth/me")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["email"] == get_demo_user_email()
+    assert body["is_admin"] is False
+
+
+def test_disable_auth_allows_protected_endpoints_without_cookie(api, monkeypatch):
+    """DISABLE_AUTH=true → require_user 也不擋；watchlist 之類的 endpoint 應放行回 demo user 資料。"""
+    from app import auth as auth_module
+
+    monkeypatch.setattr(auth_module, "is_auth_disabled", lambda: True)
+    client, _db = api
+
+    res = client.get("/api/watchlist")
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["total"] == 0
+    assert isinstance(body["items"], list)
