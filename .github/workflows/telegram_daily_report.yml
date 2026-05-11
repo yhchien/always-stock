@@ -1,0 +1,66 @@
+name: Telegram Daily Report
+
+on:
+  schedule:
+    # 台北 21:30（週一到週五）= UTC 13:30
+    # 時機：ETL（18:00）+ M25 wtq（~21:00）跑完後；Telegram 每日清單報告同樣依賴
+    # daily_price / inst_stock_flow / trade quality snapshot，所以排在它們之後。
+    - cron: '30 13 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      chat_id:
+        description: '只跑單一 chat_id（debug 用）'
+        required: false
+      dry_run:
+        description: 'dry-run（true / false），不打 OpenAI / Telegram'
+        required: false
+        default: 'false'
+
+jobs:
+  run_telegram_report:
+    runs-on: ubuntu-latest
+    # 20 chat × 20 檔 × ~15 秒（OpenAI）≈ 100 分鐘上限；20 chat 對個人專案夠用
+    timeout-minutes: 120
+
+    env:
+      TZ: Asia/Taipei
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --quiet -r backend/requirements.txt
+
+      - name: Run telegram daily report
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          INPUT_CHAT_ID: ${{ github.event.inputs.chat_id }}
+          INPUT_DRY_RUN: ${{ github.event.inputs.dry_run }}
+        run: |
+          set +e
+          ARGS=""
+          if [ -n "$INPUT_CHAT_ID" ]; then
+            ARGS="$ARGS --chat-id $INPUT_CHAT_ID"
+          fi
+          if [ "$INPUT_DRY_RUN" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          python3 run_telegram_daily_report.py $ARGS
+          EXIT=$?
+          echo "exit_code=$EXIT" >> "$GITHUB_OUTPUT"
+          echo "Daily report exit code: $EXIT"
+          # 0=ok / 1=partial / 5=holiday → pass
+          # 2=all_failed / 3=config_error → fail
+          case "$EXIT" in
+            0|1|5) exit 0 ;;
+            *) exit 1 ;;
+          esac

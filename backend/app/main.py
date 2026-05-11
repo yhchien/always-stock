@@ -105,6 +105,30 @@ def _seed_demo_user_if_disabled() -> None:
         db.close()
 
 
+def _ensure_telegram_tables() -> None:
+    """啟動時確保 Telegram bot 新表存在（telegram_chats / telegram_watchlist /
+    telegram_trade_quality_snapshots）。仿 M23 / M25 pattern：純建表、失敗不擋啟動。
+    """
+    from app.database import Base, engine
+    from app.models import (  # noqa: F401 — 觸發 metadata 註冊
+        TelegramChat,
+        TelegramTradeQualitySnapshot,
+        TelegramWatchlistEntry,
+    )
+
+    try:
+        Base.metadata.create_all(
+            bind=engine,
+            tables=[
+                TelegramChat.__table__,
+                TelegramWatchlistEntry.__table__,
+                TelegramTradeQualitySnapshot.__table__,
+            ],
+        )
+    except Exception:
+        logger.exception("Failed to create Telegram bot tables at startup")
+
+
 def _ensure_m23_tables() -> None:
     """啟動時確保 M23 訊號管線新表存在（margin_trade / signal_snapshots / signal_generation_jobs）。
 
@@ -146,6 +170,7 @@ async def lifespan(app: FastAPI):
     _seed_admin_user()
     _seed_demo_user_if_disabled()
     _ensure_m23_tables()
+    _ensure_telegram_tables()
     _ensure_industry_flow_schema()
     _ensure_signal_watch_schema()
 

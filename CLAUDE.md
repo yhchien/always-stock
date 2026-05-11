@@ -1641,6 +1641,79 @@ slice 1~9 完成後 review 出 3 個小瑕疵，集中於 slice 11 修掉，讓�
 - **「未來連續 3 個交易日」精確定義**：觸發日 D 之後的 D+1, D+2, D+3 共 3 個交易日；D 本身不算「未來」；settle_date = D+3（grace 期最後一天）；單元測試覆蓋一路下殺、grace 內反彈、剛跌破還沒過 grace 三種 case
 - **+45% 達標純前端衍生**：直接讀既有 `max_positive_return_pct`，無新增 DB 欄位、無新增 ETL；不結算
 
+## Telegram bot list 指令系統（2026-05-12）
+
+### Scope
+- 個人專屬 watchlist + 每日 21:30 自動推送清單報告 + 隨時觸發 trade quality 分析
+- 與站台 user_watchlist / M25 snapshot 完全獨立（chat_id 不映射 users 表），刻意設計，避免 Telegram 使用者污染 web 帳號表
+- 共用既有 `run_trade_quality_for_user(db, user=None, ...)` 跑 trade quality；`user=None` 自動跳過 M25 DB cache 路徑
+
+### DB Schema（3 張獨立表，啟動時 `_ensure_telegram_tables` 自動 idempotent 建表）
+- `telegram_chats (chat_id BIGINT PK, password_verified_at, registered_at, last_seen_at, chat_label)` — 註冊白名單，須通過 `SITE_GATE_PASSWORD` 才寫入
+- `telegram_watchlist (chat_id FK CASCADE, stock_id, added_at, UNIQUE(chat_id, stock_id))` — 觀察清單，上限 20 檔（service 層強制）
+- `telegram_trade_quality_snapshots (chat_id FK CASCADE, stock_id, snapshot_trade_date, ...M17 payload..., key_factors JSON, source, status, UNIQUE(chat_id, stock_id, snapshot_trade_date))` — 完整 M17 結果，沒有 `buy_date` 欄位（Telegram 沒有「買進均價」概念，每次都用最新交易日當 buy_date）
+
+### 指令清單（全部以 `list` 開頭，case-insensitive）
+| 指令 | 行為 | 同步/非同步 |
+|------|------|-----------|
+| `list help` | 顯示完整指令說明 | 同步 |
+| `list register <密碼>` | 比對 SITE_GATE_PASSWORD → 寫 telegram_chats | 同步 |
+| `list show` | 顯示清單（含每檔最新股價 + sub_industry） | 同步 |
+| `list add 2330` / `list add 2330, 2317` | 新增單/多檔；找不到的標紅、超過 20 標琥珀 | 同步 |
+| `list delete 2330` / `list delete 2330, 2317` | 刪除單/多檔；自動顯示剩餘清單 | 同步 |
+| `list watch 2330 detail` | 讀 (chat_id, stock_id) 最新 ok 快照；無資料提示用 list run | 同步 |
+| `list run 2330` | 跑單檔 trade quality → 寫快照 → 推送結果 | **非同步**（背景任務） |
+| `list run all` | 跑清單全部 → 寫快照 → 推送彙整 | **非同步**（背景任務） |
+
+### 非同步背景任務模式（list run / list run all）
+- handler 先 `try_acquire(chat_id)` 拿鎖；拿不到 → 直接回「⏳ 已有任務在執行中」
+- 拿到鎖 → 立即回「⏳ 已開始分析，跑完會推送」訊息
+- `context.application.create_task(_run_*_background(...))` 排背景任務
+- 背景任務 finally 區塊 `release(chat_id)`，確保鎖一定釋放
+- timeout 10 分鐘：`locks._is_expired` 在 `try_acquire` 時順手清過期鎖（worker crash 卡死保護）
+- in-memory dict，server 重啟會清空（個人專案接受）
+
+### 21:30 cron（`.github/workflows/telegram_daily_report.yml`）
+- cron `30 13 * * 1-5` UTC = 台北 21:30 週一~週五
+- 串在 ETL（18:00）+ M25 wtq（~21:00）後，確保拿到當日完整 trade quality 資料
+- `run_telegram_daily_report.py` 邏輯：
+  - 對每個 chat 撈 watchlist
+  - 對每檔股票：若已有 `snapshot_trade_date == today` 的 ok 快照 → 直接讀（避免重打 OpenAI），否則 `run_trade_quality_for_user` 跑新分析寫 cron snapshot
+  - `formatters.format_daily_report(chat_label, [(snap, response), ...])` 組訊息 → 切 chunk → urllib 直接打 Telegram Bot API sendMessage
+- 用 urllib 不用 python-telegram-bot `Application`，避免 cron script 管理 async event loop
+- exit code: 0 ok / 1 partial / 2 all_failed / 5 holiday / 3 config_error
+
+### 註冊密碼策略
+- 與站台閘門共用 `SITE_GATE_PASSWORD`，避免雙密碼管理
+- `hmac.compare_digest` 防 timing attack；密碼 strip 後比對
+- 環境變數沒設 → registration 回「⚠️ 系統尚未設定」（不允許未驗證註冊）
+
+### Gotcha
+- **handler 路由「list」前綴**：`stock_query_handler` 開頭加 `text.lower().startswith("list")` 檢查並 delegate 給 `list_handler`，避免「list」字首訊息被當成股票代號
+- **背景任務拿不到 update.message**：`_run_*_background` 只能拿 `context.bot.send_message(chat_id=...)`，不能 `update.message.reply_text`，因為 update object 不能跨 task 安全傳遞
+- **`run_trade_quality_for_user(user=None)`** 已是純計算路徑：跳過 M25 DB cache 讀寫、跳過 _persist_db_cache_if_logged_in，剛好就是 Telegram 需要的「跑分析但不污染 M25 snapshot」行為，**無需另外抽 `compute_trade_quality_payload`**
+- **`list watch <id> detail` 用 latest ok 快照**：status='failed' 的 row 跳過（避免使用者讀到 partial / error payload）；沒有任何 ok 快照 → 提示「請先用 list run」
+- **訊息 Markdown 跳脫**：股票代號用 `` `2330` `` 反引號包；報告長度可能 > 4096 字（Telegram 上限），靠 `chunk_for_telegram` 切，每行不切斷
+- **快照表沒有 buy_date 欄位**：每次都用 `get_latest_industry_trade_date(db)` 當 buy_date 傳給 `run_trade_quality_for_user`；snapshot_trade_date 用同一個值
+- **chat_id 用 BigInteger**：Telegram supergroup 是負 int64（-1001234567890 之類），Integer 在 PostgreSQL 會溢位
+- **CASCADE 刪除設計**：telegram_watchlist + telegram_trade_quality_snapshots 的 chat_id 都是 ForeignKey ondelete='CASCADE'，未來刪 chat 時自動清乾淨，無孤兒 row
+- **`pytest.fixture autouse=True` 重置 in-memory locks**：避免 test 之間殘留鎖；`_reset_all_for_tests()` 是測試專用 helper
+
+### Files
+- `backend/app/telegram/` — 6 個模組（`__init__.py` / `locks.py` / `registration.py` / `watchlist_service.py` / `trade_quality_service.py` / `formatters.py` / `commands.py`）
+- `backend/app/telegram_bot.py` — `list_handler` + `_run_single_background` + `_run_all_background` 三個新 async 函式
+- `backend/run_telegram_daily_report.py` — cron 入口
+- `.github/workflows/telegram_daily_report.yml` — 21:30 cron workflow
+- `backend/tests/test_telegram_{locks,registration,watchlist_service,commands,formatters}.py` — 75 個單元測試
+
+### 部署需求（Render 環境變數）
+- `TELEGRAM_BOT_TOKEN` — 既有（M5 已設定）
+- `TELEGRAM_WEBHOOK_URL` — 既有（M5 已設定）
+- `SITE_GATE_PASSWORD` — 既有（2026-05-06 站台閘門已設）
+- `OPENAI_API_KEY` — 既有（M17 已設定）
+- 不需要新增任何 env
+- GitHub Actions secrets 需要 `TELEGRAM_BOT_TOKEN`（21:30 cron 推送用）
+
 ## 全面免登入 + 單一密碼閘門（2026-05-06）
 
 把原本的「DISABLE_AUTH=true 可選 flag」直接 hardcode：`backend/app/settings.py::is_auth_disabled()` 與 `frontend/src/lib/feature_flags.ts::isAuthDisabled()` **永遠回 True**。`feature/disable-auth-gating` 分支 merge 進 main 後，去掉 flag 環境變數，邏輯一行不動就達成「全站免註冊免登入」。

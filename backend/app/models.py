@@ -492,6 +492,94 @@ class WatchlistTradeQualitySnapshot(Base):
     )
 
 
+class TelegramChat(Base):
+    """Telegram bot 註冊使用者（chat_id 唯一）。
+
+    使用者透過 `list register <password>` 通過 SITE_GATE_PASSWORD 驗證後寫入此表；
+    後續任何 list 指令會先檢查此表是否存在對應 chat_id，未註冊 → 拒絕。
+
+    chat_id 原生為 Telegram int64；BigInteger 用以涵蓋 supergroup（負值）。
+    與 users / user_watchlist 完全獨立，刻意不關聯，符合「Telegram 自成一套」設計。
+    """
+    __tablename__ = "telegram_chats"
+
+    chat_id = Column(BigInteger, primary_key=True)
+    password_verified_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    registered_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_seen_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    chat_label = Column(String, nullable=True)  # username / first_name，純顯示用
+
+
+class TelegramWatchlistEntry(Base):
+    """Telegram 觀察清單條目（與 user_watchlist 完全獨立，不共享資料）。
+
+    每個 chat_id 上限 20 檔（service 層強制）；CASCADE 確保 chat 刪除時清空條目。
+    """
+    __tablename__ = "telegram_watchlist"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    chat_id = Column(
+        BigInteger,
+        ForeignKey("telegram_chats.chat_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    stock_id = Column(String, nullable=False)
+    added_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("chat_id", "stock_id", name="uq_telegram_watchlist_chat_stock"),
+    )
+
+
+class TelegramTradeQualitySnapshot(Base):
+    """Telegram chat 的 trade quality 快照（獨立於 M25 watchlist_trade_quality_snapshots）。
+
+    寫入時機：
+    - list run <代號>：背景任務跑完後寫一筆 source='manual'
+    - list run all：跑完全清單後對每檔寫一筆 source='manual'
+    - 每日 21:30 cron：對全 chat 全清單跑完寫 source='cron'
+
+    list watch <代號> detail 讀 (chat_id, stock_id) 的最新一筆（依 snapshot_trade_date DESC）。
+    沒有 buy_date 欄位 — Telegram 沒有「買進均價」概念，每次跑都用 DB 最新交易日當 buy_date。
+    """
+    __tablename__ = "telegram_trade_quality_snapshots"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    chat_id = Column(
+        BigInteger,
+        ForeignKey("telegram_chats.chat_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    stock_id = Column(String, nullable=False, index=True)
+    snapshot_trade_date = Column(Date, nullable=False, index=True)
+
+    # M17 trade quality payload 精簡版（Telegram 顯示用 — 完整 report 用文字訊息推送）
+    rating = Column(String(20), nullable=True)
+    rating_label = Column(String(40), nullable=True)
+    classification = Column(String(2), nullable=True)
+    summary = Column(Text, nullable=True)
+    target_price_low = Column(Float, nullable=True)
+    target_price_high = Column(Float, nullable=True)
+    exit_price_low = Column(Float, nullable=True)
+    exit_price_high = Column(Float, nullable=True)
+    report_markdown = Column(Text, nullable=True)
+    key_factors = Column(JSON, nullable=True)
+
+    source = Column(String(16), nullable=False)  # manual | cron
+    status = Column(String(16), nullable=False, default="ok")  # ok | failed
+    error_message = Column(Text, nullable=True)
+    generated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "chat_id", "stock_id", "snapshot_trade_date",
+            name="uq_telegram_tqs_chat_stock_date",
+        ),
+    )
+
+
 class IndustryMapping(Base):
     """
     產業分類對照表（雙軌驗證用）
