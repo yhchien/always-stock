@@ -1608,6 +1608,39 @@ slice 1~9 完成後 review 出 3 個小瑕疵，集中於 slice 11 修掉，讓�
 - **Gotcha**：`POST /api/watchlist` 需要該股至少一筆 `daily_price` 才能算 `avg_price`；新上市 / ETL 漏抓的個股會撞 400。`stocks_master` 有但 `daily_price` 沒資料的邊界情境是真的會發生的（特別在新股當日加入），錯誤訊息已含「價格資料」關鍵字方便使用者理解
 - **Gotcha**：DB legacy column 保留代表 trade quality 的 `(user_id, stock_id, buy_date, snapshot_trade_date)` unique key 維持「每個 entry 一個固定 buy_date、每天一筆 snapshot」的語義；如果未來真的要砍 column，必須同時改 snapshot 表 schema 與 cache lookup 條件
 
+## M23 40日追蹤：-30% 提前結算 + +45% 達標標注（2026-05-11）
+
+### 規則
+- **提前結算路徑**：每檔股票在追蹤期間，若 `return_pct` 首次跌破 -30%（threshold = `EARLY_EXIT_THRESHOLD_PCT`），開始進入 **3 個交易日反彈寬限期**（`EARLY_EXIT_GRACE_TRADE_DAYS`）；若這 3 個交易日內任一天 return_pct ≥ -30%（漲回），警示解除、繼續正常 40 日追蹤；若 3 天結束都仍 < -30%，於第 3 個寬限日**提前結算**：寫入 `signal_watch_completed_archives`（`closure_reason='early_exit_stop_loss'`、`completed_trade_date=寬限期最後一天`）+ 刪除 `signal_watch_hits` 該股所有 row（cycle 結束）
+- **+45% 達標標注**：當 `max_positive_return_pct >= 45.0`（`PEAK_MILESTONE_PCT`），前端 active / completed 表都加金色 chip「⭐ +45% 達標」；僅標注、**不結算**
+
+### 後端
+- `backend/app/models.py::SignalWatchCompletedArchive` 新增 `closure_reason` 欄位（`String(32)`, NOT NULL, default `completed_40_days`），值域 `completed_40_days | early_exit_stop_loss`
+- `backend/app/signal_watch_schema.py::ensure_signal_watch_hit_return_columns` 加 `ALTER TABLE ... ADD COLUMN closure_reason VARCHAR(32) NOT NULL DEFAULT 'completed_40_days'`（Render 啟動時 idempotent 補欄位，老 DB 自動 backfill 為 `completed_40_days`）
+- `backend/app/signals/archive.py`：
+  - 新增 `_post_baseline_returns(db, stock_id, baseline_trade_date, baseline_price, through_trade_date)` 回升序 `(trade_date, return_pct)` list
+  - 新增 `_resolve_early_exit_settle_date(returns)` 純函式：找最後一次 ≥ threshold 的索引；之後第一天 = 觸發日 D；若 D+3（含）已落在資料內，回傳 D+3 為 settle_date；否則 None
+  - 新增 `_build_early_exit_archive_item(...)` + `_upsert_completed_archive(item)` 共用 helper（`refresh_completed_signal_cycles` 也改用 `_upsert_completed_archive`，避免兩處重複 setattr）
+  - `update_signal_watch_returns`：每檔股票算完 baseline + return 後，呼叫 `_post_baseline_returns` + `_resolve_early_exit_settle_date`；命中時 push 進 `early_exits` list；loop 結束後統一 `_upsert_completed_archive` + `db.query(SignalWatchHit).filter(stock_id==X).delete()`；最後仍呼叫 `refresh_completed_signal_cycles` 處理 40 日滿期 case
+  - `_serialize_completed_archive_item` + `list_completed_archive_summary` 都帶 `closure_reason`（`row.closure_reason or CLOSURE_REASON_COMPLETED_40_DAYS` 保護老資料）
+
+### 前端
+- `frontend/src/lib/api.ts`：`SignalArchiveCompletedItem` 新增 `closure_reason: SignalClosureReason` 欄位；新 export type `SignalClosureReason = "completed_40_days" | "early_exit_stop_loss"`
+- `frontend/src/app/signals/archive/page.tsx`：
+  - `StopLossWarnChip`（紅色「⚠ 跌破 -30%」）：active table 上對 `return_pct <= -30` 或 `max_negative_return_pct <= -30` 顯示
+  - `PeakMilestoneChip`（金色「⭐ +45% 達標」）：active + completed table 上對 `max_positive_return_pct >= 45` 顯示
+  - `ClosureReasonChip`：completed table 對 `early_exit_stop_loss` 紅色「提前結算」、`completed_40_days` 灰色「40 日結束」
+  - header 說明卡多加一塊「結算與標注規則」解釋兩種 chip
+- `frontend/src/components/DailySignalsPanel.tsx` L0 header 加「每日將於晚上 21:30 更新」副字
+
+### Gotcha
+- **跑 cron 後 active rows 立即消失**：提前結算後，`signal_watch_hits` 該股 row 全清掉；前端 L0 panel 與 archive active table 立刻看不到，永久紀錄 table 看得到
+- **未來再被抓到 = 新 cycle**：清掉 active 後，下次 `persist_signal_watch_hits` 看不到 prior return state，新 hit 會以新的 `first_seen_date` 進入新 cycle；`signal_watch_completed_archives` 的 UNIQUE `(stock_id, first_seen_date)` 不會撞 key
+- **`closure_reason` 老 DB 是空字串/NULL**：`list_completed_archive_summary` 用 `row.closure_reason or CLOSURE_REASON_COMPLETED_40_DAYS` fallback；ALTER TABLE 加欄位時 NOT NULL DEFAULT 也會自動把現有列補成 `completed_40_days`
+- **`refresh_completed_signal_cycles` 顯式覆寫 closure_reason='completed_40_days'**：避免某 stock 之前曾被 early-exit 寫入但 cycle 又重新長到 40 日的邊界情境誤標
+- **「未來連續 3 個交易日」精確定義**：觸發日 D 之後的 D+1, D+2, D+3 共 3 個交易日；D 本身不算「未來」；settle_date = D+3（grace 期最後一天）；單元測試覆蓋一路下殺、grace 內反彈、剛跌破還沒過 grace 三種 case
+- **+45% 達標純前端衍生**：直接讀既有 `max_positive_return_pct`，無新增 DB 欄位、無新增 ETL；不結算
+
 ## 全面免登入 + 單一密碼閘門（2026-05-06）
 
 把原本的「DISABLE_AUTH=true 可選 flag」直接 hardcode：`backend/app/settings.py::is_auth_disabled()` 與 `frontend/src/lib/feature_flags.ts::isAuthDisabled()` **永遠回 True**。`feature/disable-auth-gating` 分支 merge 進 main 後，去掉 flag 環境變數，邏輯一行不動就達成「全站免註冊免登入」。

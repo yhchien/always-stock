@@ -499,3 +499,169 @@ def test_refresh_completed_signal_cycles_upserts_40_day_archive_rows():
         assert payload["items"][0]["stock_id"] == "2330"
         assert payload["items"][0]["completed_trade_date"] == first_seen + timedelta(days=39)
         assert payload["items"][0]["max_positive_return_pct"] is not None
+        assert payload["items"][0]["closure_reason"] == archive.CLOSURE_REASON_COMPLETED_40_DAYS
+
+
+def _seed_consecutive_prices(
+    db,
+    stock_id: str,
+    start_date: date,
+    daily_close: list[float],
+) -> list[date]:
+    """連續交易日 seed close_price（用 day_offset 等於日曆日簡化測試）."""
+    dates: list[date] = []
+    for offset, close_price in enumerate(daily_close):
+        trade_date = start_date + timedelta(days=offset)
+        _seed_price(db, stock_id, trade_date, open_price=close_price, close_price=close_price)
+        dates.append(trade_date)
+    return dates
+
+
+def test_resolve_early_exit_settle_date_pure_logic():
+    # 一路都 >= -30% → 不結算
+    assert archive._resolve_early_exit_settle_date(
+        [(date(2026, 5, 1), -10.0), (date(2026, 5, 2), -25.0), (date(2026, 5, 3), -28.0)]
+    ) is None
+
+    # 跌破當天且 grace 還沒過完（只有 1 天）→ 不結算
+    assert archive._resolve_early_exit_settle_date(
+        [(date(2026, 5, 1), -32.0)]
+    ) is None
+
+    # 跌破 + grace 2 天都 < -30% → grace 還差 1 天 → 不結算
+    assert archive._resolve_early_exit_settle_date(
+        [
+            (date(2026, 5, 1), -32.0),
+            (date(2026, 5, 2), -33.0),
+            (date(2026, 5, 3), -35.0),
+        ]
+    ) is None
+
+    # 跌破 + grace 3 天都 < -30% → 在 D+3 結算
+    assert archive._resolve_early_exit_settle_date(
+        [
+            (date(2026, 5, 1), -32.0),
+            (date(2026, 5, 2), -33.0),
+            (date(2026, 5, 3), -35.0),
+            (date(2026, 5, 4), -31.0),
+        ]
+    ) == date(2026, 5, 4)
+
+    # grace 期間任一天漲回 -30% 以上 → 警示重置；之後若再跌破要重新等
+    assert archive._resolve_early_exit_settle_date(
+        [
+            (date(2026, 5, 1), -32.0),
+            (date(2026, 5, 2), -28.0),  # 漲回 → 重置
+            (date(2026, 5, 3), -33.0),  # 再次跌破，這是新的 D
+            (date(2026, 5, 4), -34.0),
+        ]
+    ) is None  # 新 D 之後只有 1 天 grace，還沒過完
+
+
+def test_update_signal_watch_returns_early_exits_after_three_day_grace():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+
+    with Session() as db:
+        first_seen = date(2026, 4, 1)
+        # baseline_trade_date = 4/2, baseline_price = 100；之後 4 個交易日全都 < -30%
+        # 4/3 -32%, 4/4 -33%, 4/5 -35%, 4/6 -36% → 4/6 應結算
+        baseline_close = 100.0
+        baseline_open = 100.0
+        _seed_price(db, "9999", date(2026, 4, 2), baseline_open, baseline_close)
+        _seed_price(db, "9999", date(2026, 4, 3), 68.0, 68.0)
+        _seed_price(db, "9999", date(2026, 4, 4), 67.0, 67.0)
+        _seed_price(db, "9999", date(2026, 4, 5), 65.0, 65.0)
+        _seed_price(db, "9999", date(2026, 4, 6), 64.0, 64.0)
+
+        db.add(
+            SignalWatchHit(
+                snapshot_date=first_seen,
+                stock_id="9999",
+                stock_name="測試股",
+                signal_type="LEADER",
+                industry_name="半導體業",
+                sub_industry="x",
+                business_summary="a",
+                reason="a",
+                theme={},
+                group_info={},
+                leader_check={},
+                signals={},
+                baseline_trade_date=date(2026, 4, 2),
+                baseline_price=100.0,
+                latest_eval_trade_date=date(2026, 4, 2),
+                latest_eval_price=100.0,
+                return_pct=0.0,
+            )
+        )
+        db.commit()
+
+        archive.update_signal_watch_returns(db, as_of_trade_date=date(2026, 4, 6))
+
+        # active table 中該股 row 已全部清掉
+        active = db.query(SignalWatchHit).filter(SignalWatchHit.stock_id == "9999").all()
+        assert active == []
+
+        # completed archive 有一筆 early_exit_stop_loss，completed_trade_date = 4/6
+        completed = (
+            db.query(SignalWatchCompletedArchive)
+            .filter(SignalWatchCompletedArchive.stock_id == "9999")
+            .one()
+        )
+        assert completed.closure_reason == archive.CLOSURE_REASON_EARLY_EXIT_STOP_LOSS
+        assert completed.completed_trade_date == date(2026, 4, 6)
+        assert completed.first_seen_date == first_seen
+        assert completed.baseline_trade_date == date(2026, 4, 2)
+        assert completed.baseline_price == 100.0
+
+
+def test_update_signal_watch_returns_does_not_early_exit_when_grace_recovers():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+
+    with Session() as db:
+        first_seen = date(2026, 4, 1)
+        # baseline 4/2 = 100；4/3 -32%, 4/4 -28%（漲回 → 警示解除），4/5 -33%（重新觸發但 grace 還沒過）
+        _seed_price(db, "8888", date(2026, 4, 2), 100.0, 100.0)
+        _seed_price(db, "8888", date(2026, 4, 3), 68.0, 68.0)
+        _seed_price(db, "8888", date(2026, 4, 4), 72.0, 72.0)
+        _seed_price(db, "8888", date(2026, 4, 5), 67.0, 67.0)
+
+        db.add(
+            SignalWatchHit(
+                snapshot_date=first_seen,
+                stock_id="8888",
+                stock_name="反彈股",
+                signal_type="LEADER",
+                industry_name="半導體業",
+                sub_industry="x",
+                business_summary="a",
+                reason="a",
+                theme={},
+                group_info={},
+                leader_check={},
+                signals={},
+                baseline_trade_date=date(2026, 4, 2),
+                baseline_price=100.0,
+                latest_eval_trade_date=date(2026, 4, 2),
+                latest_eval_price=100.0,
+                return_pct=0.0,
+            )
+        )
+        db.commit()
+
+        archive.update_signal_watch_returns(db, as_of_trade_date=date(2026, 4, 5))
+
+        # active table 中該股 row 仍存在（未提前結算）
+        active = db.query(SignalWatchHit).filter(SignalWatchHit.stock_id == "8888").all()
+        assert len(active) == 1
+        # completed archive 中沒有該股
+        completed = (
+            db.query(SignalWatchCompletedArchive)
+            .filter(SignalWatchCompletedArchive.stock_id == "8888")
+            .all()
+        )
+        assert completed == []

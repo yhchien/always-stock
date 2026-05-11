@@ -453,6 +453,7 @@ export default function DailySignalsPanel({
               {snapshot.generated_at ? ` · ${formatTpeDateTime(snapshot.generated_at)}` : ""}
             </span>
           )}
+          <span className="text-[11px] text-slate-500">每日將於晚上 21:30 更新</span>
         </div>
         <div className="flex items-center gap-2">
           <Link

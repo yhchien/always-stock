@@ -1313,7 +1313,10 @@ export interface SignalArchiveCompletedItem {
   max_negative_return_pct: number | null
   max_negative_return_trade_date: string | null
   completed_trade_date: string
+  closure_reason: SignalClosureReason
 }
+
+export type SignalClosureReason = "completed_40_days" | "early_exit_stop_loss"
 
 export interface SignalArchiveCompletedResponse {
   items: SignalArchiveCompletedItem[]

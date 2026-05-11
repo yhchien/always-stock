@@ -417,6 +417,12 @@ class SignalWatchCompletedArchive(Base):
     max_negative_return_pct = Column(Float, nullable=True)
     max_negative_return_trade_date = Column(Date, nullable=True)
     completed_trade_date = Column(Date, nullable=False, index=True)
+    closure_reason = Column(
+        String(32),
+        nullable=False,
+        default="completed_40_days",
+        server_default="completed_40_days",
+    )
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 

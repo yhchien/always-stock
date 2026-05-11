@@ -26,6 +26,7 @@ def ensure_signal_watch_hit_return_columns(engine: Engine) -> None:
             "max_positive_return_trade_date": "ALTER TABLE signal_watch_completed_archives ADD COLUMN max_positive_return_trade_date DATE",
             "max_negative_return_pct": "ALTER TABLE signal_watch_completed_archives ADD COLUMN max_negative_return_pct FLOAT",
             "max_negative_return_trade_date": "ALTER TABLE signal_watch_completed_archives ADD COLUMN max_negative_return_trade_date DATE",
+            "closure_reason": "ALTER TABLE signal_watch_completed_archives ADD COLUMN closure_reason VARCHAR(32) NOT NULL DEFAULT 'completed_40_days'",
         },
     }
 

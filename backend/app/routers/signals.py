@@ -137,6 +137,7 @@ class SignalArchiveCompletedItemResponse(BaseModel):
     max_negative_return_pct: Optional[float]
     max_negative_return_trade_date: Optional[date]
     completed_trade_date: date
+    closure_reason: str = "completed_40_days"
 
 
 class SignalArchiveCompletedResponse(BaseModel):

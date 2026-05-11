@@ -54,6 +54,49 @@ function formatShortDate(value: string | null): string {
   return `${Number(parts[1])}/${Number(parts[2])}`
 }
 
+const EARLY_EXIT_THRESHOLD_PCT = -30
+const PEAK_MILESTONE_PCT = 45
+
+function StopLossWarnChip() {
+  return (
+    <span
+      className="inline-flex items-center rounded border border-rose-500/60 bg-rose-500/15 px-1.5 py-0.5 text-[11px] font-medium text-rose-200"
+      title="期間曾跌破 -30%；若首次跌破後再 3 個交易日仍 < -30%，會提前移至永久紀錄。"
+    >
+      ⚠ 跌破 -30%
+    </span>
+  )
+}
+
+function PeakMilestoneChip() {
+  return (
+    <span
+      className="inline-flex items-center rounded border border-amber-400/70 bg-amber-400/15 px-1.5 py-0.5 text-[11px] font-medium text-amber-200"
+      title="期間曾達 +45% 報酬率里程碑（僅標注，不結算）。"
+    >
+      ⭐ +45% 達標
+    </span>
+  )
+}
+
+function ClosureReasonChip({ reason }: { reason: "completed_40_days" | "early_exit_stop_loss" }) {
+  if (reason === "early_exit_stop_loss") {
+    return (
+      <span
+        className="inline-flex items-center rounded border border-rose-500/60 bg-rose-500/20 px-1.5 py-0.5 text-[11px] font-medium text-rose-100"
+        title="首次跌破 -30% 後再 3 個交易日仍未漲回，已提前結算。"
+      >
+        提前結算
+      </span>
+    )
+  }
+  return (
+    <span className="inline-flex items-center rounded border border-slate-600 bg-slate-700/40 px-1.5 py-0.5 text-[11px] font-medium text-slate-200">
+      40 日結束
+    </span>
+  )
+}
+
 function ReturnCell({ value }: { value: number | null }) {
   if (value == null) {
     return <span className="font-mono text-sm text-slate-500">--</span>
@@ -216,6 +259,25 @@ export default function SignalArchivePage() {
             <p>第二個交易日：以當日 `(開盤價 + 收盤價) / 2` 建立 baseline 基準價，當天報酬率固定顯示 `0.00%`。</p>
             <p>第三個交易日起：才開始用最新評估日的收盤價，相對這個 baseline 基準價計算報酬率。</p>
           </div>
+          <div className="mt-2 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs leading-6 text-slate-400">
+            <p>結算與標注規則：</p>
+            <p>
+              <span className="mr-1 inline-flex items-center rounded border border-rose-500/60 bg-rose-500/15 px-1 py-0 text-[11px] text-rose-200">
+                ⚠ 跌破 -30%
+              </span>
+              期間曾跌破 -30%；若首次跌破後再 3 個交易日仍 &lt; -30%，會
+              <span className="mx-1 inline-flex items-center rounded border border-rose-500/60 bg-rose-500/20 px-1 py-0 text-[11px] text-rose-100">
+                提前結算
+              </span>
+              並移到下方「永久紀錄」，不必等 40 日。
+            </p>
+            <p>
+              <span className="mr-1 inline-flex items-center rounded border border-amber-400/70 bg-amber-400/15 px-1 py-0 text-[11px] text-amber-200">
+                ⭐ +45% 達標
+              </span>
+              期間曾達 +45% 報酬率里程碑；僅標注、不結算。
+            </p>
+          </div>
           {summary?.as_of_trade_date && (
             <p className="mt-1 text-xs text-slate-500">最新評估交易日：{summary.as_of_trade_date}</p>
           )}
@@ -265,6 +327,11 @@ export default function SignalArchivePage() {
             <TableBody>
               {summary.items.map((item) => {
                 const active = item.stock_id === selectedStockId
+                const hitPeak =
+                  (item.max_positive_return_pct ?? -Infinity) >= PEAK_MILESTONE_PCT
+                const hitStopLoss =
+                  (item.return_pct ?? Infinity) <= EARLY_EXIT_THRESHOLD_PCT ||
+                  (item.max_negative_return_pct ?? Infinity) <= EARLY_EXIT_THRESHOLD_PCT
                 return (
                   <TableRow
                     key={item.stock_id}
@@ -283,6 +350,12 @@ export default function SignalArchivePage() {
                           {item.industry_name ?? "—"}
                           {item.sub_industry ? ` · ${item.sub_industry}` : ""}
                         </span>
+                        {(hitPeak || hitStopLoss) && (
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            {hitPeak && <PeakMilestoneChip />}
+                            {hitStopLoss && <StopLossWarnChip />}
+                          </div>
+                        )}
                       </div>
                     </TableCell>
                     <TableCell className="font-mono text-xs text-slate-300">
@@ -372,7 +445,10 @@ export default function SignalArchivePage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {completedSummary.items.map((item) => (
+              {completedSummary.items.map((item) => {
+                const hitPeak =
+                  (item.max_positive_return_pct ?? -Infinity) >= PEAK_MILESTONE_PCT
+                return (
                 <TableRow
                   key={`${item.stock_id}-${item.first_seen_date}`}
                   className="border-slate-800"
@@ -386,6 +462,10 @@ export default function SignalArchivePage() {
                         {item.industry_name ?? "—"}
                         {item.sub_industry ? ` · ${item.sub_industry}` : ""}
                       </span>
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        <ClosureReasonChip reason={item.closure_reason} />
+                        {hitPeak && <PeakMilestoneChip />}
+                      </div>
                     </div>
                   </TableCell>
                   <TableCell className="font-mono text-xs text-slate-300">
@@ -430,7 +510,8 @@ export default function SignalArchivePage() {
                     </Link>
                   </TableCell>
                 </TableRow>
-              ))}
+                )
+              })}
             </TableBody>
           </Table>
         )}

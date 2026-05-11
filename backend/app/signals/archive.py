@@ -21,6 +21,15 @@ ARCHIVE_RETENTION_TRADE_DAYS = 40
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 SIGNALS_SAME_DAY_READY_TIME = time(hour=19, minute=0)
 
+# 提前結算規則：return_pct 首次跌破 -30% 後，再給 EARLY_EXIT_GRACE_TRADE_DAYS 個交易日的
+# 反彈寬限期；若寬限期內任一天 return_pct >= EARLY_EXIT_THRESHOLD_PCT（漲回到 >= -30%）
+# 就視為止跌、警示解除；若三天都仍 < -30% 則提前結算到永久紀錄。
+EARLY_EXIT_THRESHOLD_PCT = -30.0
+EARLY_EXIT_GRACE_TRADE_DAYS = 3
+PEAK_MILESTONE_PCT = 45.0
+CLOSURE_REASON_COMPLETED_40_DAYS = "completed_40_days"
+CLOSURE_REASON_EARLY_EXIT_STOP_LOSS = "early_exit_stop_loss"
+
 
 @dataclass
 class ArchiveSummaryItem:
@@ -65,6 +74,7 @@ class CompletedArchiveItem:
     max_negative_return_pct: Optional[float]
     max_negative_return_trade_date: Optional[date]
     completed_trade_date: date
+    closure_reason: str = CLOSURE_REASON_COMPLETED_40_DAYS
 
 
 def persist_signal_watch_hits(
@@ -255,6 +265,9 @@ def list_completed_archive_summary(
                     max_negative_return_pct=row.max_negative_return_pct,
                     max_negative_return_trade_date=row.max_negative_return_trade_date,
                     completed_trade_date=row.completed_trade_date,
+                    closure_reason=(
+                        row.closure_reason or CLOSURE_REASON_COMPLETED_40_DAYS
+                    ),
                 )
             )
             for row in rows
@@ -319,57 +332,9 @@ def refresh_completed_signal_cycles(
             trade_date_cache=trade_date_cache,
             price_cache=price_cache,
         )
-        existing = (
-            db.query(SignalWatchCompletedArchive)
-            .filter(
-                SignalWatchCompletedArchive.stock_id == stock_id,
-                SignalWatchCompletedArchive.first_seen_date == first_seen_date,
-            )
-            .one_or_none()
-        )
-        if existing is None:
-            db.add(
-                SignalWatchCompletedArchive(
-                    stock_id=completed_item.stock_id,
-                    stock_name=completed_item.stock_name,
-                    industry_name=completed_item.industry_name,
-                    sub_industry=completed_item.sub_industry,
-                    first_seen_date=completed_item.first_seen_date,
-                    latest_hit_date=completed_item.latest_hit_date,
-                    hit_count=completed_item.hit_count,
-                    latest_signal_type=completed_item.latest_signal_type,
-                    baseline_trade_date=completed_item.baseline_trade_date,
-                    baseline_price=completed_item.baseline_price,
-                    return_day_10_pct=completed_item.return_day_10_pct,
-                    return_day_20_pct=completed_item.return_day_20_pct,
-                    return_day_30_pct=completed_item.return_day_30_pct,
-                    return_day_40_pct=completed_item.return_day_40_pct,
-                    max_positive_return_pct=completed_item.max_positive_return_pct,
-                    max_positive_return_trade_date=completed_item.max_positive_return_trade_date,
-                    max_negative_return_pct=completed_item.max_negative_return_pct,
-                    max_negative_return_trade_date=completed_item.max_negative_return_trade_date,
-                    completed_trade_date=completed_item.completed_trade_date,
-                )
-            )
-        else:
-            existing.stock_name = completed_item.stock_name
-            existing.industry_name = completed_item.industry_name
-            existing.sub_industry = completed_item.sub_industry
-            existing.latest_hit_date = completed_item.latest_hit_date
-            existing.hit_count = completed_item.hit_count
-            existing.latest_signal_type = completed_item.latest_signal_type
-            existing.baseline_trade_date = completed_item.baseline_trade_date
-            existing.baseline_price = completed_item.baseline_price
-            existing.return_day_10_pct = completed_item.return_day_10_pct
-            existing.return_day_20_pct = completed_item.return_day_20_pct
-            existing.return_day_30_pct = completed_item.return_day_30_pct
-            existing.return_day_40_pct = completed_item.return_day_40_pct
-            existing.max_positive_return_pct = completed_item.max_positive_return_pct
-            existing.max_positive_return_trade_date = completed_item.max_positive_return_trade_date
-            existing.max_negative_return_pct = completed_item.max_negative_return_pct
-            existing.max_negative_return_trade_date = completed_item.max_negative_return_trade_date
-            existing.completed_trade_date = completed_item.completed_trade_date
-            existing.updated_at = datetime.utcnow()
+        # 走 40 天滿期路徑，顯式覆寫 closure_reason（避免被舊 early-exit 殘留錯標）。
+        completed_item.closure_reason = CLOSURE_REASON_COMPLETED_40_DAYS
+        _upsert_completed_archive(db, completed_item)
         upserted += 1
 
     return upserted
@@ -723,6 +688,207 @@ def _resolve_return_extrema(
     )
 
 
+def _post_baseline_returns(
+    db: Session,
+    *,
+    stock_id: str,
+    baseline_trade_date: date,
+    baseline_price: float,
+    through_trade_date: date,
+) -> List[tuple[date, float]]:
+    """Trading-day-ordered (date, return_pct) list for days strictly after baseline."""
+    if through_trade_date <= baseline_trade_date:
+        return []
+    rows = (
+        db.query(DailyPrice.trade_date, DailyPrice.close_price)
+        .filter(
+            DailyPrice.stock_id == stock_id,
+            DailyPrice.trade_date > baseline_trade_date,
+            DailyPrice.trade_date <= through_trade_date,
+            DailyPrice.close_price.isnot(None),
+        )
+        .order_by(DailyPrice.trade_date.asc())
+        .all()
+    )
+    base = float(baseline_price)
+    if base == 0:
+        return []
+    return [
+        (row.trade_date, (float(row.close_price) - base) / base * 100.0)
+        for row in rows
+    ]
+
+
+def _resolve_early_exit_settle_date(
+    returns: List[tuple[date, float]],
+) -> Optional[date]:
+    """
+    決定是否觸發提前結算並回傳結算交易日。
+
+    規則：
+    - 取 baseline 之後的所有 (trade_date, return_pct) 升序。
+    - 找最後一次 return_pct >= EARLY_EXIT_THRESHOLD_PCT 的索引；之後第一天就是「觸發日 D」
+      （若一路都 < threshold，則第一天就是 D）。
+    - 觸發日 D 後再給 EARLY_EXIT_GRACE_TRADE_DAYS 個交易日（D+1, D+2, …）做反彈寬限。
+      若這 N 天全部仍 < threshold，於最後一個寬限日結算。
+    - 若寬限期未過完，回 None；不結算。
+    """
+    if not returns:
+        return None
+
+    last_above_idx = -1
+    for idx, (_, pct) in enumerate(returns):
+        if pct >= EARLY_EXIT_THRESHOLD_PCT:
+            last_above_idx = idx
+
+    trigger_idx = last_above_idx + 1
+    if trigger_idx >= len(returns):
+        # 從未跌破 threshold
+        return None
+
+    grace_end_idx = trigger_idx + EARLY_EXIT_GRACE_TRADE_DAYS
+    if grace_end_idx >= len(returns):
+        # 觸發後寬限期尚未跑完整
+        return None
+
+    return returns[grace_end_idx][0]
+
+
+def _build_early_exit_archive_item(
+    db: Session,
+    *,
+    stock_id: str,
+    rows: list[SignalWatchHit],
+    baseline_trade_date: date,
+    baseline_price: float,
+    settle_trade_date: date,
+    trade_date_cache: dict[tuple[date, int], Optional[date]],
+    price_cache: dict[tuple[str, date], Optional[DailyPrice]],
+) -> CompletedArchiveItem:
+    """Build a CompletedArchiveItem for an early-exit closure.
+
+    Day-N return columns are populated only when the relevant trading day已落在 settle 之前；
+    否則仍寫 None（避免用未來資料寫入）。
+    """
+    first_row = rows[0]
+    latest_row = rows[-1]
+    first_seen_date = first_row.snapshot_date
+
+    (
+        max_positive_return_pct,
+        max_positive_return_trade_date,
+        max_negative_return_pct,
+        max_negative_return_trade_date,
+    ) = _resolve_return_extrema(
+        db,
+        stock_id=stock_id,
+        baseline_trade_date=baseline_trade_date,
+        baseline_price=baseline_price,
+        through_trade_date=settle_trade_date,
+    )
+
+    def _day_n_return(tracking_day: int) -> Optional[float]:
+        nth = _resolve_nth_trade_date(
+            db,
+            first_seen_date=first_seen_date,
+            day_index=tracking_day,
+            cache=trade_date_cache,
+        )
+        if nth is None or nth > settle_trade_date:
+            return None
+        return _resolve_return_for_tracking_day(
+            db,
+            stock_id=stock_id,
+            first_seen_date=first_seen_date,
+            tracking_day=tracking_day,
+            baseline_price=baseline_price,
+            trade_date_cache=trade_date_cache,
+            price_cache=price_cache,
+        )
+
+    return CompletedArchiveItem(
+        stock_id=stock_id,
+        stock_name=latest_row.stock_name,
+        industry_name=latest_row.industry_name,
+        sub_industry=latest_row.sub_industry,
+        first_seen_date=first_seen_date,
+        latest_hit_date=latest_row.snapshot_date,
+        hit_count=len(rows),
+        latest_signal_type=latest_row.signal_type,
+        baseline_trade_date=baseline_trade_date,
+        baseline_price=baseline_price,
+        return_day_10_pct=_day_n_return(10),
+        return_day_20_pct=_day_n_return(20),
+        return_day_30_pct=_day_n_return(30),
+        return_day_40_pct=_day_n_return(40),
+        max_positive_return_pct=max_positive_return_pct,
+        max_positive_return_trade_date=max_positive_return_trade_date,
+        max_negative_return_pct=max_negative_return_pct,
+        max_negative_return_trade_date=max_negative_return_trade_date,
+        completed_trade_date=settle_trade_date,
+        closure_reason=CLOSURE_REASON_EARLY_EXIT_STOP_LOSS,
+    )
+
+
+def _upsert_completed_archive(
+    db: Session,
+    item: CompletedArchiveItem,
+) -> None:
+    existing = (
+        db.query(SignalWatchCompletedArchive)
+        .filter(
+            SignalWatchCompletedArchive.stock_id == item.stock_id,
+            SignalWatchCompletedArchive.first_seen_date == item.first_seen_date,
+        )
+        .one_or_none()
+    )
+    if existing is None:
+        db.add(
+            SignalWatchCompletedArchive(
+                stock_id=item.stock_id,
+                stock_name=item.stock_name,
+                industry_name=item.industry_name,
+                sub_industry=item.sub_industry,
+                first_seen_date=item.first_seen_date,
+                latest_hit_date=item.latest_hit_date,
+                hit_count=item.hit_count,
+                latest_signal_type=item.latest_signal_type,
+                baseline_trade_date=item.baseline_trade_date,
+                baseline_price=item.baseline_price,
+                return_day_10_pct=item.return_day_10_pct,
+                return_day_20_pct=item.return_day_20_pct,
+                return_day_30_pct=item.return_day_30_pct,
+                return_day_40_pct=item.return_day_40_pct,
+                max_positive_return_pct=item.max_positive_return_pct,
+                max_positive_return_trade_date=item.max_positive_return_trade_date,
+                max_negative_return_pct=item.max_negative_return_pct,
+                max_negative_return_trade_date=item.max_negative_return_trade_date,
+                completed_trade_date=item.completed_trade_date,
+                closure_reason=item.closure_reason,
+            )
+        )
+    else:
+        existing.stock_name = item.stock_name
+        existing.industry_name = item.industry_name
+        existing.sub_industry = item.sub_industry
+        existing.latest_hit_date = item.latest_hit_date
+        existing.hit_count = item.hit_count
+        existing.latest_signal_type = item.latest_signal_type
+        existing.baseline_trade_date = item.baseline_trade_date
+        existing.baseline_price = item.baseline_price
+        existing.return_day_10_pct = item.return_day_10_pct
+        existing.return_day_20_pct = item.return_day_20_pct
+        existing.return_day_30_pct = item.return_day_30_pct
+        existing.return_day_40_pct = item.return_day_40_pct
+        existing.max_positive_return_pct = item.max_positive_return_pct
+        existing.max_positive_return_trade_date = item.max_positive_return_trade_date
+        existing.max_negative_return_pct = item.max_negative_return_pct
+        existing.max_negative_return_trade_date = item.max_negative_return_trade_date
+        existing.completed_trade_date = item.completed_trade_date
+        existing.closure_reason = item.closure_reason
+        existing.updated_at = datetime.utcnow()
+
+
 def update_signal_watch_returns(
     db: Session,
     *,
@@ -741,6 +907,10 @@ def update_signal_watch_returns(
         return 0
 
     updated = 0
+    early_exits: List[tuple[str, list[SignalWatchHit], date, float, date]] = []
+    trade_date_cache: dict[tuple[date, int], Optional[date]] = {}
+    price_cache: dict[tuple[str, date], Optional[DailyPrice]] = {}
+
     for stock_id, rows in grouped.items():
         latest_row = rows[-1]
         first_seen_date = rows[0].snapshot_date
@@ -795,6 +965,26 @@ def update_signal_watch_returns(
                 row.max_negative_return_pct = max_negative_return_pct
                 row.max_negative_return_trade_date = max_negative_return_trade_date
             updated += 1
+
+            # 提前結算檢查：首次跌破 -30% 後再給 3 個交易日反彈寬限，若都未漲回則結算。
+            post_baseline = _post_baseline_returns(
+                db,
+                stock_id=stock_id,
+                baseline_trade_date=baseline_trade_date,
+                baseline_price=baseline_price,
+                through_trade_date=trade_date,
+            )
+            settle_date = _resolve_early_exit_settle_date(post_baseline)
+            if settle_date is not None:
+                early_exits.append(
+                    (
+                        stock_id,
+                        rows,
+                        baseline_trade_date,
+                        baseline_price,
+                        settle_date,
+                    )
+                )
             continue
 
         if first_seen_date < trade_date:
@@ -811,8 +1001,31 @@ def update_signal_watch_returns(
                 row.max_negative_return_trade_date = None
             updated += 1
 
+    # 將所有 early-exit cycle 寫入永久紀錄並清掉 active rows。
+    for (
+        stock_id,
+        rows,
+        baseline_trade_date,
+        baseline_price,
+        settle_date,
+    ) in early_exits:
+        item = _build_early_exit_archive_item(
+            db,
+            stock_id=stock_id,
+            rows=rows,
+            baseline_trade_date=baseline_trade_date,
+            baseline_price=baseline_price,
+            settle_trade_date=settle_date,
+            trade_date_cache=trade_date_cache,
+            price_cache=price_cache,
+        )
+        _upsert_completed_archive(db, item)
+        db.query(SignalWatchHit).filter(
+            SignalWatchHit.stock_id == stock_id
+        ).delete(synchronize_session=False)
+
     completed_upserts = refresh_completed_signal_cycles(db, as_of_trade_date=trade_date)
-    if updated or completed_upserts:
+    if updated or completed_upserts or early_exits:
         db.commit()
     return updated
 
@@ -861,6 +1074,7 @@ def _serialize_completed_archive_item(item: CompletedArchiveItem) -> dict[str, A
         "max_negative_return_pct": item.max_negative_return_pct,
         "max_negative_return_trade_date": item.max_negative_return_trade_date,
         "completed_trade_date": item.completed_trade_date,
+        "closure_reason": item.closure_reason,
     }
 
 
