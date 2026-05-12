@@ -78,9 +78,11 @@ def register_chat(
     return RegistrationResult(
         success=True,
         message=(
-            "🎉 註冊成功！\n\n"
-            "輸入 `list help` 查看支援指令。\n"
-            "你的清單上限為 20 檔，每日 21:30 會自動推送清單報告。"
+            f"🎉 註冊成功！\n\n"
+            f"你的 chat_id：`{chat_id}`\n"
+            f"（管理員可把此 ID 加入 `ADMIN_TELEGRAM_CHAT_IDS` 取得後台權限）\n\n"
+            f"輸入 `list help` 查看支援指令。\n"
+            f"清單上限 20 檔，每日 21:30 會自動推送清單報告。"
         ),
     )
 

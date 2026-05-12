@@ -22,9 +22,12 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ParsedCommand:
-    kind: str  # help | register | show | add | delete | watch_detail | run_single | run_all | unknown
+    # help | register | show | add | delete | watch_detail | run_single | run_all
+    # | admin_chats | admin_show | unknown
+    kind: str
     stock_ids: List[str] = field(default_factory=list)
     password: Optional[str] = None
+    target_chat_id: Optional[int] = None  # admin_show 用
     error: Optional[str] = None
 
 
@@ -91,6 +94,29 @@ def parse(text: str) -> ParsedCommand:
             )
         return ParsedCommand(kind="watch_detail", stock_ids=[stock_id])
 
+    if sub == "admin":
+        admin_tokens = rest.strip().split()
+        if not admin_tokens:
+            return ParsedCommand(kind="unknown")  # 偽裝未知，不洩漏 admin 存在
+        action = admin_tokens[0].lower()
+        if action == "chats":
+            return ParsedCommand(kind="admin_chats")
+        if action == "show":
+            if len(admin_tokens) < 2:
+                return ParsedCommand(
+                    kind="admin_show",
+                    error="格式：`list admin show <chat_id>`",
+                )
+            try:
+                target = int(admin_tokens[1])
+            except ValueError:
+                return ParsedCommand(
+                    kind="admin_show",
+                    error="chat_id 必須是整數",
+                )
+            return ParsedCommand(kind="admin_show", target_chat_id=target)
+        return ParsedCommand(kind="unknown")  # admin 但子命令不認得
+
     if sub == "run":
         target = rest.strip()
         if not target:
@@ -138,6 +164,21 @@ def handle_add(db: Session, *, chat_id: int, stock_ids: List[str]) -> str:
 def handle_delete(db: Session, *, chat_id: int, stock_ids: List[str]) -> str:
     result = watchlist_service.remove_stocks(db, chat_id=chat_id, stock_ids=stock_ids)
     return formatters.format_delete_result(result)
+
+
+def handle_admin_chats(db: Session) -> str:
+    from app.telegram import formatters
+    items = watchlist_service.all_chats_with_summary(db)
+    return formatters.format_admin_chats(items)
+
+
+def handle_admin_show(db: Session, *, target_chat_id: int) -> str:
+    from app.telegram import formatters
+    detail = watchlist_service.get_chat_detail(db, target_chat_id)
+    if detail is None:
+        return f"❌ chat_id `{target_chat_id}` 不存在。"
+    chat, snapshots = detail
+    return formatters.format_admin_chat_detail(chat, snapshots)
 
 
 def handle_watch_detail(db: Session, *, chat_id: int, stock_id: str) -> str:

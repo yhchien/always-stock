@@ -299,6 +299,38 @@ async def list_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(telegram_commands.handle_help(), parse_mode="Markdown")
         return
 
+    # Admin 指令獨立檢查（不需註冊；不在白名單則偽裝成 unknown，不洩漏指令存在）
+    if parsed.kind in ("admin_chats", "admin_show"):
+        from app.settings import get_admin_telegram_chat_ids
+        admin_ids = get_admin_telegram_chat_ids()
+        if chat_id not in admin_ids:
+            await update.message.reply_text(
+                "❓ 未知指令。輸入 `list help` 查看支援指令。",
+                parse_mode="Markdown",
+            )
+            return
+
+        db = SessionLocal()
+        try:
+            if parsed.kind == "admin_chats":
+                reply = telegram_commands.handle_admin_chats(db)
+            else:
+                reply = telegram_commands.handle_admin_show(
+                    db, target_chat_id=parsed.target_chat_id,
+                )
+            from app.telegram.formatters import chunk_for_telegram
+            for chunk in chunk_for_telegram(reply):
+                await update.message.reply_text(chunk, parse_mode="Markdown")
+        except Exception:
+            logger.exception("admin command failed chat_id=%s text=%s", chat_id, text)
+            await update.message.reply_text(
+                "⚠️ 管理指令執行失敗，請查 log。",
+                parse_mode="Markdown",
+            )
+        finally:
+            db.close()
+        return
+
     db = SessionLocal()
     try:
         if parsed.kind == "register":

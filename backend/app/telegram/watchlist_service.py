@@ -9,13 +9,13 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import date
-from typing import List, Optional
+from datetime import date, datetime
+from typing import List, Optional, Tuple
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import DailyPrice, StockMaster, TelegramWatchlistEntry
+from app.models import DailyPrice, StockMaster, TelegramChat, TelegramWatchlistEntry
 
 logger = logging.getLogger(__name__)
 
@@ -241,3 +241,58 @@ def remove_stocks(db: Session, *, chat_id: int, stock_ids: List[str]) -> DeleteR
     result.remaining = list_watchlist(db, chat_id)
     result.current_count = len(result.remaining)
     return result
+
+
+# ── Admin-only queries ──────────────────────────────────────────────────────
+
+
+@dataclass
+class AdminChatSummary:
+    chat_id: int
+    chat_label: Optional[str]
+    registered_at: datetime
+    last_seen_at: datetime
+    watchlist_size: int
+
+
+def all_chats_with_summary(db: Session) -> List[AdminChatSummary]:
+    """列出所有註冊 chat + 各自的清單大小（管理員專屬）。
+
+    依 last_seen_at DESC 排序，最近活躍的 chat 在前面。
+    每個 chat 一次 COUNT 查詢；註冊 chat 量級不大（個人專案不會超過 10~20 個）。
+    """
+    chats = (
+        db.query(TelegramChat)
+        .order_by(TelegramChat.last_seen_at.desc())
+        .all()
+    )
+    out: List[AdminChatSummary] = []
+    for chat in chats:
+        size = (
+            db.query(func.count(TelegramWatchlistEntry.id))
+            .filter(TelegramWatchlistEntry.chat_id == chat.chat_id)
+            .scalar()
+            or 0
+        )
+        out.append(AdminChatSummary(
+            chat_id=chat.chat_id,
+            chat_label=chat.chat_label,
+            registered_at=chat.registered_at,
+            last_seen_at=chat.last_seen_at,
+            watchlist_size=size,
+        ))
+    return out
+
+
+def get_chat_detail(
+    db: Session, chat_id: int
+) -> Optional[Tuple[TelegramChat, List[StockSnapshot]]]:
+    """取得單一 chat 的完整資訊 + 觀察清單（管理員專屬）。
+
+    chat 不存在 → None。
+    """
+    chat = db.get(TelegramChat, chat_id)
+    if chat is None:
+        return None
+    snapshots = list_watchlist(db, chat_id)
+    return (chat, snapshots)

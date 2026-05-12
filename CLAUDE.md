@@ -1711,8 +1711,28 @@ slice 1~9 完成後 review 出 3 個小瑕疵，集中於 slice 11 修掉，讓�
 - `TELEGRAM_WEBHOOK_URL` — 既有（M5 已設定）
 - `SITE_GATE_PASSWORD` — 既有（2026-05-06 站台閘門已設）
 - `OPENAI_API_KEY` — 既有（M17 已設定）
-- 不需要新增任何 env
+- `ADMIN_TELEGRAM_CHAT_IDS`（**新增 / 選填**）— 開發者後台白名單 chat_id，逗號分隔；空值 → admin 指令對所有 chat 禁用
 - GitHub Actions secrets 需要 `TELEGRAM_BOT_TOKEN`（21:30 cron 推送用）
+
+### 開發者後台（admin commands）
+專為「開發者監看所有使用者 list」設計，**一般使用者打不開**（偽裝成 unknown 指令拒掉，不洩漏 admin 存在）。
+
+兩條進入路徑：
+
+| 入口 | 用途 | 守門 |
+|------|------|-----|
+| `list admin chats` Telegram 指令 | 手機隨時看；列出所有註冊 chat + 清單大小，依 last_seen DESC | `ADMIN_TELEGRAM_CHAT_IDS` env 白名單 |
+| `list admin show <chat_id>` Telegram 指令 | 看單一 chat 的完整觀察清單（含每檔最新股價） | 同上 |
+| `python3 backend/scripts/show_telegram_chats.py` CLI | 備援；在 Render Shell 跑印 markdown / `--json` | 需要 `DATABASE_URL` |
+| `--chat-id <id>` flag | 同上但只看單一 chat | 同上 |
+
+**設定方式**：使用者跑 `list register` 後，註冊成功訊息會直接告訴他自己的 chat_id；管理員把這個 ID 加到 Render env `ADMIN_TELEGRAM_CHAT_IDS=<id>,<id2>,...` 後 redeploy 即可。
+
+**Gotcha**：
+- admin 指令**不需要 chat 自己有註冊** — 在 `list_handler` 是獨立分支處理，先於 register check
+- 非白名單 chat 打 admin 指令 → 回「未知指令」（**不洩漏指令存在**）
+- `get_admin_telegram_chat_ids()` 容錯：忽略無效 token、保留負值（supergroup chat_id）
+- CLI 與 Telegram 指令共用 `watchlist_service.all_chats_with_summary` / `get_chat_detail`，邏輯一致
 
 ## 全面免登入 + 單一密碼閘門（2026-05-06）
 

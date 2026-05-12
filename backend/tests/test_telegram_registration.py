@@ -24,6 +24,9 @@ def test_register_chat_success(db, with_password):
     assert result.success is True
     assert result.already_registered is False
     assert "註冊成功" in result.message
+    # 確認 chat_id 出現在成功訊息（給管理員設 ADMIN_TELEGRAM_CHAT_IDS 用）
+    assert "123" in result.message
+    assert "ADMIN_TELEGRAM_CHAT_IDS" in result.message
 
     row = db.get(TelegramChat, 123)
     assert row is not None

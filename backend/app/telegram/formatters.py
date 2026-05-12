@@ -8,10 +8,12 @@ from __future__ import annotations
 
 from typing import List, Optional
 
+from app.models import TelegramChat
 from app.routers.analysis import KeyFactor, TradeQualityResponse
 from app.telegram.watchlist_service import (
     WATCHLIST_LIMIT,
     AddResult,
+    AdminChatSummary,
     DeleteResult,
     StockSnapshot,
 )
@@ -235,6 +237,47 @@ def format_daily_report(
             sections.append("  ⚠️ 尚無分析資料")
         sections.append("")
     return "\n".join(sections).rstrip()
+
+
+def format_admin_chats(items: List[AdminChatSummary]) -> str:
+    """`list admin chats` 總覽訊息：所有註冊 chat + 清單大小，依 last_seen DESC。"""
+    if not items:
+        return "🔐 *Admin*\n\n目前沒有任何註冊的 chat。"
+
+    lines = [f"🔐 *Admin: 所有註冊 chat（{len(items)} 個）*", ""]
+    for i, item in enumerate(items, start=1):
+        label = item.chat_label or "—"
+        registered = item.registered_at.strftime("%Y-%m-%d %H:%M")
+        last_seen = item.last_seen_at.strftime("%m/%d %H:%M")
+        lines.append(
+            f"{i}. `{item.chat_id}` ({label})"
+        )
+        lines.append(
+            f"    註冊 {registered} · 最後活動 {last_seen} · "
+            f"清單 {item.watchlist_size}/{WATCHLIST_LIMIT}"
+        )
+    lines.append("")
+    lines.append("用 `list admin show <chat_id>` 看單一 chat 的完整清單。")
+    return "\n".join(lines)
+
+
+def format_admin_chat_detail(chat: TelegramChat, snapshots: List[StockSnapshot]) -> str:
+    """`list admin show <id>` 詳細訊息：單一 chat 的完整觀察清單。"""
+    label = chat.chat_label or "—"
+    lines = [
+        f"🔐 *Admin: chat `{chat.chat_id}` ({label})*",
+        "",
+        f"註冊：{chat.registered_at.strftime('%Y-%m-%d %H:%M')}",
+        f"最後活動：{chat.last_seen_at.strftime('%Y-%m-%d %H:%M')}",
+        f"清單：{len(snapshots)}/{WATCHLIST_LIMIT}",
+        "",
+    ]
+    if snapshots:
+        for s in snapshots:
+            lines.append(_format_snapshot_line(s))
+    else:
+        lines.append("（清單為空）")
+    return "\n".join(lines)
 
 
 def chunk_for_telegram(text: str, chunk_size: int = 3900) -> List[str]:

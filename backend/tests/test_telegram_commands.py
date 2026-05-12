@@ -129,6 +129,50 @@ def test_parse_run_no_args():
     assert parsed.error is not None
 
 
+# ── admin ───────────────────────────────────────────────────────────────────
+
+
+def test_parse_admin_chats():
+    parsed = commands.parse("list admin chats")
+    assert parsed.kind == "admin_chats"
+
+
+def test_parse_admin_show_with_chat_id():
+    parsed = commands.parse("list admin show 12345")
+    assert parsed.kind == "admin_show"
+    assert parsed.target_chat_id == 12345
+
+
+def test_parse_admin_show_with_negative_chat_id():
+    """supergroup chat_id 為負值，需要支援"""
+    parsed = commands.parse("list admin show -1001234567890")
+    assert parsed.kind == "admin_show"
+    assert parsed.target_chat_id == -1001234567890
+
+
+def test_parse_admin_show_missing_chat_id():
+    parsed = commands.parse("list admin show")
+    assert parsed.kind == "admin_show"
+    assert parsed.error is not None
+
+
+def test_parse_admin_show_invalid_chat_id():
+    parsed = commands.parse("list admin show notanumber")
+    assert parsed.kind == "admin_show"
+    assert parsed.error is not None
+
+
+def test_parse_admin_empty_args_disguised_as_unknown():
+    """`list admin` 不應洩漏 admin 存在，回 unknown"""
+    parsed = commands.parse("list admin")
+    assert parsed.kind == "unknown"
+
+
+def test_parse_admin_unknown_subcommand_disguised():
+    parsed = commands.parse("list admin foobar")
+    assert parsed.kind == "unknown"
+
+
 # ── unknown / 邊界 ──────────────────────────────────────────────────────────
 
 

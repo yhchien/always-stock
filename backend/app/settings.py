@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Set
 
 from dotenv import load_dotenv
 
@@ -92,3 +92,24 @@ def get_site_gate_lockout_seconds() -> int:
         return max(1, int(os.getenv("SITE_GATE_LOCKOUT_SECONDS", "300")))
     except ValueError:
         return 300
+
+
+def get_admin_telegram_chat_ids() -> Set[int]:
+    """Telegram admin chat_id 白名單（管理員專屬指令 list admin chats / list admin show）。
+
+    格式：comma-separated int（負號允許，給 supergroup 用）；忽略空白與無效 token。
+    未設或全 invalid → 空集合 → admin 指令對所有 chat 都拒絕（裝作 unknown）。
+    例：`ADMIN_TELEGRAM_CHAT_IDS=12345,-1001234567890`
+    """
+    raw = os.getenv("ADMIN_TELEGRAM_CHAT_IDS", "").strip()
+    if not raw:
+        return set()
+    out: Set[int] = set()
+    for token in raw.split(","):
+        t = token.strip()
+        if not t:
+            continue
+        # 允許負號（supergroup chat_id 為負值）
+        if t.lstrip("-").isdigit():
+            out.add(int(t))
+    return out
