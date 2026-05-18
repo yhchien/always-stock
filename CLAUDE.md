@@ -1825,3 +1825,34 @@ slice 1~9 完成後 review 出 3 個小瑕疵，集中於 slice 11 修掉，讓�
 - **A4 prompt 切片若解析錯**：fallback 回 `full`（保守），不會破 LLM 路徑；測試 `test_load_system_prompt_market_stage_drops_other_steps` 驗 STEP 切片正確
 - **既有測試對齊**：M25 4 個測試（rating 5-tier mapping / retry / stream / parses_openai_json）改加 `patch("_synthesize_key_factors_from_context", return_value=None)` 模擬 m21 不可用，聚焦 LLM 原行為；M23 `test_run_research_batch_aligns_response_by_stock_id` 補 `prelim_type` 才能驗證 B4 覆寫
 - **monkeypatch lambda 簽章**：`_load_system_prompt` 加 `stage` 參數後，test 內 `lambda: ...` 全部要改 `lambda stage="full": ...`
+
+## M23 drawdown-from-peak 提前結算 + 半年表格（2026-05-18）
+
+針對 40 日追蹤新增第 2 條提前結算規則 + 永久紀錄改為半年一張表。
+
+### 新規則：drawdown from peak（停利紀律）
+- **觸發條件**：`max_positive_return > 0` AND `current_return < 0` AND `(max_positive - current) >= 30%`
+- **寬限期**：觸發日 D 之後 3 個交易日（D+1 / D+2 / D+3）；若任一天 drawdown 回到 < 30% 警示解除、繼續 sweep；3 天都仍超標 → D+3 結算
+- **與舊規則（return ≤ -30%）並存，取較早觸發者**
+- closure_reason 值：`early_exit_drawdown_from_peak`（rose-orange chip「提前結算（高點回落 30%）」）
+- 實作位置：[backend/app/signals/archive.py](backend/app/signals/archive.py) `_resolve_drawdown_exit_settle_date()` + `update_signal_watch_returns` 內 chosen_settle 二選一 + `_build_early_exit_archive_item` 接 closure_reason 參數
+- 常數：`DRAWDOWN_EXIT_THRESHOLD_PCT = 30.0` / `DRAWDOWN_EXIT_GRACE_TRADE_DAYS = 3`
+- **Why**：規則 1 看絕對虧損（baseline 之後一路跌 -30%）；規則 2 看從高點回落（漲過再跌下來）。後者更貼近實務停利紀律 — 漲過 +15% 又跌回 -15% (drawdown 30%) 雖然 return 還沒到 -30%，但已是賺錢變賠錢的失控狀態
+
+### 永久紀錄半年表格
+- **半年區間**：以 2026-05-01 為 anchor，每 6 個月一段；用 `completed_trade_date` 當分段標準
+  - 2026-05-01 ~ 2026-10-31、2026-11-01 ~ 2027-04-30、2027-05-01 ~ 2027-10-31、…
+- **API**：`GET /api/signals/archive/completed?period_start=YYYY-MM-DD`（後端會 normalize 到 anchor）
+- **Response**：除 items 外多回 `periods: [{period_start, period_end, count}]`（倒序）+ `selected_period_start`
+- **前端 UI**（[frontend/src/app/signals/archive/page.tsx](frontend/src/app/signals/archive/page.tsx)）：表格上方加半年區間 tab；首次載入預設選最新一段
+- **表格欄位精簡**（依使用者要求，從 11 欄縮成 8 欄）：股票/產業 / 首次抓到 / 抓到次數 / 類型（LEADER/FOLLOWER/LAGGARD chip） / 最大正報酬 / 最大負報酬 / 移出原因（含日期）/ 操作（K線圖）
+- **拔掉**：第 10/20/30/40 天報酬欄位（仍存在 DB 與 API，前端不顯示）、獨立的「移出日」欄（合進「移出原因」cell）
+- **新元件**：`SignalTypeChip`（LEADER→領漲綠 / FOLLOWER→跟漲藍 / LAGGARD→補漲琥珀）、`formatPeriodLabel` 顯示「2026/05 - 2026/10」
+
+### Gotcha
+- **`half_year_period_start(date)` 對齊邏輯**：以 anchor 起算 `months_since_anchor // 6` 找 bucket，再算回該 bucket 起始月。輸入早於 anchor 直接回 anchor。Pure function 純算數學，不依賴 DB
+- **periods meta 永遠 group by 全表**：不會因為 `period_start` filter 影響 periods 列表；前端 tab 永遠看得到所有半年區間
+- **selected_period_start 預設行為**：mount 時 `selectedPeriodStart=null` → API 回全表 + periods → 前端 effect 看 `data.periods[0]` 設為最新一段。避免使用者第一眼看到 200 列爆炸
+- **規則 1 vs 規則 2 互斥取早者**：兩規則並存但同一 cycle 只結算一次；若兩規則同日觸發，drawdown 優先（畢竟漲過再跌的紀律更嚴）
+- **drawdown 規則需 max_positive > 0**：從未漲過正報酬的股票（baseline 之後直接一路跌）只會被舊規則「return ≤ -30%」抓到，不會被新規則
+- **既有 4 baseline test failure 不變**：site-passwordless 改動後未同步的 4 個 signals_router test 仍 fail，與本輪無關（驗證 baseline 20 fail = 20 fail）

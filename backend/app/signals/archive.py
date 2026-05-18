@@ -21,14 +21,32 @@ ARCHIVE_RETENTION_TRADE_DAYS = 40
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 SIGNALS_SAME_DAY_READY_TIME = time(hour=19, minute=0)
 
-# 提前結算規則：return_pct 首次跌破 -30% 後，再給 EARLY_EXIT_GRACE_TRADE_DAYS 個交易日的
-# 反彈寬限期；若寬限期內任一天 return_pct >= EARLY_EXIT_THRESHOLD_PCT（漲回到 >= -30%）
+# 提前結算規則 1（stop loss）：return_pct 首次跌破 -30% 後，再給 EARLY_EXIT_GRACE_TRADE_DAYS
+# 個交易日的反彈寬限期；若寬限期內任一天 return_pct >= EARLY_EXIT_THRESHOLD_PCT（漲回到 >= -30%）
 # 就視為止跌、警示解除；若三天都仍 < -30% 則提前結算到永久紀錄。
 EARLY_EXIT_THRESHOLD_PCT = -30.0
 EARLY_EXIT_GRACE_TRADE_DAYS = 3
 PEAK_MILESTONE_PCT = 45.0
+
+# 提前結算規則 2（drawdown from peak，2026-05-18 新增）：當 max_positive_return > 0 且
+# current_return < 0 時，計算 drawdown = current_return - max_positive_return；
+# 若 drawdown <= -DRAWDOWN_EXIT_THRESHOLD_PCT，從觸發日 D 起算 D+1, D+2, D+3 共 3 個交易日寬限；
+# 若寬限期內任一天 drawdown 回到 < threshold（漲回 -30% 以內），警示解除；
+# 若 3 天都仍 <= threshold 則 D+3 結算。
+#
+# 差異：規則 1 看絕對虧損（baseline 之後一路跌 -30%）；規則 2 看從高點回落（漲過再跌下來）。
+# 後者更貼近實務停利紀律 — 漲過 +15% 又跌回 -15% (drawdown -30%) 雖然 return 還沒到 -30%，
+# 但已是賺錢變賠錢的失控狀態。兩規則並存，取較早觸發者結算。
+DRAWDOWN_EXIT_THRESHOLD_PCT = 30.0
+DRAWDOWN_EXIT_GRACE_TRADE_DAYS = 3
+
 CLOSURE_REASON_COMPLETED_40_DAYS = "completed_40_days"
 CLOSURE_REASON_EARLY_EXIT_STOP_LOSS = "early_exit_stop_loss"
+CLOSURE_REASON_EARLY_EXIT_DRAWDOWN = "early_exit_drawdown_from_peak"
+
+# 半年表格起算日（2026-05-01）；之後每 6 個月一段。
+HALF_YEAR_PERIOD_ANCHOR = date(2026, 5, 1)
+HALF_YEAR_PERIOD_MONTHS = 6
 
 
 @dataclass
@@ -229,12 +247,82 @@ def get_archive_detail(
     return payload
 
 
+def half_year_period_start(d: date) -> date:
+    """把任意 date 對齊到所屬半年區間的起始日。
+
+    區間：以 HALF_YEAR_PERIOD_ANCHOR (2026-05-01) 為起點，每 HALF_YEAR_PERIOD_MONTHS (6) 個月一段：
+      - 2026-05-01 ~ 2026-10-31
+      - 2026-11-01 ~ 2027-04-30
+      - 2027-05-01 ~ 2027-10-31
+      - …
+
+    輸入早於 anchor → 回 anchor（最早可呈現的區間）。
+    """
+    if d < HALF_YEAR_PERIOD_ANCHOR:
+        return HALF_YEAR_PERIOD_ANCHOR
+    months_since_anchor = (d.year - HALF_YEAR_PERIOD_ANCHOR.year) * 12 + (
+        d.month - HALF_YEAR_PERIOD_ANCHOR.month
+    )
+    bucket = months_since_anchor // HALF_YEAR_PERIOD_MONTHS
+    total_months = HALF_YEAR_PERIOD_ANCHOR.month + bucket * HALF_YEAR_PERIOD_MONTHS - 1
+    year = HALF_YEAR_PERIOD_ANCHOR.year + total_months // 12
+    month = total_months % 12 + 1
+    return date(year, month, 1)
+
+
+def half_year_period_end(start: date) -> date:
+    """半年區間 end date（含），即下一段 start - 1 日。"""
+    total_months = start.month - 1 + HALF_YEAR_PERIOD_MONTHS
+    year = start.year + total_months // 12
+    month = total_months % 12 + 1
+    next_start = date(year, month, 1)
+    return next_start - timedelta(days=1)
+
+
 def list_completed_archive_summary(
     db: Session,
     *,
     limit: int = 200,
+    period_start: Optional[date] = None,
 ) -> dict[str, Any]:
-    query = db.query(SignalWatchCompletedArchive).order_by(
+    """回封存表的 items + 半年期間 meta。
+
+    period_start：若提供（必須對齊半年區間起始日），只回該區間 completed_trade_date
+                  落在 [start, end] 的 rows；否則回全部（受 limit）。
+
+    periods：永遠回所有「有資料的半年區間」list（依 start 倒序），含每段 count，供前端做 tab。
+    """
+    # ── periods meta：對全表 group by half-year period ────────────────────────
+    all_completed_dates = db.query(SignalWatchCompletedArchive.completed_trade_date).all()
+    period_counts: dict[date, int] = {}
+    for (cdate,) in all_completed_dates:
+        if cdate is None:
+            continue
+        pstart = half_year_period_start(cdate)
+        period_counts[pstart] = period_counts.get(pstart, 0) + 1
+
+    periods = sorted(
+        (
+            {
+                "period_start": p,
+                "period_end": half_year_period_end(p),
+                "count": count,
+            }
+            for p, count in period_counts.items()
+        ),
+        key=lambda x: x["period_start"],
+        reverse=True,
+    )
+
+    # ── items：依 period_start filter ─────────────────────────────────────────
+    query = db.query(SignalWatchCompletedArchive)
+    if period_start is not None:
+        pend = half_year_period_end(period_start)
+        query = query.filter(
+            SignalWatchCompletedArchive.completed_trade_date >= period_start,
+            SignalWatchCompletedArchive.completed_trade_date <= pend,
+        )
+    query = query.order_by(
         SignalWatchCompletedArchive.completed_trade_date.desc(),
         SignalWatchCompletedArchive.first_seen_date.desc(),
         SignalWatchCompletedArchive.stock_id.asc(),
@@ -242,6 +330,7 @@ def list_completed_archive_summary(
     if limit > 0:
         query = query.limit(limit)
     rows = query.all()
+
     return {
         "items": [
             _serialize_completed_archive_item(
@@ -271,7 +360,9 @@ def list_completed_archive_summary(
                 )
             )
             for row in rows
-        ]
+        ],
+        "periods": periods,
+        "selected_period_start": period_start,
     }
 
 
@@ -719,6 +810,59 @@ def _post_baseline_returns(
     ]
 
 
+def _resolve_drawdown_exit_settle_date(
+    returns: List[tuple[date, float]],
+) -> Optional[date]:
+    """規則 2（drawdown from peak）：回 settle_date 或 None。
+
+    流程：
+    - 沿時間軸 sweep，維護「至今 max_positive_return」
+    - 觸發條件：max_positive_return > 0 AND current_return < 0
+                AND (max_positive - current) >= DRAWDOWN_EXIT_THRESHOLD_PCT
+    - 觸發日 D 之後給 DRAWDOWN_EXIT_GRACE_TRADE_DAYS 個交易日（D+1, D+2, D+3）做寬限
+    - 寬限期內任一天 drawdown 回到 < threshold（不論 current 是否仍負）→ 警示解除、繼續 sweep
+    - 寬限期 3 天全部仍超標 → 在最後一天 D+3 結算
+    - 從未觸發或寬限期未跑完 → None
+
+    Returns 應為升序 (trade_date, return_pct) tuples。
+    """
+    if not returns:
+        return None
+
+    max_positive: float = 0.0
+    trigger_idx: Optional[int] = None
+
+    for idx, (_, pct) in enumerate(returns):
+        # 更新歷史高點（只計正報酬）
+        if pct > max_positive:
+            max_positive = pct
+
+        # 觸發條件：max_positive 必須 > 0、當下 < 0、回落 >= threshold
+        triggered = (
+            max_positive > 0
+            and pct < 0
+            and (max_positive - pct) >= DRAWDOWN_EXIT_THRESHOLD_PCT
+        )
+
+        if trigger_idx is None:
+            if triggered:
+                trigger_idx = idx
+            continue
+
+        # 已在 grace 期內：檢查是否解除警示
+        if not triggered:
+            # 回到 -30% 以內 → 警示解除，重新等下一次觸發
+            trigger_idx = None
+            continue
+
+        # 仍觸發中，檢查 grace 是否已跑完（D+1, D+2, D+3）
+        days_after_trigger = idx - trigger_idx
+        if days_after_trigger >= DRAWDOWN_EXIT_GRACE_TRADE_DAYS:
+            return returns[idx][0]
+
+    return None
+
+
 def _resolve_early_exit_settle_date(
     returns: List[tuple[date, float]],
 ) -> Optional[date]:
@@ -764,6 +908,7 @@ def _build_early_exit_archive_item(
     settle_trade_date: date,
     trade_date_cache: dict[tuple[date, int], Optional[date]],
     price_cache: dict[tuple[str, date], Optional[DailyPrice]],
+    closure_reason: str = CLOSURE_REASON_EARLY_EXIT_STOP_LOSS,
 ) -> CompletedArchiveItem:
     """Build a CompletedArchiveItem for an early-exit closure.
 
@@ -826,7 +971,7 @@ def _build_early_exit_archive_item(
         max_negative_return_pct=max_negative_return_pct,
         max_negative_return_trade_date=max_negative_return_trade_date,
         completed_trade_date=settle_trade_date,
-        closure_reason=CLOSURE_REASON_EARLY_EXIT_STOP_LOSS,
+        closure_reason=closure_reason,
     )
 
 
@@ -907,7 +1052,8 @@ def update_signal_watch_returns(
         return 0
 
     updated = 0
-    early_exits: List[tuple[str, list[SignalWatchHit], date, float, date]] = []
+    # 提前結算 tuple：(stock_id, rows, baseline_trade_date, baseline_price, settle_date, closure_reason)
+    early_exits: List[tuple[str, list[SignalWatchHit], date, float, date, str]] = []
     trade_date_cache: dict[tuple[date, int], Optional[date]] = {}
     price_cache: dict[tuple[str, date], Optional[DailyPrice]] = {}
 
@@ -966,7 +1112,9 @@ def update_signal_watch_returns(
                 row.max_negative_return_trade_date = max_negative_return_trade_date
             updated += 1
 
-            # 提前結算檢查：首次跌破 -30% 後再給 3 個交易日反彈寬限，若都未漲回則結算。
+            # 提前結算檢查（兩規則並存，取較早觸發者）：
+            # 規則 1：return_pct <= -30% 3 日寬限（CLOSURE_REASON_EARLY_EXIT_STOP_LOSS）
+            # 規則 2：drawdown from peak >= 30% 3 日寬限（CLOSURE_REASON_EARLY_EXIT_DRAWDOWN）
             post_baseline = _post_baseline_returns(
                 db,
                 stock_id=stock_id,
@@ -974,15 +1122,30 @@ def update_signal_watch_returns(
                 baseline_price=baseline_price,
                 through_trade_date=trade_date,
             )
-            settle_date = _resolve_early_exit_settle_date(post_baseline)
-            if settle_date is not None:
+            stop_loss_date = _resolve_early_exit_settle_date(post_baseline)
+            drawdown_date = _resolve_drawdown_exit_settle_date(post_baseline)
+
+            chosen_settle: Optional[date] = None
+            chosen_reason = CLOSURE_REASON_EARLY_EXIT_STOP_LOSS
+            if stop_loss_date is not None and drawdown_date is not None:
+                if drawdown_date <= stop_loss_date:
+                    chosen_settle, chosen_reason = drawdown_date, CLOSURE_REASON_EARLY_EXIT_DRAWDOWN
+                else:
+                    chosen_settle, chosen_reason = stop_loss_date, CLOSURE_REASON_EARLY_EXIT_STOP_LOSS
+            elif drawdown_date is not None:
+                chosen_settle, chosen_reason = drawdown_date, CLOSURE_REASON_EARLY_EXIT_DRAWDOWN
+            elif stop_loss_date is not None:
+                chosen_settle, chosen_reason = stop_loss_date, CLOSURE_REASON_EARLY_EXIT_STOP_LOSS
+
+            if chosen_settle is not None:
                 early_exits.append(
                     (
                         stock_id,
                         rows,
                         baseline_trade_date,
                         baseline_price,
-                        settle_date,
+                        chosen_settle,
+                        chosen_reason,
                     )
                 )
             continue
@@ -1008,6 +1171,7 @@ def update_signal_watch_returns(
         baseline_trade_date,
         baseline_price,
         settle_date,
+        closure_reason,
     ) in early_exits:
         item = _build_early_exit_archive_item(
             db,
@@ -1018,6 +1182,7 @@ def update_signal_watch_returns(
             settle_trade_date=settle_date,
             trade_date_cache=trade_date_cache,
             price_cache=price_cache,
+            closure_reason=closure_reason,
         )
         _upsert_completed_archive(db, item)
         db.query(SignalWatchHit).filter(

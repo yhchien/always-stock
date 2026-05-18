@@ -665,3 +665,209 @@ def test_update_signal_watch_returns_does_not_early_exit_when_grace_recovers():
             .all()
         )
         assert completed == []
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Drawdown-from-peak 提前結算規則（2026-05-18 新增）
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def test_resolve_drawdown_exit_settle_date_pure_logic():
+    """規則 2：max_positive 必須 > 0 才觸發；漲過再跌下來、差距 >= 30% 連續 3 天結算。"""
+
+    # 從未漲過正報酬 → max_positive 永遠 = 0 → 永遠不觸發
+    assert archive._resolve_drawdown_exit_settle_date(
+        [(date(2026, 5, 1), -10.0), (date(2026, 5, 2), -25.0), (date(2026, 5, 3), -40.0)]
+    ) is None
+
+    # 漲過 +10% 但回落只到 -10%（drawdown 20%）→ 沒到 30% threshold → 不觸發
+    assert archive._resolve_drawdown_exit_settle_date(
+        [(date(2026, 5, 1), 10.0), (date(2026, 5, 2), -10.0)]
+    ) is None
+
+    # 漲過 +15% 回落到 -15%（drawdown 30%）：觸發日 D=5/2，需 D+1, D+2, D+3 寬限都仍 >= 30%
+    # 5/3 -16%（drawdown 31）/ 5/4 -17%（drawdown 32）/ 5/5 -18%（drawdown 33）→ 5/5 結算
+    assert archive._resolve_drawdown_exit_settle_date(
+        [
+            (date(2026, 5, 1), 15.0),
+            (date(2026, 5, 2), -15.0),  # D
+            (date(2026, 5, 3), -16.0),  # D+1
+            (date(2026, 5, 4), -17.0),  # D+2
+            (date(2026, 5, 5), -18.0),  # D+3 結算
+        ]
+    ) == date(2026, 5, 5)
+
+    # 寬限期未跑完（只到 D+2）→ 不結算
+    assert archive._resolve_drawdown_exit_settle_date(
+        [
+            (date(2026, 5, 1), 15.0),
+            (date(2026, 5, 2), -15.0),
+            (date(2026, 5, 3), -16.0),
+            (date(2026, 5, 4), -17.0),
+        ]
+    ) is None
+
+    # 寬限期任一天回到 -30% 以內 → 警示解除
+    assert archive._resolve_drawdown_exit_settle_date(
+        [
+            (date(2026, 5, 1), 15.0),
+            (date(2026, 5, 2), -15.0),   # D：drawdown 30
+            (date(2026, 5, 3), -10.0),   # 回落差距 = 25，警示解除
+            (date(2026, 5, 4), -12.0),   # 仍 < threshold
+            (date(2026, 5, 5), -14.0),
+        ]
+    ) is None
+
+    # max_positive 必須 > 0：漲到 +5% 後回落到 -25%（drawdown 30）也要觸發
+    settle = archive._resolve_drawdown_exit_settle_date(
+        [
+            (date(2026, 5, 1), 5.0),
+            (date(2026, 5, 2), -25.0),  # D
+            (date(2026, 5, 3), -26.0),  # D+1
+            (date(2026, 5, 4), -27.0),  # D+2
+            (date(2026, 5, 5), -28.0),  # D+3
+        ]
+    )
+    assert settle == date(2026, 5, 5)
+
+
+def test_update_signal_watch_returns_drawdown_rule_triggers_earlier_than_stop_loss():
+    """規則 1 vs 規則 2 並存：取較早觸發者，並寫對應 closure_reason。
+
+    場景：先漲後跌的股票，drawdown 規則先觸發（return 還在 -25% 但 drawdown 已 30%）。
+    """
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+
+    with Session() as db:
+        first_seen = date(2026, 4, 1)
+        # baseline = 4/2 close = 100
+        # 4/3 +15% → 115 (max_positive=15)
+        # 4/4 -15% → 85 (drawdown=30) D
+        # 4/5 -20% → 80 (drawdown=35) D+1
+        # 4/6 -22% → 78 (drawdown=37) D+2
+        # 4/7 -25% → 75 (drawdown=40) D+3 → drawdown 結算
+        # 此時 return=-25% 還沒到 stop_loss 規則的 -30%
+        for d, price in [
+            (date(2026, 4, 2), 100.0),
+            (date(2026, 4, 3), 115.0),
+            (date(2026, 4, 4), 85.0),
+            (date(2026, 4, 5), 80.0),
+            (date(2026, 4, 6), 78.0),
+            (date(2026, 4, 7), 75.0),
+        ]:
+            _seed_price(db, "7777", d, price, price)
+
+        db.add(
+            SignalWatchHit(
+                snapshot_date=first_seen,
+                stock_id="7777",
+                stock_name="先漲後跌股",
+                signal_type="LEADER",
+                industry_name="半導體業",
+                sub_industry="x",
+                business_summary="",
+                reason="",
+                theme={},
+                group_info={},
+                leader_check={},
+                signals={},
+                baseline_trade_date=date(2026, 4, 2),
+                baseline_price=100.0,
+                latest_eval_trade_date=date(2026, 4, 2),
+                latest_eval_price=100.0,
+                return_pct=0.0,
+            )
+        )
+        db.commit()
+
+        archive.update_signal_watch_returns(db, as_of_trade_date=date(2026, 4, 7))
+
+        # active 已清空、completed 有 drawdown 結算 row
+        active = db.query(SignalWatchHit).filter(SignalWatchHit.stock_id == "7777").all()
+        assert active == []
+
+        completed = (
+            db.query(SignalWatchCompletedArchive)
+            .filter(SignalWatchCompletedArchive.stock_id == "7777")
+            .one()
+        )
+        assert completed.closure_reason == archive.CLOSURE_REASON_EARLY_EXIT_DRAWDOWN
+        assert completed.completed_trade_date == date(2026, 4, 7)
+        assert completed.max_positive_return_pct is not None
+        assert completed.max_positive_return_pct >= 14.9  # +15% 左右
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Half-year period filter
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def test_half_year_period_start_aligns_to_anchor():
+    """半年區間切割：2026-05-01 起算，每 6 個月一段。"""
+    # anchor 之前 → 對齊 anchor
+    assert archive.half_year_period_start(date(2026, 4, 30)) == date(2026, 5, 1)
+    # 區間內任一天 → 起始日 = 2026-05-01
+    assert archive.half_year_period_start(date(2026, 5, 1)) == date(2026, 5, 1)
+    assert archive.half_year_period_start(date(2026, 7, 15)) == date(2026, 5, 1)
+    assert archive.half_year_period_start(date(2026, 10, 31)) == date(2026, 5, 1)
+    # 第二段 = 2026-11-01 ~ 2027-04-30
+    assert archive.half_year_period_start(date(2026, 11, 1)) == date(2026, 11, 1)
+    assert archive.half_year_period_start(date(2027, 1, 1)) == date(2026, 11, 1)
+    assert archive.half_year_period_start(date(2027, 4, 30)) == date(2026, 11, 1)
+    # 第三段 = 2027-05-01 起
+    assert archive.half_year_period_start(date(2027, 5, 1)) == date(2027, 5, 1)
+    assert archive.half_year_period_start(date(2027, 12, 31)) == date(2027, 11, 1)
+
+
+def test_half_year_period_end_is_inclusive_last_day():
+    assert archive.half_year_period_end(date(2026, 5, 1)) == date(2026, 10, 31)
+    assert archive.half_year_period_end(date(2026, 11, 1)) == date(2027, 4, 30)
+    assert archive.half_year_period_end(date(2027, 5, 1)) == date(2027, 10, 31)
+
+
+def test_list_completed_archive_summary_period_filter_returns_only_matching_rows():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+
+    def _seed_completed(db, stock_id: str, completed: date) -> None:
+        db.add(
+            SignalWatchCompletedArchive(
+                stock_id=stock_id,
+                stock_name=f"股{stock_id}",
+                industry_name="半導體業",
+                first_seen_date=completed - timedelta(days=30),
+                latest_hit_date=completed - timedelta(days=10),
+                hit_count=2,
+                latest_signal_type="LEADER",
+                completed_trade_date=completed,
+                closure_reason="completed_40_days",
+            )
+        )
+
+    with Session() as db:
+        _seed_completed(db, "AAAA", date(2026, 6, 15))    # 1st half period
+        _seed_completed(db, "BBBB", date(2026, 10, 31))   # 1st half period (boundary)
+        _seed_completed(db, "CCCC", date(2026, 11, 1))    # 2nd half period (boundary)
+        _seed_completed(db, "DDDD", date(2027, 3, 1))     # 2nd half period
+        db.commit()
+
+        # 不帶 period → 回全部 4 個 + periods meta 列出 2 段
+        all_data = archive.list_completed_archive_summary(db)
+        assert len(all_data["items"]) == 4
+        assert len(all_data["periods"]) == 2
+        # periods 倒序（最新先）
+        assert all_data["periods"][0]["period_start"] == date(2026, 11, 1)
+        assert all_data["periods"][1]["period_start"] == date(2026, 5, 1)
+        assert all_data["periods"][0]["count"] == 2  # CCCC + DDDD
+        assert all_data["periods"][1]["count"] == 2  # AAAA + BBBB
+
+        # 指定 period_start=2026-05-01 → 只回 AAAA + BBBB
+        first_half = archive.list_completed_archive_summary(
+            db, period_start=date(2026, 5, 1)
+        )
+        stock_ids = sorted(item["stock_id"] for item in first_half["items"])
+        assert stock_ids == ["AAAA", "BBBB"]
+        assert first_half["selected_period_start"] == date(2026, 5, 1)

@@ -7,10 +7,12 @@ import {
   fetchCompletedSignalArchive,
   fetchSignalArchive,
   fetchSignalArchiveDetail,
+  type SignalArchiveCompletedPeriod,
   type SignalArchiveCompletedResponse,
   type SignalArchiveDetailResponse,
   type SignalArchiveSortBy,
   type SignalArchiveSummaryResponse,
+  type SignalClosureReason,
 } from "@/lib/api"
 import {
   Select,
@@ -79,14 +81,24 @@ function PeakMilestoneChip() {
   )
 }
 
-function ClosureReasonChip({ reason }: { reason: "completed_40_days" | "early_exit_stop_loss" }) {
+function ClosureReasonChip({ reason }: { reason: SignalClosureReason }) {
   if (reason === "early_exit_stop_loss") {
     return (
       <span
         className="inline-flex items-center rounded border border-rose-500/60 bg-rose-500/20 px-1.5 py-0.5 text-[11px] font-medium text-rose-100"
         title="首次跌破 -30% 後再 3 個交易日仍未漲回，已提前結算。"
       >
-        提前結算
+        提前結算（跌破 -30%）
+      </span>
+    )
+  }
+  if (reason === "early_exit_drawdown_from_peak") {
+    return (
+      <span
+        className="inline-flex items-center rounded border border-orange-500/60 bg-orange-500/20 px-1.5 py-0.5 text-[11px] font-medium text-orange-100"
+        title="從歷史高點回落 30% 以上，且後續 3 個交易日仍未縮小差距至 30% 以內，已提前結算（停利紀律）。"
+      >
+        提前結算（高點回落 30%）
       </span>
     )
   }
@@ -95,6 +107,38 @@ function ClosureReasonChip({ reason }: { reason: "completed_40_days" | "early_ex
       40 日結束
     </span>
   )
+}
+
+function SignalTypeChip({ type }: { type: string }) {
+  const upper = type.toUpperCase()
+  if (upper === "LEADER") {
+    return (
+      <span className="inline-flex items-center rounded border border-emerald-500/60 bg-emerald-500/15 px-1.5 py-0.5 text-[11px] font-medium text-emerald-200">
+        領漲
+      </span>
+    )
+  }
+  if (upper === "FOLLOWER") {
+    return (
+      <span className="inline-flex items-center rounded border border-sky-500/60 bg-sky-500/15 px-1.5 py-0.5 text-[11px] font-medium text-sky-200">
+        跟漲
+      </span>
+    )
+  }
+  if (upper === "LAGGARD") {
+    return (
+      <span className="inline-flex items-center rounded border border-amber-500/60 bg-amber-500/15 px-1.5 py-0.5 text-[11px] font-medium text-amber-200">
+        補漲
+      </span>
+    )
+  }
+  return <span className="text-xs text-slate-400">{upper}</span>
+}
+
+function formatPeriodLabel(period: SignalArchiveCompletedPeriod): string {
+  const [sy, sm] = period.period_start.split("-")
+  const [ey, em] = period.period_end.split("-")
+  return `${sy}/${sm} - ${ey}/${em}`
 }
 
 function ReturnCell({ value }: { value: number | null }) {
@@ -133,6 +177,8 @@ export default function SignalArchivePage() {
   const [sortBy, setSortBy] = useState<SignalArchiveSortBy>("tracking_days_desc")
   const [summary, setSummary] = useState<SignalArchiveSummaryResponse | null>(null)
   const [completedSummary, setCompletedSummary] = useState<SignalArchiveCompletedResponse | null>(null)
+  // null = 全部區間；string = 該半年區間起始日（YYYY-MM-DD）
+  const [selectedPeriodStart, setSelectedPeriodStart] = useState<string | null>(null)
   const [selectedStockId, setSelectedStockId] = useState<string | null>(null)
   const [detail, setDetail] = useState<SignalArchiveDetailResponse | null>(null)
   const [loading, setLoading] = useState(true)
@@ -166,8 +212,17 @@ export default function SignalArchivePage() {
       setCompletedLoading(true)
       setCompletedError(null)
       try {
-        const data = await fetchCompletedSignalArchive({ limit: 200 })
-        if (!cancelled) setCompletedSummary(data)
+        const data = await fetchCompletedSignalArchive({
+          limit: 200,
+          periodStart: selectedPeriodStart,
+        })
+        if (!cancelled) {
+          setCompletedSummary(data)
+          // 首次載入時：若還沒選 period 且後端有 periods → 預設選最新一段，避免一次顯示全部
+          if (selectedPeriodStart === null && data.periods.length > 0) {
+            setSelectedPeriodStart(data.periods[0].period_start)
+          }
+        }
       } catch (err) {
         if (!cancelled) {
           setCompletedError(err instanceof Error ? err.message : "40日移出紀錄載入失敗")
@@ -180,7 +235,7 @@ export default function SignalArchivePage() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [selectedPeriodStart])
 
   useEffect(() => {
     if (!selectedStockId) {
@@ -267,9 +322,15 @@ export default function SignalArchivePage() {
               </span>
               期間曾跌破 -30%；若首次跌破後再 3 個交易日仍 &lt; -30%，會
               <span className="mx-1 inline-flex items-center rounded border border-rose-500/60 bg-rose-500/20 px-1 py-0 text-[11px] text-rose-100">
-                提前結算
+                提前結算（跌破 -30%）
               </span>
               並移到下方「永久紀錄」，不必等 40 日。
+            </p>
+            <p>
+              <span className="mr-1 inline-flex items-center rounded border border-orange-500/60 bg-orange-500/20 px-1 py-0 text-[11px] text-orange-100">
+                提前結算（高點回落 30%）
+              </span>
+              若曾漲過正報酬，又回落到負區且高低差 ≥ 30%，後續 3 個交易日仍未縮小差距至 30% 以內，也會提前結算（停利紀律）。
             </p>
             <p>
               <span className="mr-1 inline-flex items-center rounded border border-amber-400/70 bg-amber-400/15 px-1 py-0 text-[11px] text-amber-200">
@@ -414,33 +475,56 @@ export default function SignalArchivePage() {
       </section>
 
       <section className="rounded-xl border border-slate-700 bg-slate-900/40 p-4">
-        <header className="mb-4">
-          <h2 className="text-lg font-semibold text-slate-100">移出 40 日後紀錄</h2>
-          <p className="mt-1 text-sm text-slate-400">
-            當股票完成一個 40 交易日追蹤 cycle 後，會在這裡留下封存摘要；同一檔之後若重新被抓到，會再新增一列。
-          </p>
+        <header className="mb-4 flex flex-col gap-3">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-100">移出 40 日後紀錄</h2>
+            <p className="mt-1 text-sm text-slate-400">
+              當股票完成一個追蹤 cycle 後（40 日結束 / 跌破 -30% / 從高點回落 30%），會在這裡留下封存摘要；
+              依移出時間切半年一張表（2026/05 起算），同一檔之後若重新被抓到會以新的首次抓到日新增一列。
+            </p>
+          </div>
+          {completedSummary && completedSummary.periods.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs text-slate-400">半年區間：</span>
+              {completedSummary.periods.map((p) => {
+                const isActive = selectedPeriodStart === p.period_start
+                return (
+                  <button
+                    key={p.period_start}
+                    type="button"
+                    onClick={() => setSelectedPeriodStart(p.period_start)}
+                    className={
+                      "rounded border px-2.5 py-1 text-xs font-medium transition " +
+                      (isActive
+                        ? "border-sky-400 bg-sky-500/20 text-sky-100"
+                        : "border-slate-700 bg-slate-800/40 text-slate-300 hover:border-slate-500")
+                    }
+                  >
+                    {formatPeriodLabel(p)}（{p.count}）
+                  </button>
+                )
+              })}
+            </div>
+          )}
         </header>
         {completedLoading && <p className="text-sm text-slate-400">載入中…</p>}
         {completedError && !completedLoading && (
           <p className="text-sm text-rose-300">{completedError}</p>
         )}
         {!completedLoading && !completedError && (completedSummary?.items.length ?? 0) === 0 && (
-          <p className="text-sm text-slate-400">暫無資料</p>
+          <p className="text-sm text-slate-400">此區間暫無資料</p>
         )}
         {!completedLoading && !completedError && completedSummary && completedSummary.items.length > 0 && (
           <Table>
             <TableHeader>
               <TableRow className="border-slate-700">
-                <TableHead className="text-slate-300">股票</TableHead>
+                <TableHead className="text-slate-300">股票 / 產業</TableHead>
                 <TableHead className="text-slate-300">首次抓到</TableHead>
-                <TableHead className="text-slate-300">40天中抓到次數</TableHead>
-                <TableHead className="text-slate-300">第10天</TableHead>
-                <TableHead className="text-slate-300">第20天</TableHead>
-                <TableHead className="text-slate-300">第30天</TableHead>
-                <TableHead className="text-slate-300">第40天</TableHead>
+                <TableHead className="text-slate-300">抓到次數</TableHead>
+                <TableHead className="text-slate-300">類型</TableHead>
                 <TableHead className="text-slate-300">最大正報酬</TableHead>
                 <TableHead className="text-slate-300">最大負報酬</TableHead>
-                <TableHead className="text-slate-300">移出日</TableHead>
+                <TableHead className="text-slate-300">移出原因</TableHead>
                 <TableHead className="text-slate-300">操作</TableHead>
               </TableRow>
             </TableHeader>
@@ -449,67 +533,64 @@ export default function SignalArchivePage() {
                 const hitPeak =
                   (item.max_positive_return_pct ?? -Infinity) >= PEAK_MILESTONE_PCT
                 return (
-                <TableRow
-                  key={`${item.stock_id}-${item.first_seen_date}`}
-                  className="border-slate-800"
-                >
-                  <TableCell className="align-top">
-                    <div className="flex flex-col">
-                      <span className="text-sm font-semibold text-slate-100">
-                        {item.stock_id} {item.stock_name}
-                      </span>
-                      <span className="text-xs text-slate-500">
-                        {item.industry_name ?? "—"}
-                        {item.sub_industry ? ` · ${item.sub_industry}` : ""}
-                      </span>
-                      <div className="mt-1 flex flex-wrap gap-1">
-                        <ClosureReasonChip reason={item.closure_reason} />
-                        {hitPeak && <PeakMilestoneChip />}
+                  <TableRow
+                    key={`${item.stock_id}-${item.first_seen_date}`}
+                    className="border-slate-800"
+                  >
+                    <TableCell className="align-top">
+                      <div className="flex flex-col">
+                        <span className="text-sm font-semibold text-slate-100">
+                          {item.stock_id} {item.stock_name}
+                        </span>
+                        <span className="text-xs text-slate-500">
+                          {item.industry_name ?? "—"}
+                          {item.sub_industry ? ` · ${item.sub_industry}` : ""}
+                        </span>
+                        {hitPeak && (
+                          <div className="mt-1">
+                            <PeakMilestoneChip />
+                          </div>
+                        )}
                       </div>
-                    </div>
-                  </TableCell>
-                  <TableCell className="font-mono text-xs text-slate-300">
-                    {item.first_seen_date}
-                  </TableCell>
-                  <TableCell className="text-sm text-slate-200">
-                    {item.hit_count} 次
-                  </TableCell>
-                  <TableCell>
-                    <ReturnCell value={item.return_day_10_pct} />
-                  </TableCell>
-                  <TableCell>
-                    <ReturnCell value={item.return_day_20_pct} />
-                  </TableCell>
-                  <TableCell>
-                    <ReturnCell value={item.return_day_30_pct} />
-                  </TableCell>
-                  <TableCell>
-                    <ReturnCell value={item.return_day_40_pct} />
-                  </TableCell>
-                  <TableCell>
-                    <ExtremeReturnCell
-                      value={item.max_positive_return_pct}
-                      tradeDate={item.max_positive_return_trade_date}
-                    />
-                  </TableCell>
-                  <TableCell>
-                    <ExtremeReturnCell
-                      value={item.max_negative_return_pct}
-                      tradeDate={item.max_negative_return_trade_date}
-                    />
-                  </TableCell>
-                  <TableCell className="font-mono text-xs text-slate-300">
-                    {item.completed_trade_date}
-                  </TableCell>
-                  <TableCell>
-                    <Link
-                      href={`/stocks/${encodeURIComponent(item.stock_id)}`}
-                      className="rounded border border-sky-500/50 bg-sky-500/10 px-2 py-1 text-xs text-sky-200 hover:bg-sky-500/20"
-                    >
-                      K線圖
-                    </Link>
-                  </TableCell>
-                </TableRow>
+                    </TableCell>
+                    <TableCell className="font-mono text-xs text-slate-300">
+                      {item.first_seen_date}
+                    </TableCell>
+                    <TableCell className="text-sm text-slate-200">
+                      {item.hit_count} 次
+                    </TableCell>
+                    <TableCell>
+                      <SignalTypeChip type={item.latest_signal_type} />
+                    </TableCell>
+                    <TableCell>
+                      <ExtremeReturnCell
+                        value={item.max_positive_return_pct}
+                        tradeDate={item.max_positive_return_trade_date}
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <ExtremeReturnCell
+                        value={item.max_negative_return_pct}
+                        tradeDate={item.max_negative_return_trade_date}
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex flex-col gap-1">
+                        <ClosureReasonChip reason={item.closure_reason} />
+                        <span className="font-mono text-[10px] text-slate-500">
+                          {item.completed_trade_date}
+                        </span>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <Link
+                        href={`/stocks/${encodeURIComponent(item.stock_id)}`}
+                        className="rounded border border-sky-500/50 bg-sky-500/10 px-2 py-1 text-xs text-sky-200 hover:bg-sky-500/20"
+                      >
+                        K線圖
+                      </Link>
+                    </TableCell>
+                  </TableRow>
                 )
               })}
             </TableBody>

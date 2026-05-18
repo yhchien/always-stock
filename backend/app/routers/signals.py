@@ -140,8 +140,16 @@ class SignalArchiveCompletedItemResponse(BaseModel):
     closure_reason: str = "completed_40_days"
 
 
+class SignalArchiveCompletedPeriodMeta(BaseModel):
+    period_start: date
+    period_end: date
+    count: int
+
+
 class SignalArchiveCompletedResponse(BaseModel):
     items: List[SignalArchiveCompletedItemResponse]
+    periods: List[SignalArchiveCompletedPeriodMeta] = []
+    selected_period_start: Optional[date] = None
 
 
 class SignalArchiveReportResponse(BaseModel):
@@ -351,11 +359,23 @@ def get_signal_archive(
 @router.get("/archive/completed", response_model=SignalArchiveCompletedResponse)
 def get_completed_signal_archive(
     limit: int = Query(default=200, ge=1, le=500),
+    period_start: Optional[date] = Query(
+        default=None,
+        description=(
+            "半年區間起始日（YYYY-MM-DD）；必須對齊到 2026-05-01 起算的半年區間"
+            "（例：2026-05-01 / 2026-11-01 / 2027-05-01）。"
+            "未指定時回所有 row（受 limit）。"
+        ),
+    ),
     db: Session = Depends(get_db),
 ) -> SignalArchiveCompletedResponse:
+    if period_start is not None:
+        # 後端 normalize 到正確的 anchor（防使用者傳奇怪日期）
+        period_start = signal_archive.half_year_period_start(period_start)
     payload = signal_archive.list_completed_archive_summary(
         db,
         limit=limit,
+        period_start=period_start,
     )
     return SignalArchiveCompletedResponse(**payload)
 

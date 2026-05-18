@@ -1316,10 +1316,21 @@ export interface SignalArchiveCompletedItem {
   closure_reason: SignalClosureReason
 }
 
-export type SignalClosureReason = "completed_40_days" | "early_exit_stop_loss"
+export type SignalClosureReason =
+  | "completed_40_days"
+  | "early_exit_stop_loss"
+  | "early_exit_drawdown_from_peak"
+
+export interface SignalArchiveCompletedPeriod {
+  period_start: string
+  period_end: string
+  count: number
+}
 
 export interface SignalArchiveCompletedResponse {
   items: SignalArchiveCompletedItem[]
+  periods: SignalArchiveCompletedPeriod[]
+  selected_period_start: string | null
 }
 
 export interface SignalArchiveReportItem {
@@ -1421,11 +1432,14 @@ export async function fetchSignalArchiveDetail(
 export async function fetchCompletedSignalArchive(
   params?: {
     limit?: number
+    /** 半年區間起始日（YYYY-MM-DD）；未指定回所有區間 */
+    periodStart?: string | null
   },
   options?: FetchOptions,
 ): Promise<SignalArchiveCompletedResponse> {
   const qs = new URLSearchParams()
   if (params?.limit != null) qs.set("limit", String(params.limit))
+  if (params?.periodStart) qs.set("period_start", params.periodStart)
   const url = `${API_BASE}/api/signals/archive/completed${qs.toString() ? `?${qs.toString()}` : ""}`
   const res = await apiFetch(url, { signal: options?.signal })
   if (!res.ok) throw new Error(await buildErrorMessage(res, "40日移出紀錄載入失敗"))
