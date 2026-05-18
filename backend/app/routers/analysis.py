@@ -328,13 +328,28 @@ def _build_user_message(
             "說明：以下 6 個 section 已用純規則從 DB 預聚合完成；\n"
             "請**直接消費結論**，不要重新從 raw 數據推算相同訊號。\n"
             "欄位語義詳見 docs/plans/trade_quality_context_spec.md。\n"
-            "下方 raw OHLC / 法人僅保留 5 日供你交叉驗證，不是主要推論依據。\n\n"
+            "\n"
             "```json\n"
             f"{json.dumps(m21_context, ensure_ascii=False, indent=2)}\n"
             "```\n"
         )
     else:
         m21_block = "[M21 預聚合訊號]\n（不可用：請以下方原始資料自行推論）\n"
+
+    # A1：m21 可用時拔掉 raw 5 日 OHLC / 法人 / 月營收 3 段，
+    # 避免雙重資訊（M21 已結論化 price_structure/chip/fundamental）+ 省 ~600-1000 tokens。
+    # m21 不可用時保留 raw，避免 LLM 完全無資料推論。
+    if m21_context is None:
+        raw_blocks = (
+            "[近 5 交易日 OHLC / 成交量 / 漲跌%]\n"
+            f"{context['prices_text']}\n\n"
+            "[近 5 交易日三大法人淨買賣（張）]\n"
+            f"{context['flows_text']}\n\n"
+            "[最近 3 個月月營收 + YoY/MoM]\n"
+            f"{context['revenue_text']}\n\n"
+        )
+    else:
+        raw_blocks = ""
 
     return f"""[INPUT]
 {{"stock": "{context['stock_name']} ({context['stock_id']})", "buy_date": "{context['buy_date']}"}}
@@ -347,16 +362,7 @@ def _build_user_message(
 - 買進日收盤價：{_fmt(context['latest_close'])}
 
 {m21_block}
-[近 5 交易日 OHLC / 成交量 / 漲跌%（僅供對照）]
-{context['prices_text']}
-
-[近 5 交易日三大法人淨買賣（張，僅供對照）]
-{context['flows_text']}
-
-[最近 3 個月月營收 + YoY/MoM]
-{context['revenue_text']}
-
-[新聞]
+{raw_blocks}[新聞]
 {news_note}
 {warning_block}
 
@@ -620,16 +626,33 @@ def _key_factors_complete(factors: Optional[List[KeyFactor]]) -> bool:
     return REQUIRED_KEY_FACTOR_CATEGORIES.issubset({f.category for f in factors})
 
 
-def _build_factors_retry_user_msg(user_msg: str) -> str:
+def _build_factors_retry_user_msg(
+    user_msg: str,
+    *,
+    existing_factors: Optional[List[KeyFactor]] = None,
+) -> str:
     """LLM 第一輪沒給齊 6 個 category 時，retry 用的補強提醒。
 
-    把原 user_msg 完整貼回（保留 buy_date / context / M21 訊號），再追加說明，
-    免得 LLM 只看補強段就忘了 buy_date。
+    A7：明列「上一輪你已給了什麼」+「還缺哪些」，避免 LLM 又把 6 個都重產一遍仍漏項。
+    把原 user_msg 完整貼回（保留 buy_date / context / M21 訊號），再追加缺漏清單。
     """
+    existing_set = {f.category for f in (existing_factors or [])}
+    missing = sorted(REQUIRED_KEY_FACTOR_CATEGORIES - existing_set)
+    provided = sorted(existing_set & REQUIRED_KEY_FACTOR_CATEGORIES)
+
+    provided_line = (
+        f"- 上一輪已提供：{', '.join(provided) if provided else '（沒有任何合法 category）'}"
+    )
+    missing_line = (
+        f"- 缺漏必補：{', '.join(missing)}" if missing else "- 缺漏必補：（請完整輸出 6 個）"
+    )
+
     return (
         f"{user_msg}\n\n"
-        "[重要補充：上一版輸出的 key_factors 缺少必備 category]\n"
-        "請務必在 JSON 的 `key_factors` 陣列裡輸出 6 個 category 全部燈號：\n"
+        "[重要補充：上一版輸出的 key_factors 不齊]\n"
+        f"{provided_line}\n"
+        f"{missing_line}\n"
+        "請在 JSON 的 `key_factors` 陣列裡輸出 6 個 category 全部燈號：\n"
         "- industry / industry_heat / return / chip / technical / fundamental\n"
         "每個 category 必須含 `level` (A/B/C)、`trend` "
         "(improving/stable/weakening/deteriorating) 與一句 10~25 字的 `note`。\n"
@@ -646,6 +669,10 @@ def _call_openai_with_factors_retry(
 
     第一輪結果即使不完整也會作為 fallback：retry 完全失敗時退回第一輪。
     完全沒拿到任何 payload → 回 None（caller 走 unavailable fallback）。
+
+    A2 後：主流程在 m21_context 可用時改走 _call_openai（不 retry），因為
+    _apply_key_factor_fallback 會永遠用 deterministic 覆寫 key_factors，
+    retry 純屬浪費。這個 function 只有 m21 不可用時的 fallback 路徑會走到。
     """
     payload = _call_openai(system_prompt, user_msg)
     if payload is None:
@@ -659,7 +686,10 @@ def _call_openai_with_factors_retry(
         "key_factors incomplete after first call (got=%d/6); retrying once with reminder",
         len(factors or []),
     )
-    retry_payload = _call_openai(system_prompt, _build_factors_retry_user_msg(user_msg))
+    retry_payload = _call_openai(
+        system_prompt,
+        _build_factors_retry_user_msg(user_msg, existing_factors=factors),
+    )
     if retry_payload is None:
         return payload
 
@@ -882,16 +912,100 @@ def _apply_key_factor_fallback(
     *,
     m21_context: Optional[dict],
 ) -> TradeQualityResponse:
-    if _key_factors_complete(response.key_factors):
-        return response
+    """A2：把 deterministic synthesizer 升為主路徑。
 
+    優先序：
+    1. m21_context 可用 + synthesize 齊 6 項 → 永遠覆寫（即使 LLM 已給），LLM 給的 levels
+       會被 deterministic 蓋掉但語意 note 部分保留 by 重新生成。
+       Why: LLM 的 key_factors 飄移大、與 deterministic 訊號常打架；既然 M21 已經
+       deterministic 算好 industry/chip/技術/基本面，沒理由再讓 LLM 拍腦袋蓋。
+    2. m21 不可用但 LLM 給齊了 → 保留 LLM 的（fallback to 既有行為）
+    3. 兩邊都缺 → 不動，前端用 has key_factors 當渲染條件
+    """
     synthesized = _synthesize_key_factors_from_context(m21_context)
-    if not _key_factors_complete(synthesized):
+    if _key_factors_complete(synthesized):
+        if not _key_factors_complete(response.key_factors):
+            note = "已用 deterministic context 補齊 key_factors"
+        else:
+            note = "已用 deterministic context 覆寫 LLM key_factors（強制對齊 M21 訊號）"
+        if note not in response.warnings:
+            response.warnings.append(note)
+        response.key_factors = synthesized
+    return response
+
+
+# ── B1：deterministic rating / classification mapping ─────────────────────────
+#
+# Why: prompt 已寫「key_factors 必須與 classification 一致」（4+ A → A、3+ C → C），
+#      但 LLM 仍經常違反，導致前端燈號全綠卻顯示「再看看」、或燈號 4 紅顯示「推薦」。
+#      改用 deterministic mapping 從 key_factors counts 推 rating + classification，
+#      LLM 的原始判斷寫進 warnings 供對照。
+#
+# How: counts(A/B/C) 投票 → classification → rating；
+#      LLM 偶爾還是會給合法但不一致的組合，覆寫後在 warnings 寫「AI 原判 XX → 已對齊燈號改為 YY」。
+
+def _derive_rating_from_factors(
+    factors: Optional[List[KeyFactor]],
+) -> Optional[tuple[str, str]]:
+    """從 6 個 key_factors 推 (rating, classification)。
+
+    回傳 None 表示燈號不齊（caller 應該保留 LLM 原始判斷不覆寫）。
+    """
+    if not _key_factors_complete(factors):
+        return None
+    assert factors is not None  # mypy hint
+
+    counts = {"A": 0, "B": 0, "C": 0}
+    for f in factors:
+        if f.level in counts:
+            counts[f.level] += 1
+
+    a, c = counts["A"], counts["C"]
+
+    if a >= 4:
+        classification = "A"
+    elif c >= 3:
+        classification = "C"
+    else:
+        classification = "B"
+
+    # rating mapping（與 prompt 內既有規則對齊）
+    if a >= 5:
+        rating = "STRONG_BUY"
+    elif a >= 3:
+        rating = "BUY"
+    elif c >= 4:
+        rating = "RUN"
+    elif c >= 2:
+        rating = "WATCH"
+    else:
+        rating = "NEUTRAL"
+
+    return rating, classification
+
+
+def _enforce_deterministic_rating(
+    response: TradeQualityResponse,
+) -> TradeQualityResponse:
+    derived = _derive_rating_from_factors(response.key_factors)
+    if derived is None:
         return response
 
-    if "已用 deterministic context 補齊 key_factors" not in response.warnings:
-        response.warnings.append("已用 deterministic context 補齊 key_factors")
-    response.key_factors = synthesized
+    new_rating, new_classification = derived
+    notes: list[str] = []
+    if response.rating != new_rating:
+        notes.append(f"AI 原判 rating={response.rating} → 已對齊燈號改為 {new_rating}")
+        response.rating = new_rating
+        response.rating_label = RATING_LABELS[new_rating]
+    if response.classification and response.classification != new_classification:
+        notes.append(
+            f"AI 原判 classification={response.classification} → 已對齊燈號改為 {new_classification}"
+        )
+    response.classification = new_classification
+
+    for note in notes:
+        if note not in response.warnings:
+            response.warnings.append(note)
     return response
 
 
@@ -992,7 +1106,12 @@ def run_trade_quality_for_user(
         raise HTTPException(status_code=500, detail="分析 prompt 檔案缺失")
 
     user_msg = _build_user_message(context, m21_context, warnings)
-    payload = _call_openai_with_factors_retry(system_prompt, user_msg)
+    # A2：m21 可用時 deterministic 會永遠覆寫 key_factors，retry 無意義 → 省一次 OpenAI call。
+    # m21 不可用才走 retry 路徑做 LLM key_factors 保險。
+    if _key_factors_complete(_synthesize_key_factors_from_context(m21_context)):
+        payload = _call_openai(system_prompt, user_msg)
+    else:
+        payload = _call_openai_with_factors_retry(system_prompt, user_msg)
 
     if payload is None:
         fallback = TradeQualityResponse(
@@ -1010,6 +1129,7 @@ def run_trade_quality_for_user(
 
     response = _normalize_response(payload, stock, resolved, warnings, source="openai")
     response = _apply_key_factor_fallback(response, m21_context=m21_context)
+    response = _enforce_deterministic_rating(response)
     _store_cached_trade_quality(stock_id, resolved, response)
     snapshot_trade_date = None
     if persist_db_cache:
@@ -1165,7 +1285,11 @@ def analyze_trade_quality_stream(
 
             yield _emit("openai_call", "AI 分析中（依 prompt 推論評級與目標價）")
             user_msg = _build_user_message(context, m21_context, warnings)
-            payload = _call_openai_with_factors_retry(system_prompt, user_msg)
+            # A2：m21 可用時 deterministic 覆寫 key_factors，retry 無意義
+            if _key_factors_complete(_synthesize_key_factors_from_context(m21_context)):
+                payload = _call_openai(system_prompt, user_msg)
+            else:
+                payload = _call_openai_with_factors_retry(system_prompt, user_msg)
 
             if payload is None:
                 fallback = TradeQualityResponse(
@@ -1183,6 +1307,8 @@ def analyze_trade_quality_stream(
                 return
 
             response = _normalize_response(payload, stock, resolved, warnings, source="openai")
+            response = _apply_key_factor_fallback(response, m21_context=m21_context)
+            response = _enforce_deterministic_rating(response)
             _store_cached_trade_quality(req.stock_id, resolved, response)
             _persist_db_cache_if_logged_in(
                 db, user=user, stock=stock, buy_date=resolved, response=response

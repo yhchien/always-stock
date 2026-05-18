@@ -14,7 +14,15 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-from app.signals import llm_caller
+from app.signals import llm_caller, market_cache
+
+
+@pytest.fixture(autouse=True)
+def _reset_market_cache():
+    """A3：每個測試前後清空 in-process market_context cache，避免跨測試命中。"""
+    market_cache._reset_for_tests()
+    yield
+    market_cache._reset_for_tests()
 
 
 # ---------- helpers ----------
@@ -68,7 +76,7 @@ def _patch_openai(
     monkeypatch.setattr(llm_caller, "OpenAI", _factory)
     monkeypatch.setattr(llm_caller, "get_openai_api_key", lambda: api_key)
     # 確保 prompt 載入不會因檔案缺失炸掉
-    monkeypatch.setattr(llm_caller, "_load_system_prompt", lambda: "FAKE_SYSTEM_PROMPT")
+    monkeypatch.setattr(llm_caller, "_load_system_prompt", lambda stage="full": "FAKE_SYSTEM_PROMPT")
     return fake_client
 
 
@@ -224,9 +232,10 @@ def test_run_research_batch_aligns_response_by_stock_id(monkeypatch):
         ]
     }
     fake_client = _patch_openai(monkeypatch, json.dumps(response, ensure_ascii=False))
+    # B4：type 鎖死 deterministic prelim_type，LLM 給的 type 會被覆寫
     batch = [
-        {"stock_id": "2330", "name": "台積電", "industry": "半導體業"},
-        {"stock_id": "2454", "name": "聯發科", "industry": "半導體業"},
+        {"stock_id": "2330", "name": "台積電", "industry": "半導體業", "prelim_type": "LEADER"},
+        {"stock_id": "2454", "name": "聯發科", "industry": "半導體業", "prelim_type": "FOLLOWER"},
     ]
     out = llm_caller.run_research_batch(batch)
     assert len(out) == 2
@@ -365,7 +374,7 @@ def test_run_explanation_batch_chunks_by_default_batch_size(monkeypatch):
 
     monkeypatch.setattr(llm_caller, "OpenAI", lambda **_: client)
     monkeypatch.setattr(llm_caller, "get_openai_api_key", lambda: "fake-key")
-    monkeypatch.setattr(llm_caller, "_load_system_prompt", lambda: "S")
+    monkeypatch.setattr(llm_caller, "_load_system_prompt", lambda stage="full": "S")
 
     research = [{"stock": f"S{i:03d}", "name": "x"} for i in range(13)]
     out = llm_caller.run_explanation_batch(research, market_context={})
@@ -563,3 +572,165 @@ def test_assemble_final_output_keeps_all_watch_items(monkeypatch):
     assert len(out["watchlist"]) == 8
     assert out["final_watchlist_size"] == 8
     assert [item["stock"] for item in out["watchlist"]] == [str(1000 + i) for i in range(8)]
+
+
+# ---------- B4 / B6 / A3 / A4 新增測試 ----------
+
+
+def test_normalize_prelim_type_maps_laggard_candidate_to_laggard():
+    """B4：candidate_pool 給的 LAGGARD_CANDIDATE 對外應顯示為 LAGGARD。"""
+    assert llm_caller._normalize_prelim_type("LAGGARD_CANDIDATE") == "LAGGARD"
+    assert llm_caller._normalize_prelim_type("LEADER") == "LEADER"
+    assert llm_caller._normalize_prelim_type("follower") == "FOLLOWER"
+    assert llm_caller._normalize_prelim_type(None) == "LEADER"
+    assert llm_caller._normalize_prelim_type("UNKNOWN") == "LEADER"
+
+
+def test_run_research_batch_overrides_llm_type_with_prelim_type(monkeypatch):
+    """B4：即使 LLM 自己回 LEADER 也應被 prelim_type=FOLLOWER 覆寫。"""
+    response = {
+        "research": [
+            {
+                "stock": "2454", "name": "聯發科",
+                "type": "LEADER",  # LLM 試圖判 LEADER
+                "business_summary": "IC 設計",
+                "supply_chain_position": "upstream", "theme_fit": "HIGH",
+                "theme": {"main_theme": "x", "theme_duration": "1Q", "theme_score": 2, "theme_reason": "."},
+                "group_info": {"is_group_stock": False, "group_name": None, "related_group_stocks": [], "group_price_sync": "none"},
+                "leader_check": {"industry_leader": "2330", "leader_price_trend": "up", "leader_supports_theme": True},
+            }
+        ]
+    }
+    _patch_openai(monkeypatch, json.dumps(response, ensure_ascii=False))
+    batch = [{"stock_id": "2454", "name": "聯發科", "prelim_type": "FOLLOWER"}]
+    out = llm_caller.run_research_batch(batch)
+    assert out[0]["type"] == "FOLLOWER"  # deterministic 覆寫
+
+
+def test_to_evidence_view_extracts_core_metrics():
+    """B6：candidate_pool dict 投影成乾淨 evidence card。"""
+    stocks = [
+        {
+            "stock_id": "2330", "name": "台積電", "industry": "半導體業",
+            "sub_industry": "晶圓代工", "prelim_type": "LEADER",
+            "industry_rank_5d": 1, "industry_rank_net_3d": 1, "industry_count": 25,
+            "consecutive_buy_days_3d": 3, "volume_5d_to_60d_ratio": 1.8,
+            "price_change_3d": 6.5, "price_change_5d": 9.2,
+            "total_institution_flow_3d": 5_000_000_000,
+            "in_top_stocks_3d": True, "in_top_industries_3d": True,
+            "soft_hints": ["HINT_TEST"],
+            # internal noise that should be dropped
+            "industry_name": "半導體業",
+        }
+    ]
+    out = llm_caller._to_evidence_view(stocks)
+    assert out[0]["stock"] == "2330"
+    assert out[0]["prelim_type"] == "LEADER"
+    assert out[0]["evidence"]["industry_rank_5d"] == 1
+    assert out[0]["evidence"]["consecutive_inst_buy_days_3d"] == 3
+    assert out[0]["evidence"]["volume_5d_to_60d_ratio"] == 1.8
+    assert out[0]["evidence"]["total_institution_flow_3d_twd"] == 5_000_000_000
+    assert out[0]["evidence"]["in_top_stocks_3d"] is True
+    assert out[0]["soft_hints"] == ["HINT_TEST"]
+
+
+def test_run_research_batch_user_msg_includes_evidence_view(monkeypatch):
+    """B6：research user_msg 必須含 evidence 區塊，且把硬規則寫進 prompt。"""
+    response = {"research": []}
+    fake_client = _patch_openai(monkeypatch, json.dumps(response))
+    batch = [
+        {
+            "stock_id": "2330", "name": "台積電", "industry": "半導體業",
+            "prelim_type": "LEADER", "consecutive_buy_days_3d": 3,
+            "price_change_3d": 5.5,
+        }
+    ]
+    llm_caller.run_research_batch(batch)
+    sent_user_msg = fake_client._responses_api.calls[0]["input"]
+    assert '"evidence"' in sent_user_msg
+    assert "consecutive_inst_buy_days_3d" in sent_user_msg
+    assert "硬規則" in sent_user_msg  # B4 / B6 指引段
+
+
+def test_run_research_batch_loads_research_stage_prompt(monkeypatch):
+    """A4：research stage 收到的 system prompt 只含 research 相關 STEP（1-4）。
+
+    這個 test 走真實 prompt（不 patch `_load_system_prompt`），只 mock OpenAI client。
+    """
+    fake_client = _FakeOpenAIClient(json.dumps({"research": []}))
+
+    def _factory(**_kwargs: Any) -> _FakeOpenAIClient:
+        return fake_client
+
+    monkeypatch.setattr(llm_caller, "OpenAI", _factory)
+    monkeypatch.setattr(llm_caller, "get_openai_api_key", lambda: "fake-key")
+    llm_caller._PROMPT_FRAGMENT_CACHE.clear()
+
+    llm_caller.run_research_batch([{"stock_id": "2330", "name": "X", "prelim_type": "LEADER"}])
+    sent_instructions = fake_client._responses_api.calls[0]["instructions"]
+
+    # research stage 應含 STEP 1~4，不含 STEP 5/6/7/8/9
+    assert "STEP 1：建立候選池" in sent_instructions
+    assert "STEP 4：龍頭股、同業、集團股檢查" in sent_instructions
+    assert "STEP 5：Leader / Follower / Laggard 分類" not in sent_instructions
+    assert "STEP 9：最終輸出格式" not in sent_instructions
+    # 共用 preamble + 重要限制必須在
+    assert "核心原則" in sent_instructions
+    assert "重要限制" in sent_instructions
+
+
+def test_assemble_market_context_caches_for_subsequent_calls(monkeypatch):
+    """A3：第一次 LLM call 命中後寫 cache，第二次直接命中（不再打 OpenAI）。"""
+    response = {
+        "market_state": "STRONG_BULL", "vix_status": "risk_on",
+        "futures_bias": "LONG", "market_state_reason": "fresh",
+    }
+    fake_client = _patch_openai(monkeypatch, json.dumps(response))
+    snapshot = {
+        "taiex": {"change_pct_1d": 1.2},
+        "otc": {"change_pct_1d": 0.8},
+    }
+    out1 = llm_caller.assemble_market_context(snapshot)
+    out2 = llm_caller.assemble_market_context(snapshot)
+    assert out1["market_state"] == "STRONG_BULL"
+    assert out2["market_state"] == "STRONG_BULL"
+    # 只打過一次 OpenAI
+    assert len(fake_client._responses_api.calls) == 1
+    # taiex/otc 仍以 backend 為準
+    assert out2["taiex_change_pct"] == 1.2
+    assert out2["otc_change_pct"] == 0.8
+
+
+def test_assemble_market_context_does_not_cache_fallback(monkeypatch):
+    """A3：fallback path（OpenAI 不可用）不該寫 cache，下次仍重試。"""
+    _patch_openai(monkeypatch, "", api_key=None)
+    snapshot = {"taiex": {"change_pct_1d": -0.5}, "otc": {"change_pct_1d": -1.0}}
+    llm_caller.assemble_market_context(snapshot)
+    # 第二次應該還是 fallback（cache 沒寫）
+    cached = llm_caller.market_cache.get_cached()
+    assert cached is None
+
+
+def test_assemble_market_context_use_cache_false_bypasses_cache(monkeypatch):
+    """A3：use_cache=False 強制 fresh（cron 用）。"""
+    response = {
+        "market_state": "RANGE", "vix_status": "neutral",
+        "futures_bias": "NEUTRAL", "market_state_reason": "r",
+    }
+    fake_client = _patch_openai(monkeypatch, json.dumps(response))
+    snapshot = {"taiex": {"change_pct_1d": 0.0}, "otc": {"change_pct_1d": 0.0}}
+    llm_caller.assemble_market_context(snapshot, use_cache=True)  # 寫 cache
+    llm_caller.assemble_market_context(snapshot, use_cache=False)  # 強制 fresh
+    assert len(fake_client._responses_api.calls) == 2
+
+
+def test_load_system_prompt_market_stage_drops_other_steps():
+    """A4：market stage fragment 只含 STEP 0 + preamble + 重要限制。"""
+    llm_caller._PROMPT_FRAGMENT_CACHE.clear()
+    fragment = llm_caller._load_system_prompt(stage="market")
+    assert "STEP 0：上網查詢市場狀態" in fragment
+    assert "STEP 3：公司業務" not in fragment
+    assert "STEP 5：Leader" not in fragment
+    assert "重要限制" in fragment
+    # input 描述（preamble）也保留
+    assert "stock_pool" in fragment

@@ -1767,3 +1767,61 @@ slice 1~9 完成後 review 出 3 個小瑕疵，集中於 slice 11 修掉，讓�
 - **`SITE_GATE_PASSWORD` 用 `.strip()`**：環境變數取值 strip trailing whitespace；前端送進來的 password **不** strip，複製貼上多空白會驗失敗（刻意 — 避免 false positive）
 - **demo user `password_hash` 是無對應原文 placeholder**：`disabled-auth-demo-user` 經 bcrypt，無 plaintext 對應，無法當正常帳號登入
 - **既有 `Depends(require_user)` 一行不動**：所有 endpoint 認證寫法保留，未來恢復多帳號只需把 `is_auth_disabled()` 改回 env-driven，零 endpoint 改動
+
+## LLM 效率 / 準確率優化第一+二波（2026-05-18）
+
+針對 M23 魚尾訊號 + M25 watchlist trade quality 兩條 LLM 路徑做的 8 項優化，分兩波完工，全部 zero new test failures（baseline 20 → 20）。
+
+### 第一波（M25 為主）
+
+- **B1 deterministic rating/classification mapping**（`backend/app/routers/analysis.py`）
+  - 新增 `_derive_rating_from_factors(factors)` → `(rating, classification)`：純 counts(A/B/C) 投票
+  - rules：`A≥5 → STRONG_BUY、A≥3 → BUY、C≥4 → RUN、C≥2 → WATCH、else NEUTRAL`；`A≥4 → 類 A、C≥3 → 類 C、else B`
+  - `_enforce_deterministic_rating(response)`：覆寫 LLM 的 rating + classification，把 LLM 原判寫進 `warnings`（`"AI 原判 rating=X → 已對齊燈號改為 Y"`）供對照
+  - 接在 `_apply_key_factor_fallback` 之後（非 stream + stream 兩處）
+  - **Why**：prompt 規定 4+A→類 A 等規則，但 LLM 仍經常違反，導致前端燈號全綠卻顯示「再看看」，使用者體感矛盾。後端強制對齊
+- **A2 deterministic key_factors 為主**（`_apply_key_factor_fallback`）
+  - 行為從「LLM 不齊才補」改為「m21 可用永遠覆寫」；warning 區分「補齊」vs「覆寫」
+  - 主流程 smart routing：m21 可用 → 走 `_call_openai`（單次）；m21 不可用 → 走 `_call_openai_with_factors_retry`（保險）
+  - **Why**：LLM 的 key_factors 飄移大、與 deterministic 訊號常打架；M21 已 deterministic 算好就沒理由讓 LLM 拍腦袋蓋。同時拔 retry → 每檔省 1 次 OpenAI call（過去 ~30% case 觸發）
+- **A1 拔 raw OHLC/法人/月營收 3 段**（`_build_user_message`）
+  - m21 可用 → 不貼 raw text blocks（前面 M21 `price_structure / chip_summary / fundamental` section 已結論化）
+  - m21 不可用 → 仍保留 raw 3 段，避免 LLM 完全沒資料
+  - **節省**：每檔約 600–1000 tokens（依股票歷史長度）
+- **A7 retry 明列缺漏 category**（`_build_factors_retry_user_msg`）
+  - 新增 `existing_factors` 參數；retry 訊息列出「上一輪已提供：x, y, z」+「缺漏必補：a, b, c」
+  - 主路徑 A2 後 retry 觸發率大幅降低，A7 是 m21 不可用時的防禦層
+
+### 第二波（M23 為主）
+
+- **B4 type 鎖死 deterministic**（`backend/app/signals/llm_caller.py`）
+  - 新 `_normalize_prelim_type(raw)` helper：`LAGGARD_CANDIDATE → LAGGARD`、未知/缺值 → `LEADER`
+  - `run_research_batch` alignment 強制 `aligned[].type = _normalize_prelim_type(stock["prelim_type"])`，LLM 給的 type 被覆寫
+  - research / decision / watch_reason 三段 prompt 都加硬規則「type 不可修改」
+  - **Why**：classification 已是 deterministic（`classify_stocks`），但 LLM research stage 可能蓋掉分類，破壞 candidate_pool 排序與 spec §7 對齊
+- **B6 deterministic 證據卡傳給 LLM**（`_to_evidence_view`）
+  - 把 candidate_pool dict 投影成乾淨的 evidence card：14 個關鍵欄位（產業排名 / 連買日數 / 量能比 / 漲幅 / 法人金額 / 融資融券 / soft hints）
+  - research / decision / watch_reason 三段 user_msg 改吃 `_to_evidence_view(stocks)` 取代直接 dump
+  - prompt 加硬規則：reason 必須引用 evidence 段 2-3 個具體數字，避免「籌碼好」「題材熱」空話
+  - **Why**：原本整包 candidate dict dump（含 internal 欄位）噪音大、LLM reason 經常給空話；evidence view 更乾淨且強制 LLM 引用具體數據
+- **A3 market_context 4h cache**（新增 `backend/app/signals/market_cache.py`）
+  - In-process dict + 4h TTL（單 worker FastAPI 部署夠用；多 worker 要換 Redis）
+  - `assemble_market_context(snapshot, use_cache=True)`：命中 cache 直接回；taiex/otc 仍從 backend snapshot 覆寫（避免 cache 鎖死當日漲跌幅）
+  - fallback 路徑（OpenAI 不可用）**不寫 cache**，避免使用者連續 4h 看到 RANGE
+  - cron 可用 `use_cache=False` 強制 fresh
+  - **節省**：使用者連按「重新產生」第 2 次以後免一次 web_search call（5–8 秒）
+- **A4 prompt 按 stage 切片**（`_load_system_prompt(stage)` + `_build_stage_prompt`）
+  - 不切檔，原 `watch-list-stock.md` 保留；用 string parsing 抽取對應 STEP 區段
+  - stage → 包含的 STEP：`market={0}` / `research={1,2,3,4}` / `decision={5,6,7,8,9}` / `watch_reason={7,8,9}` / `full={全部}`
+  - preamble（核心原則 + INPUT 描述）與「重要限制」永遠保留；watch_reason 額外保留「WATCH 長理由寫作規則」
+  - fragment 結果 module-level cache（`_PROMPT_FRAGMENT_CACHE`），不會每次 LLM call 重新切
+  - **節省**：market / decision / reason stage 各省 ~50-60% input tokens（不再送無關 STEP）
+
+### 測試與部署 Gotcha
+
+- **跑 cron 第一次後觀察**：B6 evidence card 要求 LLM 引用數字，prod 若 reason 仍空話，可調 prompt strict 度
+- **B1 + A2 上線後 watchlist row 變化**：deterministic rating 上線 → 部分 row rating 會變（與 LLM 飄移結果不同）；使用者體感是「重新分析後評級變了」。可以在使用者通知文案加說明
+- **A3 cache 重啟清空**：Render 部署重啟後 cache 清空；第一個使用者按按鈕仍會跑 fresh，正常
+- **A4 prompt 切片若解析錯**：fallback 回 `full`（保守），不會破 LLM 路徑；測試 `test_load_system_prompt_market_stage_drops_other_steps` 驗 STEP 切片正確
+- **既有測試對齊**：M25 4 個測試（rating 5-tier mapping / retry / stream / parses_openai_json）改加 `patch("_synthesize_key_factors_from_context", return_value=None)` 模擬 m21 不可用，聚焦 LLM 原行為；M23 `test_run_research_batch_aligns_response_by_stock_id` 補 `prelim_type` 才能驗證 B4 覆寫
+- **monkeypatch lambda 簽章**：`_load_system_prompt` 加 `stage` 參數後，test 內 `lambda: ...` 全部要改 `lambda stage="full": ...`

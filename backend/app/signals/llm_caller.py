@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional
 from openai import OpenAI
 
 from app.settings import get_openai_api_key
+from app.signals import market_cache
 
 logger = logging.getLogger(__name__)
 
@@ -87,15 +88,30 @@ def assemble_market_context(
     db_market_snapshot: Dict[str, Any],
     *,
     model: str = DEFAULT_MARKET_MODEL,
+    use_cache: bool = True,
 ) -> Dict[str, Any]:
     """Step 0：判斷 market_state（STRONG_BULL / STRUCTURAL_BULL / RANGE / WEAK）。
 
     LLM 上網查 VIX / 美股 / 台指期 / USD-TWD，搭配 DB 已知數字判斷。
     LLM 不可用 → 回 fallback dict（market_state="RANGE"，reason 標記不可用）。
+
+    A3：4 小時 in-process cache。同日多人按「重新產生」、cron 03:00 之後 web UI 觸發都命中。
+    backend 的 taiex/otc 數字會 merge 進 cached payload（避免 cache 鎖死當日漲跌幅），
+    LLM 上網查的 market_state / vix / 期貨 4h 內不重打。`use_cache=False` 給測試 / cron 強制 fresh。
     """
     taiex_change_pct = _get_index_change_pct(db_market_snapshot, "taiex")
     otc_change_pct = _get_index_change_pct(db_market_snapshot, "otc")
-    system_prompt = _load_system_prompt()
+
+    if use_cache:
+        cached = market_cache.get_cached()
+        if cached is not None:
+            # 覆蓋當日 backend authoritative 指數數字（cache 鎖了昨日的 taiex/otc 不合理）
+            merged = dict(cached)
+            merged["taiex_change_pct"] = taiex_change_pct
+            merged["otc_change_pct"] = otc_change_pct
+            return merged
+
+    system_prompt = _load_system_prompt(stage="market")
     user_msg = (
         "[只執行 STEP 0：判斷今日市場狀態]\n"
         "你必須使用 web search 查詢 VIX、美股、台指期、USD/TWD，搭配下方 backend 已知數字，"
@@ -124,9 +140,10 @@ def assemble_market_context(
         prompt_cache_key=_CACHE_KEY_MARKET,
     )
     if payload is None:
+        # fallback 不寫 cache，避免使用者連續 4 小時都看到 RANGE 不可用文案
         return _market_context_fallback(db_market_snapshot, diagnostic=diagnostic)
 
-    return {
+    result = {
         "market_state": payload.get("market_state", "RANGE"),
         "taiex_change_pct": taiex_change_pct,
         "otc_change_pct": otc_change_pct,
@@ -135,6 +152,17 @@ def assemble_market_context(
         "market_state_reason": payload.get("market_state_reason", ""),
         "llm_diagnostic": diagnostic,
     }
+    if use_cache:
+        # 只 cache 「VIX / 期貨 / market_state」 等外部宏觀變數；
+        # 當日 taiex/otc 由 caller 端 backend 數字覆寫（見上方 cache hit branch）
+        market_cache.set_cached({
+            "market_state": result["market_state"],
+            "vix_status": result["vix_status"],
+            "futures_bias": result["futures_bias"],
+            "market_state_reason": result["market_state_reason"],
+            "llm_diagnostic": diagnostic,
+        })
+    return result
 
 
 def run_research_batch(
@@ -156,15 +184,21 @@ def run_research_batch(
         return []
 
     market_context = market_context or {}
-    system_prompt = _load_system_prompt()
+    system_prompt = _load_system_prompt(stage="research")
+    evidence_view = _to_evidence_view(stocks_batch)
     user_msg = (
         "[只執行 STEP 2 / STEP 3 / STEP 4：research 部分]\n"
         "對下列每檔股票，請上網查詢主要業務、題材延續性、產業鏈位置、龍頭 / 集團，"
         "並輸出每檔 research result。**不要做最終 decision**（那是 STEP 5-9 的事）。\n\n"
+        "[硬規則]\n"
+        "1. `type` 已由後端決定（prelim_type 欄位），請直接照填，不可重判 LEADER/FOLLOWER/LAGGARD。\n"
+        "2. 每檔 stock 都有 `evidence` 段落，是後端 deterministic 從 DB 算出的數字；\n"
+        "   你的 research 結果應與 evidence 一致（例如 evidence 顯示外資 3 日連買、\n"
+        "   就不可在 theme_reason 寫「外資未進駐」）。\n\n"
         f"[market_context]\n"
         f"{json.dumps(market_context, ensure_ascii=False, indent=2)}\n\n"
         f"[stocks_batch]\n"
-        f"{json.dumps(stocks_batch, ensure_ascii=False, indent=2)}\n\n"
+        f"{json.dumps(evidence_view, ensure_ascii=False, indent=2)}\n\n"
         "輸出格式（JSON only，不要 markdown code fence）：\n"
         "{\n"
         '  "research": [\n'
@@ -173,7 +207,7 @@ def run_research_batch(
         '      "name": "股票名稱",\n'
         '      "industry": "產業",\n'
         '      "sub_industry": "細產業",\n'
-        '      "type": "LEADER | FOLLOWER | LAGGARD",\n'
+        '      "type": "LEADER | FOLLOWER | LAGGARD",  // 直接照填 prelim_type\n'
         '      "business_summary": "公司主要業務說明",\n'
         '      "supply_chain_position": "upstream | midstream | downstream | equipment | component | material | brand | channel | service | other",\n'
         '      "theme_fit": "HIGH | MEDIUM | LOW | NONE",\n'
@@ -216,12 +250,16 @@ def run_research_batch(
     aligned: List[Dict[str, Any]] = []
     for stock in stocks_batch:
         sid = str(stock.get("stock_id") or stock.get("stock") or "")
+        deterministic_type = _normalize_prelim_type(stock.get("prelim_type"))
         if sid in by_id:
             aligned.append(
                 {
                     **stock,
                     **by_id[sid],
                     "stock": sid,
+                    # B4：type 鎖死 deterministic prelim_type，LLM 不可改判分類
+                    # （prompt 也已要求 LLM 不要重判 type，但保險起見後端強制覆寫）
+                    "type": deterministic_type,
                     "llm_diagnostic": diagnostic,
                 }
             )
@@ -331,13 +369,124 @@ def assemble_final_output(
 # ---------- internal helpers ----------
 
 
-def _load_system_prompt() -> str:
+# A4：stage → 該 stage 需要包含的 STEP 區段。其他 STEP 區段在 _build_stage_prompt 內被裁掉。
+# preamble（總原則 + INPUT 描述）與「重要限制」永遠保留，避免裁掉後 LLM 失去 ground truth。
+# market / research / decision / watch_reason 各自只看自己負責的 step，input token 可省 ~50-60%。
+_STAGE_INCLUDED_STEPS: Dict[str, set[int]] = {
+    "market": {0},
+    "research": {1, 2, 3, 4},
+    "decision": {5, 6, 7, 8, 9},
+    "watch_reason": {7, 8, 9},
+    "full": {0, 1, 2, 3, 4, 5, 6, 7, 8, 9},
+}
+
+_PROMPT_FRAGMENT_CACHE: Dict[str, str] = {}
+
+
+def _load_system_prompt(stage: str = "full") -> str:
+    """A4：依 stage 載入對應 STEP fragment。
+
+    `stage="full"` 維持原行為（整份 prompt），給未明確指定 stage 的 caller 用。
+    其餘 stage 只保留 preamble + 該 stage 需要的 STEP + WATCH 寫作規則（reason stage）
+    + 重要限制段。fragment 結果 in-process cache，避免每次 LLM call 重新切割。
+    """
+    cache_key = stage
+    if cache_key in _PROMPT_FRAGMENT_CACHE:
+        return _PROMPT_FRAGMENT_CACHE[cache_key]
     if not _PROMPT_PATH.exists():
         raise FileNotFoundError(
             f"M23 system prompt not found at {_PROMPT_PATH}. "
             "請確認 backend/app/prompts/watch-list-stock.md 已部署。"
         )
-    return _PROMPT_PATH.read_text(encoding="utf-8")
+    full = _PROMPT_PATH.read_text(encoding="utf-8")
+    fragment = _build_stage_prompt(full, stage)
+    _PROMPT_FRAGMENT_CACHE[cache_key] = fragment
+    return fragment
+
+
+def _build_stage_prompt(full: str, stage: str) -> str:
+    """根據 `_STAGE_INCLUDED_STEPS[stage]` 裁切 watch-list-stock.md。
+
+    切割規則：
+    - preamble = 檔頭至第一個 `==` 包圍的 `STEP N：` 之前
+    - 每個 STEP 區段 = 從該 STEP 標題列起至下一個 `=====` 區段標題之前
+    - WATCH 長理由寫作規則 / 重要限制 兩段視為「共用尾巴」，永遠保留
+    - 不認得 stage → 直接回 full（保守 fallback）
+    """
+    included = _STAGE_INCLUDED_STEPS.get(stage)
+    if included is None or stage == "full":
+        return full
+
+    lines = full.split("\n")
+    # 找所有「==========」邊界（用作 section 切點）
+    section_starts = [i for i, ln in enumerate(lines) if ln.strip().startswith("====")]
+    # 第一個 ==== 之前是 preamble，但實際 prompt 第一個 ==== 是「核心原則」
+    # 結構：preamble 是「核心原則」section + 「[INPUT]」section + 「Input 建議」section + STEP 0+
+
+    # 找每個 STEP / WATCH / 重要限制 section 的起點
+    section_headers: list[tuple[int, str]] = []  # (line_index, header_label)
+    for i in range(len(lines)):
+        stripped = lines[i].strip()
+        if not stripped.startswith("STEP "):
+            # 也可能是「WATCH 長理由寫作規則」「重要限制」
+            if stripped in {"WATCH 長理由寫作規則", "重要限制"}:
+                section_headers.append((i, stripped))
+            continue
+        # STEP N：xxx 樣式
+        try:
+            step_num = int(stripped.split("STEP", 1)[1].strip().split("：")[0].split(":")[0])
+            section_headers.append((i, f"STEP {step_num}"))
+        except (ValueError, IndexError):
+            continue
+
+    if not section_headers:
+        return full
+
+    # preamble = 0 .. first section_header 前面最近的 ===== 邊界
+    first_header_line = section_headers[0][0]
+    preamble_end = first_header_line
+    # 往上找最近的 ==== 邊界，preamble 結束在那之前
+    for boundary in reversed(section_starts):
+        if boundary < first_header_line:
+            preamble_end = boundary
+            break
+    preamble = "\n".join(lines[:preamble_end]).rstrip()
+
+    # 對每個 section_header 找它的 section 邊界（從 header 上方 ==== 開始到下一個 section 的上方 ====）
+    fragments: list[str] = [preamble]
+    for idx, (header_line, label) in enumerate(section_headers):
+        # 起點：header_line 上方最近的 ==== 邊界
+        start = header_line
+        for boundary in reversed(section_starts):
+            if boundary < header_line:
+                start = boundary
+                break
+        # 終點：下一個 section_header 上方的 ==== 邊界（或檔尾）
+        if idx + 1 < len(section_headers):
+            next_header_line = section_headers[idx + 1][0]
+            end = next_header_line
+            for boundary in section_starts:
+                if boundary < next_header_line and boundary > header_line:
+                    end = boundary
+                    break
+        else:
+            end = len(lines)
+
+        # 判斷該 section 是否要包含
+        keep = False
+        if label.startswith("STEP "):
+            step_num = int(label.split()[1])
+            if step_num in included:
+                keep = True
+        elif label == "WATCH 長理由寫作規則":
+            keep = stage in {"watch_reason", "full"}
+        elif label == "重要限制":
+            keep = True  # 共用尾巴
+
+        if keep:
+            fragments.append("\n".join(lines[start:end]).strip())
+
+    return "\n\n".join(fragments) + "\n"
 
 
 def _call_llm_json(
@@ -465,12 +614,16 @@ def _run_decision_chunk(
     model: str,
 ) -> List[Dict[str, Any]]:
     """單個 chunk 的短 decision call。"""
-    system_prompt = _load_system_prompt()
+    system_prompt = _load_system_prompt(stage="decision")
     user_msg = (
         "[執行 STEP 5 / STEP 6：先對全候選做短 decision]\n"
         "你現在只需要判斷 WATCH / REMOVE，並給 1-2 句短理由。"
         "最終 WATCH 名單只保留最值得追蹤的 3 檔，條件普通或排序偏後者請直接判 REMOVE。"
         "不要產生長文分析，長理由只留給最後的 WATCH 名單。\n\n"
+        "[硬規則]\n"
+        "1. `type` 由 research_results 帶入，**不可修改**（後端 deterministic 決定）。\n"
+        "2. short_reason 必須引用 evidence 內的至少 1 個具體數字（漲幅 / 法人金額 / 連買日數 / 量能比），\n"
+        "   只寫「籌碼好」「題材熱」等空話會被視為品質不足。\n\n"
         f"[market_context]\n"
         f"{json.dumps(market_context, ensure_ascii=False, indent=2)}\n\n"
         f"[research_results]\n"
@@ -539,12 +692,17 @@ def _run_watch_reason_chunk(
     model: str,
 ) -> List[Dict[str, Any]]:
     """只對 WATCH 名單補長理由。"""
-    system_prompt = _load_system_prompt()
+    system_prompt = _load_system_prompt(stage="watch_reason")
     user_msg = (
         "[執行 STEP 7 / STEP 8 / STEP 9：只對 WATCH 名單補長理由]\n"
         "你現在只處理已經判定為 WATCH 的股票。"
         "請根據 research 與 market_state，為每檔輸出 250-350 字繁體中文分析。"
         "不要重做 WATCH / REMOVE 判斷，也不要處理 REMOVE 股票。\n\n"
+        "[硬規則]\n"
+        "1. reason 內必須具體引用 evidence 段的 2-3 個數字（例如「外資 3 日累計買超 X 億」、\n"
+        "   「成交量擴張為 60 日均量的 X.X 倍」、「該產業 5 日漲幅排名 X / N」），\n"
+        "   避免「籌碼穩定」「題材延續」這類空話。\n"
+        "2. `type` 已由後端鎖定，不可修改；reason 內可帶到「身為 LEADER 的角色」等敘述。\n\n"
         f"[market_context]\n"
         f"{json.dumps(market_context, ensure_ascii=False, indent=2)}\n\n"
         f"[watch_items]\n"
@@ -719,6 +877,58 @@ def _market_context_fallback(
     }
 
 
+def _to_evidence_view(stocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """B6：把 candidate_pool dict 投影成乾淨的「deterministic 證據卡」給 LLM。
+
+    Why: 原本整包 dict dump 進 prompt，內部欄位（in_top_stocks_3d / industry_count / 各種
+         flow_1d/3d/5d）一起塞進 LLM context，重點不明且佔 token。改成只挑核心數字 +
+         好讀的 key 名稱，並要求 LLM 在 reason 引用，提升 reason 的具體性、減少空話。
+    """
+    out: List[Dict[str, Any]] = []
+    for s in stocks:
+        out.append({
+            "stock": s.get("stock_id") or s.get("stock"),
+            "name": s.get("name", ""),
+            "industry": s.get("industry") or s.get("industry_name"),
+            "sub_industry": s.get("sub_industry"),
+            "prelim_type": _normalize_prelim_type(s.get("prelim_type")),
+            "evidence": {
+                "industry_rank_5d": s.get("industry_rank_5d"),
+                "industry_rank_net_3d": s.get("industry_rank_net_3d"),
+                "industry_count": s.get("industry_count"),
+                "consecutive_inst_buy_days_3d": s.get("consecutive_buy_days_3d"),
+                "volume_5d_to_60d_ratio": s.get("volume_5d_to_60d_ratio"),
+                "price_change_1d_pct": s.get("price_change_1d"),
+                "price_change_3d_pct": s.get("price_change_3d"),
+                "price_change_5d_pct": s.get("price_change_5d"),
+                "foreign_flow_3d_twd": s.get("foreign_flow_3d"),
+                "trust_flow_3d_twd": s.get("trust_flow_3d"),
+                "dealer_flow_3d_twd": s.get("dealer_flow_3d"),
+                "total_institution_flow_3d_twd": s.get("total_institution_flow_3d"),
+                "total_institution_flow_5d_twd": s.get("total_institution_flow_5d"),
+                "margin_change_3d": s.get("margin_change_3d"),
+                "short_change_3d": s.get("short_change_3d"),
+                "in_top_stocks_3d": bool(s.get("in_top_stocks_3d")),
+                "in_top_industries_3d": bool(s.get("in_top_industries_3d")),
+            },
+            "soft_hints": s.get("soft_hints", []),
+        })
+    return out
+
+
+def _normalize_prelim_type(raw: Any) -> str:
+    """把 candidate_pool 的 prelim_type 映射到 watchlist[].type 接受的 3 個值。
+
+    `LAGGARD_CANDIDATE` → `LAGGARD`；未知 / 缺值 → 保守 `LEADER`（沿用舊 fallback 行為）。
+    """
+    value = str(raw or "").upper().strip()
+    if value == "LAGGARD_CANDIDATE":
+        return "LAGGARD"
+    if value in {"LEADER", "FOLLOWER", "LAGGARD"}:
+        return value
+    return "LEADER"
+
+
 def _research_fallback(
     stock: Dict[str, Any],
     *,
@@ -731,7 +941,7 @@ def _research_fallback(
         "name": stock.get("name", ""),
         "industry": stock.get("industry"),
         "sub_industry": stock.get("sub_industry"),
-        "type": stock.get("prelim_type") or "LEADER",
+        "type": _normalize_prelim_type(stock.get("prelim_type")),
         "business_summary": "（LLM 不可用，缺研究資料）",
         "supply_chain_position": "other",
         "theme_fit": "MEDIUM",

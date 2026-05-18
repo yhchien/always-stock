@@ -25,8 +25,12 @@ from app.models import (
 from app.rate_limit import limiter
 from app.routers import analysis as analysis_router
 from app.routers.analysis import (
+    KeyFactor,
     _apply_key_factor_fallback,
+    _build_factors_retry_user_msg,
     _build_user_message,
+    _derive_rating_from_factors,
+    _enforce_deterministic_rating,
     _is_market_not_open_yet,
     _load_system_prompt,
     _synthesize_key_factors_from_context,
@@ -177,6 +181,177 @@ def test_synthesize_key_factors_from_context_returns_complete_set():
     assert {f.category for f in factors} == {
         "industry", "industry_heat", "return", "chip", "technical", "fundamental"
     }
+
+
+def _kf(category: str, level: str, trend: str = "stable") -> KeyFactor:
+    return KeyFactor(category=category, level=level, trend=trend, note="n")
+
+
+@pytest.mark.parametrize(
+    "levels,expected_rating,expected_classification",
+    [
+        # B1 deterministic mapping rules
+        (["A"] * 6, "STRONG_BUY", "A"),
+        (["A", "A", "A", "A", "A", "B"], "STRONG_BUY", "A"),
+        (["A", "A", "A", "A", "B", "B"], "BUY", "A"),
+        (["A", "A", "A", "B", "B", "B"], "BUY", "B"),
+        (["B"] * 6, "NEUTRAL", "B"),
+        (["B", "B", "B", "B", "C", "C"], "WATCH", "B"),
+        (["C", "C", "C", "B", "B", "B"], "WATCH", "C"),
+        (["C"] * 4 + ["B"] * 2, "RUN", "C"),
+        (["C"] * 6, "RUN", "C"),
+    ],
+)
+def test_derive_rating_from_factors_counts(levels, expected_rating, expected_classification):
+    """B1：rating + classification 都由 key_factors A/C counts 投票決定。"""
+    categories = ["industry", "industry_heat", "return", "chip", "technical", "fundamental"]
+    factors = [_kf(c, lvl) for c, lvl in zip(categories, levels)]
+    rating, classification = _derive_rating_from_factors(factors)
+    assert rating == expected_rating
+    assert classification == expected_classification
+
+
+def test_derive_rating_from_factors_returns_none_when_incomplete():
+    """B1：key_factors 不齊 6 category → 不推導，caller 應該保留 LLM 原始判斷。"""
+    partial = [
+        _kf("industry", "A"),
+        _kf("chip", "B"),
+        _kf("technical", "B"),
+    ]
+    assert _derive_rating_from_factors(partial) is None
+
+
+def test_enforce_deterministic_rating_overrides_llm_when_mismatch():
+    """B1：LLM 給 STRONG_BUY 但 key_factors 是 6C → 應被覆寫成 RUN + warning。"""
+    response = TradeQualityResponse(
+        stock_id="2330", stock_name="x", buy_date="2024-01-01",
+        rating="STRONG_BUY", rating_label="強烈推薦", classification="A",
+        summary="", report_markdown="", source="openai", warnings=[],
+        key_factors=[
+            _kf("industry", "C"), _kf("industry_heat", "C"), _kf("return", "C"),
+            _kf("chip", "C"), _kf("technical", "C"), _kf("fundamental", "C"),
+        ],
+    )
+    out = _enforce_deterministic_rating(response)
+    assert out.rating == "RUN"
+    assert out.rating_label == "快跑"
+    assert out.classification == "C"
+    assert any("rating=STRONG_BUY" in w for w in out.warnings)
+    assert any("classification=A" in w for w in out.warnings)
+
+
+def test_enforce_deterministic_rating_keeps_llm_when_aligned():
+    """B1：LLM rating 與 deterministic 一致 → 不加 warning、不變動。"""
+    response = TradeQualityResponse(
+        stock_id="2330", stock_name="x", buy_date="2024-01-01",
+        rating="STRONG_BUY", rating_label="強烈推薦", classification="A",
+        summary="", report_markdown="", source="openai", warnings=[],
+        key_factors=[_kf(c, "A") for c in (
+            "industry", "industry_heat", "return", "chip", "technical", "fundamental",
+        )],
+    )
+    out = _enforce_deterministic_rating(response)
+    assert out.rating == "STRONG_BUY"
+    assert out.classification == "A"
+    assert out.warnings == []
+
+
+def test_enforce_deterministic_rating_noop_when_factors_missing():
+    """B1：key_factors 不齊 → 不覆寫（信任 LLM 結果）。"""
+    response = TradeQualityResponse(
+        stock_id="2330", stock_name="x", buy_date="2024-01-01",
+        rating="STRONG_BUY", rating_label="強烈推薦",
+        summary="", report_markdown="", source="openai", warnings=[],
+        key_factors=None,
+    )
+    out = _enforce_deterministic_rating(response)
+    assert out.rating == "STRONG_BUY"
+    assert out.warnings == []
+
+
+def test_apply_key_factor_fallback_overrides_when_m21_available():
+    """A2：m21 可用時即使 LLM 已給 key_factors，仍以 deterministic 覆寫。"""
+    response = TradeQualityResponse(
+        stock_id="2330", stock_name="x", buy_date="2024-01-01",
+        rating="BUY", rating_label="推薦",
+        summary="", report_markdown="", source="openai", warnings=[],
+        key_factors=[_kf(c, "A") for c in (
+            "industry", "industry_heat", "return", "chip", "technical", "fundamental",
+        )],
+    )
+    m21_context = {
+        "industry_summary": {
+            "industry_hot_level": "C",
+            "industry_price_strength": "weak",
+            "industry_volume_trend": "declining",
+            "industry_institution_flow": "none",
+            "is_false_hot": True,
+        },
+        "chip_summary": {
+            "chip_strength": "weak",
+            "is_accumulation": False,
+            "volume_trend": "declining",
+            "investment_trust_buy_days": 0,
+            "foreign_buy_days": 0,
+        },
+        "peer_rank": {"leader_or_follower": "follower", "return_5d_percentile": 0.9},
+        "fundamental": {"revenue_yoy": -10.0, "revenue_mom": -5.0},
+        "price_structure": {
+            "trend": "downtrend", "is_breakout": False,
+            "is_consolidation": False, "is_accelerating": False,
+        },
+    }
+    out = _apply_key_factor_fallback(response, m21_context=m21_context)
+    # deterministic 應該不全 A：表示 LLM 6A 被覆寫
+    out_levels = [f.level for f in out.key_factors]
+    assert out_levels.count("A") < 6
+    assert any("覆寫 LLM" in w for w in out.warnings)
+
+
+def test_build_user_message_drops_raw_blocks_when_m21_available():
+    """A1：m21 可用時 user_msg 不應包含 raw 5 日 OHLC / 法人 / 月營收 3 段。"""
+    ctx = {
+        "stock_id": "2330", "stock_name": "台積電", "industry_name": "半導體",
+        "sub_industry": "晶圓代工", "buy_date": "2026-05-04", "latest_close": 1000.0,
+        "prices_text": "RAW_PRICE_MARKER",
+        "flows_text": "RAW_FLOWS_MARKER",
+        "revenue_text": "RAW_REVENUE_MARKER",
+    }
+    m21 = {"industry_summary": {"industry_hot_level": "A"}}
+    msg = _build_user_message(ctx, m21_context=m21, warnings=[])
+    assert "RAW_PRICE_MARKER" not in msg
+    assert "RAW_FLOWS_MARKER" not in msg
+    assert "RAW_REVENUE_MARKER" not in msg
+    # m21 block 仍應出現
+    assert "M21 預聚合訊號" in msg
+
+
+def test_build_user_message_keeps_raw_blocks_when_m21_unavailable():
+    """A1：m21 不可用時 user_msg 必須保留 raw 3 段供 LLM 推論。"""
+    ctx = {
+        "stock_id": "2330", "stock_name": "台積電", "industry_name": "半導體",
+        "sub_industry": "晶圓代工", "buy_date": "2026-05-04", "latest_close": 1000.0,
+        "prices_text": "RAW_PRICE_MARKER",
+        "flows_text": "RAW_FLOWS_MARKER",
+        "revenue_text": "RAW_REVENUE_MARKER",
+    }
+    msg = _build_user_message(ctx, m21_context=None, warnings=[])
+    assert "RAW_PRICE_MARKER" in msg
+    assert "RAW_FLOWS_MARKER" in msg
+    assert "RAW_REVENUE_MARKER" in msg
+
+
+def test_factors_retry_user_msg_lists_missing_categories():
+    """A7：retry 訊息明列上一輪缺哪些 category，幫助 LLM 補洞而非全部重產。"""
+    existing = [_kf("industry", "A"), _kf("chip", "B"), _kf("technical", "B")]
+    out = _build_factors_retry_user_msg("ORIGINAL_USER_MSG", existing_factors=existing)
+    assert "ORIGINAL_USER_MSG" in out
+    # sorted 後輸出，三個都要在；不檢查順序
+    for cat in ("industry", "chip", "technical"):
+        assert cat in out
+    assert "industry_heat" in out and "return" in out and "fundamental" in out  # 缺漏
+    # 明示 provided / missing 兩條 label
+    assert "已提供" in out and "缺漏必補" in out
 
 
 def test_apply_key_factor_fallback_uses_deterministic_context():
@@ -353,6 +528,9 @@ def test_trade_quality_parses_openai_json(api):
         "exit_price_high": None,
         "max_holding_days": None,
         "report_markdown": "## 股票：台積電\n\n完整分析段落...",
+        # B1：deterministic rating mapping 會根據 key_factors counts 覆寫 LLM rating。
+        # 想要保留 LLM 的 STRONG_BUY 必須提供 6 個 level=A 的 key_factors。
+        "key_factors": _FULL_KEY_FACTORS,
     }
 
     mock_client = MagicMock()
@@ -360,8 +538,12 @@ def test_trade_quality_parses_openai_json(api):
         choices=[MagicMock(message=MagicMock(content=json.dumps(fake_payload)))]
     )
 
+    # A2：m21 deterministic 永遠覆寫 LLM key_factors。為了讓本測試聚焦於「LLM 給的
+    # 6A → rating=STRONG_BUY」這條路徑，把 _synthesize_key_factors_from_context patch 成 None
+    # 模擬 m21 不可用 → 走 LLM key_factors fallback path。
     with patch("app.routers.analysis.get_openai_api_key", return_value="fake-key"), \
-         patch("app.routers.analysis.OpenAI", return_value=mock_client):
+         patch("app.routers.analysis.OpenAI", return_value=mock_client), \
+         patch("app.routers.analysis._synthesize_key_factors_from_context", return_value=None):
         resp = client.post(
             "/api/analysis/trade-quality",
             json={"stock_id": "2330", "buy_date": "2024-01-11"},
@@ -486,8 +668,13 @@ def test_trade_quality_retries_once_when_openai_returns_invalid_json(api):
         MagicMock(choices=[MagicMock(message=MagicMock(content=json.dumps(valid_payload)))]),
     ]
 
+    # A2：disable deterministic synthesizer so LLM key_factors (6A) survive,
+    # B1 deterministic rating mapping then produces STRONG_BUY (≥5 A) which still
+    # honors the test's intent that LLM rating won the day after retry.
+    # 改 expected rating = STRONG_BUY 對齊新 deterministic 行為。
     with patch("app.routers.analysis.get_openai_api_key", return_value="k"), \
-         patch("app.routers.analysis.OpenAI", return_value=mock_client):
+         patch("app.routers.analysis.OpenAI", return_value=mock_client), \
+         patch("app.routers.analysis._synthesize_key_factors_from_context", return_value=None):
         resp = client.post(
             "/api/analysis/trade-quality",
             json={"stock_id": "2330", "buy_date": "2024-01-11"},
@@ -496,7 +683,8 @@ def test_trade_quality_retries_once_when_openai_returns_invalid_json(api):
     assert resp.status_code == 200
     data = resp.json()
     assert data["source"] == "openai"
-    assert data["rating"] == "BUY"
+    # B1：LLM rating=BUY 帶 6A key_factors → deterministic 推導為 STRONG_BUY 覆寫
+    assert data["rating"] == "STRONG_BUY"
     assert data["summary"] == "重試後成功"
     assert mock_client.chat.completions.create.call_count == 2
 
@@ -578,6 +766,8 @@ def test_trade_quality_prompt_can_be_loaded():
     ],
 )
 def test_trade_quality_rating_maps_to_5_tier_labels(api, raw_rating, expected_rating, expected_label):
+    """Test 聚焦於 `_normalize_response` 的 5-tier 值域映射；B1 deterministic 覆寫不在此範圍，
+    用 patch synthesize=None 讓 key_factors 缺、derived rating 為 None → 不覆寫。"""
     client, db = api
     _seed_full_context(db)
 
@@ -593,7 +783,8 @@ def test_trade_quality_rating_maps_to_5_tier_labels(api, raw_rating, expected_ra
     )
 
     with patch("app.routers.analysis.get_openai_api_key", return_value="k"), \
-         patch("app.routers.analysis.OpenAI", return_value=mock_client):
+         patch("app.routers.analysis.OpenAI", return_value=mock_client), \
+         patch("app.routers.analysis._synthesize_key_factors_from_context", return_value=None):
         resp = client.post(
             "/api/analysis/trade-quality",
             json={"stock_id": "2330", "buy_date": "2024-01-11"},
@@ -731,8 +922,11 @@ def test_trade_quality_stream_emits_4_stages_in_order(api):
         choices=[MagicMock(message=MagicMock(content=json.dumps(fake_payload)))]
     )
 
+    # A2 + B1：聚焦 4 stage 順序測試，把 deterministic synthesizer patch 成 None，
+    # 避免 deterministic 覆寫 LLM rating（與本測試無關）。
     with patch("app.routers.analysis.get_openai_api_key", return_value="k"), \
-         patch("app.routers.analysis.OpenAI", return_value=mock_client):
+         patch("app.routers.analysis.OpenAI", return_value=mock_client), \
+         patch("app.routers.analysis._synthesize_key_factors_from_context", return_value=None):
         resp = client.post(
             "/api/analysis/trade-quality/stream",
             json={"stock_id": "2330", "buy_date": "2024-01-11"},
