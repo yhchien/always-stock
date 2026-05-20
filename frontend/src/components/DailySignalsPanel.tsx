@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
-import { useRouter } from "next/navigation"
+import { usePathname, useRouter, useSearchParams } from "next/navigation"
 
 import {
   fetchSignalRegenerateQuota,
@@ -35,7 +35,14 @@ import {
 
 const LAST_SEEN_KEY = "always-stock:signals:last_seen_snapshot_date"
 const COLLAPSED_KEY = "always-stock:signals:collapsed"
+const TAB_QUERY_KEY = "signals_tab"
 type SignalsTab = "leader" | "follower" | "laggard"
+
+const VALID_TABS: ReadonlySet<SignalsTab> = new Set(["leader", "follower", "laggard"])
+
+function isSignalsTab(value: string | null): value is SignalsTab {
+  return value !== null && VALID_TABS.has(value as SignalsTab)
+}
 
 function formatTpeDateTime(iso: string | null | undefined): string {
   if (!iso) return ""
@@ -239,11 +246,16 @@ export default function DailySignalsPanel({
   initialJobLoaded?: boolean
 }) {
   const { status: authStatus } = useAuth()
+  const router = useRouter()
+  const pathname = usePathname()
+  const searchParams = useSearchParams()
+  const tabParam = searchParams.get(TAB_QUERY_KEY)
+  const tab: SignalsTab = isSignalsTab(tabParam) ? tabParam : "leader"
+
   const [snapshot, setSnapshot] = useState<SignalSnapshotResponse | null>(initialSnapshot ?? null)
   const [snapshotLoading, setSnapshotLoading] = useState(!initialSnapshotLoaded)
   const [snapshotError, setSnapshotError] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState(true)
-  const [tab, setTab] = useState<SignalsTab>("leader")
   const [hasNewSignals, setHasNewSignals] = useState(false)
   const [bumpKey, setBumpKey] = useState(0)
   const [regenerating, setRegenerating] = useState(false)
@@ -342,10 +354,18 @@ export default function DailySignalsPanel({
 
   const handleTabChange = useCallback(
     (next: SignalsTab) => {
-      setTab(next)
+      const params = new URLSearchParams(searchParams.toString())
+      if (next === "leader") {
+        // 預設 tab 不寫進 URL，避免 query 過於雜亂
+        params.delete(TAB_QUERY_KEY)
+      } else {
+        params.set(TAB_QUERY_KEY, next)
+      }
+      const queryString = params.toString()
+      router.replace(queryString ? `${pathname}?${queryString}` : pathname, { scroll: false })
       markSeen()
     },
-    [markSeen],
+    [markSeen, pathname, router, searchParams],
   )
 
   const handleToggleCollapse = useCallback(() => {

@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useState, useCallback, useMemo } from "react"
-import { useRouter } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 import {
   Table,
   TableBody,
@@ -30,21 +30,36 @@ import WatchlistAddButton from "@/components/WatchlistAddButton"
 
 type SummarySortKey = "total" | "foreign" | "trust" | "dealer" | "streak"
 
+const VALID_SORT_KEYS: ReadonlySet<SummarySortKey> = new Set([
+  "total",
+  "foreign",
+  "trust",
+  "dealer",
+  "streak",
+])
+
+function isSummarySortKey(value: string | null): value is SummarySortKey {
+  return value !== null && VALID_SORT_KEYS.has(value as SummarySortKey)
+}
+
 function SummaryTable({
   rows,
   onFilter,
   activeFilter,
+  sortKey,
+  sortAsc,
+  onSortChange,
 }: {
   rows: SubIndustrySummaryItem[]
   onFilter: (sub: string | null) => void
   activeFilter: string | null
+  sortKey: SummarySortKey
+  sortAsc: boolean
+  onSortChange: (key: SummarySortKey, asc: boolean) => void
 }) {
-  const [sortKey, setSortKey] = useState<SummarySortKey>("total")
-  const [sortAsc, setSortAsc] = useState(false)
-
   const handleSort = (key: SummarySortKey) => {
-    if (key === sortKey) setSortAsc(!sortAsc)
-    else { setSortKey(key); setSortAsc(false) }
+    if (key === sortKey) onSortChange(key, !sortAsc)
+    else onSortChange(key, false)
   }
 
   const sorted = useMemo(() => {
@@ -154,6 +169,7 @@ interface Props {
 
 export default function StockList({ industryName, defaultDate, defaultSubFilter = null }: Props) {
   const router = useRouter()
+  const searchParams = useSearchParams()
   const [date, setDate] = useState(defaultDate)
   const [rows, setRows] = useState<StockFlowItem[]>([])
   const [summary, setSummary] = useState<SubIndustrySummaryItem[]>([])
@@ -161,14 +177,35 @@ export default function StockList({ industryName, defaultDate, defaultSubFilter 
   const [error, setError] = useState<string | null>(null)
   const [subFilter, setSubFilter] = useState<string | null>(defaultSubFilter)
 
+  // 排序狀態純粹由 URL 驅動：(?sort=total|foreign|...&sort_dir=asc|desc)
+  // 預設 total + desc 不寫進 URL，避免雜訊；切回預設時也會把 query key 移除。
+  const sortKeyParam = searchParams.get("sort")
+  const sortDirParam = searchParams.get("sort_dir")
+  const sortKey: SummarySortKey = isSummarySortKey(sortKeyParam) ? sortKeyParam : "total"
+  const sortAsc = sortDirParam === "asc"
+
   // Sync state changes to URL (without navigation)
-  const syncUrl = useCallback((d: string, sub: string | null) => {
-    const params = new URLSearchParams()
-    params.set("date", d)
-    if (sub) params.set("sub", sub)
-    const url = `/industries/${encodeURIComponent(industryName)}?${params}`
-    router.replace(url, { scroll: false })
-  }, [router, industryName])
+  const syncUrl = useCallback(
+    (d: string, sub: string | null, opts?: { sort?: SummarySortKey; sortAsc?: boolean }) => {
+      const params = new URLSearchParams()
+      params.set("date", d)
+      if (sub) params.set("sub", sub)
+      const sort = opts?.sort ?? sortKey
+      const asc = opts?.sortAsc ?? sortAsc
+      if (sort !== "total") params.set("sort", sort)
+      if (asc) params.set("sort_dir", "asc")
+      const url = `/industries/${encodeURIComponent(industryName)}?${params}`
+      router.replace(url, { scroll: false })
+    },
+    [industryName, router, sortAsc, sortKey],
+  )
+
+  const handleSortChange = useCallback(
+    (key: SummarySortKey, asc: boolean) => {
+      syncUrl(date, subFilter, { sort: key, sortAsc: asc })
+    },
+    [date, subFilter, syncUrl],
+  )
 
   const load = useCallback(async (d: string) => {
     const controller = new AbortController()
@@ -296,7 +333,17 @@ export default function StockList({ industryName, defaultDate, defaultSubFilter 
               </button>
             )}
           </div>
-          <SummaryTable rows={summary} onFilter={(sub) => { setSubFilter(sub); syncUrl(date, sub) }} activeFilter={subFilter} />
+          <SummaryTable
+            rows={summary}
+            onFilter={(sub) => {
+              setSubFilter(sub)
+              syncUrl(date, sub)
+            }}
+            activeFilter={subFilter}
+            sortKey={sortKey}
+            sortAsc={sortAsc}
+            onSortChange={handleSortChange}
+          />
         </div>
       )}
 

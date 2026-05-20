@@ -108,6 +108,11 @@ export default function StockChart({ stockId, defaultDate, days: initialDays = 9
     }
   }, [dateRange, externalRangeKey])
 
+  // Sync `days` prop changes (parent 端從 URL 控制) → 內部 days state
+  useEffect(() => {
+    setDays(initialDays)
+  }, [initialDays])
+
   // Institutional line toggle state
   const [activeInst, setActiveInst] = useState<Set<InstKey>>(new Set(["foreign", "trust", "dealer"]))
 

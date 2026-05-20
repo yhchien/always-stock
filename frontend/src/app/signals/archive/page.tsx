@@ -1,7 +1,8 @@
 "use client"
 
 import Link from "next/link"
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react"
+import { usePathname, useRouter, useSearchParams } from "next/navigation"
 
 import {
   fetchCompletedSignalArchive,
@@ -38,6 +39,15 @@ const SORT_OPTIONS: { value: SignalArchiveSortBy; label: string }[] = [
   { value: "latest_hit_desc", label: "最近抓到日期" },
   { value: "stock_id_asc", label: "股票代號" },
 ]
+
+const DEFAULT_SORT_BY: SignalArchiveSortBy = "tracking_days_desc"
+const SORT_VALUES: ReadonlySet<SignalArchiveSortBy> = new Set(SORT_OPTIONS.map((o) => o.value))
+
+function isSortBy(value: string | null): value is SignalArchiveSortBy {
+  return value !== null && SORT_VALUES.has(value as SignalArchiveSortBy)
+}
+
+const PERIOD_PATTERN = /^\d{4}-\d{2}-\d{2}$/
 
 function formatPct(value: number | null): string {
   if (value == null) return "--"
@@ -173,12 +183,49 @@ function ExtremeReturnCell({
   )
 }
 
-export default function SignalArchivePage() {
-  const [sortBy, setSortBy] = useState<SignalArchiveSortBy>("tracking_days_desc")
+function SignalArchiveContent() {
+  const router = useRouter()
+  const pathname = usePathname()
+  const searchParams = useSearchParams()
+
+  // sortBy + selectedPeriodStart 由 URL 驅動，瀏覽器 back 自動還原
+  const sortByParam = searchParams.get("sort_by")
+  const sortBy: SignalArchiveSortBy = isSortBy(sortByParam) ? sortByParam : DEFAULT_SORT_BY
+  const periodParam = searchParams.get("period")
+  // null = 尚未選擇（等載入完自動跳最新一段）；string = 指定半年起始日
+  const selectedPeriodStart: string | null =
+    periodParam && PERIOD_PATTERN.test(periodParam) ? periodParam : null
+
+  const setSortBy = useCallback(
+    (next: SignalArchiveSortBy) => {
+      const params = new URLSearchParams(searchParams.toString())
+      if (next === DEFAULT_SORT_BY) {
+        params.delete("sort_by")
+      } else {
+        params.set("sort_by", next)
+      }
+      const queryString = params.toString()
+      router.replace(queryString ? `${pathname}?${queryString}` : pathname, { scroll: false })
+    },
+    [pathname, router, searchParams],
+  )
+
+  const setSelectedPeriodStart = useCallback(
+    (next: string | null) => {
+      const params = new URLSearchParams(searchParams.toString())
+      if (next === null) {
+        params.delete("period")
+      } else {
+        params.set("period", next)
+      }
+      const queryString = params.toString()
+      router.replace(queryString ? `${pathname}?${queryString}` : pathname, { scroll: false })
+    },
+    [pathname, router, searchParams],
+  )
+
   const [summary, setSummary] = useState<SignalArchiveSummaryResponse | null>(null)
   const [completedSummary, setCompletedSummary] = useState<SignalArchiveCompletedResponse | null>(null)
-  // null = 全部區間；string = 該半年區間起始日（YYYY-MM-DD）
-  const [selectedPeriodStart, setSelectedPeriodStart] = useState<string | null>(null)
   const [selectedStockId, setSelectedStockId] = useState<string | null>(null)
   const [detail, setDetail] = useState<SignalArchiveDetailResponse | null>(null)
   const [loading, setLoading] = useState(true)
@@ -686,5 +733,13 @@ export default function SignalArchivePage() {
         )}
       </section>
     </main>
+  )
+}
+
+export default function SignalArchivePage() {
+  return (
+    <Suspense>
+      <SignalArchiveContent />
+    </Suspense>
   )
 }

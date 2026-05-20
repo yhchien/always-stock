@@ -1,9 +1,9 @@
 "use client"
 
-import { Suspense, use, useEffect, useMemo, useState } from "react"
+import { Suspense, use, useCallback, useEffect, useMemo, useState } from "react"
 import dynamic from "next/dynamic"
 import Link from "next/link"
-import { useSearchParams } from "next/navigation"
+import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import RequireAuth from "@/components/RequireAuth"
 import StockSignalSummaryPanel from "@/components/StockSignalSummaryPanel"
 import StockWatchlistTradeQualityPanel from "@/components/StockWatchlistTradeQualityPanel"
@@ -115,7 +115,11 @@ function Sidebar({
 
 // ── Main content ───────────────────────────────────────────────────────────
 
+const DEFAULT_CHART_DAYS = 90
+
 function StockContent({ stockId }: { stockId: string }) {
+  const router = useRouter()
+  const pathname = usePathname()
   const searchParams = useSearchParams()
   const date = searchParams.get("date") ?? undefined
 
@@ -127,10 +131,30 @@ function StockContent({ stockId }: { stockId: string }) {
     [backtestStart, backtestEnd],
   )
 
+  // K 線天數由 URL 驅動（?chart_days=N），預設 90 不寫進 URL
+  const chartDaysParam = searchParams.get("chart_days")
+  const chartDays = useMemo(() => {
+    const parsed = chartDaysParam ? Number(chartDaysParam) : NaN
+    return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : DEFAULT_CHART_DAYS
+  }, [chartDaysParam])
+
+  const handleChartDaysChange = useCallback(
+    (next: number) => {
+      const params = new URLSearchParams(searchParams.toString())
+      if (next === DEFAULT_CHART_DAYS) {
+        params.delete("chart_days")
+      } else {
+        params.set("chart_days", String(next))
+      }
+      const queryString = params.toString()
+      router.replace(queryString ? `${pathname}?${queryString}` : pathname, { scroll: false })
+    },
+    [pathname, router, searchParams],
+  )
+
   const [showFinancialsPanel, setShowFinancialsPanel] = useState(() =>
     readStoredToggle(FINANCIALS_TOGGLE_STORAGE_KEY, true),
   )
-  const [chartDays, setChartDays] = useState(90)
 
   useEffect(() => {
     window.localStorage.setItem(FINANCIALS_TOGGLE_STORAGE_KEY, String(showFinancialsPanel))
@@ -174,7 +198,8 @@ function StockContent({ stockId }: { stockId: string }) {
             <StockChart
               stockId={stockId}
               defaultDate={date}
-              onDaysChange={setChartDays}
+              days={chartDays}
+              onDaysChange={handleChartDaysChange}
               selectedBroker={null}
               dateRange={externalDateRange}
             />

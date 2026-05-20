@@ -1826,6 +1826,57 @@ slice 1~9 完成後 review 出 3 個小瑕疵，集中於 slice 11 修掉，讓�
 - **既有測試對齊**：M25 4 個測試（rating 5-tier mapping / retry / stream / parses_openai_json）改加 `patch("_synthesize_key_factors_from_context", return_value=None)` 模擬 m21 不可用，聚焦 LLM 原行為；M23 `test_run_research_batch_aligns_response_by_stock_id` 補 `prelim_type` 才能驗證 B4 覆寫
 - **monkeypatch lambda 簽章**：`_load_system_prompt` 加 `stage` 參數後，test 內 `lambda: ...` 全部要改 `lambda stage="full": ...`
 
+## 全站 filter / tab / sort URL params 化（2026-05-21）
+
+### Scope
+- 使用者選了 tab、sort、子產業 filter、K 線天數、archive 半年區間後，點進個股看細節，再按瀏覽器上一頁要回到原本選擇的狀態
+- 解決方案：把「真正的 filter / sort / 想被分享」的 state 從 `useState` 移到 URL query params，靠瀏覽器原生 back/forward stack 自動還原
+- 純使用者偏好（折疊狀態、面板顯示開關）仍維持 localStorage，**不**寫進 URL 避免雜訊
+
+### 為何不啟用 Next 16 Cache Components
+- 那是 page-level state preservation，會把所有頁面包成 `<Activity>` 維持 DOM；改動範圍大，需驗證 react-echarts hidden 時不爆炸、realtime quotes polling 是否會 leak
+- URL params 是更聚焦、零副作用的方案；refresh / 分享連結也能保留狀態
+
+### 已 URL 化的欄位
+| 頁面 | URL params 新增 / 既有 |
+|------|----------|
+| `/`（首頁） | **新增** `?signals_tab=follower\|laggard`（DailySignalsPanel，預設 leader 不寫）；既有 `?date=`、`?stock_id=&buy_date=`（TQA prefill） |
+| `/industries/[name]` | **新增** `?sort=total\|foreign\|trust\|dealer\|streak`（SummaryTable 排序欄位，預設 total 不寫）+ `?sort_dir=asc`（預設 desc 不寫）；既有 `?date=`、`?sub=` |
+| `/stocks/[id]` | **新增** `?chart_days=N`（K 線天數，預設 90 不寫）；既有 `?date=`、`?start=&end=`（L3 帶回的回測區間） |
+| `/signals/archive` | **新增** `?sort_by=`（預設 `tracking_days_desc` 不寫）+ `?period=YYYY-MM-DD`（半年區間起始日） |
+
+### 實作 pattern
+```ts
+const router = useRouter()
+const pathname = usePathname()
+const searchParams = useSearchParams()
+const param = searchParams.get(KEY)
+
+function update(next) {
+  const params = new URLSearchParams(searchParams.toString())  // ← 保留其他 panel 的 params
+  if (next === DEFAULT) params.delete(KEY)  // ← 預設值不寫進 URL
+  else params.set(KEY, String(next))
+  const q = params.toString()
+  router.replace(q ? `${pathname}?${q}` : pathname, { scroll: false })
+}
+```
+
+### Gotcha
+- **`useSearchParams` 在 Next 16 client component 內仍需 Suspense 包覆**：`signals/archive/page.tsx` 把內容抽到 `SignalArchiveContent`，default export 用 `<Suspense><SignalArchiveContent /></Suspense>` 包起來
+- **`router.replace({ scroll: false })`**：tab 切換 / sort 變更不該觸發 scroll-to-top
+- **StockChart 內部 `useState(initialDays)` 不會 sync prop 變化**：要再加 `useEffect(() => setDays(initialDays), [initialDays])` 才能讓 URL 控制即時反映到 chart。否則 URL 更新後 chart 看起來像沒反應
+- **預設值不要寫進 URL**：`if (next === DEFAULT) params.delete(KEY)`，否則第一次點預設 tab 也會留 URL 雜訊
+- **多 panel 共存**：用 `new URLSearchParams(searchParams.toString())` 為基礎再 set/delete，**不要** `new URLSearchParams()` 從空白開始（會把其他 panel 的 params 全部蓋掉）
+- **L1 排序為「點同一欄切 asc/desc」**：所以 `sort_dir` 是布林（asc/desc），不是 tri-state；handleSort 直接 `syncUrl(date, sub, { sort, sortAsc: next })`
+- **DailySignalsPanel `collapsed` 維持 localStorage**：per-user 偏好不該污染 URL
+- **L2 個股頁 `showFinancialsPanel` 也維持 localStorage**：同上原則
+
+### 驗證流程
+1. 進首頁 → 點「跟漲」tab → URL 變 `/?signals_tab=follower`
+2. 點任一檔股票 → 個股頁
+3. 按瀏覽器上一頁 → 回首頁 → tab 仍在「跟漲」
+4. 同樣模式驗 L1 子產業 filter / 排序欄、L2 改 K 線天數、archive 切半年區間
+
 ## M23 drawdown-from-peak 提前結算 + 半年表格（2026-05-18）
 
 針對 40 日追蹤新增第 2 條提前結算規則 + 永久紀錄改為半年一張表。
