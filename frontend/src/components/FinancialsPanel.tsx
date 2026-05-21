@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react"
 import ReactECharts from "echarts-for-react"
 import { Skeleton } from "@/components/ui/skeleton"
+import StickyHorizontalScroll from "@/components/StickyHorizontalScroll"
 import {
   fetchValuation,
   fetchRevenue,
@@ -345,7 +346,7 @@ function FinancialsTable({ stockId, chartDays }: { stockId: string; chartDays?: 
   if (itemNames.length === 0) return <p className="text-xs text-slate-500">無財報資料。</p>
 
   return (
-    <div className="overflow-x-auto">
+    <StickyHorizontalScroll>
       <table className="w-full text-xs">
         <thead>
           <tr className="border-b border-slate-600">
@@ -373,7 +374,7 @@ function FinancialsTable({ stockId, chartDays }: { stockId: string; chartDays?: 
           ))}
         </tbody>
       </table>
-    </div>
+    </StickyHorizontalScroll>
   )
 }
 

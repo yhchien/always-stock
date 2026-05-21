@@ -1826,6 +1826,40 @@ slice 1~9 完成後 review 出 3 個小瑕疵，集中於 slice 11 修掉，讓�
 - **既有測試對齊**：M25 4 個測試（rating 5-tier mapping / retry / stream / parses_openai_json）改加 `patch("_synthesize_key_factors_from_context", return_value=None)` 模擬 m21 不可用，聚焦 LLM 原行為；M23 `test_run_research_batch_aligns_response_by_stock_id` 補 `prelim_type` 才能驗證 B4 覆寫
 - **monkeypatch lambda 簽章**：`_load_system_prompt` 加 `stage` 參數後，test 內 `lambda: ...` 全部要改 `lambda stage="full": ...`
 
+## Sticky horizontal scrollbar 全站套用（2026-05-21）
+
+### Scope
+- 長表（魚尾追蹤 10 欄、completed 8 欄）水平 scrollbar 原本在表格底部 → 必須先捲到表格最底才能拖、再回捲找列
+- 新增 `<StickyHorizontalScroll>` wrapper：在視口底部 portal 一條 fake scrollbar，與內部 wrapper 雙向同步 `scrollLeft`
+- 透過改 `frontend/src/components/ui/table.tsx::Table` 一處達成全站表格 zero-touch 受惠
+
+### 顯示條件（避免重複 / 干擾）
+- **wrapper 部分在視口內 AND wrapper 底部仍在視口外** → 顯示 fake bar
+- 捲到表格底端時原生 scrollbar 露面 → fake bar 自動隱藏，不會兩條重複
+- 表格在視口外時 fake bar 隱藏
+- 監聽 `window.scroll` / `resize` 即時重新評估顯示條件
+
+### 同步機制
+- `useRef<"wrapper" | "bar" | null>` guard 雙向同步 scrollLeft 避免無限 loop（A 觸發 B 後立刻清旗）
+- `ResizeObserver` 監看 wrapper + inner content 寬度變化（filter / inline expand row 增減即時反映）
+- `MutationObserver` 看 children 變動（特別針對動態 row 增減）
+- `createPortal(fakeBar, document.body)`：fake bar 跳脫表格 DOM 樹，`position: fixed; bottom: 0; z-50`
+
+### 實作位置
+- 新檔 [frontend/src/components/StickyHorizontalScroll.tsx](frontend/src/components/StickyHorizontalScroll.tsx)
+- [frontend/src/components/ui/table.tsx](frontend/src/components/ui/table.tsx)：`<Table>` 內建使用 → 全站 `<Table>` 受惠
+- [frontend/src/components/FinancialsPanel.tsx](frontend/src/components/FinancialsPanel.tsx)：自定義 `<table>` 改用
+- [frontend/src/components/KeyFactorsTimeline.tsx](frontend/src/components/KeyFactorsTimeline.tsx)：非 compact 路徑改用（compact 是小卡片內不需要）
+
+### Gotcha
+- **SSR safe**：`useEffect setMounted(true)` 才 `createPortal`；預設 mounted=false 不 portal，避免 hydration mismatch
+- **多表共存**：頁面有多個表時，各自獨立 fake bar；顯示條件天然錯開（捲到 A 表時 B 表通常已不在視口）；極端情境可能疊兩條，可接受
+- **iOS Safari momentum scroll**：原生 momentum 跟同步邏輯有微秒級 lag，桌機正常；可接受
+- **fake bar 高度 = 14px**：在 macOS / Windows / mobile 都接近原生 scrollbar 高度；視覺乾淨且不擋內容
+- **content 寬度 + wrapper 寬度比較用 `+1` buffer**：avoid rounding edge case 誤判 hasOverflow
+- **隱藏條件包含 `!hasOverflow`**：表格欄夠少不需水平捲時 fake bar 不顯示
+- **KeyFactorsTimeline 的 compact 路徑沒套**：compact 是 inline 小卡片內 6 列表，本來就不會超寬，套了 overkill
+
 ## M23 訊號追蹤頁 UX 升級：搜尋框 + inline expand 報告（2026-05-21）
 
 ### Scope

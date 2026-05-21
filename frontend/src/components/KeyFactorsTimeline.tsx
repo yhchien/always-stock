@@ -1,5 +1,6 @@
 "use client"
 
+import StickyHorizontalScroll from "@/components/StickyHorizontalScroll"
 import type { KeyFactor, WatchlistFactorSnapshot } from "@/lib/api"
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -110,7 +111,7 @@ export default function KeyFactorsTimeline({
         <p className="text-[10px] text-slate-600">A 強 / B 中 / C 弱</p>
       </div>
 
-      <div className="mt-2 overflow-x-auto">
+      <StickyHorizontalScroll className="mt-2">
         <table className="min-w-full text-xs">
           <thead>
             <tr className="text-slate-500">
@@ -153,7 +154,7 @@ export default function KeyFactorsTimeline({
             ))}
           </tbody>
         </table>
-      </div>
+      </StickyHorizontalScroll>
     </div>
   )
 }

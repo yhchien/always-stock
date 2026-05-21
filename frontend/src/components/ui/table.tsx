@@ -3,19 +3,19 @@
 import * as React from "react"
 
 import { cn } from "@/lib/utils"
+import StickyHorizontalScroll from "@/components/StickyHorizontalScroll"
 
 function Table({ className, ...props }: React.ComponentProps<"table">) {
+  // 用 StickyHorizontalScroll 取代原本的單純 overflow-x wrapper：表格底部 scrollbar 過深時，
+  // 會自動在視口底部 portal 一條 sticky scrollbar 隨時可用；捲到表格底端時自動隱藏避免重複。
   return (
-    <div
-      data-slot="table-container"
-      className="relative w-full overflow-x-auto"
-    >
+    <StickyHorizontalScroll>
       <table
         data-slot="table"
         className={cn("w-full caption-bottom text-sm", className)}
         {...props}
       />
-    </div>
+    </StickyHorizontalScroll>
   )
 }
 
