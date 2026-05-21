@@ -1826,6 +1826,38 @@ slice 1~9 完成後 review 出 3 個小瑕疵，集中於 slice 11 修掉，讓�
 - **既有測試對齊**：M25 4 個測試（rating 5-tier mapping / retry / stream / parses_openai_json）改加 `patch("_synthesize_key_factors_from_context", return_value=None)` 模擬 m21 不可用，聚焦 LLM 原行為；M23 `test_run_research_batch_aligns_response_by_stock_id` 補 `prelim_type` 才能驗證 B4 覆寫
 - **monkeypatch lambda 簽章**：`_load_system_prompt` 加 `stage` 參數後，test 內 `lambda: ...` 全部要改 `lambda stage="full": ...`
 
+## M23 訊號追蹤頁 UX 升級：搜尋框 + inline expand 報告（2026-05-21）
+
+### Scope
+- `/signals/archive` 兩個表（active 30 日追蹤 + completed 永久紀錄）各加 client-side 搜尋框（filter by stock_id 子字串 OR stock_name 子字串）
+- active 表的「點我看更多分析結果」按鈕從「跳到頁面底部 detail panel」改為 **inline 在該 row 下方展開**（fragment + colSpan 整列 detail row）
+- 一次只能展開一檔（沿用 `selectedStockId` single state，toggle 行為：再點同檔收合）
+- 刪掉原本頁面最底下的獨立 detail panel section
+
+### 為何 completed 表不做 inline expand
+- completed 表本來就**沒有**「點我看更多」按鈕（只有 K線圖連結）
+- 後端在封存時會 `db.query(SignalWatchHit).filter(stock_id==X).delete()` 清空對應 hits → `get_archive_detail(stock_id)` 對封存股票永遠回 None → 即便加 inline expand 也只會顯示「找不到報告內容」
+- 想加 detail 入口需要先改 backend（archive 表額外保存 reports JSON / 或保留 hits 不清除），不在這輪範圍
+- 搜尋框不依賴 detail，所以兩表都加 OK
+
+### 實作
+- `frontend/src/app/signals/archive/page.tsx`：
+  - 兩個 search state：`activeSearch` / `completedSearch`
+  - 兩個 `useMemo` filter：`filteredActiveItems` / `filteredCompletedItems`，純前端 `toLowerCase().includes()`
+  - `toggleExpand(stockId)`：`setSelectedStockId(prev => prev === stockId ? null : stockId)`
+  - active TableBody 用 `<Fragment key={stock_id}>` 包：原 row + `(active && <TableRow><TableCell colSpan={10}>...detail...</TableCell></TableRow>)`
+  - 按鈕文字 toggle：「點我看更多分析結果」/「收合報告」
+  - 預設 `selectedStockId=null`（先前是 fallback 到 `items[0]?.stock_id` 自動展開第一檔；inline expand UX 下應該等使用者主動點才展開）
+  - 刪 `selectedSummary` useMemo（只被刪除的底部 panel 用）
+
+### Gotcha
+- **inline detail 仍走原本的 `useEffect([selectedStockId])` fetch path**：不需要改 fetch 邏輯，只是顯示位置變了
+- **detail row 用 `colSpan={10}` 對齊 active 表 10 欄**；completed 表（8 欄）若未來也要 inline expand 要記得改成 `colSpan={8}`
+- **`detail.stock_id !== item.stock_id` 邊界**：點 A 展開時 detail 正在 fetch，使用者瞬間點 B → `selectedStockId=B` 但 `detail` 還是 A 的；用 `detail.stock_id === item.stock_id` 守住避免 A 的 detail 顯示在 B row 下面（會有極短瞬間 race，detail loading state 視為過渡）
+- **空搜尋結果用 colSpan row 顯示「找不到符合『X』的股票」**：active 用 colSpan=10、completed 用 colSpan=8，與表格欄數一致
+- **搜尋框純前端**：不打 backend，refresh 不保留搜尋字串（state 在 useState，非 URL params）；如未來想保留，可比照 URL state preservation pattern 加 `?q=` query
+- **completed 表搜尋與半年區間 filter 並存**：先選半年區間（後端 query）→ 再用前端搜尋框 filter 該區間 items
+
 ## M23 訊號追蹤 retention：40 → 30 個交易日（2026-05-21）
 
 ### 改動

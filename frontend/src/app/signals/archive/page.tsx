@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { Suspense, useCallback, useEffect, useMemo, useState } from "react"
+import { Fragment, Suspense, useCallback, useEffect, useMemo, useState } from "react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 
 import {
@@ -235,19 +235,50 @@ function SignalArchiveContent() {
   const [completedError, setCompletedError] = useState<string | null>(null)
   const [detailError, setDetailError] = useState<string | null>(null)
 
+  // 兩張表各自的搜尋框：純前端 filter（不打 backend），by stock_id / stock_name 子字串
+  const [activeSearch, setActiveSearch] = useState("")
+  const [completedSearch, setCompletedSearch] = useState("")
+
+  const filteredActiveItems = useMemo(() => {
+    if (!summary?.items) return []
+    const q = activeSearch.trim().toLowerCase()
+    if (!q) return summary.items
+    return summary.items.filter(
+      (item) =>
+        item.stock_id.toLowerCase().includes(q) ||
+        (item.stock_name ?? "").toLowerCase().includes(q),
+    )
+  }, [summary?.items, activeSearch])
+
+  const filteredCompletedItems = useMemo(() => {
+    if (!completedSummary?.items) return []
+    const q = completedSearch.trim().toLowerCase()
+    if (!q) return completedSummary.items
+    return completedSummary.items.filter(
+      (item) =>
+        item.stock_id.toLowerCase().includes(q) ||
+        (item.stock_name ?? "").toLowerCase().includes(q),
+    )
+  }, [completedSummary?.items, completedSearch])
+
   const loadSummary = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
       const data = await fetchSignalArchive({ sort_by: sortBy, limit: 200 })
       setSummary(data)
-      setSelectedStockId((prev) => prev ?? data.items[0]?.stock_id ?? null)
+      // 預設不展開任何一檔（inline expand UX：使用者主動點才展開）
     } catch (err) {
       setError(err instanceof Error ? err.message : "訊號追蹤清單載入失敗")
     } finally {
       setLoading(false)
     }
   }, [sortBy])
+
+  // Toggle：再點同一檔 → 收合；點別檔 → 切換
+  const toggleExpand = useCallback((stockId: string) => {
+    setSelectedStockId((prev) => (prev === stockId ? null : stockId))
+  }, [])
 
   useEffect(() => {
     void loadSummary()
@@ -312,11 +343,6 @@ function SignalArchiveContent() {
       cancelled = true
     }
   }, [selectedStockId])
-
-  const selectedSummary = useMemo(() => {
-    if (!selectedStockId) return null
-    return summary?.items.find((item) => item.stock_id === selectedStockId) ?? null
-  }, [selectedStockId, summary?.items])
 
   return (
     <main className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-8">
@@ -411,6 +437,29 @@ function SignalArchiveContent() {
       </header>
 
       <section className="rounded-xl border border-slate-700 bg-slate-900/40 p-4">
+        {!loading && !error && summary && summary.items.length > 0 && (
+          <div className="mb-3 flex items-center gap-2">
+            <input
+              type="text"
+              value={activeSearch}
+              onChange={(e) => setActiveSearch(e.target.value)}
+              placeholder="搜尋股票代號或名稱…"
+              className="w-56 rounded border border-slate-600 bg-slate-800/40 px-2 py-1 text-sm text-slate-100 placeholder:text-slate-500 focus:border-sky-400 focus:outline-none"
+            />
+            {activeSearch && (
+              <button
+                type="button"
+                onClick={() => setActiveSearch("")}
+                className="text-xs text-slate-400 hover:text-slate-200"
+              >
+                清除
+              </button>
+            )}
+            <span className="ml-auto text-xs text-slate-500">
+              {filteredActiveItems.length} / {summary.items.length} 檔
+            </span>
+          </div>
+        )}
         {loading && <p className="text-sm text-slate-400">載入中…</p>}
         {error && !loading && <p className="text-sm text-rose-300">{error}</p>}
         {!loading && !error && (summary?.items.length ?? 0) === 0 && (
@@ -433,7 +482,14 @@ function SignalArchiveContent() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {summary.items.map((item) => {
+              {filteredActiveItems.length === 0 && activeSearch.trim() !== "" && (
+                <TableRow className="border-slate-800">
+                  <TableCell colSpan={10} className="text-center text-sm text-slate-400">
+                    找不到符合「{activeSearch}」的股票
+                  </TableCell>
+                </TableRow>
+              )}
+              {filteredActiveItems.map((item) => {
                 const active = item.stock_id === selectedStockId
                 const hitPeak =
                   (item.max_positive_return_pct ?? -Infinity) >= PEAK_MILESTONE_PCT
@@ -441,79 +497,176 @@ function SignalArchiveContent() {
                   (item.return_pct ?? Infinity) <= EARLY_EXIT_THRESHOLD_PCT ||
                   (item.max_negative_return_pct ?? Infinity) <= EARLY_EXIT_THRESHOLD_PCT
                 return (
-                  <TableRow
-                    key={item.stock_id}
-                    className={`border-slate-800 ${active ? "bg-slate-800/40" : ""}`}
-                  >
-                    <TableCell className="align-top">
-                      <div className="flex flex-col">
-                        <button
-                          type="button"
-                          onClick={() => setSelectedStockId(item.stock_id)}
-                          className="w-fit text-left text-sm font-semibold text-slate-100 hover:text-sky-300"
-                        >
-                          {item.stock_id} {item.stock_name}
-                        </button>
-                        <span className="text-xs text-slate-500">
-                          {item.industry_name ?? "—"}
-                          {item.sub_industry ? ` · ${item.sub_industry}` : ""}
-                        </span>
-                        {(hitPeak || hitStopLoss) && (
-                          <div className="mt-1 flex flex-wrap gap-1">
-                            {hitPeak && <PeakMilestoneChip />}
-                            {hitStopLoss && <StopLossWarnChip />}
+                  <Fragment key={item.stock_id}>
+                    <TableRow
+                      className={`border-slate-800 ${active ? "bg-slate-800/40" : ""}`}
+                    >
+                      <TableCell className="align-top">
+                        <div className="flex flex-col">
+                          <button
+                            type="button"
+                            onClick={() => toggleExpand(item.stock_id)}
+                            className="w-fit text-left text-sm font-semibold text-slate-100 hover:text-sky-300"
+                          >
+                            {item.stock_id} {item.stock_name}
+                          </button>
+                          <span className="text-xs text-slate-500">
+                            {item.industry_name ?? "—"}
+                            {item.sub_industry ? ` · ${item.sub_industry}` : ""}
+                          </span>
+                          {(hitPeak || hitStopLoss) && (
+                            <div className="mt-1 flex flex-wrap gap-1">
+                              {hitPeak && <PeakMilestoneChip />}
+                              {hitStopLoss && <StopLossWarnChip />}
+                            </div>
+                          )}
+                        </div>
+                      </TableCell>
+                      <TableCell className="font-mono text-xs text-slate-300">
+                        {item.first_seen_date}
+                      </TableCell>
+                      <TableCell className="font-mono text-xs text-slate-300">
+                        {item.latest_hit_date}
+                      </TableCell>
+                      <TableCell className="text-sm text-slate-200">
+                        第 {item.tracking_day_index} 天
+                      </TableCell>
+                      <TableCell className="text-sm text-slate-200">
+                        {item.hit_count} 次
+                      </TableCell>
+                      <TableCell className="text-sm text-slate-300">
+                        {item.latest_signal_type}
+                      </TableCell>
+                      <TableCell>
+                        <ReturnCell value={item.return_pct} />
+                      </TableCell>
+                      <TableCell>
+                        <ExtremeReturnCell
+                          value={item.max_positive_return_pct}
+                          tradeDate={item.max_positive_return_trade_date}
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <ExtremeReturnCell
+                          value={item.max_negative_return_pct}
+                          tradeDate={item.max_negative_return_trade_date}
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex flex-wrap gap-2">
+                          <Link
+                            href={`/stocks/${encodeURIComponent(item.stock_id)}`}
+                            className="rounded border border-sky-500/50 bg-sky-500/10 px-2 py-1 text-xs text-sky-200 hover:bg-sky-500/20"
+                          >
+                            K線圖
+                          </Link>
+                          <button
+                            type="button"
+                            onClick={() => toggleExpand(item.stock_id)}
+                            className="rounded border border-slate-600 bg-slate-800/50 px-2 py-1 text-xs text-slate-200 hover:bg-slate-700"
+                          >
+                            {active ? "收合報告" : "點我看更多分析結果"}
+                          </button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                    {active && (
+                      <TableRow className="border-slate-800 bg-slate-900/30 hover:bg-slate-900/30">
+                        <TableCell colSpan={10} className="p-0">
+                          <div className="border-t border-slate-700 px-4 py-4">
+                            {detailLoading && (
+                              <p className="text-sm text-slate-400">載入報告中…</p>
+                            )}
+                            {detailError && !detailLoading && (
+                              <p className="text-sm text-rose-300">{detailError}</p>
+                            )}
+                            {!detailLoading && !detailError && detail && detail.stock_id === item.stock_id && (
+                              <div className="flex flex-col gap-4">
+                                <header className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-800 pb-3">
+                                  <div>
+                                    <h3 className="text-base font-semibold text-slate-100">
+                                      {detail.stock_id} {detail.stock_name}
+                                    </h3>
+                                    <p className="mt-1 text-xs text-slate-400">
+                                      {detail.industry_name ?? "—"}
+                                      {detail.sub_industry ? ` · ${detail.sub_industry}` : ""}
+                                    </p>
+                                  </div>
+                                  <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-slate-400">
+                                    <span>首次抓到</span>
+                                    <span className="font-mono text-slate-200">{detail.first_seen_date}</span>
+                                    <span>最近抓到</span>
+                                    <span className="font-mono text-slate-200">{detail.latest_hit_date}</span>
+                                    <span>目前追蹤</span>
+                                    <span className="text-slate-200">第 {detail.tracking_day_index} 天</span>
+                                    <span>命中次數</span>
+                                    <span className="text-slate-200">{detail.hit_count} 次</span>
+                                    <span>基準價</span>
+                                    <span className="font-mono text-slate-200">
+                                      {formatPrice(detail.baseline_price)}
+                                      {detail.baseline_trade_date ? ` (${detail.baseline_trade_date})` : ""}
+                                    </span>
+                                    <span>最新評價</span>
+                                    <span className="font-mono text-slate-200">
+                                      {formatPrice(detail.latest_eval_price)}
+                                      {detail.latest_eval_trade_date ? ` (${detail.latest_eval_trade_date})` : ""}
+                                    </span>
+                                    <span>報酬率</span>
+                                    <ReturnCell value={detail.return_pct} />
+                                    <span>最大正報酬</span>
+                                    <span className="text-slate-200">
+                                      <ExtremeReturnCell
+                                        value={detail.max_positive_return_pct}
+                                        tradeDate={detail.max_positive_return_trade_date}
+                                      />
+                                    </span>
+                                    <span>最大負報酬</span>
+                                    <span className="text-slate-200">
+                                      <ExtremeReturnCell
+                                        value={detail.max_negative_return_pct}
+                                        tradeDate={detail.max_negative_return_trade_date}
+                                      />
+                                    </span>
+                                  </div>
+                                </header>
+
+                                <div className="flex flex-col gap-3">
+                                  <h4 className="text-sm font-medium text-slate-200">報告時間軸</h4>
+                                  {detail.reports.map((report) => (
+                                    <article
+                                      key={`${report.snapshot_date}-${report.signal_type}`}
+                                      className="rounded-lg border border-slate-800 bg-slate-800/30 p-4"
+                                    >
+                                      <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
+                                        <span className="font-mono text-slate-200">{report.snapshot_date}</span>
+                                        <span className="rounded border border-slate-600 px-1.5 py-0.5 text-[11px] text-slate-300">
+                                          {report.signal_type}
+                                        </span>
+                                        {report.snapshot_generated_at && (
+                                          <span>{report.snapshot_generated_at}</span>
+                                        )}
+                                      </div>
+                                      {report.business_summary && (
+                                        <p className="mt-2 text-xs text-slate-400">{report.business_summary}</p>
+                                      )}
+                                      <p className="mt-3 whitespace-pre-line text-sm leading-relaxed text-slate-200">
+                                        {report.reason}
+                                      </p>
+                                    </article>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                            {!detailLoading && !detailError && (!detail || detail.stock_id !== item.stock_id) && (
+                              <p className="text-sm text-slate-400">
+                                找不到 {item.stock_id} 的報告內容。
+                              </p>
+                            )}
                           </div>
-                        )}
-                      </div>
-                    </TableCell>
-                    <TableCell className="font-mono text-xs text-slate-300">
-                      {item.first_seen_date}
-                    </TableCell>
-                    <TableCell className="font-mono text-xs text-slate-300">
-                      {item.latest_hit_date}
-                    </TableCell>
-                    <TableCell className="text-sm text-slate-200">
-                      第 {item.tracking_day_index} 天
-                    </TableCell>
-                    <TableCell className="text-sm text-slate-200">
-                      {item.hit_count} 次
-                    </TableCell>
-                    <TableCell className="text-sm text-slate-300">
-                      {item.latest_signal_type}
-                    </TableCell>
-                    <TableCell>
-                      <ReturnCell value={item.return_pct} />
-                    </TableCell>
-                    <TableCell>
-                      <ExtremeReturnCell
-                        value={item.max_positive_return_pct}
-                        tradeDate={item.max_positive_return_trade_date}
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <ExtremeReturnCell
-                        value={item.max_negative_return_pct}
-                        tradeDate={item.max_negative_return_trade_date}
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex flex-wrap gap-2">
-                        <Link
-                          href={`/stocks/${encodeURIComponent(item.stock_id)}`}
-                          className="rounded border border-sky-500/50 bg-sky-500/10 px-2 py-1 text-xs text-sky-200 hover:bg-sky-500/20"
-                        >
-                          K線圖
-                        </Link>
-                        <button
-                          type="button"
-                          onClick={() => setSelectedStockId(item.stock_id)}
-                          className="rounded border border-slate-600 bg-slate-800/50 px-2 py-1 text-xs text-slate-200 hover:bg-slate-700"
-                        >
-                          點我看更多分析結果
-                        </button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </Fragment>
                 )
               })}
             </TableBody>
@@ -553,6 +706,29 @@ function SignalArchiveContent() {
               })}
             </div>
           )}
+          {completedSummary && completedSummary.items.length > 0 && (
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={completedSearch}
+                onChange={(e) => setCompletedSearch(e.target.value)}
+                placeholder="搜尋股票代號或名稱…"
+                className="w-56 rounded border border-slate-600 bg-slate-800/40 px-2 py-1 text-sm text-slate-100 placeholder:text-slate-500 focus:border-sky-400 focus:outline-none"
+              />
+              {completedSearch && (
+                <button
+                  type="button"
+                  onClick={() => setCompletedSearch("")}
+                  className="text-xs text-slate-400 hover:text-slate-200"
+                >
+                  清除
+                </button>
+              )}
+              <span className="ml-auto text-xs text-slate-500">
+                {filteredCompletedItems.length} / {completedSummary.items.length} 檔
+              </span>
+            </div>
+          )}
         </header>
         {completedLoading && <p className="text-sm text-slate-400">載入中…</p>}
         {completedError && !completedLoading && (
@@ -576,7 +752,14 @@ function SignalArchiveContent() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {completedSummary.items.map((item) => {
+              {filteredCompletedItems.length === 0 && completedSearch.trim() !== "" && (
+                <TableRow className="border-slate-800">
+                  <TableCell colSpan={8} className="text-center text-sm text-slate-400">
+                    找不到符合「{completedSearch}」的股票
+                  </TableCell>
+                </TableRow>
+              )}
+              {filteredCompletedItems.map((item) => {
                 const hitPeak =
                   (item.max_positive_return_pct ?? -Infinity) >= PEAK_MILESTONE_PCT
                 return (
@@ -645,93 +828,6 @@ function SignalArchiveContent() {
         )}
       </section>
 
-      <section className="rounded-xl border border-slate-700 bg-slate-900/40 p-4">
-        {!selectedStockId && <p className="text-sm text-slate-400">選一檔股票即可查看報告。</p>}
-        {detailLoading && <p className="text-sm text-slate-400">載入報告中…</p>}
-        {detailError && !detailLoading && <p className="text-sm text-rose-300">{detailError}</p>}
-        {!detailLoading && !detailError && detail && (
-          <div className="flex flex-col gap-4">
-            <header className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-800 pb-3">
-              <div>
-                <h2 className="text-lg font-semibold text-slate-100">
-                  {detail.stock_id} {detail.stock_name}
-                </h2>
-                <p className="mt-1 text-sm text-slate-400">
-                  {detail.industry_name ?? "—"}
-                  {detail.sub_industry ? ` · ${detail.sub_industry}` : ""}
-                </p>
-              </div>
-              <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-slate-400">
-                <span>首次抓到</span>
-                <span className="font-mono text-slate-200">{detail.first_seen_date}</span>
-                <span>最近抓到</span>
-                <span className="font-mono text-slate-200">{detail.latest_hit_date}</span>
-                <span>目前追蹤</span>
-                <span className="text-slate-200">第 {detail.tracking_day_index} 天</span>
-                <span>命中次數</span>
-                <span className="text-slate-200">{detail.hit_count} 次</span>
-                <span>基準價</span>
-                <span className="font-mono text-slate-200">
-                  {formatPrice(detail.baseline_price)}
-                  {detail.baseline_trade_date ? ` (${detail.baseline_trade_date})` : ""}
-                </span>
-                <span>最新評價</span>
-                <span className="font-mono text-slate-200">
-                  {formatPrice(detail.latest_eval_price)}
-                  {detail.latest_eval_trade_date ? ` (${detail.latest_eval_trade_date})` : ""}
-                </span>
-                <span>報酬率</span>
-                <ReturnCell value={detail.return_pct} />
-                <span>最大正報酬</span>
-                <span className="text-slate-200">
-                  <ExtremeReturnCell
-                    value={detail.max_positive_return_pct}
-                    tradeDate={detail.max_positive_return_trade_date}
-                  />
-                </span>
-                <span>最大負報酬</span>
-                <span className="text-slate-200">
-                  <ExtremeReturnCell
-                    value={detail.max_negative_return_pct}
-                    tradeDate={detail.max_negative_return_trade_date}
-                  />
-                </span>
-              </div>
-            </header>
-
-            <div className="flex flex-col gap-3">
-              <h3 className="text-sm font-medium text-slate-200">報告時間軸</h3>
-              {detail.reports.map((report) => (
-                <article
-                  key={`${report.snapshot_date}-${report.signal_type}`}
-                  className="rounded-lg border border-slate-800 bg-slate-800/30 p-4"
-                >
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
-                    <span className="font-mono text-slate-200">{report.snapshot_date}</span>
-                    <span className="rounded border border-slate-600 px-1.5 py-0.5 text-[11px] text-slate-300">
-                      {report.signal_type}
-                    </span>
-                    {report.snapshot_generated_at && (
-                      <span>{report.snapshot_generated_at}</span>
-                    )}
-                  </div>
-                  {report.business_summary && (
-                    <p className="mt-2 text-xs text-slate-400">{report.business_summary}</p>
-                  )}
-                  <p className="mt-3 whitespace-pre-line text-sm leading-relaxed text-slate-200">
-                    {report.reason}
-                  </p>
-                </article>
-              ))}
-            </div>
-          </div>
-        )}
-        {!detailLoading && !detailError && !detail && selectedSummary && (
-          <p className="text-sm text-slate-400">
-            找不到 {selectedSummary.stock_id} 的報告內容。
-          </p>
-        )}
-      </section>
     </main>
   )
 }
