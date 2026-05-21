@@ -493,8 +493,6 @@ def test_refresh_completed_signal_cycles_upserts_full_cycle_archive_rows():
         assert row.return_day_10_pct is not None
         assert row.return_day_20_pct is not None
         assert row.return_day_30_pct is not None
-        # retention 30 後 column 永遠 NULL；歷史 row 仍保留資料完整。
-        assert row.return_day_40_pct is None
         assert row.max_positive_return_pct is not None
         assert row.max_positive_return_trade_date is not None
         assert row.max_negative_return_pct is None
@@ -504,7 +502,7 @@ def test_refresh_completed_signal_cycles_upserts_full_cycle_archive_rows():
         assert payload["items"][0]["stock_id"] == "2330"
         assert payload["items"][0]["completed_trade_date"] == expected_completed
         assert payload["items"][0]["max_positive_return_pct"] is not None
-        assert payload["items"][0]["closure_reason"] == archive.CLOSURE_REASON_COMPLETED_40_DAYS
+        assert payload["items"][0]["closure_reason"] == archive.CLOSURE_REASON_COMPLETED_30_DAYS
 
 
 def _seed_consecutive_prices(
@@ -848,7 +846,7 @@ def test_list_completed_archive_summary_period_filter_returns_only_matching_rows
                 hit_count=2,
                 latest_signal_type="LEADER",
                 completed_trade_date=completed,
-                closure_reason="completed_40_days",
+                closure_reason="completed_30_days",
             )
         )
 

@@ -6,8 +6,8 @@
 >
 > **2026-05-21 更新**：retention 從 40 個交易日改為 **30 個交易日**（`ARCHIVE_RETENTION_TRADE_DAYS = 30`）。
 > 本文件內所有「40 交易日」「40 日」字眼指原始設計值；目前實際行為為 30 個交易日。
-> `return_day_40_pct` DB column 為向後相容保留，新 cycle 永遠寫 NULL；
-> `closure_reason = "completed_40_days"` 字面值亦保留為歷史命名（語義已等同於「完成追蹤 cycle」）。
+> 同日全面同步 DB schema：DROP COLUMN `return_day_40_pct` + UPDATE `closure_reason` 字面值
+> `completed_40_days` → `completed_30_days`（由 `main.py` lifespan 跑 idempotent migration）。
 
 ---
 
@@ -136,7 +136,6 @@ class SignalWatchHit(Base):
 - `return_day_10_pct`
 - `return_day_20_pct`
 - `return_day_30_pct`
-- `return_day_40_pct`
 - `completed_trade_date`
 
 同一檔股票如果在之後某個時間點已經移出舊 cycle，且未來重新被抓到，應以新的 `first_seen_date` 再新增一筆 completed archive row，而不是覆蓋舊 row。

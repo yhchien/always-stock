@@ -39,12 +39,21 @@ def _ensure_industry_flow_schema() -> None:
 
 def _ensure_signal_watch_schema() -> None:
     from app.database import engine
-    from app.signal_watch_schema import ensure_signal_watch_hit_return_columns
+    from app.signal_watch_schema import (
+        ensure_signal_watch_hit_return_columns,
+        migrate_completed_archive_to_30_days,
+    )
 
     try:
         ensure_signal_watch_hit_return_columns(engine)
     except Exception:
         logger.exception("Failed to ensure signal_watch_hits schema at startup")
+
+    # 2026-05-21 一次性 retention 40 → 30 migration（idempotent，安全重啟）
+    try:
+        migrate_completed_archive_to_30_days(engine)
+    except Exception:
+        logger.exception("Failed to migrate completed_archive 40d → 30d at startup")
 
 
 def _seed_admin_user() -> None:

@@ -142,7 +142,7 @@ npm run dev
 | `monthly_revenue` | 每月營收 + YoY/MoM | 2019-01 ~ 上個月 | FinMind `TaiwanStockMonthRevenue` |
 | `financial_statement` | 季財報各科目（EPS、營益率等） | 2019-Q1 ~ 最新一季 | FinMind 財報資料集 |
 | `broker_trade_agg` | 分點買賣超聚合 | 2024-01 ~ today（GitHub Actions 每小時推進） | FinMind `TaiwanStockTradingDailyReportSecIdAgg` |
-| `signal_watch_completed_archives` | M23：完成 40 交易日追蹤後的封存摘要（first_seen / hit_count / day10/20/30/40 return） | 2026-04 ~ today | 從 `signal_watch_hits` + `daily_price` 計算 |
+| `signal_watch_completed_archives` | M23：完成 30 個交易日追蹤後的封存摘要（first_seen / hit_count / day10/20/30 return） | 2026-04 ~ today | 從 `signal_watch_hits` + `daily_price` 計算 |
 
 ### M18 / M19 資料表（使用者系統）
 
@@ -204,7 +204,7 @@ npm run dev
 | GET | `/api/industries/{name}/hot-money?date=&days=3&limit=10&sub_industry=` | L1：單產業熱錢排行（M22） |
 | GET | `/api/signals/archive` | M23：最近 30 個交易日訊號追蹤總表（2026-05-21 起 retention 從 40 改 30） |
 | GET | `/api/signals/archive/{stock_id}` | M23：單一股票 30 個交易日追蹤報告時間軸 |
-| GET | `/api/signals/archive/completed` | M23：追蹤期滿移出後的封存表（含 day10/20/30 報酬；day40 為歷史欄位，新 cycle 寫 NULL） |
+| GET | `/api/signals/archive/completed` | M23：追蹤期滿移出後的封存表（含 day10/20/30 報酬） |
 | POST | `/api/analysis/trade-quality` | 首頁 AI 交易質量分析（公開；未登入 3/day、已登入 30/day） |
 | GET | `/api/analysis/context` | M21：Trade Quality Context 6 section 預聚合 JSON（需登入；deterministic + no-hindsight） |
 | POST | `/api/backtest/run` | L3：回測執行（需登入） |

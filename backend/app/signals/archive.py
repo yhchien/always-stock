@@ -1,8 +1,8 @@
 """Read/write helpers for the M23 30-trading-day signal archive.
 
-歷史備註：本模組 2026-04 上線時 retention=40 個交易日，2026-05-21 調整為 30。
-DB column `return_day_40_pct` 與 closure_reason 字面值 `completed_40_days` 為向後相容
-保留歷史命名；新 cycle 不會再寫入 `return_day_40_pct`（永遠 NULL）。
+歷史備註：本模組 2026-04 上線時 retention=40 個交易日，2026-05-21 全面調整為 30
+（包含 DB column 與 closure_reason 字面值）。`main.py` lifespan 跑一次 idempotent
+migration：DROP COLUMN return_day_40_pct + UPDATE closure_reason 字面值 + ALTER DEFAULT。
 """
 
 from __future__ import annotations
@@ -45,9 +45,7 @@ PEAK_MILESTONE_PCT = 45.0
 DRAWDOWN_EXIT_THRESHOLD_PCT = 30.0
 DRAWDOWN_EXIT_GRACE_TRADE_DAYS = 3
 
-# 歷史命名：原 retention=40 時叫 `completed_40_days`，2026-05-21 retention 改為 30 後語義為
-# 「完成追蹤 cycle」；保留字面值不破壞 DB 既有 row，常數名稱也維持原樣避免廣域改動。
-CLOSURE_REASON_COMPLETED_40_DAYS = "completed_40_days"
+CLOSURE_REASON_COMPLETED_30_DAYS = "completed_30_days"
 CLOSURE_REASON_EARLY_EXIT_STOP_LOSS = "early_exit_stop_loss"
 CLOSURE_REASON_EARLY_EXIT_DRAWDOWN = "early_exit_drawdown_from_peak"
 
@@ -93,13 +91,12 @@ class CompletedArchiveItem:
     return_day_10_pct: Optional[float]
     return_day_20_pct: Optional[float]
     return_day_30_pct: Optional[float]
-    return_day_40_pct: Optional[float]
     max_positive_return_pct: Optional[float]
     max_positive_return_trade_date: Optional[date]
     max_negative_return_pct: Optional[float]
     max_negative_return_trade_date: Optional[date]
     completed_trade_date: date
-    closure_reason: str = CLOSURE_REASON_COMPLETED_40_DAYS
+    closure_reason: str = CLOSURE_REASON_COMPLETED_30_DAYS
 
 
 def persist_signal_watch_hits(
@@ -355,14 +352,13 @@ def list_completed_archive_summary(
                     return_day_10_pct=row.return_day_10_pct,
                     return_day_20_pct=row.return_day_20_pct,
                     return_day_30_pct=row.return_day_30_pct,
-                    return_day_40_pct=row.return_day_40_pct,
                     max_positive_return_pct=row.max_positive_return_pct,
                     max_positive_return_trade_date=row.max_positive_return_trade_date,
                     max_negative_return_pct=row.max_negative_return_pct,
                     max_negative_return_trade_date=row.max_negative_return_trade_date,
                     completed_trade_date=row.completed_trade_date,
                     closure_reason=(
-                        row.closure_reason or CLOSURE_REASON_COMPLETED_40_DAYS
+                        row.closure_reason or CLOSURE_REASON_COMPLETED_30_DAYS
                     ),
                 )
             )
@@ -431,7 +427,7 @@ def refresh_completed_signal_cycles(
             price_cache=price_cache,
         )
         # 走滿期路徑（retention 屆滿），顯式覆寫 closure_reason（避免被舊 early-exit 殘留錯標）。
-        completed_item.closure_reason = CLOSURE_REASON_COMPLETED_40_DAYS
+        completed_item.closure_reason = CLOSURE_REASON_COMPLETED_30_DAYS
         _upsert_completed_archive(db, completed_item)
         upserted += 1
 
@@ -560,9 +556,6 @@ def _build_completed_archive_item(
             trade_date_cache=trade_date_cache,
             price_cache=price_cache,
         ),
-        # 2026-05-21 retention 從 40 改 30 後，新 cycle 不會走到第 40 個交易日；
-        # column 保留是為了向後相容歷史資料，這裡固定寫 None。
-        return_day_40_pct=None,
         max_positive_return_pct=max_positive_return_pct,
         max_positive_return_trade_date=max_positive_return_trade_date,
         max_negative_return_pct=max_negative_return_pct,
@@ -966,9 +959,6 @@ def _build_early_exit_archive_item(
         return_day_10_pct=_day_n_return(10),
         return_day_20_pct=_day_n_return(20),
         return_day_30_pct=_day_n_return(30),
-        # 2026-05-21 retention 30 後永遠 None（settle_trade_date 必在第 30 個交易日內）；
-        # column 保留是為了向後相容歷史資料。
-        return_day_40_pct=None,
         max_positive_return_pct=max_positive_return_pct,
         max_positive_return_trade_date=max_positive_return_trade_date,
         max_negative_return_pct=max_negative_return_pct,
@@ -1006,7 +996,6 @@ def _upsert_completed_archive(
                 return_day_10_pct=item.return_day_10_pct,
                 return_day_20_pct=item.return_day_20_pct,
                 return_day_30_pct=item.return_day_30_pct,
-                return_day_40_pct=item.return_day_40_pct,
                 max_positive_return_pct=item.max_positive_return_pct,
                 max_positive_return_trade_date=item.max_positive_return_trade_date,
                 max_negative_return_pct=item.max_negative_return_pct,
@@ -1027,7 +1016,6 @@ def _upsert_completed_archive(
         existing.return_day_10_pct = item.return_day_10_pct
         existing.return_day_20_pct = item.return_day_20_pct
         existing.return_day_30_pct = item.return_day_30_pct
-        existing.return_day_40_pct = item.return_day_40_pct
         existing.max_positive_return_pct = item.max_positive_return_pct
         existing.max_positive_return_trade_date = item.max_positive_return_trade_date
         existing.max_negative_return_pct = item.max_negative_return_pct
@@ -1236,7 +1224,6 @@ def _serialize_completed_archive_item(item: CompletedArchiveItem) -> dict[str, A
         "return_day_10_pct": item.return_day_10_pct,
         "return_day_20_pct": item.return_day_20_pct,
         "return_day_30_pct": item.return_day_30_pct,
-        "return_day_40_pct": item.return_day_40_pct,
         "max_positive_return_pct": item.max_positive_return_pct,
         "max_positive_return_trade_date": item.max_positive_return_trade_date,
         "max_negative_return_pct": item.max_negative_return_pct,

@@ -1826,6 +1826,35 @@ slice 1~9 完成後 review 出 3 個小瑕疵，集中於 slice 11 修掉，讓�
 - **既有測試對齊**：M25 4 個測試（rating 5-tier mapping / retry / stream / parses_openai_json）改加 `patch("_synthesize_key_factors_from_context", return_value=None)` 模擬 m21 不可用，聚焦 LLM 原行為；M23 `test_run_research_batch_aligns_response_by_stock_id` 補 `prelim_type` 才能驗證 B4 覆寫
 - **monkeypatch lambda 簽章**：`_load_system_prompt` 加 `stage` 參數後，test 內 `lambda: ...` 全部要改 `lambda stage="full": ...`
 
+## M23 retention 30 天徹底化：砍 DB column + UPDATE enum（2026-05-21 第二輪）
+
+### Scope
+- 接續第一輪「常數 40 → 30 + UI 文案改 30」(commit `d5b6934`)；本輪把當時保留的 DB 層歷史命名也徹底清掉
+- **DB destructive ops**（lifespan migration 一次性 idempotent）：
+  - `DROP COLUMN signal_watch_completed_archives.return_day_40_pct`
+  - `UPDATE signal_watch_completed_archives SET closure_reason='completed_30_days' WHERE closure_reason='completed_40_days'`
+  - `ALTER COLUMN closure_reason SET DEFAULT 'completed_30_days'`
+- 後端 / 前端 / 測試所有 `return_day_40_pct` 與 `"completed_40_days"` 字面值全清掉
+
+### Migration helper（[backend/app/signal_watch_schema.py::migrate_completed_archive_to_30_days](backend/app/signal_watch_schema.py)）
+- 三步驟各別 try/except 包：DROP / UPDATE / ALTER DEFAULT 任一失敗只 logger.warning，不阻擋 app 啟動
+- `inspect()` 先看 `return_day_40_pct` column 是否存在，存在才 DROP（避免重啟重複噴 log）
+- `PostgreSQL IF EXISTS` 確保 idempotent；SQLite 測試不會走這條路（直接用 `Base.metadata.create_all` + 新 schema）
+- 由 `main.py::_ensure_signal_watch_schema()` lifespan 在啟動時呼叫一次
+
+### 改動清單
+- 後端：[archive.py](backend/app/signals/archive.py) 常數 / dataclass / 7 處 `return_day_40_pct` 引用 / 3 處 `CLOSURE_REASON_COMPLETED_40_DAYS` 引用全清；[models.py](backend/app/models.py) column drop + default 改 `completed_30_days`；[routers/signals.py](backend/app/routers/signals.py) pydantic schema 拔 + default 改；[signal_watch_schema.py](backend/app/signal_watch_schema.py) ALTER 預設值改 + 加 migration helper；[main.py](backend/app/main.py) lifespan 呼叫
+- 前端：[lib/api.ts](frontend/src/lib/api.ts) `SignalArchiveCompletedItem.return_day_40_pct` 拔 + `SignalClosureReason` union 從 `"completed_40_days"` 改 `"completed_30_days"`；archive page 本身 `ClosureReasonChip` 只看 early-exit reason，fallback 走「追蹤期滿」chip，零改動
+- 測試：[test_signal_archive_returns.py](backend/tests/test_signal_archive_returns.py) `return_day_40_pct is None` 斷言刪、`CLOSURE_REASON_COMPLETED_40_DAYS` → `_30_DAYS`、`closure_reason="completed_40_days"` seed → `"completed_30_days"`；[test_signals_router.py](backend/tests/test_signals_router.py) fixture 拔 + 斷言改 `return_day_30_pct == 6.5`
+
+### Gotcha
+- **既有歷史 row 那欄資料永久消失**：影響 = 0（前端早就不顯示 return_day_*_pct 欄位）
+- **prod migration 失敗不會擋啟動**：lifespan 包 try/except + logger.warning；若 DROP / UPDATE 任一失敗，app 仍會起來但 schema 與 code 不一致。需從 Render log 看 warning 訊息
+- **SQLite 測試環境**：`Base.metadata.create_all` 直接用新 schema 不存在 column，migration 函式內 inspector 也看不到 legacy column，skip 整段；測試不需特殊處理
+- **常數重命名 `CLOSURE_REASON_COMPLETED_40_DAYS` → `_30_DAYS`**：所有 import 同步改；只有 archive.py 內 + 1 個測試斷言用此常數，搜尋 `CLOSURE_REASON_COMPLETED_40` 應為 0 結果（除註解／migration helper SQL 內字串）
+- **`refresh_completed_signal_cycles` 寫入時用新 enum value**：避免 cycle 重新跑到滿期時又寫 `completed_40_days`
+- **lifespan 失敗的容錯邊界**：UPDATE 失敗 → 新舊 enum value 並存 DB；前端 ClosureReasonChip 對未知 value fallback 走「追蹤期滿」灰色 chip，視覺不會壞但統計上會有兩種值
+
 ## Sticky horizontal scrollbar 全站套用（2026-05-21）
 
 ### Scope

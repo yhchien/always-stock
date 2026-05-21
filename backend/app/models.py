@@ -391,14 +391,14 @@ class SignalWatchHit(Base):
 
 class SignalWatchCompletedArchive(Base):
     """
-    M23 訊號追蹤期滿後封存表（2026-05-21 起 retention = 30 個交易日，原為 40）。
+    M23 訊號追蹤期滿後封存表（retention = 30 個交易日）。
 
     一列代表一檔股票完成一個追蹤 cycle 的摘要；若同檔股票未來重新進入新的追蹤期，
     會以新的 first_seen_date 再新增一列。
 
-    `return_day_40_pct` column 為歷史欄位（retention 40 時期使用）；retention 30 後
-    新 cycle 永遠寫 NULL，僅保留以維持既有資料完整性。`closure_reason` 預設值
-    `completed_40_days` 為歷史命名，語義 = 「完成追蹤 cycle」，保留字面值避免破壞既有 row。
+    歷史備註：2026-04 上線時 retention = 40，2026-05-21 全面調整為 30
+    （含 column 名稱與 closure_reason enum 字面值）；舊 `return_day_40_pct` column
+    與 `completed_40_days` 字面值由 lifespan migration 一次性 DROP + UPDATE。
     """
     __tablename__ = "signal_watch_completed_archives"
 
@@ -416,7 +416,6 @@ class SignalWatchCompletedArchive(Base):
     return_day_10_pct = Column(Float, nullable=True)
     return_day_20_pct = Column(Float, nullable=True)
     return_day_30_pct = Column(Float, nullable=True)
-    return_day_40_pct = Column(Float, nullable=True)
     max_positive_return_pct = Column(Float, nullable=True)
     max_positive_return_trade_date = Column(Date, nullable=True)
     max_negative_return_pct = Column(Float, nullable=True)
@@ -425,8 +424,8 @@ class SignalWatchCompletedArchive(Base):
     closure_reason = Column(
         String(32),
         nullable=False,
-        default="completed_40_days",
-        server_default="completed_40_days",
+        default="completed_30_days",
+        server_default="completed_30_days",
     )
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)

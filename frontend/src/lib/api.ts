@@ -1307,7 +1307,6 @@ export interface SignalArchiveCompletedItem {
   return_day_10_pct: number | null
   return_day_20_pct: number | null
   return_day_30_pct: number | null
-  return_day_40_pct: number | null
   max_positive_return_pct: number | null
   max_positive_return_trade_date: string | null
   max_negative_return_pct: number | null
@@ -1317,7 +1316,7 @@ export interface SignalArchiveCompletedItem {
 }
 
 export type SignalClosureReason =
-  | "completed_40_days"
+  | "completed_30_days"
   | "early_exit_stop_loss"
   | "early_exit_drawdown_from_peak"
 

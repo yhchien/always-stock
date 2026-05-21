@@ -609,7 +609,6 @@ def test_completed_archive_summary_returns_rows(api):
             return_day_10_pct=2.5,
             return_day_20_pct=4.5,
             return_day_30_pct=6.5,
-            return_day_40_pct=8.5,
             max_positive_return_pct=12.25,
             max_positive_return_trade_date=date(2026, 3, 20),
             max_negative_return_pct=-4.75,
@@ -628,7 +627,7 @@ def test_completed_archive_summary_returns_rows(api):
     assert item["stock_name"] == "聯發科"
     assert item["first_seen_date"] == "2026-03-03"
     assert item["hit_count"] == 3
-    assert item["return_day_40_pct"] == 8.5
+    assert item["return_day_30_pct"] == 6.5
     assert item["max_positive_return_pct"] == 12.25
     assert item["max_positive_return_trade_date"] == "2026-03-20"
     assert item["max_negative_return_pct"] == -4.75

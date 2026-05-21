@@ -131,13 +131,12 @@ class SignalArchiveCompletedItemResponse(BaseModel):
     return_day_10_pct: Optional[float]
     return_day_20_pct: Optional[float]
     return_day_30_pct: Optional[float]
-    return_day_40_pct: Optional[float]
     max_positive_return_pct: Optional[float]
     max_positive_return_trade_date: Optional[date]
     max_negative_return_pct: Optional[float]
     max_negative_return_trade_date: Optional[date]
     completed_trade_date: date
-    closure_reason: str = "completed_40_days"
+    closure_reason: str = "completed_30_days"
 
 
 class SignalArchiveCompletedPeriodMeta(BaseModel):
