@@ -114,7 +114,7 @@ function ClosureReasonChip({ reason }: { reason: SignalClosureReason }) {
   }
   return (
     <span className="inline-flex items-center rounded border border-slate-600 bg-slate-700/40 px-1.5 py-0.5 text-[11px] font-medium text-slate-200">
-      40 日結束
+      追蹤期滿
     </span>
   )
 }
@@ -272,7 +272,7 @@ function SignalArchiveContent() {
         }
       } catch (err) {
         if (!cancelled) {
-          setCompletedError(err instanceof Error ? err.message : "40日移出紀錄載入失敗")
+          setCompletedError(err instanceof Error ? err.message : "追蹤期滿移出紀錄載入失敗")
         }
       } finally {
         if (!cancelled) setCompletedLoading(false)
@@ -322,9 +322,9 @@ function SignalArchiveContent() {
     <main className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-8">
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight text-slate-100">抓到的股票觀察總覽（40日）</h1>
+          <h1 className="text-xl font-semibold tracking-tight text-slate-100">抓到的股票觀察總覽（30 個交易日）</h1>
           <p className="mt-1 text-sm text-slate-400">
-            追蹤最近 {summary?.retention_trade_days ?? 40} 個交易日內，被納入每日大魚尾清單的股票。
+            追蹤最近 {summary?.retention_trade_days ?? 30} 個交易日內，被納入每日大魚尾清單的股票。
           </p>
           <div className="mt-3 grid gap-2 rounded-lg border border-slate-800 bg-slate-900/60 p-3 text-xs leading-6 text-slate-400 sm:grid-cols-3">
             <div>
@@ -371,7 +371,7 @@ function SignalArchiveContent() {
               <span className="mx-1 inline-flex items-center rounded border border-rose-500/60 bg-rose-500/20 px-1 py-0 text-[11px] text-rose-100">
                 提前結算（跌破 -30%）
               </span>
-              並移到下方「永久紀錄」，不必等 40 日。
+              並移到下方「永久紀錄」，不必等追蹤期滿。
             </p>
             <p>
               <span className="mr-1 inline-flex items-center rounded border border-orange-500/60 bg-orange-500/20 px-1 py-0 text-[11px] text-orange-100">
@@ -524,9 +524,9 @@ function SignalArchiveContent() {
       <section className="rounded-xl border border-slate-700 bg-slate-900/40 p-4">
         <header className="mb-4 flex flex-col gap-3">
           <div>
-            <h2 className="text-lg font-semibold text-slate-100">移出 40 日後紀錄</h2>
+            <h2 className="text-lg font-semibold text-slate-100">追蹤期滿移出紀錄</h2>
             <p className="mt-1 text-sm text-slate-400">
-              當股票完成一個追蹤 cycle 後（40 日結束 / 跌破 -30% / 從高點回落 30%），會在這裡留下封存摘要；
+              當股票完成一個追蹤 cycle 後（追蹤 30 個交易日期滿 / 跌破 -30% / 從高點回落 30%），會在這裡留下封存摘要；
               依移出時間切半年一張表（2026/05 起算），同一檔之後若重新被抓到會以新的首次抓到日新增一列。
             </p>
           </div>

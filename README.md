@@ -167,7 +167,7 @@ npm run dev
 |----------|------------------|--------|
 | [`daily_etl_update.yml`](.github/workflows/daily_etl_update.yml) | 週一~五 **18:00**（cron）+ 手動 | 每個交易日傍晚全量刷新 Render PostgreSQL（FinMind ETL：stocks_master / daily_price / inst_flow / daily_valuation / monthly_revenue / financial_statement / margin_trade / industry_flow 聚合；broker_trade_agg 已拆到獨立 workflow）。配額耗盡（exit 2）時 sleep 1.5h 後自動 retry 一次；假日由 daily_price 空資料 + 配額健康判定自動短路（exit 5）。**ETL 結束（exit 0/1）後串跑 M25 watchlist trade quality refresh**，對全使用者 watchlist 跑 trade quality 寫入 `watchlist_trade_quality_snapshots`，給 `/watchlist` 卡片與個股頁報告直接讀 |
 | [`daily_signals.yml`](.github/workflows/daily_signals.yml) | 週一~五 **19:00**（cron）+ 手動 | M23 每日異常訊號 pipeline（`run_daily_signals.py`）：deterministic filter 建候選池 → LLM batch 分析公司業務／集團／龍頭比對 → 寫入 `signal_snapshots`，產出 LEADER / FOLLOWER / LAGGARD 三類訊號清單。exit 0/1（ok / no_data）→ workflow pass；exit 2/3（llm_error / db_error）→ workflow fail |
-| [`signal_archive_returns.yml`](.github/workflows/signal_archive_returns.yml) | 週一~五 **20:00**（cron）+ 手動 | M23 40 日訊號追蹤報酬率更新（`run_signal_archive_returns.py`）：對 active hits 同步 `latest_eval_price` / `return_pct`；完成 40 交易日 cycle 後封存到 `signal_watch_completed_archives`。可帶 `target_date` 手動補跑 |
+| [`signal_archive_returns.yml`](.github/workflows/signal_archive_returns.yml) | 週一~五 **20:00**（cron）+ 手動 | M23 30 個交易日訊號追蹤報酬率更新（`run_signal_archive_returns.py`）：對 active hits 同步 `latest_eval_price` / `return_pct`；完成 30 個交易日 cycle 後封存到 `signal_watch_completed_archives`（2026-05-21 起 retention 從 40 改 30）。可帶 `target_date` 手動補跑 |
 | [`broker_trade_backfill.yml`](.github/workflows/broker_trade_backfill.yml) | **手動觸發**（cron 已停用，2026-04-21 起） | 找出 `broker_trade_agg` 在 `[min_backfill_date, end_date]` 範圍內缺漏的週一~五交易日，每批 N 天（預設 3）補資料；FinMind 6000 req/hr 限制下，1 日 ≈ 1588 req |
 | [`aggregate_industry_flow.yml`](.github/workflows/aggregate_industry_flow.yml) | **手動觸發** | 純本地 DB 聚合 `industry_daily_flow`（不打 FinMind）；用於 `daily_etl_update` 在 inst_flow 後斷掉（quota / timeout）時補聚合，或歷史資料 backfill 後重算 industry 層 |
 
@@ -202,9 +202,9 @@ npm run dev
 | GET | `/api/market/latest-trade-date` | 取得 DB 最新交易日 |
 | GET | `/api/market/hot-money?date=&days=3&limit=20` | L0：熱錢湧入個股排行 Top N（M22） |
 | GET | `/api/industries/{name}/hot-money?date=&days=3&limit=10&sub_industry=` | L1：單產業熱錢排行（M22） |
-| GET | `/api/signals/archive` | M23：最近 40 交易日訊號追蹤總表 |
-| GET | `/api/signals/archive/{stock_id}` | M23：單一股票 40 日追蹤報告時間軸 |
-| GET | `/api/signals/archive/completed` | M23：移出 40 日後的封存表（day10/20/30/40 報酬） |
+| GET | `/api/signals/archive` | M23：最近 30 個交易日訊號追蹤總表（2026-05-21 起 retention 從 40 改 30） |
+| GET | `/api/signals/archive/{stock_id}` | M23：單一股票 30 個交易日追蹤報告時間軸 |
+| GET | `/api/signals/archive/completed` | M23：追蹤期滿移出後的封存表（含 day10/20/30 報酬；day40 為歷史欄位，新 cycle 寫 NULL） |
 | POST | `/api/analysis/trade-quality` | 首頁 AI 交易質量分析（公開；未登入 3/day、已登入 30/day） |
 | GET | `/api/analysis/context` | M21：Trade Quality Context 6 section 預聚合 JSON（需登入；deterministic + no-hindsight） |
 | POST | `/api/backtest/run` | L3：回測執行（需登入） |
@@ -245,7 +245,7 @@ npm run dev
 | M20 | 交易分析擴充（預期 45% 報酬率加碼建議 + 風報比 1:1.75） | ⬜ 規劃中（M19 完成後） |
 | M21 | Trade Quality Context 資料管線（6 section 預聚合 JSON + `GET /api/analysis/context`；deterministic + no-hindsight） | ✅ |
 | M22 | 熱錢湧入個股排行（L0 底部 Top 20 / L1 頂部 Top 10，近 N 日三大法人累計買超） | ✅ |
-| M23 | 每日異常訊號清單（deterministic filter 建候選池 + LLM 上網查公司業務／集團／龍頭比對；最終只保留 top 3 檔，輸出 LEADER / FOLLOWER / LAGGARD 三類；L0 tab bar + pulse 通知 + 多工背景重新產生 + 進度條；全候選先做短 decision，只有 WATCH 補長理由；另含 40 交易日訊號追蹤清單、命中次數、報酬率與報告時間軸，並新增移出 40 日後的 completed archive 封存表；不預測報酬、不出買賣建議） | 🚧 持續優化中（[core spec](docs/plans/m23_daily_signals_spec.md) / [archive spec](docs/plans/m23_signal_archive_spec.md)） |
+| M23 | 每日異常訊號清單（deterministic filter 建候選池 + LLM 上網查公司業務／集團／龍頭比對；最終只保留 top 3 檔，輸出 LEADER / FOLLOWER / LAGGARD 三類；L0 tab bar + pulse 通知 + 多工背景重新產生 + 進度條；全候選先做短 decision，只有 WATCH 補長理由；另含 30 個交易日訊號追蹤清單（2026-05-21 起 retention 從 40 改 30）、命中次數、報酬率與報告時間軸，並新增追蹤期滿移出的 completed archive 封存表；不預測報酬、不出買賣建議） | 🚧 持續優化中（[core spec](docs/plans/m23_daily_signals_spec.md) / [archive spec](docs/plans/m23_signal_archive_spec.md)） |
 
 M23 診斷約定：
 - `market_context` 與 research / decision / watch-reason 各階段 fallback 都會附帶 `llm_diagnostic`

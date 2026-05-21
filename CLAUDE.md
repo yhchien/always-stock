@@ -1826,6 +1826,33 @@ slice 1~9 完成後 review 出 3 個小瑕疵，集中於 slice 11 修掉，讓�
 - **既有測試對齊**：M25 4 個測試（rating 5-tier mapping / retry / stream / parses_openai_json）改加 `patch("_synthesize_key_factors_from_context", return_value=None)` 模擬 m21 不可用，聚焦 LLM 原行為；M23 `test_run_research_batch_aligns_response_by_stock_id` 補 `prelim_type` 才能驗證 B4 覆寫
 - **monkeypatch lambda 簽章**：`_load_system_prompt` 加 `stage` 參數後，test 內 `lambda: ...` 全部要改 `lambda stage="full": ...`
 
+## M23 訊號追蹤 retention：40 → 30 個交易日（2026-05-21）
+
+### 改動
+- `backend/app/signals/archive.py::ARCHIVE_RETENTION_TRADE_DAYS = 40` → **30**
+- 行為連動：`_prune_signal_watch_hits` 只保留最近 30 個 snapshot_date；`refresh_completed_signal_cycles` 第 30 天就走滿期結算（不再等 40 天）；`_resolve_nth_trade_date(day_index=30)` 是新的 cycle 終點
+
+### 向後相容（DB schema 不動）
+- `SignalWatchCompletedArchive.return_day_40_pct` column **保留**：retention 30 後新 cycle 永遠寫 NULL；既有歷史 row 不受影響
+- `closure_reason = "completed_40_days"` 字面值與常數 `CLOSURE_REASON_COMPLETED_40_DAYS` **保留**：避免破壞既有資料；新註解標明這是歷史命名，語義 = 「完成追蹤 cycle」
+- `_build_completed_archive_item` / `_build_early_exit_archive_item` 內 `return_day_40_pct` 顯式寫 None（不再呼叫 `_resolve_return_for_tracking_day(tracking_day=40)` 浪費 query）
+
+### UI / 文案改動
+- `frontend/src/app/signals/archive/page.tsx`：h1「抓到的股票觀察總覽（40日）」→「（30 個交易日）」；`ClosureReasonChip` 滿期 chip「40 日結束」→「追蹤期滿」；section heading「移出 40 日後紀錄」→「追蹤期滿移出紀錄」；說明文案「不必等 40 日」→「不必等追蹤期滿」
+- `frontend/src/components/DailySignalsPanel.tsx`：「40日追蹤」按鈕 → 「30日追蹤」
+- `README.md` 與 `docs/plans/m23_signal_archive_spec.md` 加 2026-05-21 變更註記
+
+### 測試
+- `test_refresh_completed_signal_cycles_upserts_40_day_archive_rows` 重命名為 `_upserts_full_cycle_archive_rows`
+- 斷言 `completed_trade_date == first_seen + timedelta(days=29)`（第 30 個交易日，非 39）+ `return_day_40_pct is None`
+- `closure_reason` 仍斷言 `CLOSURE_REASON_COMPLETED_40_DAYS` 字面值（向後相容）
+- 全 14 個 `test_signal_archive_returns.py` pass
+
+### Gotcha
+- **既有 archive table 不需要 backfill**：原本 40 天 cycle 完成的歷史 row 仍是合法紀錄（按當時規則結算）；新 cycle 走 30 天規則
+- **DB column 命名歷史錯位**：未來看 `return_day_40_pct` column 名仍像 40 天 retention，需配合 model docstring 與本段落理解。若未來真要重命名，DB migration + API contract + 前端三方都要同步
+- **`closure_reason="completed_40_days"` 字面值已成歷史 key**：前端 `ClosureReasonChip` 對應顯示「追蹤期滿」，不再寫「40 日結束」；enum 值依然保留以避免 DB migration
+
 ## 全站 filter / tab / sort URL params 化（2026-05-21）
 
 ### Scope

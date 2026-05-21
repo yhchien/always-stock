@@ -391,9 +391,14 @@ class SignalWatchHit(Base):
 
 class SignalWatchCompletedArchive(Base):
     """
-    M23 訊號追蹤 40 交易日結束後封存表
-    一列代表一檔股票完成一個 40 交易日追蹤 cycle 的摘要。
-    若同檔股票未來重新進入新的 40 日追蹤，會以新的 first_seen_date 再新增一列。
+    M23 訊號追蹤期滿後封存表（2026-05-21 起 retention = 30 個交易日，原為 40）。
+
+    一列代表一檔股票完成一個追蹤 cycle 的摘要；若同檔股票未來重新進入新的追蹤期，
+    會以新的 first_seen_date 再新增一列。
+
+    `return_day_40_pct` column 為歷史欄位（retention 40 時期使用）；retention 30 後
+    新 cycle 永遠寫 NULL，僅保留以維持既有資料完整性。`closure_reason` 預設值
+    `completed_40_days` 為歷史命名，語義 = 「完成追蹤 cycle」，保留字面值避免破壞既有 row。
     """
     __tablename__ = "signal_watch_completed_archives"
 

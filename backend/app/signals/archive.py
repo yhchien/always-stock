@@ -1,4 +1,9 @@
-"""Read/write helpers for the M23 40-trading-day signal archive."""
+"""Read/write helpers for the M23 30-trading-day signal archive.
+
+歷史備註：本模組 2026-04 上線時 retention=40 個交易日，2026-05-21 調整為 30。
+DB column `return_day_40_pct` 與 closure_reason 字面值 `completed_40_days` 為向後相容
+保留歷史命名；新 cycle 不會再寫入 `return_day_40_pct`（永遠 NULL）。
+"""
 
 from __future__ import annotations
 
@@ -17,7 +22,7 @@ from app.models import (
     SignalWatchHit,
 )
 
-ARCHIVE_RETENTION_TRADE_DAYS = 40
+ARCHIVE_RETENTION_TRADE_DAYS = 30
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 SIGNALS_SAME_DAY_READY_TIME = time(hour=19, minute=0)
 
@@ -40,6 +45,8 @@ PEAK_MILESTONE_PCT = 45.0
 DRAWDOWN_EXIT_THRESHOLD_PCT = 30.0
 DRAWDOWN_EXIT_GRACE_TRADE_DAYS = 3
 
+# 歷史命名：原 retention=40 時叫 `completed_40_days`，2026-05-21 retention 改為 30 後語義為
+# 「完成追蹤 cycle」；保留字面值不破壞 DB 既有 row，常數名稱也維持原樣避免廣域改動。
 CLOSURE_REASON_COMPLETED_40_DAYS = "completed_40_days"
 CLOSURE_REASON_EARLY_EXIT_STOP_LOSS = "early_exit_stop_loss"
 CLOSURE_REASON_EARLY_EXIT_DRAWDOWN = "early_exit_drawdown_from_peak"
@@ -423,7 +430,7 @@ def refresh_completed_signal_cycles(
             trade_date_cache=trade_date_cache,
             price_cache=price_cache,
         )
-        # 走 40 天滿期路徑，顯式覆寫 closure_reason（避免被舊 early-exit 殘留錯標）。
+        # 走滿期路徑（retention 屆滿），顯式覆寫 closure_reason（避免被舊 early-exit 殘留錯標）。
         completed_item.closure_reason = CLOSURE_REASON_COMPLETED_40_DAYS
         _upsert_completed_archive(db, completed_item)
         upserted += 1
@@ -553,15 +560,9 @@ def _build_completed_archive_item(
             trade_date_cache=trade_date_cache,
             price_cache=price_cache,
         ),
-        return_day_40_pct=_resolve_return_for_tracking_day(
-            db,
-            stock_id=stock_id,
-            first_seen_date=first_seen_date,
-            tracking_day=40,
-            baseline_price=baseline_price,
-            trade_date_cache=trade_date_cache,
-            price_cache=price_cache,
-        ),
+        # 2026-05-21 retention 從 40 改 30 後，新 cycle 不會走到第 40 個交易日；
+        # column 保留是為了向後相容歷史資料，這裡固定寫 None。
+        return_day_40_pct=None,
         max_positive_return_pct=max_positive_return_pct,
         max_positive_return_trade_date=max_positive_return_trade_date,
         max_negative_return_pct=max_negative_return_pct,
@@ -965,7 +966,9 @@ def _build_early_exit_archive_item(
         return_day_10_pct=_day_n_return(10),
         return_day_20_pct=_day_n_return(20),
         return_day_30_pct=_day_n_return(30),
-        return_day_40_pct=_day_n_return(40),
+        # 2026-05-21 retention 30 後永遠 None（settle_trade_date 必在第 30 個交易日內）；
+        # column 保留是為了向後相容歷史資料。
+        return_day_40_pct=None,
         max_positive_return_pct=max_positive_return_pct,
         max_positive_return_trade_date=max_positive_return_trade_date,
         max_negative_return_pct=max_negative_return_pct,

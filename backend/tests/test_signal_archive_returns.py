@@ -420,7 +420,8 @@ def test_update_signal_watch_returns_tracks_cycle_extrema_from_first_seen():
             assert row.max_negative_return_trade_date == date(2026, 4, 30)
 
 
-def test_refresh_completed_signal_cycles_upserts_40_day_archive_rows():
+def test_refresh_completed_signal_cycles_upserts_full_cycle_archive_rows():
+    """2026-05-21 起 retention=30 個交易日；測試 seed 仍給 40 天資料以涵蓋 day_n=40 edge case。"""
     engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
     Base.metadata.create_all(bind=engine)
     Session = sessionmaker(bind=engine)
@@ -477,6 +478,9 @@ def test_refresh_completed_signal_cycles_upserts_40_day_archive_rows():
         assert upserted == 1
         db.commit()
 
+        # retention=30 → completed_trade_date 是第 30 個交易日（first_seen + 29 calendar days，
+        # 因 seed 為連續每日資料 trade_date 與 calendar 一一對應）。
+        expected_completed = first_seen + timedelta(days=archive.ARCHIVE_RETENTION_TRADE_DAYS - 1)
         row = db.query(SignalWatchCompletedArchive).one()
         assert row.stock_id == "2330"
         assert row.first_seen_date == first_seen
@@ -485,11 +489,12 @@ def test_refresh_completed_signal_cycles_upserts_40_day_archive_rows():
         assert row.latest_signal_type == "FOLLOWER"
         assert row.baseline_trade_date == first_seen + timedelta(days=1)
         assert row.baseline_price == ((102.0 + 103.0) / 2.0)
-        assert row.completed_trade_date == first_seen + timedelta(days=39)
+        assert row.completed_trade_date == expected_completed
         assert row.return_day_10_pct is not None
         assert row.return_day_20_pct is not None
         assert row.return_day_30_pct is not None
-        assert row.return_day_40_pct is not None
+        # retention 30 後 column 永遠 NULL；歷史 row 仍保留資料完整。
+        assert row.return_day_40_pct is None
         assert row.max_positive_return_pct is not None
         assert row.max_positive_return_trade_date is not None
         assert row.max_negative_return_pct is None
@@ -497,7 +502,7 @@ def test_refresh_completed_signal_cycles_upserts_40_day_archive_rows():
 
         payload = archive.list_completed_archive_summary(db)
         assert payload["items"][0]["stock_id"] == "2330"
-        assert payload["items"][0]["completed_trade_date"] == first_seen + timedelta(days=39)
+        assert payload["items"][0]["completed_trade_date"] == expected_completed
         assert payload["items"][0]["max_positive_return_pct"] is not None
         assert payload["items"][0]["closure_reason"] == archive.CLOSURE_REASON_COMPLETED_40_DAYS
 

@@ -3,6 +3,11 @@
 > **Canonical spec**：若 README、CLAUDE.md、memory 與本文件衝突，以本文件為準。
 > 2026-04-29 起草，屬於 M23 每日異常訊號清單的延伸功能。
 > 依附既有 spec：[m23_daily_signals_spec.md](./m23_daily_signals_spec.md)
+>
+> **2026-05-21 更新**：retention 從 40 個交易日改為 **30 個交易日**（`ARCHIVE_RETENTION_TRADE_DAYS = 30`）。
+> 本文件內所有「40 交易日」「40 日」字眼指原始設計值；目前實際行為為 30 個交易日。
+> `return_day_40_pct` DB column 為向後相容保留，新 cycle 永遠寫 NULL；
+> `closure_reason = "completed_40_days"` 字面值亦保留為歷史命名（語義已等同於「完成追蹤 cycle」）。
 
 ---
 

@@ -480,7 +480,7 @@ export default function DailySignalsPanel({
             href="/signals/archive"
             className="inline-flex items-center rounded border border-slate-600 bg-slate-800/50 px-3 py-1 text-xs font-medium text-slate-200 hover:bg-slate-700"
           >
-            40日追蹤
+            30日追蹤
           </Link>
           <button
             type="button"
