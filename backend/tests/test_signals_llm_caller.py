@@ -421,12 +421,31 @@ def test_run_explanation_batch_falls_back_for_missing_stock_in_response(monkeypa
     assert by_id["9999"]["llm_diagnostic"]["status"] == llm_caller._DIAG_STATUS_OK
 
 
-def test_run_watch_reason_batch_only_fills_long_reason(monkeypatch):
+def test_run_watch_reason_batch_fills_five_section_bullets(monkeypatch):
+    """M2（2026-05-24）：reason schema 改為 5 段 bullet array。"""
     response = {
         "items": [
             {
                 "stock": "2330",
-                "reason": "台積電受惠 AI 資本支出與龍頭延續，籌碼與技術同步，仍具觀察價值。",
+                "theme_reason": [
+                    "公司主要業務為晶圓代工",
+                    "屬於 AI 伺服器產業鏈核心",
+                    "AI 資本支出題材可延續 2 季以上",
+                ],
+                "capital_reason": [
+                    "今日值得關注因為外資 3 日累計買超 X 億",
+                    "身為 LEADER 角色",
+                    "同集團聯電同步上漲",
+                ],
+                "chip_reason": [
+                    "外資投信同步買超",
+                    "成交量擴張為 60 日均量 1.8 倍",
+                ],
+                "margin_reason": ["融資增幅 3% 屬正常範圍"],
+                "technical_reason": [
+                    "突破近期高點",
+                    "站穩 20 日均線",
+                ],
             }
         ]
     }
@@ -435,20 +454,98 @@ def test_run_watch_reason_batch_only_fills_long_reason(monkeypatch):
         {"stock": "2330", "name": "台積電", "decision": "WATCH", "short_reason": "量價轉強"},
     ]
     out = llm_caller.run_watch_reason_batch(watch_items, market_context={"market_state": "RANGE"})
-    assert out[0]["reason"].startswith("台積電受惠")
-    assert out[0]["llm_diagnostic"]["status"] == llm_caller._DIAG_STATUS_OK
+    item = out[0]
+    assert item["theme_reason"][0] == "公司主要業務為晶圓代工"
+    assert len(item["theme_reason"]) == 3
+    assert len(item["capital_reason"]) == 3
+    assert len(item["chip_reason"]) == 2
+    assert len(item["margin_reason"]) == 1
+    assert len(item["technical_reason"]) == 2
+    # 向後相容：reason 仍存在，組成 markdown 字串
+    assert "【題材】" in item["reason"]
+    assert "【資金】" in item["reason"]
+    assert item["llm_diagnostic"]["status"] == llm_caller._DIAG_STATUS_OK
     assert fake_client._responses_api.calls[0]["prompt_cache_key"] == llm_caller._CACHE_KEY_WATCH_REASON
 
 
-def test_run_watch_reason_batch_fallback_carries_diagnostic(monkeypatch):
+def test_run_watch_reason_batch_fallback_fills_all_five_sections(monkeypatch):
+    """M2：fallback 時 5 段全部填 fallback 訊息，前端 5 panel 仍可渲染。"""
     _patch_openai(monkeypatch, "not valid json")
     watch_items = [
         {"stock": "2330", "name": "台積電", "decision": "WATCH", "short_reason": "量價轉強"},
     ]
     out = llm_caller.run_watch_reason_batch(watch_items, market_context={})
-    assert "量價轉強" == out[0]["reason"]
-    assert out[0]["llm_diagnostic"]["stage"] == "watch_reason"
-    assert out[0]["llm_diagnostic"]["status"] == llm_caller._DIAG_STATUS_INVALID_JSON
+    item = out[0]
+    # 舊欄位向後相容：reason 仍是 short_reason
+    assert "量價轉強" == item["reason"]
+    # 5 段都填 fallback bullet
+    for key in llm_caller.WATCH_REASON_SECTIONS:
+        assert isinstance(item[key], list)
+        assert len(item[key]) == 1
+        assert item[key][0] == "量價轉強"
+    assert item["llm_diagnostic"]["stage"] == "watch_reason"
+    assert item["llm_diagnostic"]["status"] == llm_caller._DIAG_STATUS_INVALID_JSON
+
+
+def test_coerce_reason_sections_handles_missing_sections():
+    """M2：缺漏的段填空 list，不 raise。"""
+    out = llm_caller._coerce_reason_sections({"theme_reason": ["bullet a"]})
+    assert out["theme_reason"] == ["bullet a"]
+    assert out["capital_reason"] == []
+    assert out["chip_reason"] == []
+    assert out["margin_reason"] == []
+    assert out["technical_reason"] == []
+
+
+def test_coerce_reason_sections_promotes_string_to_single_bullet():
+    """M2：LLM 偶爾吐字串而非 array，要 graceful fallback 成單一 bullet。"""
+    out = llm_caller._coerce_reason_sections(
+        {"theme_reason": "一整段文字而非 array"}
+    )
+    assert out["theme_reason"] == ["一整段文字而非 array"]
+
+
+def test_coerce_reason_sections_filters_empty_bullets_and_truncates_long():
+    """M2：空白 bullet 過濾掉，超過 80 字 truncate（防 LLM 失控）。"""
+    long_bullet = "字" * 100
+    out = llm_caller._coerce_reason_sections(
+        {"theme_reason": ["正常", "", "  ", None, long_bullet]}
+    )
+    assert out["theme_reason"][0] == "正常"
+    # 空白與 None 都被濾掉
+    assert len(out["theme_reason"]) == 2
+    assert len(out["theme_reason"][1]) == 80
+
+
+def test_format_watch_entry_includes_five_section_bullets():
+    """M2：_format_watch_entry 輸出加 5 段欄位（最終 watchlist[] 持久化 dict）。"""
+    item = {
+        "stock": "2330",
+        "name": "台積電",
+        "type": "LEADER",
+        "industry": "半導體",
+        "signals": {"capital_flow": "strong"},
+        "theme_reason": ["公司主業"],
+        "capital_reason": ["外資連買"],
+        "chip_reason": ["投信加碼"],
+        "margin_reason": ["融資溫和"],
+        "technical_reason": ["突破均線"],
+        "reason": "整合 reason markdown",
+    }
+    out = llm_caller._format_watch_entry(item)
+    assert out["theme_reason"] == ["公司主業"]
+    assert out["capital_reason"] == ["外資連買"]
+    assert out["chip_reason"] == ["投信加碼"]
+    assert out["margin_reason"] == ["融資溫和"]
+    assert out["technical_reason"] == ["突破均線"]
+    assert out["reason"] == "整合 reason markdown"
+
+
+def test_format_watch_entry_defaults_missing_sections_to_empty_list():
+    """M2：5 段欄位若缺，輸出為空 list（前端用 length > 0 判斷是否渲染 panel）。"""
+    out = llm_caller._format_watch_entry({"stock": "2330", "name": "台積電", "decision": "WATCH"})
+    for key in llm_caller.WATCH_REASON_SECTIONS:
+        assert out[key] == []
 
 
 # ---------- assemble_final_output ----------

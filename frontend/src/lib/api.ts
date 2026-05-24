@@ -1196,7 +1196,14 @@ export interface SignalWatchlistItem {
     technical_status?: string | null
   } | null
   decision?: string | null
+  /** 舊版單一字串 reason，向後相容保留；新 prompt 會把 5 段 bullet 組成 markdown 也塞回這欄。 */
   reason?: string | null
+  /** M2（2026-05-24）：5 段 bullet array — 題材 / 資金 / 籌碼 / 融券 / 技術。 */
+  theme_reason?: string[] | null
+  capital_reason?: string[] | null
+  chip_reason?: string[] | null
+  margin_reason?: string[] | null
+  technical_reason?: string[] | null
 }
 
 export interface SignalSummary {

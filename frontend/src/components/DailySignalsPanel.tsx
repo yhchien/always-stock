@@ -24,6 +24,10 @@ import {
   toneChipClass,
 } from "@/lib/signalPresentation"
 import SignalEmotionCard, { type EmotionTone } from "@/components/SignalEmotionCard"
+import TradingPlanPanel, {
+  PanelBulletList,
+  type TradingPlanAccent,
+} from "@/components/TradingPlanPanel"
 import WatchlistAddButton from "@/components/WatchlistAddButton"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
@@ -102,6 +106,25 @@ function decisionToTone(type: SignalDecisionType | null | undefined): EmotionTon
   return "leader"
 }
 
+type ReasonSection = {
+  key: keyof Pick<
+    SignalWatchlistItem,
+    "theme_reason" | "capital_reason" | "chip_reason" | "margin_reason" | "technical_reason"
+  >
+  number: number
+  title: string
+  accent: TradingPlanAccent
+}
+
+// 5 段 panel 順序 / 配色（對應 M2 backend 5 段 bullet）
+const REASON_PANELS: ReasonSection[] = [
+  { key: "theme_reason", number: 1, title: "題材", accent: "amber" },
+  { key: "capital_reason", number: 2, title: "資金", accent: "cyan" },
+  { key: "chip_reason", number: 3, title: "籌碼", accent: "emerald" },
+  { key: "margin_reason", number: 4, title: "融券", accent: "rose" },
+  { key: "technical_reason", number: 5, title: "技術", accent: "slate" },
+]
+
 function SignalCard({
   item,
   quote,
@@ -109,6 +132,7 @@ function SignalCard({
   item: SignalWatchlistItem
   quote: RealtimeQuote | undefined
 }) {
+  const [expanded, setExpanded] = useState(false)
   const themeFit = item.theme_fit
   const subtitle =
     item.industry != null ? (
@@ -117,6 +141,12 @@ function SignalCard({
         {item.sub_industry ? <span className="text-slate-500"> · {item.sub_industry}</span> : null}
       </>
     ) : null
+
+  // 偵測是否有任一段 bullet array 有內容（舊快照可能全 null/empty → 不顯示展開鈕）
+  const hasReasonSections = REASON_PANELS.some((p) => {
+    const bullets = item[p.key]
+    return Array.isArray(bullets) && bullets.length > 0
+  })
 
   return (
     <SignalEmotionCard
@@ -138,7 +168,7 @@ function SignalCard({
           ) : null}
         </div>
 
-        <div className="flex flex-wrap gap-1.5">
+        <div className="flex flex-wrap items-center gap-1.5">
           <ChipWithLabel label="資金" kind="capital_flow" value={item.signals?.capital_flow} />
           <ChipWithLabel label="籌碼" kind="chip_trend" value={item.signals?.chip_trend} />
           <ChipWithLabel
@@ -147,7 +177,46 @@ function SignalCard({
             value={item.signals?.margin_short_signal}
           />
           <ChipWithLabel label="技術" kind="technical_status" value={item.signals?.technical_status} />
+          {hasReasonSections ? (
+            <button
+              type="button"
+              onClick={(e) => {
+                // SignalEmotionCard 整張卡是 Link，需 stopPropagation 否則點 toggle 也會跳 L2
+                e.preventDefault()
+                e.stopPropagation()
+                setExpanded((v) => !v)
+              }}
+              className="ml-auto inline-flex items-center gap-1 rounded border border-slate-500/50 bg-slate-700/40 px-1.5 py-0.5 text-[11px] font-medium text-slate-200 hover:bg-slate-700/60"
+            >
+              {expanded ? "收合" : "看細節"}
+              <span aria-hidden>{expanded ? "▴" : "▾"}</span>
+            </button>
+          ) : null}
         </div>
+
+        {expanded && hasReasonSections ? (
+          <div
+            // 整段 onClick stop：避免使用者點 panel 內任何位置誤跳 L2
+            onClick={(e) => e.preventDefault()}
+            onMouseDown={(e) => e.stopPropagation()}
+            className="mt-2 grid gap-2 lg:grid-cols-2"
+          >
+            {REASON_PANELS.map((p) => {
+              const bullets = (item[p.key] ?? []) as string[]
+              if (bullets.length === 0) return null
+              return (
+                <TradingPlanPanel
+                  key={p.key}
+                  number={p.number}
+                  title={p.title}
+                  accent={p.accent}
+                >
+                  <PanelBulletList items={bullets} bulletAccent={p.accent} />
+                </TradingPlanPanel>
+              )
+            })}
+          </div>
+        ) : null}
       </div>
     </SignalEmotionCard>
   )

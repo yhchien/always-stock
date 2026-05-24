@@ -382,6 +382,23 @@ _STAGE_INCLUDED_STEPS: Dict[str, set[int]] = {
 
 _PROMPT_FRAGMENT_CACHE: Dict[str, str] = {}
 
+# M2（2026-05-24）：WATCH 寫作規則 header name 兼容新舊
+# - 舊：「WATCH 長理由寫作規則」（單一 250-350 字 reason）
+# - 新：「WATCH 五段 bullet 寫作規則」（5 段 string[] 各 3-5 bullet）
+_WATCH_REASON_HEADERS = {
+    "WATCH 長理由寫作規則",
+    "WATCH 五段 bullet 寫作規則",
+}
+
+# M2：WATCH reason 拆分後的 5 段欄位名（與 prompt schema 對齊）
+WATCH_REASON_SECTIONS = (
+    "theme_reason",
+    "capital_reason",
+    "chip_reason",
+    "margin_reason",
+    "technical_reason",
+)
+
 
 def _load_system_prompt(stage: str = "full") -> str:
     """A4：依 stage 載入對應 STEP fragment。
@@ -428,8 +445,9 @@ def _build_stage_prompt(full: str, stage: str) -> str:
     for i in range(len(lines)):
         stripped = lines[i].strip()
         if not stripped.startswith("STEP "):
-            # 也可能是「WATCH 長理由寫作規則」「重要限制」
-            if stripped in {"WATCH 長理由寫作規則", "重要限制"}:
+            # 兼容 watch_reason header 的新舊名稱
+            # 2026-05-24 M2：reason 從單一字串 → 5 段 bullet array，header 換名
+            if stripped in _WATCH_REASON_HEADERS or stripped == "重要限制":
                 section_headers.append((i, stripped))
             continue
         # STEP N：xxx 樣式
@@ -478,7 +496,7 @@ def _build_stage_prompt(full: str, stage: str) -> str:
             step_num = int(label.split()[1])
             if step_num in included:
                 keep = True
-        elif label == "WATCH 長理由寫作規則":
+        elif label in _WATCH_REASON_HEADERS:
             keep = stage in {"watch_reason", "full"}
         elif label == "重要限制":
             keep = True  # 共用尾巴
@@ -691,28 +709,39 @@ def _run_watch_reason_chunk(
     *,
     model: str,
 ) -> List[Dict[str, Any]]:
-    """只對 WATCH 名單補長理由。"""
+    """只對 WATCH 名單補 5 段 bullet array 分析（M2,2026-05-24 改版）。
+
+    輸出 schema 從單一 `reason` 字串 → 5 段 string[]
+    對應前端 5 個 TradingPlanPanel 編號 panel：題材 / 資金 / 籌碼 / 融券 / 技術。
+    """
     system_prompt = _load_system_prompt(stage="watch_reason")
     user_msg = (
-        "[執行 STEP 7 / STEP 8 / STEP 9：只對 WATCH 名單補長理由]\n"
+        "[執行 STEP 7 / STEP 8 / STEP 9：只對 WATCH 名單補 5 段 bullet 分析]\n"
         "你現在只處理已經判定為 WATCH 的股票。"
-        "請根據 research 與 market_state，為每檔輸出 250-350 字繁體中文分析。"
-        "不要重做 WATCH / REMOVE 判斷，也不要處理 REMOVE 股票。\n\n"
+        "請根據 research、evidence、market_state,為每檔輸出 5 段 bullet array 繁體中文分析。"
+        "不要重做 WATCH / REMOVE 判斷,也不要處理 REMOVE 股票。\n\n"
         "[硬規則]\n"
-        "1. reason 內必須具體引用 evidence 段的 2-3 個數字（例如「外資 3 日累計買超 X 億」、\n"
-        "   「成交量擴張為 60 日均量的 X.X 倍」、「該產業 5 日漲幅排名 X / N」），\n"
+        "1. 必須完全照 prompt「WATCH 五段 bullet 寫作規則」section 的格式輸出 5 段 string[]。\n"
+        "2. 每段 3~5 條 bullet（margin_reason 允許 2 條),每條 15~40 字繁體中文。\n"
+        "3. 必須在 5 段內具體引用 evidence 的 2-3 個數字（例「外資 3 日累計買超 X 億」、\n"
+        "   「成交量擴張為 60 日均量的 X.X 倍」、「該產業 5 日漲幅排名 X / N」),\n"
         "   避免「籌碼穩定」「題材延續」這類空話。\n"
-        "2. `type` 已由後端鎖定，不可修改；reason 內可帶到「身為 LEADER 的角色」等敘述。\n\n"
+        "4. `type` 已由後端鎖定不可修改;capital_reason 內可帶到「身為 LEADER 的角色」等敘述。\n"
+        "5. 禁止把同樣資訊重複寫在不同段;禁止 capital_reason 寫籌碼、technical_reason 寫法人。\n\n"
         f"[market_context]\n"
         f"{json.dumps(market_context, ensure_ascii=False, indent=2)}\n\n"
         f"[watch_items]\n"
         f"{json.dumps(chunk, ensure_ascii=False, indent=2)}\n\n"
-        "輸出格式（JSON only，不要 markdown code fence）：\n"
+        "輸出格式（JSON only,不要 markdown code fence)：\n"
         "{\n"
         '  "items": [\n'
         '    {\n'
         '      "stock": "股票代碼",\n'
-        '      "reason": "250-350 字繁體中文分析"\n'
+        '      "theme_reason": ["bullet 1", "bullet 2", "..."],\n'
+        '      "capital_reason": ["bullet 1", "..."],\n'
+        '      "chip_reason": ["bullet 1", "..."],\n'
+        '      "margin_reason": ["bullet 1", "..."],\n'
+        '      "technical_reason": ["bullet 1", "..."]\n'
         '    }\n'
         '  ]\n'
         "}\n"
@@ -750,7 +779,9 @@ def _run_watch_reason_chunk(
         sid = str(watch.get("stock") or watch.get("stock_id") or "")
         merged: Dict[str, Any] = {**watch}
         if sid in by_id:
-            merged["reason"] = by_id[sid].get("reason", "")
+            sections = _coerce_reason_sections(by_id[sid])
+            merged.update(sections)
+            merged["reason"] = _join_reason_sections_to_markdown(sections)
             merged["llm_diagnostic"] = diagnostic
         else:
             merged.update(_watch_reason_fallback(watch, diagnostic=diagnostic))
@@ -758,9 +789,54 @@ def _run_watch_reason_chunk(
     return aligned
 
 
+def _coerce_reason_sections(item: Dict[str, Any]) -> Dict[str, List[str]]:
+    """從 LLM 回應抽出 5 段 bullet array,缺漏 / 型別不對的段填空 list。"""
+    out: Dict[str, List[str]] = {}
+    for key in WATCH_REASON_SECTIONS:
+        value = item.get(key)
+        if isinstance(value, list):
+            cleaned = []
+            for bullet in value:
+                if not isinstance(bullet, str):
+                    continue
+                stripped = bullet.strip()
+                if not stripped:
+                    continue
+                cleaned.append(stripped[:80])
+            out[key] = cleaned
+        elif isinstance(value, str) and value.strip():
+            out[key] = [value.strip()[:80]]
+        else:
+            out[key] = []
+    return out
+
+
+def _join_reason_sections_to_markdown(sections: Dict[str, List[str]]) -> str:
+    """把 5 段 bullet 組回 markdown 字串,給仍使用 `reason` 欄位的舊 consumer 用。"""
+    labels = {
+        "theme_reason": "題材",
+        "capital_reason": "資金",
+        "chip_reason": "籌碼",
+        "margin_reason": "融券",
+        "technical_reason": "技術",
+    }
+    parts: List[str] = []
+    for key in WATCH_REASON_SECTIONS:
+        bullets = sections.get(key) or []
+        if not bullets:
+            continue
+        parts.append(f"【{labels[key]}】")
+        parts.extend(f"• {b}" for b in bullets)
+    return "\n".join(parts)
+
+
 def _format_watch_entry(item: Dict[str, Any]) -> Dict[str, Any]:
-    """擷取 spec §10.2 watchlist[] 期望的欄位。"""
-    return {
+    """擷取 spec §10.2 watchlist[] 期望的欄位。
+
+    M2（2026-05-24）：新增 5 段 bullet array 欄位（theme/capital/chip/margin/technical_reason）
+    對應前端 5 panel grid；舊 `reason` 欄位仍保留供向後相容 / Telegram 等舊 consumer。
+    """
+    entry: Dict[str, Any] = {
         "stock": item.get("stock") or item.get("stock_id"),
         "name": item.get("name", ""),
         "type": str(item.get("type") or "LEADER").upper(),
@@ -776,6 +852,11 @@ def _format_watch_entry(item: Dict[str, Any]) -> Dict[str, Any]:
         "decision": "WATCH",
         "reason": item.get("reason") or item.get("short_reason", ""),
     }
+    # 5 段 bullet array；不存在時填空 list（前端 truthy 檢查 length > 0 即可隱藏 panel）
+    for key in WATCH_REASON_SECTIONS:
+        value = item.get(key)
+        entry[key] = value if isinstance(value, list) else []
+    return entry
 
 
 def _cap_final_watchlist(
@@ -987,12 +1068,25 @@ def _watch_reason_fallback(
     *,
     diagnostic: Dict[str, Any],
 ) -> Dict[str, Any]:
-    return {
+    """M2（2026-05-24）：5 段 bullet 改版後，fallback 也輸出 5 段，每段塞 fallback 訊息為單一 bullet。
+
+    這樣前端 5 個 TradingPlanPanel 仍會顯示，使用者一眼看出哪段是 fallback。
+    """
+    fallback_msg = item.get("short_reason") or _stage_fallback_reason(
+        "watch_reason", diagnostic
+    )
+    out: Dict[str, Any] = {
         **item,
-        "reason": item.get("short_reason")
-        or _stage_fallback_reason("watch_reason", diagnostic),
+        "reason": fallback_msg,
         "llm_diagnostic": diagnostic,
     }
+    for key in WATCH_REASON_SECTIONS:
+        # 已存在的段（例如 LLM 部分成功）不覆寫；缺漏才填 fallback
+        if not isinstance(item.get(key), list) or not item.get(key):
+            out[key] = [fallback_msg]
+        else:
+            out[key] = item.get(key)
+    return out
 
 
 def _base_diagnostic(

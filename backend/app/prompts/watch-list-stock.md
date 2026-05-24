@@ -475,7 +475,11 @@ STEP 9：最終輸出格式
       },
 
       "decision": "WATCH",
-      "reason": "WATCH 股票的 250-350 字繁體中文分析"
+      "theme_reason": ["bullet 1（題材 / 業務 / 產業鏈位置 / 題材延續性）", "bullet 2", "..."],
+      "capital_reason": ["bullet 1（資金主線 / leader 已漲 / 集團同步 / 為何是 LEADER/FOLLOWER/LAGGARD）", "..."],
+      "chip_reason": ["bullet 1（籌碼集中 / 法人連買 / 量價配合）", "..."],
+      "margin_reason": ["bullet 1（融資增減 / 融券軋空潛力 / 散戶過熱風險）", "..."],
+      "technical_reason": ["bullet 1（技術型態 / 均線 / 為何不是短線追高）", "..."]
     }
   ],
 
@@ -497,26 +501,55 @@ STEP 9：最終輸出格式
 }
 
 ==================================================
-WATCH 長理由寫作規則
+WATCH 五段 bullet 寫作規則
 ==================================================
 
-每檔 WATCH 股票的 reason 建議 250–350 字。
+每檔 WATCH 股票必須輸出 5 段 bullet array，分散原 13 點要點到 5 個分類，方便前端用編號 panel 呈現。
 
-reason 必須包含：
+每段為 `string[]`，**禁止輸出單一字串或 markdown 段落**。
 
-1. 為什麼今天需要關注它
-2. 它屬於哪個熱門產業鏈
-3. 公司實際業務是什麼
-4. 它在產業鏈中的位置
-5. 最近市場在炒什麼題材
-6. 題材是否可能延續 1–2 季
-7. 龍頭股是否已漲
-8. 集團股是否同步
-9. 籌碼是否支持
-10. 融資融券是否有風險
-11. 技術面是否符合
-12. 它是 LEADER / FOLLOWER / LAGGARD
-13. 為什麼不是單純短線追高
+字數 / 數量規則（嚴格遵守）：
+
+- 每段 **3~5 條 bullet**（margin_reason 允許 2 條，因為融資融券資料較少）
+- 每條 bullet **15~40 字繁體中文**，禁止超過 50 字
+- 禁止使用「、」分隔的複合句，每條 bullet 必須是一個獨立完整的意思
+- 禁止 bullet 開頭加「・」「-」「1.」等符號，由前端自己加
+
+5 段分配：
+
+**theme_reason**（題材；3~5 bullet）必須涵蓋：
+- 公司實際業務與核心產品
+- 它在熱門產業鏈中的位置（上中下游 / equipment / component / brand）
+- 最近市場在炒什麼題材
+- 題材是否可能延續 1–2 季
+
+**capital_reason**（資金；3~5 bullet）必須涵蓋：
+- 為什麼今天值得關注它（從資金面）
+- 它是 LEADER / FOLLOWER / LAGGARD 哪一種，理由
+- 產業 leader 最近是否上漲（若有 laggard / follower 角色）
+- 集團股 / 同供應鏈是否同步上漲
+
+**chip_reason**（籌碼；3~5 bullet）必須涵蓋：
+- 三大法人最近的買賣超方向（外資 / 投信 / 自營商）
+- 是否量價配合（成交量是否放大且股價墊高）
+- chip_trend 的具體現象（accumulating / weakening / retail_overheated）
+
+**margin_reason**（融資融券；2~4 bullet）必須涵蓋：
+- 融資增減方向（是否散戶過熱）
+- 融券變化（是否有軋空潛力 / 資減券增）
+- 若融資融券資料不足，可註明「融資融券無明顯訊號」當作一條
+
+**technical_reason**（技術；3~5 bullet）必須涵蓋:
+- 技術型態（breakout / steady_uptrend / early_turn / range_bound / distribution / weak）
+- 均線位置與走勢
+- 為什麼不是單純短線追高（持續性 / 風險區間）
+
+禁止規則：
+
+- 禁止把同樣訊息重複寫在不同段
+- 禁止 capital_reason 出現「籌碼集中」這種屬於 chip_reason 的詞
+- 禁止 technical_reason 出現「外資連買」這種屬於 chip_reason 的詞
+- 禁止輸出空陣列；若該段資料真的缺，至少寫一條「該欄位資料不足」
 
 ==================================================
 重要限制
