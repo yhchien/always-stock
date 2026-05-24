@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 
 import { Skeleton } from "@/components/ui/skeleton"
 import KeyFactorsTimeline from "@/components/KeyFactorsTimeline"
@@ -15,6 +15,21 @@ import {
   type WatchlistTradeQualityResponse,
 } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
+
+// 評級排序權重：強烈推薦 → 推薦 → 中立 → 再看看 → 快跑 → 未分析
+const RATING_ORDER: Record<TradeQualityRating, number> = {
+  STRONG_BUY: 0,
+  BUY: 1,
+  NEUTRAL: 2,
+  WATCH: 3,
+  RUN: 4,
+}
+
+function ratingWeight(item: WatchlistTradeQualityItem): number {
+  const rating = item.latest?.rating
+  if (rating && rating in RATING_ORDER) return RATING_ORDER[rating]
+  return 99 // 未分析 / failed / null 排最後
+}
 
 const RATING_STYLES: Record<
   TradeQualityRating,
@@ -230,9 +245,13 @@ export default function WatchlistTradeQualityTable({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data?.snapshot_trade_date, data?.total])
 
-  if (status !== "authenticated") return null
+  // 排序：依評級權重，相同則保留 backend 原順序（加入時間）
+  const items = useMemo(() => {
+    const raw = data?.items ?? []
+    return [...raw].sort((a, b) => ratingWeight(a) - ratingWeight(b))
+  }, [data])
 
-  const items = data?.items ?? []
+  if (status !== "authenticated") return null
 
   return (
     <section className="rounded-lg border border-zinc-700 bg-zinc-700/50">

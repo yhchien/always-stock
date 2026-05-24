@@ -23,6 +23,8 @@ import {
   signalValueTone,
   toneChipClass,
 } from "@/lib/signalPresentation"
+import { Dialog } from "@base-ui/react/dialog"
+
 import SignalEmotionCard, { type EmotionTone } from "@/components/SignalEmotionCard"
 import TradingPlanPanel, {
   PanelBulletList,
@@ -132,7 +134,7 @@ function SignalCard({
   item: SignalWatchlistItem
   quote: RealtimeQuote | undefined
 }) {
-  const [expanded, setExpanded] = useState(false)
+  const [detailOpen, setDetailOpen] = useState(false)
   const themeFit = item.theme_fit
   const subtitle =
     item.industry != null ? (
@@ -142,65 +144,134 @@ function SignalCard({
       </>
     ) : null
 
-  // 偵測是否有任一段 bullet array 有內容（舊快照可能全 null/empty → 不顯示展開鈕）
+  // 偵測是否有任一段 bullet array 有內容（舊快照可能全 null/empty → 不顯示「看細節」按鈕）
   const hasReasonSections = REASON_PANELS.some((p) => {
     const bullets = item[p.key]
     return Array.isArray(bullets) && bullets.length > 0
   })
 
   return (
-    <SignalEmotionCard
-      tone={decisionToTone(item.type)}
-      stockId={item.stock}
-      stockName={item.name ?? null}
-      subtitle={subtitle}
-      headerRight={<WatchlistAddButton stockId={item.stock} variant="compact" />}
-    >
-      <div className="space-y-2">
-        <div className="flex items-center justify-between gap-2">
-          <InlinePrice quote={quote} />
-          {themeFit ? (
-            <span
-              className={`shrink-0 inline-flex whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px] font-medium ${toneChipClass(signalValueTone("theme_fit", themeFit))}`}
-            >
-              題材 {signalValueLabel(themeFit, "theme_fit")}
-            </span>
-          ) : null}
-        </div>
+    <>
+      <SignalEmotionCard
+        tone={decisionToTone(item.type)}
+        stockId={item.stock}
+        stockName={item.name ?? null}
+        subtitle={subtitle}
+        headerRight={<WatchlistAddButton stockId={item.stock} variant="compact" />}
+      >
+        <div className="space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <InlinePrice quote={quote} />
+            {themeFit ? (
+              <span
+                className={`shrink-0 inline-flex whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px] font-medium ${toneChipClass(signalValueTone("theme_fit", themeFit))}`}
+              >
+                題材 {signalValueLabel(themeFit, "theme_fit")}
+              </span>
+            ) : null}
+          </div>
 
-        <div className="flex flex-wrap items-center gap-1.5">
-          <ChipWithLabel label="資金" kind="capital_flow" value={item.signals?.capital_flow} />
-          <ChipWithLabel label="籌碼" kind="chip_trend" value={item.signals?.chip_trend} />
-          <ChipWithLabel
-            label="融券"
-            kind="margin_short_signal"
-            value={item.signals?.margin_short_signal}
-          />
-          <ChipWithLabel label="技術" kind="technical_status" value={item.signals?.technical_status} />
-          {hasReasonSections ? (
-            <button
-              type="button"
-              onClick={(e) => {
-                // SignalEmotionCard 整張卡是 Link，需 stopPropagation 否則點 toggle 也會跳 L2
-                e.preventDefault()
-                e.stopPropagation()
-                setExpanded((v) => !v)
-              }}
-              className="ml-auto inline-flex items-center gap-1 rounded border border-slate-500/50 bg-slate-700/40 px-1.5 py-0.5 text-[11px] font-medium text-slate-200 hover:bg-slate-700/60"
-            >
-              {expanded ? "收合" : "看細節"}
-              <span aria-hidden>{expanded ? "▴" : "▾"}</span>
-            </button>
-          ) : null}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <ChipWithLabel label="資金" kind="capital_flow" value={item.signals?.capital_flow} />
+            <ChipWithLabel label="籌碼" kind="chip_trend" value={item.signals?.chip_trend} />
+            <ChipWithLabel
+              label="融券"
+              kind="margin_short_signal"
+              value={item.signals?.margin_short_signal}
+            />
+            <ChipWithLabel label="技術" kind="technical_status" value={item.signals?.technical_status} />
+            {hasReasonSections ? (
+              <button
+                type="button"
+                onClick={(e) => {
+                  // SignalEmotionCard 整張卡是 Link，需 preventDefault 否則點按鈕也會跳 L2
+                  e.preventDefault()
+                  e.stopPropagation()
+                  setDetailOpen(true)
+                }}
+                className="ml-auto inline-flex items-center gap-1 rounded border border-slate-500/50 bg-slate-700/40 px-1.5 py-0.5 text-[11px] font-medium text-slate-200 hover:bg-slate-700/60"
+              >
+                看細節 <span aria-hidden>↗</span>
+              </button>
+            ) : null}
+          </div>
         </div>
+      </SignalEmotionCard>
 
-        {expanded && hasReasonSections ? (
-          <div
-            // 整段 onClick stop：避免使用者點 panel 內任何位置誤跳 L2
-            onClick={(e) => e.preventDefault()}
-            onMouseDown={(e) => e.stopPropagation()}
-            className="mt-2 grid gap-2 lg:grid-cols-2"
-          >
+      <SignalDetailDialog
+        item={item}
+        quote={quote}
+        open={detailOpen}
+        onOpenChange={setDetailOpen}
+      />
+    </>
+  )
+}
+
+function SignalDetailDialog({
+  item,
+  quote,
+  open,
+  onOpenChange,
+}: {
+  item: SignalWatchlistItem
+  quote: RealtimeQuote | undefined
+  open: boolean
+  onOpenChange: (next: boolean) => void
+}) {
+  const stockHref = `/stocks/${encodeURIComponent(item.stock)}`
+  return (
+    <Dialog.Root open={open} onOpenChange={onOpenChange}>
+      <Dialog.Portal>
+        <Dialog.Backdrop className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm" />
+        <Dialog.Popup className="fixed left-1/2 top-1/2 z-50 w-[min(96vw,56rem)] max-h-[88vh] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl border border-zinc-700 bg-zinc-900 p-5 shadow-2xl sm:p-6">
+          {/* Header */}
+          <div className="mb-4 flex items-start justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <Dialog.Title className="flex items-baseline gap-2 text-xl font-black text-slate-100">
+                <span>{item.stock}</span>
+                {item.name ? <span className="text-base">{item.name}</span> : null}
+                {item.type ? (
+                  <span className="rounded-full border border-rose-500/40 bg-rose-500/10 px-2 py-0.5 text-xs font-medium text-rose-200">
+                    {item.type === "LEADER" ? "領漲" : item.type === "FOLLOWER" ? "跟漲" : "補漲"}
+                  </span>
+                ) : null}
+              </Dialog.Title>
+              <Dialog.Description className="mt-1 flex flex-wrap items-center gap-3 text-xs text-slate-400">
+                {item.industry ? (
+                  <span>
+                    {item.industry}
+                    {item.sub_industry ? <span className="text-slate-500"> · {item.sub_industry}</span> : null}
+                  </span>
+                ) : null}
+                <InlinePrice quote={quote} />
+              </Dialog.Description>
+            </div>
+            <Dialog.Close
+              className="shrink-0 rounded-lg border border-slate-600 bg-slate-800/60 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-700"
+              aria-label="關閉"
+            >
+              ✕
+            </Dialog.Close>
+          </div>
+
+          {/* 訊號 chip 列 */}
+          <div className="mb-4 flex flex-wrap gap-1.5">
+            {item.theme_fit ? (
+              <span
+                className={`inline-flex whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px] font-medium ${toneChipClass(signalValueTone("theme_fit", item.theme_fit))}`}
+              >
+                題材 {signalValueLabel(item.theme_fit, "theme_fit")}
+              </span>
+            ) : null}
+            <ChipWithLabel label="資金" kind="capital_flow" value={item.signals?.capital_flow} />
+            <ChipWithLabel label="籌碼" kind="chip_trend" value={item.signals?.chip_trend} />
+            <ChipWithLabel label="融券" kind="margin_short_signal" value={item.signals?.margin_short_signal} />
+            <ChipWithLabel label="技術" kind="technical_status" value={item.signals?.technical_status} />
+          </div>
+
+          {/* 5 panel grid（modal 寬度 56rem，明顯比卡片寬，每行字數舒服） */}
+          <div className="grid gap-3 sm:grid-cols-2">
             {REASON_PANELS.map((p) => {
               const bullets = (item[p.key] ?? []) as string[]
               if (bullets.length === 0) return null
@@ -216,9 +287,22 @@ function SignalCard({
               )
             })}
           </div>
-        ) : null}
-      </div>
-    </SignalEmotionCard>
+
+          {/* Footer: 跳 L2 入口 */}
+          <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-zinc-700 pt-4">
+            <p className="text-xs text-slate-500">
+              想看 K 線、財報、回測等完整研究頁面 →
+            </p>
+            <Link
+              href={stockHref}
+              className="inline-flex items-center rounded-lg border border-sky-500/50 bg-sky-500/10 px-3 py-1.5 text-sm font-medium text-sky-200 hover:bg-sky-500/20"
+            >
+              前往個股研究頁 →
+            </Link>
+          </div>
+        </Dialog.Popup>
+      </Dialog.Portal>
+    </Dialog.Root>
   )
 }
 
