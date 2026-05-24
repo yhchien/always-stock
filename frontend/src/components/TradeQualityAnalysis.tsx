@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useSearchParams } from "next/navigation"
 import KeyFactorsList from "@/components/KeyFactorsList"
+import TradingPlanPanel, { PanelBulletList } from "@/components/TradingPlanPanel"
 import {
   fetchLatestTradeDate,
   searchStocks,
@@ -446,6 +447,14 @@ export default function TradeQualityAnalysis({
             )}
           </div>
 
+          {/* M3 action_one_liner：一句話建議 */}
+          {result.action_one_liner && (
+            <div className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2">
+              <span className="text-[10px] text-amber-400/70 shrink-0 uppercase tracking-wide">建議</span>
+              <span className="text-sm font-semibold text-amber-100">{result.action_one_liner}</span>
+            </div>
+          )}
+
           {/* Summary */}
           <p className="text-sm text-slate-200 leading-relaxed">{result.summary}</p>
 
@@ -512,22 +521,72 @@ export default function TradeQualityAnalysis({
             </ul>
           )}
 
-          {/* Detail toggle */}
-          <div>
-            <button
-              type="button"
-              onClick={() => setShowDetail((v) => !v)}
-              className="text-xs text-slate-300 hover:text-slate-100 underline underline-offset-2"
-            >
-              {showDetail ? "收起詳細" : "詳細"}
-            </button>
-          </div>
+          {/* M3 六段分析 panels */}
+          {(result.industry_section || result.chip_section || result.fundamental_section ||
+            result.technical_section || result.peer_section || result.news_section) && (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+              <TradingPlanPanel number="1" title="產業位置" accent="amber">
+                <PanelBulletList
+                  items={result.industry_section ?? []}
+                  bulletAccent="amber"
+                  emptyText="資料待更新"
+                />
+              </TradingPlanPanel>
+              <TradingPlanPanel number="2" title="籌碼動向" accent="cyan">
+                <PanelBulletList
+                  items={result.chip_section ?? []}
+                  bulletAccent="cyan"
+                  emptyText="資料待更新"
+                />
+              </TradingPlanPanel>
+              <TradingPlanPanel number="3" title="基本面動能" accent="emerald">
+                <PanelBulletList
+                  items={result.fundamental_section ?? []}
+                  bulletAccent="emerald"
+                  emptyText="資料待更新"
+                />
+              </TradingPlanPanel>
+              <TradingPlanPanel number="4" title="技術面" accent="rose">
+                <PanelBulletList
+                  items={result.technical_section ?? []}
+                  bulletAccent="rose"
+                  emptyText="資料待更新"
+                />
+              </TradingPlanPanel>
+              <TradingPlanPanel number="5" title="同儕比較" accent="slate">
+                <PanelBulletList
+                  items={result.peer_section ?? []}
+                  bulletAccent="slate"
+                  emptyText="資料待更新"
+                />
+              </TradingPlanPanel>
+              <TradingPlanPanel number="6" title="近期訊號" accent="slate">
+                <PanelBulletList
+                  items={result.news_section ?? []}
+                  bulletAccent="slate"
+                  emptyText="資料待更新"
+                />
+              </TradingPlanPanel>
+            </div>
+          )}
 
-          {showDetail && (
-            <div className="rounded-md border border-slate-700/60 bg-slate-900/50 p-4">
-              <pre className="text-xs text-slate-200 leading-relaxed whitespace-pre-wrap font-sans">
-                {result.report_markdown}
-              </pre>
+          {/* 完整報告（收合備用，向後相容） */}
+          {result.report_markdown && (
+            <div>
+              <button
+                type="button"
+                onClick={() => setShowDetail((v) => !v)}
+                className="text-xs text-slate-500 hover:text-slate-300 underline underline-offset-2"
+              >
+                {showDetail ? "收起完整報告" : "展開完整報告"}
+              </button>
+              {showDetail && (
+                <div className="mt-2 rounded-md border border-slate-700/60 bg-slate-900/50 p-4">
+                  <pre className="text-xs text-slate-200 leading-relaxed whitespace-pre-wrap font-sans">
+                    {result.report_markdown}
+                  </pre>
+                </div>
+              )}
             </div>
           )}
         </div>

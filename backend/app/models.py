@@ -481,6 +481,7 @@ class WatchlistTradeQualitySnapshot(Base):
     max_holding_days = Column(Integer, nullable=True)
     report_markdown = Column(Text, nullable=True)
     key_factors = Column(JSON, nullable=True)               # [{category, level, trend, note}, ...]
+    sections_json = Column(JSON, nullable=True)             # M3: {action_one_liner, industry_section, ...}
 
     # Cache / 觸發 metadata
     source = Column(String(16), nullable=False)             # manual / on_demand / cron

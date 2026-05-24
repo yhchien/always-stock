@@ -588,8 +588,82 @@ BB → 低 PE
 "if_weak": {
 "exit_price_range": [min, max],
 "max_holding_days": number
+},
+"action_one_liner": "一句話投資建議（15~30 字繁體中文，對應評級給出明確操作方向）",
+"industry_section": [
+  "產業熱度 / 市場位置 bullet 1（15~30 字）",
+  "產業題材 / 同儕排名 bullet 2",
+  "（3~5 項）"
+],
+"chip_section": [
+  "法人籌碼動向 bullet 1（15~30 字）",
+  "量價訊號 bullet 2",
+  "（3~5 項）"
+],
+"fundamental_section": [
+  "月營收 YoY/MoM bullet 1（15~30 字）",
+  "估值 / EPS 方向 bullet 2",
+  "（3~5 項）"
+],
+"technical_section": [
+  "均線 / 趨勢 bullet 1（15~30 字）",
+  "突破 / 整理 / 加速 bullet 2",
+  "（3~5 項）"
+],
+"peer_section": [
+  "同儕相對強弱 bullet 1（15~30 字）",
+  "Leader / Follower 位置 bullet 2",
+  "（3~5 項）"
+],
+"news_section": [
+  "近期題材訊號 bullet 1（15~30 字）",
+  "催化劑 / 風險提示 bullet 2",
+  "（若無新聞資料可以寫「目前無新聞資料，依籌碼保守推論」）"
+]
 }
-}
+
+==================================================
+⚠️ action_one_liner 規則
+=============
+
+`action_one_liner` 是「頂部一句話評級總結」，字數 15~30 字繁體中文：
+
+- 必須包含「操作方向詞」（例：「可考慮布局」/ 「建議觀望」/ 「宜快速出場」）
+- 必須點名 1~2 個最關鍵的理由（產業熱度 / 籌碼集中 / 基本面加速 / 技術突破等）
+- 禁止使用模糊詞（「長期看好」/ 「待觀察」）
+- 範例：
+  - STRONG_BUY：「建議積極布局，外資連買 + AI 伺服器題材加速，動能強」
+  - BUY：「可分批買進，籌碼集中但月營收動能仍需驗證」
+  - NEUTRAL：「中性觀望，產業題材延續性不明，成交量未放大」
+  - WATCH：「暫緩介入，法人轉賣、籌碼轉弱，待止跌訊號確認」
+  - RUN：「建議快速出場，基本面劣化、產業退潮，向下風險高」
+
+==================================================
+⚠️ 6 段 section bullet 規則（M3 結構化面板）
+=============
+
+`industry_section` / `chip_section` / `fundamental_section` / `technical_section` / `peer_section` / `news_section`
+是「前端 6 張交易計畫 panel」的 bullet 資料，每個 section 回傳 3~5 個字串的陣列：
+
+**格式規則：**
+- 每個 bullet 為獨立繁體中文句（15~35 字）
+- 禁止帶 `-` / `•` 前綴（由前端自動加）
+- 每項必須包含**具體數據或描述**（不可空泛如「籌碼良好」）
+- 各 section 對應的寫作重點：
+  - `industry_section`：產業熱度等級（S/A/B/C）/ 資金類型（Trading/Re-rating）/ 同業相對位置 / 題材持續性
+  - `chip_section`：外資/投信連買日數 / 量能倍數 / 籌碼集中 or 出貨判斷 / 融資融券動向
+  - `fundamental_section`：最新月營收 YoY% / MoM% / EPS 方向 / 法說 / 估值水位
+  - `technical_section`：站上 / 跌破哪條均線 / 是否突破前高 / 整理 or 加速 / 支撐壓力
+  - `peer_section`：同產業排名百分位 / Leader 或 Follower 判斷 / 同族群代表股比較
+  - `news_section`：近期題材催化劑（AI / 電源 / 升級等）/ 重要訊號 / 風險注意；若無新聞資料，寫「目前無新聞資料，依籌碼結構保守推論」
+
+**若 M21 context 可用**（user message 有 `[M21 預聚合訊號]` 區塊），各 section 必須直接引用對應欄位：
+- `industry_section` 引用 `industry_summary.industry_hot_level / capital_type / volume_trend`
+- `chip_section` 引用 `chip_summary.foreign_buy_days / chip_strength / is_accumulation`
+- `fundamental_section` 引用 `fundamental.revenue_yoy / revenue_mom`
+- `technical_section` 引用 `price_structure.trend / is_breakout / is_consolidation`
+- `peer_section` 引用 `peer_rank.leader_or_follower / return_5d_percentile`
+- `news_section` 引用 `news_input_stub.query_stock` 或說明「無新聞資料」
 
 ==================================================
 ⚠️ key_factors 規則（M25 條列指標 + 燈號）

@@ -273,7 +273,7 @@ def save_snapshot_failed(
             "expectation_gap", "action", "summary", "core_logic", "risk_level",
             "target_price_low", "target_price_high", "time_horizon_days",
             "exit_price_low", "exit_price_high", "max_holding_days",
-            "report_markdown", "key_factors",
+            "report_markdown", "key_factors", "sections_json",
         ]:
             setattr(existing, k, None)
         for k, v in fields.items():
@@ -311,6 +311,16 @@ def snapshot_to_response_dict(row: WatchlistTradeQualitySnapshot) -> dict:
         "max_holding_days": row.max_holding_days,
         "report_markdown": row.report_markdown or "",
         "key_factors": row.key_factors,
+        # M3 sections（舊快照無此欄位時為 None，前端顯示 fallback）
+        **({
+            "action_one_liner": row.sections_json.get("action_one_liner"),
+            "industry_section": row.sections_json.get("industry_section"),
+            "chip_section": row.sections_json.get("chip_section"),
+            "fundamental_section": row.sections_json.get("fundamental_section"),
+            "technical_section": row.sections_json.get("technical_section"),
+            "peer_section": row.sections_json.get("peer_section"),
+            "news_section": row.sections_json.get("news_section"),
+        } if row.sections_json else {}),
         "warnings": [],
         "source": "cache",
     }
@@ -350,4 +360,18 @@ def _payload_to_columns(payload: dict) -> dict[str, Any]:
         "max_holding_days": payload.get("max_holding_days"),
         "report_markdown": payload.get("report_markdown"),
         "key_factors": key_factors,
+        # M3 sections 打包進單一 JSON 欄位，減少 ALTER TABLE 次數
+        "sections_json": {
+            "action_one_liner": payload.get("action_one_liner"),
+            "industry_section": payload.get("industry_section"),
+            "chip_section": payload.get("chip_section"),
+            "fundamental_section": payload.get("fundamental_section"),
+            "technical_section": payload.get("technical_section"),
+            "peer_section": payload.get("peer_section"),
+            "news_section": payload.get("news_section"),
+        } if any(
+            payload.get(k) is not None
+            for k in ("action_one_liner", "industry_section", "chip_section",
+                      "fundamental_section", "technical_section", "peer_section", "news_section")
+        ) else None,
     }

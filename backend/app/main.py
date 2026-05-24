@@ -37,6 +37,25 @@ def _ensure_industry_flow_schema() -> None:
         logger.exception("Failed to ensure industry_daily_flow schema at startup")
 
 
+def _ensure_m3_snapshot_columns() -> None:
+    """M3：idempotent 補 watchlist_trade_quality_snapshots.sections_json 欄位。"""
+    from app.database import engine
+    from sqlalchemy import inspect, text
+
+    try:
+        insp = inspect(engine)
+        cols = {c["name"] for c in insp.get_columns("watchlist_trade_quality_snapshots")}
+        if "sections_json" not in cols:
+            with engine.connect() as conn:
+                conn.execute(
+                    text("ALTER TABLE watchlist_trade_quality_snapshots ADD COLUMN sections_json JSON")
+                )
+                conn.commit()
+            logger.info("M3: added sections_json column to watchlist_trade_quality_snapshots")
+    except Exception:
+        logger.exception("Failed to ensure M3 sections_json column at startup")
+
+
 def _ensure_signal_watch_schema() -> None:
     from app.database import engine
     from app.signal_watch_schema import (
@@ -182,6 +201,7 @@ async def lifespan(app: FastAPI):
     _ensure_telegram_tables()
     _ensure_industry_flow_schema()
     _ensure_signal_watch_schema()
+    _ensure_m3_snapshot_columns()
 
     app.state.bot_app = None
 

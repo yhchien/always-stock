@@ -29,6 +29,7 @@ from app.routers.analysis import (
     _apply_key_factor_fallback,
     _build_factors_retry_user_msg,
     _build_user_message,
+    _coerce_section,
     _derive_rating_from_factors,
     _enforce_deterministic_rating,
     _is_market_not_open_yet,
@@ -1094,3 +1095,153 @@ def test_trade_quality_falls_back_to_raw_when_m21_context_fails(api):
     assert "deterministic 訊號管線暫時不可用，僅以原始資料判斷" in data["warnings"]
     # 既使 fallback 仍要給 AI raw 區塊
     assert "近 5 交易日" in captured["user_msg"]
+
+
+# ── M3 tests: _coerce_section + section fields ───────────────────────────────
+
+class TestCoerceSection:
+    def test_list_of_strings(self):
+        items = ["bullet1", "bullet2", "bullet3"]
+        assert _coerce_section(items) == items
+
+    def test_list_strips_empty_items(self):
+        assert _coerce_section(["bullet1", "", "  ", "bullet2"]) == ["bullet1", "bullet2"]
+
+    def test_none_returns_none(self):
+        assert _coerce_section(None) is None
+
+    def test_empty_list_returns_none(self):
+        assert _coerce_section([]) is None
+
+    def test_list_all_empty_items_returns_none(self):
+        assert _coerce_section(["", "  "]) is None
+
+    def test_string_splits_by_newline(self):
+        result = _coerce_section("bullet1\nbullet2\nbullet3")
+        assert result == ["bullet1", "bullet2", "bullet3"]
+
+    def test_string_strips_leading_bullet_chars(self):
+        result = _coerce_section("- bullet1\n• bullet2\n· bullet3")
+        assert result == ["bullet1", "bullet2", "bullet3"]
+
+    def test_empty_string_returns_none(self):
+        assert _coerce_section("") is None
+        assert _coerce_section("   ") is None
+
+    def test_single_string_becomes_single_item_list(self):
+        result = _coerce_section("only one bullet")
+        assert result == ["only one bullet"]
+
+
+def test_trade_quality_includes_m3_section_fields(api):
+    """M3：LLM 回傳 action_one_liner + 6 sections 時，API response 應包含這些欄位。"""
+    client, db = api
+    _seed_full_context(db)
+
+    sections_payload = {
+        "action_one_liner": "建議積極布局，外資連買 + AI 伺服器題材加速",
+        "industry_section": ["AI 伺服器產業熱度 S 級", "資金屬 Re-rating Hot"],
+        "chip_section": ["外資連買 5 日，籌碼集中", "量能放大 1.8 倍"],
+        "fundamental_section": ["月營收 YoY +35%", "EPS 加速成長"],
+        "technical_section": ["站上 60 日均線", "突破 1 月高點"],
+        "peer_section": ["同產業排名前 10%", "Leader 地位確立"],
+        "news_section": ["AI 伺服器需求超預期", "法說上修展望"],
+    }
+
+    fake_payload = {
+        "rating": "STRONG_BUY",
+        "summary": "外資連買 + AI 題材，強勢。",
+        "report_markdown": "## 台積電\n分析內容",
+        "key_factors": _FULL_KEY_FACTORS,
+        **sections_payload,
+    }
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = MagicMock(
+        choices=[MagicMock(message=MagicMock(content=json.dumps(fake_payload)))]
+    )
+
+    with patch("app.routers.analysis.get_openai_api_key", return_value="fake-key"), \
+         patch("app.routers.analysis.OpenAI", return_value=mock_client), \
+         patch("app.routers.analysis._synthesize_key_factors_from_context", return_value=None):
+        resp = client.post(
+            "/api/analysis/trade-quality",
+            json={"stock_id": "2330", "buy_date": "2024-01-11"},
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["action_one_liner"] == "建議積極布局，外資連買 + AI 伺服器題材加速"
+    assert data["industry_section"] == ["AI 伺服器產業熱度 S 級", "資金屬 Re-rating Hot"]
+    assert data["chip_section"] == ["外資連買 5 日，籌碼集中", "量能放大 1.8 倍"]
+    assert data["fundamental_section"] == ["月營收 YoY +35%", "EPS 加速成長"]
+    assert data["technical_section"] == ["站上 60 日均線", "突破 1 月高點"]
+    assert data["peer_section"] == ["同產業排名前 10%", "Leader 地位確立"]
+    assert data["news_section"] == ["AI 伺服器需求超預期", "法說上修展望"]
+
+
+def test_trade_quality_section_fields_are_none_when_llm_omits(api):
+    """LLM 未提供 section 欄位時，回傳的 response section fields 應為 null。"""
+    client, db = api
+    _seed_full_context(db)
+
+    fake_payload = {
+        "rating": "NEUTRAL",
+        "summary": "中立。",
+        "report_markdown": "## 台積電\n分析",
+        "key_factors": _FULL_KEY_FACTORS,
+        # 不含任何 section 欄位
+    }
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = MagicMock(
+        choices=[MagicMock(message=MagicMock(content=json.dumps(fake_payload)))]
+    )
+
+    with patch("app.routers.analysis.get_openai_api_key", return_value="fake-key"), \
+         patch("app.routers.analysis.OpenAI", return_value=mock_client), \
+         patch("app.routers.analysis._synthesize_key_factors_from_context", return_value=None):
+        resp = client.post(
+            "/api/analysis/trade-quality",
+            json={"stock_id": "2330", "buy_date": "2024-01-11"},
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["action_one_liner"] is None
+    assert data["industry_section"] is None
+    assert data["chip_section"] is None
+
+
+def test_trade_quality_user_message_requests_section_fields(api):
+    """M3：user message 的 [輸出要求] 應包含 action_one_liner 和 6 section 欄位名稱。"""
+    client, db = api
+    _seed_full_context(db)
+
+    captured: dict = {}
+
+    def fake_create(*args, **kwargs):
+        captured["user_msg"] = kwargs["messages"][1]["content"]
+        return MagicMock(choices=[MagicMock(message=MagicMock(
+            content=json.dumps({"rating": "NEUTRAL", "summary": "s", "report_markdown": "r"})
+        ))])
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.side_effect = fake_create
+
+    with patch("app.routers.analysis.get_openai_api_key", return_value="k"), \
+         patch("app.routers.analysis.OpenAI", return_value=mock_client), \
+         patch("app.routers.analysis._synthesize_key_factors_from_context", return_value=None):
+        client.post(
+            "/api/analysis/trade-quality",
+            json={"stock_id": "2330", "buy_date": "2024-01-11"},
+        )
+
+    msg = captured.get("user_msg", "")
+    assert "action_one_liner" in msg
+    assert "industry_section" in msg
+    assert "chip_section" in msg
+    assert "fundamental_section" in msg
+    assert "technical_section" in msg
+    assert "peer_section" in msg
+    assert "news_section" in msg

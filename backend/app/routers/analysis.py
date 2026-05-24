@@ -119,6 +119,14 @@ class TradeQualityResponse(BaseModel):
     max_holding_days: Optional[int] = None
     report_markdown: str
     key_factors: Optional[List[KeyFactor]] = None  # M25 條列 + 燈號用
+    # M3 結構化 6 panel + 一句話總結
+    action_one_liner: Optional[str] = None
+    industry_section: Optional[List[str]] = None
+    chip_section: Optional[List[str]] = None
+    fundamental_section: Optional[List[str]] = None
+    technical_section: Optional[List[str]] = None
+    peer_section: Optional[List[str]] = None
+    news_section: Optional[List[str]] = None
     warnings: List[str] = []
     source: str  # "openai" | "unavailable" | "market_not_open" | "cache"
 
@@ -397,7 +405,14 @@ def _build_user_message(
   "exit_price_low": number 或 null,
   "exit_price_high": number 或 null,
   "max_holding_days": number 或 null,
-  "report_markdown": "精簡版中文分析報告（markdown 字串）"
+  "report_markdown": "精簡版中文分析報告（markdown 字串，約 400~600 字，5 個章節，每章 1~2 句）",
+  "action_one_liner": "一句話投資建議（15~30 字繁體中文，含操作方向 + 1~2 個關鍵理由）",
+  "industry_section": ["產業 bullet1（15~35 字）", "產業 bullet2", "（3~5 項）"],
+  "chip_section": ["籌碼 bullet1（15~35 字）", "籌碼 bullet2", "（3~5 項）"],
+  "fundamental_section": ["基本面 bullet1（15~35 字）", "基本面 bullet2", "（3~5 項）"],
+  "technical_section": ["技術面 bullet1（15~35 字）", "技術面 bullet2", "（3~5 項）"],
+  "peer_section": ["同儕 bullet1（15~35 字）", "同儕 bullet2", "（3~5 項）"],
+  "news_section": ["近期訊號 bullet1（15~35 字）", "（3~5 項，無新聞資料時寫「目前無新聞資料，依籌碼保守推論」）"]
 }}
 
 rating 對應規則（由你依分析強度自行判斷，不依死板 A/B/C 映射）：
@@ -412,15 +427,13 @@ rating 對應規則（由你依分析強度自行判斷，不依死板 A/B/C 映
 
 嚴格規則：
 - 禁止 hindsight bias
-- report_markdown 必須是繁體中文、完整段落、可讀
-- report_markdown 請精簡：
-  - 固定保留 5 個章節標題
-  - 每個章節 1 小段，2~4 句即可
-  - 總長盡量控制在 800~1200 個中文字內
-  - 不要重複 JSON 已經表達過的欄位
+- report_markdown 必須是繁體中文、完整段落、可讀（約 400~600 字）
 - classification 與 rating 邏輯需一致（C 不可對應 STRONG_BUY）
 - `key_factors` 為必填欄位，6 個 category 不可省略
 - 每個 `key_factors` item 都必須含 `category` / `level` / `trend` / `note`
+- `action_one_liner` 必填，15~30 字，含明確操作方向詞
+- 6 個 section array 必填，每個 3~5 個 bullet 字串，禁止帶 `-` / `•` 前綴
+- 每個 bullet 必須含具體數據或描述，不可寫空泛形容詞
 
 ⚠️ 輸出值域（強制，避免與系統 prompt 內部分類混淆）：
 - `classification` 僅能是 `A` / `B` / `C` —— 這是「個股整體交易質量」分類。
@@ -868,6 +881,27 @@ def _synthesize_key_factors_from_context(m21_context: Optional[dict]) -> Optiona
     ]
 
 
+def _coerce_section(raw: Any) -> Optional[List[str]]:
+    """把 LLM 回傳的 section 值轉成 List[str]；容錯 str / None / invalid list。"""
+    if raw is None:
+        return None
+    if isinstance(raw, list):
+        items = [str(item).strip() for item in raw if item and str(item).strip()]
+        return items if items else None
+    if isinstance(raw, str):
+        stripped = raw.strip()
+        if not stripped:
+            return None
+        # 若是一整個字串，嘗試用換行符或 "- " 拆成 bullets
+        lines = [
+            line.lstrip("- •·").strip()
+            for line in stripped.splitlines()
+            if line.strip() and line.strip() not in ("-", "•", "·")
+        ]
+        return [ln for ln in lines if ln] or [stripped]
+    return None
+
+
 def _normalize_response(
     payload: dict,
     stock: StockMaster,
@@ -902,6 +936,15 @@ def _normalize_response(
         report_markdown=str(payload.get("report_markdown", "")).strip()
         or "（AI 未提供完整報告）",
         key_factors=_normalize_key_factors(payload.get("key_factors")),
+        action_one_liner=str(payload["action_one_liner"]).strip()
+        if payload.get("action_one_liner")
+        else None,
+        industry_section=_coerce_section(payload.get("industry_section")),
+        chip_section=_coerce_section(payload.get("chip_section")),
+        fundamental_section=_coerce_section(payload.get("fundamental_section")),
+        technical_section=_coerce_section(payload.get("technical_section")),
+        peer_section=_coerce_section(payload.get("peer_section")),
+        news_section=_coerce_section(payload.get("news_section")),
         warnings=warnings,
         source=source,
     )

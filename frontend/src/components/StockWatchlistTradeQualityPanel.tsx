@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 
 import KeyFactorsList from "@/components/KeyFactorsList"
+import TradingPlanPanel, { PanelBulletList } from "@/components/TradingPlanPanel"
 import {
   fetchWatchlistTradeQuality,
   refreshWatchlistTradeQuality,
@@ -105,6 +106,14 @@ export default function StockWatchlistTradeQualityPanel({ stockId }: { stockId: 
       {loading && !item ? <p className="mt-3 text-sm text-slate-400">載入中…</p> : null}
       {refreshing ? <p className="mt-3 text-sm text-slate-400">正在補最新分析…</p> : null}
 
+      {/* M3 action_one_liner */}
+      {item && latest?.action_one_liner ? (
+        <div className="mt-3 flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2">
+          <span className="text-[10px] text-amber-400/70 shrink-0 uppercase tracking-wide">建議</span>
+          <span className="text-sm font-semibold text-amber-100">{latest.action_one_liner}</span>
+        </div>
+      ) : null}
+
       {item && latest?.summary ? (
         <p className="mt-4 text-sm leading-relaxed text-slate-200">{latest.summary}</p>
       ) : null}
@@ -118,12 +127,37 @@ export default function StockWatchlistTradeQualityPanel({ stockId }: { stockId: 
         </div>
       ) : null}
 
+      {/* M3 六段分析 panels */}
+      {item && (latest?.industry_section || latest?.chip_section || latest?.fundamental_section ||
+        latest?.technical_section || latest?.peer_section || latest?.news_section) ? (
+        <div className="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-3">
+          <TradingPlanPanel number="1" title="產業位置" accent="amber">
+            <PanelBulletList items={latest.industry_section ?? []} bulletAccent="amber" emptyText="資料待更新" />
+          </TradingPlanPanel>
+          <TradingPlanPanel number="2" title="籌碼動向" accent="cyan">
+            <PanelBulletList items={latest.chip_section ?? []} bulletAccent="cyan" emptyText="資料待更新" />
+          </TradingPlanPanel>
+          <TradingPlanPanel number="3" title="基本面動能" accent="emerald">
+            <PanelBulletList items={latest.fundamental_section ?? []} bulletAccent="emerald" emptyText="資料待更新" />
+          </TradingPlanPanel>
+          <TradingPlanPanel number="4" title="技術面" accent="rose">
+            <PanelBulletList items={latest.technical_section ?? []} bulletAccent="rose" emptyText="資料待更新" />
+          </TradingPlanPanel>
+          <TradingPlanPanel number="5" title="同儕比較" accent="slate">
+            <PanelBulletList items={latest.peer_section ?? []} bulletAccent="slate" emptyText="資料待更新" />
+          </TradingPlanPanel>
+          <TradingPlanPanel number="6" title="近期訊號" accent="slate">
+            <PanelBulletList items={latest.news_section ?? []} bulletAccent="slate" emptyText="資料待更新" />
+          </TradingPlanPanel>
+        </div>
+      ) : null}
+
       {latest?.report_markdown ? (
         <div className="mt-4">
           <button
             type="button"
             onClick={() => setShowReport((prev) => !prev)}
-            className="text-xs text-slate-300 underline underline-offset-2 hover:text-slate-100"
+            className="text-xs text-slate-500 underline underline-offset-2 hover:text-slate-300"
           >
             {showReport ? "收起完整報告" : "展開完整報告"}
           </button>

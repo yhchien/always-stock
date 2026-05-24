@@ -256,6 +256,13 @@ export default function WatchlistTradeQualityCards() {
                     <span className="text-xs text-slate-500">尚未分析</span>
                   )}
 
+                  {latest?.action_one_liner ? (
+                    <div className="flex items-center gap-2 rounded border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5">
+                      <span className="text-[10px] text-amber-400/70 shrink-0">建議</span>
+                      <span className="text-xs font-semibold text-amber-100">{latest.action_one_liner}</span>
+                    </div>
+                  ) : null}
+
                   {latest?.summary ? (
                     <p className="text-sm leading-relaxed text-slate-200">{latest.summary}</p>
                   ) : null}

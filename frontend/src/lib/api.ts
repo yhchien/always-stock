@@ -805,6 +805,14 @@ export interface TradeQualityResponse {
   max_holding_days?: number | null
   report_markdown: string
   key_factors?: KeyFactor[] | null
+  // M3 結構化 6 panel + 一句話總結
+  action_one_liner?: string | null
+  industry_section?: string[] | null
+  chip_section?: string[] | null
+  fundamental_section?: string[] | null
+  technical_section?: string[] | null
+  peer_section?: string[] | null
+  news_section?: string[] | null
   warnings: string[]
   source: "openai" | "unavailable" | "market_not_open" | "cache"
 }
@@ -1081,6 +1089,14 @@ export interface WatchlistSnapshotPayload {
   summary: string | null
   report_markdown: string | null
   key_factors: KeyFactor[] | null
+  // M3 結構化 6 panel + 一句話總結
+  action_one_liner?: string | null
+  industry_section?: string[] | null
+  chip_section?: string[] | null
+  fundamental_section?: string[] | null
+  technical_section?: string[] | null
+  peer_section?: string[] | null
+  news_section?: string[] | null
   status: "ok" | "failed"
   is_stale: boolean
   generated_at: string
