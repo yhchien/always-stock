@@ -46,9 +46,13 @@ REQUIRED_KEY_FACTOR_CATEGORIES = frozenset({
 
 
 def is_snapshot_complete(row: Optional[WatchlistTradeQualitySnapshot]) -> bool:
-    """status='ok' 且 key_factors 涵蓋 6 個必備 category 才算完整。
+    """status='ok' 且 key_factors 6 category 齊全 且 sections_json 帶 action_one_liner 才算完整。
 
-    給 cron skip-check 與 HTTP cache lookup 共用，避免「假 ok」row 被當成有效快照。
+    給 cron skip-check 與 HTTP cache lookup 共用，避免：
+    - 「假 ok」row（status='ok' 但 key_factors=null）被當成有效快照
+    - M3 前舊快照（無 sections_json / action_one_liner）被當成「完整」→ cron 永遠 skip
+      → watchlist 卡片永遠看不到新版 6 panel + 一句話建議。加 M3 檢查後，第一次 cron
+      會自動把所有舊快照當「不完整」一次性 backfill 成新格式。
     """
     if row is None or row.status != "ok":
         return False
@@ -61,7 +65,17 @@ def is_snapshot_complete(row: Optional[WatchlistTradeQualitySnapshot]) -> bool:
             cat = str(f.get("category", "")).strip().lower()
             if cat:
                 seen.add(cat)
-    return REQUIRED_KEY_FACTOR_CATEGORIES.issubset(seen)
+    if not REQUIRED_KEY_FACTOR_CATEGORIES.issubset(seen):
+        return False
+
+    # M3: 新版 sections 必須存在；action_one_liner 是「一句話建議」非空才算完整
+    sections = row.sections_json
+    if not isinstance(sections, dict):
+        return False
+    one_liner = sections.get("action_one_liner")
+    if not (isinstance(one_liner, str) and one_liner.strip()):
+        return False
+    return True
 
 
 def resolve_snapshot_trade_date(

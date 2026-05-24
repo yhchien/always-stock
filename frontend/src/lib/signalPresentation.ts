@@ -83,6 +83,24 @@ export function signalValueTone(kind: string, rawValue: string | null | undefine
   const value = String(rawValue ?? "").toLowerCase()
   if (!value) return "slate"
 
+  if (kind === "market_state") {
+    if (value === "strong_bull" || value === "structural_bull") return "green"
+    if (value === "range") return "amber"
+    if (value === "weak") return "red"
+  }
+
+  if (kind === "vix_status") {
+    if (value === "risk_on") return "green"
+    if (value === "neutral") return "amber"
+    if (value === "risk_off") return "red"
+  }
+
+  if (kind === "futures_bias") {
+    if (value === "long") return "green"
+    if (value === "neutral") return "amber"
+    if (value === "short") return "red"
+  }
+
   const green = new Set([
     "high",
     "strong",

@@ -41,6 +41,17 @@ _FULL_KEY_FACTORS = [
     {"category": "fundamental", "level": "A", "trend": "stable", "note": "n6"},
 ]
 
+# M3：is_snapshot_complete 加 sections_json + action_one_liner 檢查後，所有「完整」fixture 都要帶
+_FULL_SECTIONS = {
+    "action_one_liner": "目前籌碼穩定，可保留觀察",
+    "industry_section": ["產業 bullet 1"],
+    "chip_section": ["籌碼 bullet 1"],
+    "fundamental_section": ["基本面 bullet 1"],
+    "technical_section": ["技術 bullet 1"],
+    "peer_section": ["同業 bullet 1"],
+    "news_section": ["新聞 bullet 1"],
+}
+
 
 def _complete_payload(**overrides):
     payload = {
@@ -49,6 +60,7 @@ def _complete_payload(**overrides):
         "summary": "x",
         "report_markdown": "r",
         "key_factors": _FULL_KEY_FACTORS,
+        **_FULL_SECTIONS,
     }
     payload.update(overrides)
     return payload
@@ -262,6 +274,8 @@ def test_load_latest_ok_snapshot_skips_incomplete_ok_rows(api):
             "summary": "complete",
             "report_markdown": "complete row",
             "key_factors": _FULL_KEY_FACTORS,
+            # M3：is_snapshot_complete 也要求 sections_json + action_one_liner
+            **_FULL_SECTIONS,
         },
     )
 
@@ -282,13 +296,14 @@ def test_is_snapshot_complete_requires_status_ok_and_six_categories(api):
     user_id = _register_and_login(client)
     _seed_stock(db, "2330")
 
-    # Case 1: status='ok' + 6 個 category → 完整
+    # Case 1: status='ok' + 6 個 category + M3 sections + action_one_liner → 完整
     save_snapshot_ok(
         db, user_id=user_id, stock_id="2330",
         buy_date=date(2026, 4, 1), snapshot_trade_date=date(2026, 4, 28),
         response_payload={
             "rating": "BUY", "rating_label": "推薦", "summary": "x",
             "key_factors": _FULL_KEY_FACTORS,
+            **_FULL_SECTIONS,
         },
         source="manual",
     )
@@ -336,6 +351,38 @@ def test_is_snapshot_complete_requires_status_ok_and_six_categories(api):
 
     # Case 5: row=None → False
     assert is_snapshot_complete(None) is False
+
+    # Case 6 (M3)：6 個 category 齊但 sections_json=None（pre-M3 舊快照）→ 不完整，
+    # cron 會自動把它當「不完整」 → 一次性 backfill 出新版 6 panel。
+    save_snapshot_ok(
+        db, user_id=user_id, stock_id="2330",
+        buy_date=date(2026, 4, 1), snapshot_trade_date=date(2026, 5, 2),
+        response_payload={
+            "rating": "BUY", "rating_label": "推薦", "summary": "x",
+            "key_factors": _FULL_KEY_FACTORS,
+            # 不帶任何 sections / action_one_liner → sections_json 寫成 None
+        },
+        source="manual",
+    )
+    row_no_sections = load_snapshot(db, user_id=user_id, stock_id="2330",
+                                    buy_date=date(2026, 4, 1), snapshot_trade_date=date(2026, 5, 2))
+    assert is_snapshot_complete(row_no_sections) is False
+
+    # Case 7 (M3)：sections_json 存在但 action_one_liner 空白 → 不完整
+    save_snapshot_ok(
+        db, user_id=user_id, stock_id="2330",
+        buy_date=date(2026, 4, 1), snapshot_trade_date=date(2026, 5, 3),
+        response_payload={
+            "rating": "BUY", "rating_label": "推薦", "summary": "x",
+            "key_factors": _FULL_KEY_FACTORS,
+            "action_one_liner": "   ",  # 空白字串
+            "industry_section": ["x"],
+        },
+        source="manual",
+    )
+    row_blank_one_liner = load_snapshot(db, user_id=user_id, stock_id="2330",
+                                        buy_date=date(2026, 4, 1), snapshot_trade_date=date(2026, 5, 3))
+    assert is_snapshot_complete(row_blank_one_liner) is False
 
 
 def test_load_latest_ok_snapshot_skips_failed(api):
