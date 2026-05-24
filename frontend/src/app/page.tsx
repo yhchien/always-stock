@@ -4,6 +4,7 @@ import { Suspense, useEffect, useRef, useState, type ReactNode } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import dynamic from "next/dynamic"
 import IndustryDashboard from "@/components/IndustryDashboard"
+import MarketContextStrip from "@/components/MarketContextStrip"
 import {
   fetchIndustries,
   fetchLatestSignalJob,
@@ -319,6 +320,15 @@ function HomeContent() {
         <div className="mx-auto w-full max-w-5xl px-4 py-8 flex flex-col gap-6">
         {defaultDate && (
           <>
+            {initialSnapshot ? (
+              <MarketContextStrip
+                market={initialSnapshot.data.market_context}
+                riskNote={initialSnapshot.data.summary?.risk_note}
+                snapshotDate={initialSnapshot.snapshot_date}
+                generatedAt={initialSnapshot.generated_at}
+                mainHotIndustries={initialSnapshot.data.summary?.main_hot_industries}
+              />
+            ) : null}
             {showTradeQuality && !showBootOverlay && (
               <TradeQualityAnalysis initialLatestDate={latestTradeDate ?? defaultDate} />
             )}
