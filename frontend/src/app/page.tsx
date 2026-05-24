@@ -231,9 +231,8 @@ function HomeContent() {
   // 避免使用者跳過來但畫面看不到分析。
   const stockIdParam = searchParams.get("stock_id")
   const buyDateParam = searchParams.get("buy_date")
-  useEffect(() => {
-    if (stockIdParam && buyDateParam) setShowTradeQuality(true)
-  }, [stockIdParam, buyDateParam])
+  const forceShowTradeQuality = Boolean(stockIdParam && buyDateParam)
+  const effectiveShowTradeQuality = showTradeQuality || forceShowTradeQuality
 
   function markTask(task: BootTaskKey, state: BootTaskState) {
     setTasks((prev) => (prev[task] === state ? prev : { ...prev, [task]: state }))
@@ -313,7 +312,7 @@ function HomeContent() {
     <>
       {showBootOverlay && <HomeBootstrapOverlay tasks={tasks} />}
       <HomeSidebar
-        showTradeQuality={showTradeQuality}
+        showTradeQuality={effectiveShowTradeQuality}
         onToggleTradeQuality={() => setShowTradeQuality((v) => !v)}
       />
       <main className="ml-12">
@@ -327,9 +326,11 @@ function HomeContent() {
                 snapshotDate={initialSnapshot.snapshot_date}
                 generatedAt={initialSnapshot.generated_at}
                 mainHotIndustries={initialSnapshot.data.summary?.main_hot_industries}
+                collapsible
+                storageKey="always-stock:home:market-context:collapsed"
               />
             ) : null}
-            {showTradeQuality && !showBootOverlay && (
+            {effectiveShowTradeQuality && !showBootOverlay && (
               <TradeQualityAnalysis initialLatestDate={latestTradeDate ?? defaultDate} />
             )}
             <WatchlistTradeQualityTable />
@@ -348,6 +349,8 @@ function HomeContent() {
                 limit={20}
                 initialData={initialHotMoney}
                 initialDataDate={initialHotMoneyDate}
+                collapsible
+                storageKey="always-stock:home:hot-money:collapsed"
               />
             </DeferredSection>
             <DeferredSection minHeight={520}>
@@ -355,6 +358,8 @@ function HomeContent() {
                 defaultDate={defaultDate}
                 initialRows={initialIndustries ?? undefined}
                 initialRowsDate={initialIndustriesDate}
+                collapsible
+                storageKey="always-stock:home:industry-dashboard:collapsed"
                 onDateChange={(d) => router.replace(`/?date=${d}`, { scroll: false })}
                 onSelectIndustry={(name, selectedDate) =>
                   router.push(`/industries/${encodeURIComponent(name)}?date=${selectedDate}`)

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
+import CollapsibleSection from "@/components/CollapsibleSection"
 import {
   Table,
   TableBody,
@@ -29,6 +30,9 @@ interface HotMoneyListProps {
   title?: string
   initialData?: HotMoneyResponse | null
   initialDataDate?: string | null
+  collapsible?: boolean
+  defaultCollapsed?: boolean
+  storageKey?: string
 }
 
 function AmountCell({ value }: { value: number }) {
@@ -56,6 +60,9 @@ export default function HotMoneyList({
   title,
   initialData,
   initialDataDate,
+  collapsible = false,
+  defaultCollapsed = false,
+  storageKey,
 }: HotMoneyListProps) {
   const router = useRouter()
   const hasInitialData = initialDataDate === date && initialData != null
@@ -105,14 +112,16 @@ export default function HotMoneyList({
         : `${resolvedData.start_date} ~ ${resolvedData.end_date}`
       : null
 
-  return (
-    <section className="flex flex-col gap-3">
-      <div className="flex items-baseline gap-3">
-        <h2 className="text-base font-semibold text-slate-100">{heading}</h2>
-        {windowLabel && (
-          <span className="text-xs text-slate-500">窗口：{windowLabel}</span>
-        )}
-      </div>
+  const content = (
+    <div className="flex flex-col gap-3">
+      {!collapsible && (
+        <div className="flex items-baseline gap-3">
+          <h2 className="text-base font-semibold text-slate-100">{heading}</h2>
+          {windowLabel && (
+            <span className="text-xs text-slate-500">窗口：{windowLabel}</span>
+          )}
+        </div>
+      )}
 
       {loading && (
         <div className="flex flex-col gap-2">
@@ -128,7 +137,7 @@ export default function HotMoneyList({
       )}
 
       {!loading && !error && items.length > 0 && (
-        <div className="rounded-lg border border-slate-700 overflow-hidden">
+        <div className="overflow-hidden rounded-lg border border-slate-700">
           <Table>
             <TableHeader>
               <TableRow className="border-slate-700 hover:bg-transparent">
@@ -173,7 +182,6 @@ export default function HotMoneyList({
                   <TableCell className="text-right hidden md:table-cell"><AmountCell value={item.trust_net_amount} /></TableCell>
                   <TableCell className="text-right hidden lg:table-cell"><AmountCell value={item.dealer_net_amount} /></TableCell>
                   <TableCell className="text-right"><AmountCell value={item.total_net_amount} /></TableCell>
-                  {/* 整格 stopPropagation：避免點到 cell 邊緣 / padding 觸發 row 導航到個股頁 */}
                   <TableCell
                     className="text-right"
                     onClick={(e) => e.stopPropagation()}
@@ -186,6 +194,19 @@ export default function HotMoneyList({
           </Table>
         </div>
       )}
-    </section>
+    </div>
+  )
+
+  if (!collapsible) return <section>{content}</section>
+
+  return (
+    <CollapsibleSection
+      title={heading}
+      subtitle={windowLabel ? <>窗口：{windowLabel}</> : undefined}
+      defaultCollapsed={defaultCollapsed}
+      storageKey={storageKey}
+    >
+      {content}
+    </CollapsibleSection>
   )
 }

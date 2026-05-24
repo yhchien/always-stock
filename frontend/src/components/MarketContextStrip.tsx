@@ -2,6 +2,7 @@
 
 import { type ReactNode } from "react"
 
+import CollapsibleSection from "@/components/CollapsibleSection"
 import type { SignalMarketContext } from "@/lib/api"
 import {
   signalValueLabel,
@@ -46,6 +47,9 @@ export interface MarketContextStripProps {
   snapshotDate?: string | null
   generatedAt?: string | null
   mainHotIndustries?: string[] | null
+  collapsible?: boolean
+  defaultCollapsed?: boolean
+  storageKey?: string
 }
 
 /**
@@ -62,97 +66,123 @@ export default function MarketContextStrip({
   snapshotDate,
   generatedAt,
   mainHotIndustries,
+  collapsible = false,
+  defaultCollapsed = false,
+  storageKey,
 }: MarketContextStripProps) {
   const marketStateLabel = signalValueLabel(market.market_state)
   const marketStateTone = signalValueTone("market_state", market.market_state)
-
-  return (
-    <section className="overflow-hidden rounded-2xl border border-zinc-700 bg-gradient-to-r from-zinc-900 via-zinc-800 to-zinc-900 shadow-md">
-      <div className="flex flex-col gap-4 p-4 sm:p-5 lg:flex-row lg:items-start lg:justify-between">
-        {/* 左半：市場狀態描述 */}
-        <div className="min-w-0 flex-1 space-y-2">
+  const content = (
+    <div className="flex flex-col gap-4 p-4 sm:p-5 lg:flex-row lg:items-start lg:justify-between">
+      <div className="min-w-0 flex-1 space-y-2">
+        {!collapsible ? (
           <div className="flex items-center gap-2">
             <span className="text-[11px] font-medium uppercase tracking-[0.28em] text-cyan-300/90">
               Market Today
             </span>
             <h2 className="text-lg font-black text-slate-100">今日市場狀態</h2>
           </div>
+        ) : null}
 
-          <div className="flex flex-wrap items-center gap-2">
-            <span
-              className={`inline-flex items-center rounded-full border px-3 py-1 text-sm font-black ${toneChipClass(marketStateTone)}`}
-            >
-              {marketStateLabel}
+        <div className="flex flex-wrap items-center gap-2">
+          <span
+            className={`inline-flex items-center rounded-full border px-3 py-1 text-sm font-black ${toneChipClass(marketStateTone)}`}
+          >
+            {marketStateLabel}
+          </span>
+          {market.vix_status ? (
+            <span className="text-xs text-slate-400">
+              VIX <span className="font-bold text-slate-200">{signalValueLabel(market.vix_status)}</span>
             </span>
-            {market.vix_status ? (
-              <span className="text-xs text-slate-400">
-                VIX <span className="font-bold text-slate-200">{signalValueLabel(market.vix_status)}</span>
-              </span>
-            ) : null}
-            {market.futures_bias ? (
-              <span className="text-xs text-slate-400">
-                期貨 <span className="font-bold text-slate-200">{signalValueLabel(market.futures_bias)}</span>
-              </span>
-            ) : null}
-          </div>
+          ) : null}
+          {market.futures_bias ? (
+            <span className="text-xs text-slate-400">
+              期貨 <span className="font-bold text-slate-200">{signalValueLabel(market.futures_bias)}</span>
+            </span>
+          ) : null}
+        </div>
 
-          {market.market_state_reason ? (
-            <p className="text-sm leading-relaxed text-slate-300">
-              {market.market_state_reason}
+        {market.market_state_reason ? (
+          <p className="text-sm leading-relaxed text-slate-300">
+            {market.market_state_reason}
+          </p>
+        ) : null}
+
+        {riskNote ? (
+          <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
+            <span className="mt-0.5 shrink-0 rounded bg-amber-500/30 px-1.5 py-0.5 text-[10px] font-black text-amber-100">
+              ⚠ 風險提示
+            </span>
+            <p className="text-sm leading-relaxed text-amber-100/95">
+              {riskNote}
             </p>
-          ) : null}
+          </div>
+        ) : null}
 
-          {riskNote ? (
-            <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
-              <span className="mt-0.5 shrink-0 rounded bg-amber-500/30 px-1.5 py-0.5 text-[10px] font-black text-amber-100">
-                ⚠ 風險提示
+        {mainHotIndustries && mainHotIndustries.length > 0 ? (
+          <div className="flex flex-wrap items-center gap-1.5 pt-1">
+            <span className="text-xs text-slate-500">主要熱門產業：</span>
+            {mainHotIndustries.map((name) => (
+              <span
+                key={name}
+                className="rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2 py-0.5 text-xs font-medium text-cyan-200"
+              >
+                {name}
               </span>
-              <p className="text-sm leading-relaxed text-amber-100/95">
-                {riskNote}
-              </p>
-            </div>
-          ) : null}
-
-          {mainHotIndustries && mainHotIndustries.length > 0 ? (
-            <div className="flex flex-wrap items-center gap-1.5 pt-1">
-              <span className="text-xs text-slate-500">主要熱門產業：</span>
-              {mainHotIndustries.map((name) => (
-                <span
-                  key={name}
-                  className="rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2 py-0.5 text-xs font-medium text-cyan-200"
-                >
-                  {name}
-                </span>
-              ))}
-            </div>
-          ) : null}
-        </div>
-
-        {/* 右半：5 metric grid */}
-        <div className="grid w-full grid-cols-2 gap-x-4 gap-y-3 border-t border-zinc-700/60 pt-4 sm:grid-cols-3 lg:w-auto lg:max-w-md lg:border-l lg:border-t-0 lg:pl-5 lg:pt-0">
-          <Metric label="更新日期" value={snapshotDate ?? "—"} />
-          <Metric
-            label="TAIEX 加權"
-            value={<ChangePct value={market.taiex_change_pct} />}
-          />
-          <Metric
-            label="OTC 櫃買"
-            value={<ChangePct value={market.otc_change_pct} />}
-          />
-          <Metric
-            label="VIX 恐慌"
-            value={signalValueLabel(market.vix_status)}
-          />
-          <Metric
-            label="台指期"
-            value={signalValueLabel(market.futures_bias)}
-          />
-          {generatedAt ? (
-            <Metric label="產生時間" value={formatGeneratedAt(generatedAt)} />
-          ) : null}
-        </div>
+            ))}
+          </div>
+        ) : null}
       </div>
-    </section>
+
+      <div className="grid w-full grid-cols-2 gap-x-4 gap-y-3 border-t border-zinc-700/60 pt-4 sm:grid-cols-3 lg:w-auto lg:max-w-md lg:border-l lg:border-t-0 lg:pl-5 lg:pt-0">
+        <Metric label="更新日期" value={snapshotDate ?? "—"} />
+        <Metric
+          label="TAIEX 加權"
+          value={<ChangePct value={market.taiex_change_pct} />}
+        />
+        <Metric
+          label="OTC 櫃買"
+          value={<ChangePct value={market.otc_change_pct} />}
+        />
+        <Metric
+          label="VIX 恐慌"
+          value={signalValueLabel(market.vix_status)}
+        />
+        <Metric
+          label="台指期"
+          value={signalValueLabel(market.futures_bias)}
+        />
+        {generatedAt ? (
+          <Metric label="產生時間" value={formatGeneratedAt(generatedAt)} />
+        ) : null}
+      </div>
+    </div>
+  )
+
+  if (!collapsible) {
+    return (
+      <section className="overflow-hidden rounded-2xl border border-zinc-700 bg-gradient-to-r from-zinc-900 via-zinc-800 to-zinc-900 shadow-md">
+        {content}
+      </section>
+    )
+  }
+
+  return (
+    <CollapsibleSection
+      title="今日市場狀態"
+      subtitle={
+        <>
+          {snapshotDate ?? "—"} · {marketStateLabel}
+        </>
+      }
+      defaultCollapsed={defaultCollapsed}
+      storageKey={storageKey}
+      className="overflow-hidden rounded-2xl border border-zinc-700 bg-gradient-to-r from-zinc-900 via-zinc-800 to-zinc-900 shadow-md"
+      headerClassName="flex flex-wrap items-center justify-between gap-3 px-4 py-4 sm:px-5"
+      contentClassName="border-t border-zinc-700/60"
+    >
+      {content}
+    </CollapsibleSection>
   )
 }
 

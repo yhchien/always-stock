@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useState, useCallback, useMemo } from "react"
+import CollapsibleSection from "@/components/CollapsibleSection"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   Table,
@@ -63,6 +64,9 @@ interface Props {
   onSelectIndustry?: (name: string, date: string) => void
   initialRows?: IndustryFlowItem[]
   initialRowsDate?: string | null
+  collapsible?: boolean
+  defaultCollapsed?: boolean
+  storageKey?: string
 }
 
 export default function IndustryDashboard({
@@ -71,6 +75,9 @@ export default function IndustryDashboard({
   onSelectIndustry,
   initialRows,
   initialRowsDate,
+  collapsible = false,
+  defaultCollapsed = false,
+  storageKey,
 }: Props) {
   const hasInitialRows = initialRowsDate === defaultDate && initialRows != null
   const [date, setDate] = useState(defaultDate)
@@ -154,20 +161,20 @@ export default function IndustryDashboard({
   const sortIndicator = (key: SortKey) =>
     sortKey === key ? (sortAsc ? " \u25B2" : " \u25BC") : ""
 
-  return (
+  const content = (
     <div className="flex flex-col gap-4">
-      {/* Header row: title + date picker */}
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold tracking-tight">產業法人流向</h1>
-        <input
-          type="date"
-          value={date}
-          onChange={(e) => { setDate(e.target.value); onDateChange?.(e.target.value) }}
-          className="rounded-md border border-slate-700/50 bg-slate-800/50 px-3 py-1.5 text-sm text-slate-100 focus:outline-none focus:ring-1 focus:ring-slate-300"
-        />
-      </div>
+      {!collapsible && (
+        <div className="flex items-center justify-between">
+          <h1 className="text-xl font-semibold tracking-tight">產業法人流向</h1>
+          <input
+            type="date"
+            value={date}
+            onChange={(e) => { setDate(e.target.value); onDateChange?.(e.target.value) }}
+            className="rounded-md border border-slate-700/50 bg-slate-800/50 px-3 py-1.5 text-sm text-slate-100 focus:outline-none focus:ring-1 focus:ring-slate-300"
+          />
+        </div>
+      )}
 
-      {/* Search + Tabs（同一列）*/}
       <div className="flex items-center gap-3 flex-wrap">
         <div className="relative">
           <input
@@ -175,12 +182,12 @@ export default function IndustryDashboard({
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="搜尋產業..."
-            className="rounded-md border border-slate-600 bg-slate-800 px-3 py-1.5 pr-8 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-400 w-36"
+            className="w-36 rounded-md border border-slate-600 bg-slate-800 px-3 py-1.5 pr-8 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-400"
           />
           {search && (
             <button
               onClick={() => setSearch("")}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 text-base leading-none"
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-base leading-none text-slate-500 hover:text-slate-300"
               aria-label="清除搜尋"
             >
               ×
@@ -196,7 +203,7 @@ export default function IndustryDashboard({
               <TabsTrigger
                 key={t}
                 value={t}
-                className="data-[state=active]:bg-slate-700 data-[state=active]:text-white text-slate-300"
+                className="text-slate-300 data-[state=active]:bg-slate-700 data-[state=active]:text-white"
               >
                 {TAB_LABELS[t]}
               </TabsTrigger>
@@ -205,7 +212,6 @@ export default function IndustryDashboard({
         </Tabs>
       </div>
 
-      {/* Status */}
       {loading && (
         <div className="flex flex-col gap-2">
           {Array.from({ length: 8 }).map((_, i) => (
@@ -215,9 +221,8 @@ export default function IndustryDashboard({
       )}
       {error && <p className="text-sm text-red-400">{error}</p>}
 
-      {/* Table */}
       {!loading && !error && sorted.length > 0 && (
-        <div className="rounded-lg border border-slate-600 overflow-hidden">
+        <div className="overflow-hidden rounded-lg border border-slate-600">
           <Table>
             <TableHeader>
               <TableRow className="border-slate-600 hover:bg-transparent">
@@ -280,5 +285,26 @@ export default function IndustryDashboard({
         <p className="text-sm text-slate-500">此日期無資料，請選擇交易日。</p>
       )}
     </div>
+  )
+
+  if (!collapsible) return content
+
+  return (
+    <CollapsibleSection
+      title="產業法人流向"
+      subtitle={date}
+      defaultCollapsed={defaultCollapsed}
+      storageKey={storageKey}
+      actions={(
+        <input
+          type="date"
+          value={date}
+          onChange={(e) => { setDate(e.target.value); onDateChange?.(e.target.value) }}
+          className="rounded-md border border-slate-700/50 bg-slate-800/50 px-3 py-1.5 text-sm text-slate-100 focus:outline-none focus:ring-1 focus:ring-slate-300"
+        />
+      )}
+    >
+      {content}
+    </CollapsibleSection>
   )
 }
