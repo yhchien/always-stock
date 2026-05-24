@@ -66,15 +66,20 @@ const TONE_CLASSES: Record<
 export interface SignalEmotionCardProps {
   /** 情緒色階：M23 三類 (leader/follower/laggard) 或 M17 五階評級 */
   tone: EmotionTone
-  /** 股票代號；用於預設導向 `/stocks/{stockId}` */
+  /** 股票代號;用於預設導向 `/stocks/{stockId}` */
   stockId: string
   /** 股票名稱顯示在 header */
   stockName?: string | null
-  /** 自訂導向；預設 `/stocks/{stockId}` */
+  /** 自訂導向;預設 `/stocks/{stockId}`。`onCardClick` 提供時忽略此欄位。 */
   href?: string
+  /**
+   * 點擊整張卡片觸發的 handler;提供時整張卡會 render 成 `<button>` 而非 `<Link>`,
+   * 適用於「點卡片開 modal 而非跳頁」的場景（例如 M23 魚尾改 popup 模式）。
+   */
+  onCardClick?: () => void
   /** 卡片右上角徽章（例 DecisionBadge / RatingPill），會自動 stopPropagation */
   headerRight?: ReactNode
-  /** Header 下方副標題（例：產業、子產業） */
+  /** Header 下方副標題（例:產業、子產業） */
   subtitle?: ReactNode
   /** 主內容 */
   children?: ReactNode
@@ -85,27 +90,26 @@ export interface SignalEmotionCardProps {
  * 仿 jianxuanchiustock 「本日適合進場」screen-card：
  *   <button class="bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-xl p-3 transition">
  *
- * 深色主題下用 `bg-{tone}-900/40` 階梯，hover 浮起 0.5。
- * 整張卡片是 <Link>，nested 互動元素需自己 `e.stopPropagation()`。
+ * 深色主題下用 `bg-{tone}-900/40` 階梯,hover 浮起 0.5。
+ * 預設整張卡片是 `<Link>` 跳 L2;caller 傳 `onCardClick` 時改 render `<button>`。
+ * nested 互動元素需自己 `e.stopPropagation()`。
  */
 export default function SignalEmotionCard({
   tone,
   stockId,
   stockName,
   href,
+  onCardClick,
   headerRight,
   subtitle,
   children,
   className,
 }: SignalEmotionCardProps) {
   const styles = TONE_CLASSES[tone]
-  const finalHref = href ?? `/stocks/${encodeURIComponent(stockId)}`
+  const sharedClassName = `group block rounded-xl border p-3 text-left transition-all hover:-translate-y-0.5 hover:shadow-lg hover:shadow-black/30 ${styles.base} ${className ?? ""}`
 
-  return (
-    <Link
-      href={finalHref}
-      className={`group block rounded-xl border p-3 transition-all hover:-translate-y-0.5 hover:shadow-lg hover:shadow-black/30 ${styles.base} ${className ?? ""}`}
-    >
+  const cardBody = (
+    <>
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
           <div className="flex items-baseline gap-1.5">
@@ -133,11 +137,30 @@ export default function SignalEmotionCard({
         ) : null}
       </div>
       {children ? <div className="mt-2">{children}</div> : null}
+    </>
+  )
+
+  if (onCardClick) {
+    return (
+      <button
+        type="button"
+        onClick={onCardClick}
+        className={`${sharedClassName} w-full cursor-pointer`}
+      >
+        {cardBody}
+      </button>
+    )
+  }
+
+  const finalHref = href ?? `/stocks/${encodeURIComponent(stockId)}`
+  return (
+    <Link href={finalHref} className={sharedClassName}>
+      {cardBody}
     </Link>
   )
 }
 
-/** 取得情緒色階的「中文標籤」；caller 想自訂顯示時可用 */
+/** 取得情緒色階的「中文標籤」;caller 想自訂顯示時可用 */
 export function emotionLabel(tone: EmotionTone): string {
   return TONE_CLASSES[tone].label
 }

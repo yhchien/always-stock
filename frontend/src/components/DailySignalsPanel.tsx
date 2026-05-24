@@ -157,6 +157,8 @@ function SignalCard({
         stockId={item.stock}
         stockName={item.name ?? null}
         subtitle={subtitle}
+        // 改為點整張卡開 modal（仿對方 screen-card → result 流程）
+        onCardClick={() => setDetailOpen(true)}
         headerRight={<WatchlistAddButton stockId={item.stock} variant="compact" />}
       >
         <div className="space-y-2">
@@ -180,19 +182,8 @@ function SignalCard({
               value={item.signals?.margin_short_signal}
             />
             <ChipWithLabel label="技術" kind="technical_status" value={item.signals?.technical_status} />
-            {hasReasonSections ? (
-              <button
-                type="button"
-                onClick={(e) => {
-                  // SignalEmotionCard 整張卡是 Link，需 preventDefault 否則點按鈕也會跳 L2
-                  e.preventDefault()
-                  e.stopPropagation()
-                  setDetailOpen(true)
-                }}
-                className="ml-auto inline-flex items-center gap-1 rounded border border-slate-500/50 bg-slate-700/40 px-1.5 py-0.5 text-[11px] font-medium text-slate-200 hover:bg-slate-700/60"
-              >
-                看細節 <span aria-hidden>↗</span>
-              </button>
+            {!hasReasonSections ? (
+              <span className="ml-auto text-[11px] text-slate-500">細節資料待更新</span>
             ) : null}
           </div>
         </div>
@@ -288,16 +279,22 @@ function SignalDetailDialog({
             })}
           </div>
 
-          {/* Footer: 跳 L2 入口 */}
-          <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-zinc-700 pt-4">
-            <p className="text-xs text-slate-500">
-              想看 K 線、財報、回測等完整研究頁面 →
-            </p>
+          {/* Footer：兩個對等大按鈕（回上一頁 + 前往個股研究頁） */}
+          <div className="mt-6 grid grid-cols-1 gap-3 border-t border-zinc-700 pt-5 sm:grid-cols-2">
+            <button
+              type="button"
+              onClick={() => onOpenChange(false)}
+              className="inline-flex items-center justify-center rounded-lg border border-slate-600 bg-slate-800/60 px-5 py-3 text-base font-semibold text-slate-200 transition hover:bg-slate-700"
+            >
+              <span aria-hidden className="mr-1.5">←</span>
+              回上一頁
+            </button>
             <Link
               href={stockHref}
-              className="inline-flex items-center rounded-lg border border-sky-500/50 bg-sky-500/10 px-3 py-1.5 text-sm font-medium text-sky-200 hover:bg-sky-500/20"
+              className="inline-flex items-center justify-center rounded-lg border border-sky-500/60 bg-sky-500/20 px-5 py-3 text-base font-semibold text-sky-100 shadow-sm transition hover:bg-sky-500/30"
             >
-              前往個股研究頁 →
+              前往個股研究頁
+              <span aria-hidden className="ml-1.5">→</span>
             </Link>
           </div>
         </Dialog.Popup>
