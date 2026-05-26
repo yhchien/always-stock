@@ -1,0 +1,88 @@
+name: Signal Expectation Prices
+
+on:
+  # 接在 daily_signals.yml 完成後（不論 success / failure 都啟動，內部會自行判斷有無新訊號）
+  workflow_run:
+    workflows: ["Daily Signals Generation"]
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      target_date:
+        description: '目標分析日期 (YYYY-MM-DD)，預設依台北 19:00 分界自動解析'
+        required: false
+
+jobs:
+  run_expectation_prices:
+    runs-on: ubuntu-latest
+    # 通常一天新進股 5~20 檔 × ~15s/檔 ≈ 5 min；保留 60 min buffer 給異常天（黑天鵝大波段）
+    timeout-minutes: 60
+
+    env:
+      TZ: Asia/Taipei
+
+    # 僅在 daily_signals 成功時跑（workflow_run 觸發時 conclusion 才會有值）。
+    # workflow_dispatch 沒有 workflow_run，event 名稱判斷成立後 conclusion 為空 → 也允許跑。
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --quiet -r backend/requirements.txt
+
+      - name: Resolve target date
+        id: resolve
+        env:
+          INPUT_DATE: ${{ github.event.inputs.target_date }}
+        run: |
+          if [ -n "$INPUT_DATE" ]; then
+            TARGET_DATE="$INPUT_DATE"
+          else
+            HOUR=$(date +%H)
+            if [ "$HOUR" -ge 19 ]; then
+              TARGET_DATE=$(date +%F)
+            else
+              TARGET_DATE=$(date -d '1 day ago' +%F)
+            fi
+          fi
+          echo "target_date=$TARGET_DATE" >> "$GITHUB_OUTPUT"
+          echo "Target date (Taipei): $TARGET_DATE"
+
+      - name: Run expectation price cron
+        id: cron
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ secrets.OPENAI_SIGNALS_MODEL || 'gpt-5.4-mini' }}
+          OPENAI_EXPECTATION_PRICE_MODEL: ${{ secrets.OPENAI_EXPECTATION_PRICE_MODEL || 'gpt-5.4-mini' }}
+        run: |
+          set +e
+          python3 run_signal_expectation_prices.py ${{ steps.resolve.outputs.target_date }}
+          EXIT=$?
+          echo "cron_exit=$EXIT" >> "$GITHUB_OUTPUT"
+          echo "Expectation price cron exit code: $EXIT"
+          exit 0
+
+      - name: Evaluate final status
+        if: always()
+        run: |
+          FINAL="${{ steps.cron.outputs.cron_exit }}"
+          echo "Target date: ${{ steps.resolve.outputs.target_date }}"
+          echo "Exit code: $FINAL"
+          # 0 = ok / 1 = no_data（合理）/ 2 = partial（部分新股失敗，仍 pass）/ 3 = error（fail）
+          case "$FINAL" in
+            0) echo "Status: ok"; exit 0 ;;
+            1) echo "Status: no_data (no new signals today)"; exit 0 ;;
+            2) echo "Status: partial (some stocks failed)"; exit 0 ;;
+            3) echo "Status: error (FAIL)"; exit 1 ;;
+            *) echo "Status: unknown (exit=$FINAL)"; exit 1 ;;
+          esac

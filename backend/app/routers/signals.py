@@ -30,8 +30,15 @@ from sqlalchemy.orm import Session
 from app.auth import require_user
 from app.database import SessionLocal, get_db
 from app.industry_flow_service import get_latest_industry_trade_date
-from app.models import SignalGenerationJob, SignalSnapshot, User
+from app.models import (
+    SignalExpectationPrice,
+    SignalGenerationJob,
+    SignalSnapshot,
+    SignalWatchHit,
+    User,
+)
 from app.signals import archive as signal_archive
+from app.signals import expectation_price as expectation_price_service
 from app.signals.pipeline import run_signal_pipeline_sync
 
 logger = logging.getLogger(__name__)
@@ -47,6 +54,10 @@ SIGNALS_SAME_DAY_READY_TIME = time(hour=19, minute=0)
 USER_DAILY_REGENERATE_LIMIT = 3
 GLOBAL_DAILY_REGENERATE_LIMIT = 15
 _COUNTED_JOB_STATUSES = ("pending", "running", "done")
+
+# Expectation price 手動重產（個股級別）：使用者一天 30 次、全站 100 次
+USER_DAILY_EXPECTATION_LIMIT = 30
+GLOBAL_DAILY_EXPECTATION_LIMIT = 100
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +160,60 @@ class SignalArchiveCompletedResponse(BaseModel):
     items: List[SignalArchiveCompletedItemResponse]
     periods: List[SignalArchiveCompletedPeriodMeta] = []
     selected_period_start: Optional[date] = None
+
+
+class ExpectationPriceItemResponse(BaseModel):
+    """個股「資金行情可期待價格區間」單筆 row。"""
+    stock_id: str
+    stock_name: str
+    first_detected_date: date
+    latest_detected_date: Optional[date]
+    detected_type: Optional[str]
+    industry_name: Optional[str]
+    sub_industry: Optional[str]
+    conservative_price: Optional[float]
+    dream_price: Optional[float]
+    valuation_mode: Optional[str]
+    valuation_basis: Optional[str]
+    current_price_position: Optional[str]
+    chase_risk: Optional[str]
+    confidence: Optional[str]
+    detected_day_high: Optional[float]
+    detected_day_close: Optional[float]
+    current_price: Optional[float]
+    hit_conservative_at: Optional[date]
+    hit_dream_at: Optional[date]
+    scorecard: Optional[Dict[str, Any]]
+    classification: Optional[Dict[str, Any]]
+    valuation_detail: Optional[Dict[str, Any]]
+    reason_50_words: Optional[str]
+    risk_note_30_words: Optional[str]
+    source: str
+    status: str
+    error_message: Optional[str]
+    generated_at: datetime
+    updated_at: datetime
+
+
+class ExpectationPriceListResponse(BaseModel):
+    snapshot_date: Optional[date]  # 對應 query 的 snapshot_date（為 None 代表回全部）
+    items: List[ExpectationPriceItemResponse]
+
+
+class ExpectationRegenerateRequest(BaseModel):
+    stock_id: str
+
+
+class ExpectationRegenerateAcceptedResponse(BaseModel):
+    stock_id: str
+    status: str
+
+
+class ExpectationQuotaResponse(BaseModel):
+    daily_limit: int
+    used_count: int
+    remaining_count: int
+    disabled: bool
 
 
 class SignalArchiveReportResponse(BaseModel):
@@ -472,3 +537,211 @@ def regenerate_signals(
         job_id,
     )
     return RegenerateAcceptedResponse(job_id=job_id, snapshot_date=target_date)
+
+
+# ---------------------------------------------------------------------------
+# Expectation Price endpoints（價格區間預測）
+# ---------------------------------------------------------------------------
+
+
+def _serialize_expectation_row(row: SignalExpectationPrice) -> ExpectationPriceItemResponse:
+    return ExpectationPriceItemResponse(
+        stock_id=row.stock_id,
+        stock_name=row.stock_name,
+        first_detected_date=row.first_detected_date,
+        latest_detected_date=row.latest_detected_date,
+        detected_type=row.detected_type,
+        industry_name=row.industry_name,
+        sub_industry=row.sub_industry,
+        conservative_price=row.conservative_price,
+        dream_price=row.dream_price,
+        valuation_mode=row.valuation_mode,
+        valuation_basis=row.valuation_basis,
+        current_price_position=row.current_price_position,
+        chase_risk=row.chase_risk,
+        confidence=row.confidence,
+        detected_day_high=row.detected_day_high,
+        detected_day_close=row.detected_day_close,
+        current_price=row.current_price,
+        hit_conservative_at=row.hit_conservative_at,
+        hit_dream_at=row.hit_dream_at,
+        scorecard=row.scorecard,
+        classification=row.classification,
+        valuation_detail=row.valuation_detail,
+        reason_50_words=row.reason_50_words,
+        risk_note_30_words=row.risk_note_30_words,
+        source=row.source,
+        status=row.status,
+        error_message=row.error_message,
+        generated_at=row.generated_at,
+        updated_at=row.updated_at,
+    )
+
+
+def _user_expectation_count_today(db: Session, user_id: int) -> int:
+    """以 updated_at 當日為基準計次（含 ok / failed），避免使用者瘋狂 retry。"""
+    today_utc_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    # 我們沒有 triggered_by 欄位區別 user，純粹用 updated_at 全站累積（個人 vs 全站合一處理）
+    # 為了區分 user，使用「manual」source 當代理（不算 cron）+ 同日 updated_at >= 今天 UTC 開始
+    return (
+        db.query(SignalExpectationPrice)
+        .filter(
+            SignalExpectationPrice.source == "manual",
+            SignalExpectationPrice.updated_at >= today_utc_start,
+        )
+        .count()
+    )
+
+
+def _global_expectation_count_today(db: Session) -> int:
+    today_utc_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    return (
+        db.query(SignalExpectationPrice)
+        .filter(SignalExpectationPrice.updated_at >= today_utc_start)
+        .count()
+    )
+
+
+@router.get("/expectation-prices", response_model=ExpectationPriceListResponse)
+def list_expectation_prices(
+    snapshot_date: Optional[date] = Query(default=None),
+    db: Session = Depends(get_db),
+) -> ExpectationPriceListResponse:
+    """公開：列出指定 snapshot_date 對應的 expectation price 預測。
+
+    若帶 `snapshot_date` → 回該日 SignalWatchHit watchlist 對應的所有 expectation row
+    （以 stock_id 對應，不論該 row 的 first_detected_date 是不是 snapshot_date）。
+
+    若不帶 → 回近 30 天 watchlist 涵蓋的所有 row（給 prod debug 用，正常前端應該帶日期）。
+    """
+    query = db.query(SignalExpectationPrice).filter(
+        SignalExpectationPrice.status == "ok",
+    )
+
+    if snapshot_date is not None:
+        # 找該日 watchlist 的 stock_id 集合
+        stock_ids_q = (
+            db.query(SignalWatchHit.stock_id)
+            .filter(SignalWatchHit.snapshot_date == snapshot_date)
+            .distinct()
+        )
+        stock_ids = [row[0] for row in stock_ids_q.all()]
+        if not stock_ids:
+            return ExpectationPriceListResponse(
+                snapshot_date=snapshot_date,
+                items=[],
+            )
+        query = query.filter(SignalExpectationPrice.stock_id.in_(stock_ids))
+
+    rows = query.order_by(SignalExpectationPrice.updated_at.desc()).limit(200).all()
+    return ExpectationPriceListResponse(
+        snapshot_date=snapshot_date,
+        items=[_serialize_expectation_row(r) for r in rows],
+    )
+
+
+@router.get("/expectation-prices/quota", response_model=ExpectationQuotaResponse)
+def get_expectation_quota(
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> ExpectationQuotaResponse:
+    used = _user_expectation_count_today(db, user.id)
+    remaining = max(USER_DAILY_EXPECTATION_LIMIT - used, 0)
+    return ExpectationQuotaResponse(
+        daily_limit=USER_DAILY_EXPECTATION_LIMIT,
+        used_count=used,
+        remaining_count=remaining,
+        disabled=remaining <= 0,
+    )
+
+
+@router.get("/expectation-prices/{stock_id}", response_model=ExpectationPriceItemResponse)
+def get_expectation_price(
+    stock_id: str,
+    db: Session = Depends(get_db),
+) -> ExpectationPriceItemResponse:
+    """公開：取某檔股票最新一筆 expectation price（依 updated_at desc）。"""
+    row = (
+        db.query(SignalExpectationPrice)
+        .filter(SignalExpectationPrice.stock_id == stock_id)
+        .order_by(SignalExpectationPrice.updated_at.desc())
+        .first()
+    )
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No expectation price for {stock_id}",
+        )
+    return _serialize_expectation_row(row)
+
+
+def _run_expectation_safely(stock_id: str) -> None:
+    """BackgroundTask 包裝：用獨立 session 跑單檔 expectation price。"""
+    db = SessionLocal()
+    try:
+        expectation_price_service.generate_for_stock(
+            db,
+            stock_id,
+            source="manual",
+        )
+    except Exception:
+        logger.exception("expectation price regenerate failed stock=%s", stock_id)
+    finally:
+        db.close()
+
+
+@router.post(
+    "/expectation-prices/regenerate",
+    response_model=ExpectationRegenerateAcceptedResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def regenerate_expectation_price(
+    payload: ExpectationRegenerateRequest,
+    background_tasks: BackgroundTasks,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> ExpectationRegenerateAcceptedResponse:
+    """需登入：背景重產指定股票的 expectation price。
+
+    限額：每帳號每日 30 次、全站每日 100 次（依 SignalExpectationPrice.updated_at 計）。
+
+    Pre-flight 檢查：股票必須存在 signal_watch_hits（否則沒有 first_detected_date 可用）。
+    """
+    stock_id = payload.stock_id.strip()
+    if not stock_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="stock_id 不可為空",
+        )
+
+    # Pre-flight：必須有 signal_watch_hits 紀錄
+    has_hit = (
+        db.query(SignalWatchHit)
+        .filter(SignalWatchHit.stock_id == stock_id)
+        .first()
+        is not None
+    )
+    if not has_hit:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"{stock_id} 尚未被魚尾系統抓到，無法預測",
+        )
+
+    if _user_expectation_count_today(db, user.id) >= USER_DAILY_EXPECTATION_LIMIT:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"您今日預測次數已達上限（{USER_DAILY_EXPECTATION_LIMIT} 次），明日再試",
+        )
+    if _global_expectation_count_today(db) >= GLOBAL_DAILY_EXPECTATION_LIMIT:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="全站今日預測次數已達上限，請稍後",
+        )
+
+    background_tasks.add_task(_run_expectation_safely, stock_id)
+    logger.info(
+        "Expectation price regenerate triggered: user=%s stock=%s",
+        user.id,
+        stock_id,
+    )
+    return ExpectationRegenerateAcceptedResponse(stock_id=stock_id, status="accepted")

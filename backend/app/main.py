@@ -167,6 +167,7 @@ def _ensure_m23_tables() -> None:
     from app.database import Base, engine
     from app.models import (  # noqa: F401 — 觸發 metadata 註冊
         MarginTrade,
+        SignalExpectationPrice,
         SignalGenerationJob,
         SignalSnapshot,
         SignalWatchCompletedArchive,
@@ -178,6 +179,7 @@ def _ensure_m23_tables() -> None:
             bind=engine,
             tables=[
                 MarginTrade.__table__,
+                SignalExpectationPrice.__table__,
                 SignalGenerationJob.__table__,
                 SignalSnapshot.__table__,
                 SignalWatchCompletedArchive.__table__,

@@ -2100,6 +2100,76 @@ function update(next) {
 - **空資料 climate=unknown**：所有 metric None 時不該回 neutral（會誤導 LLM 寫「區間震盪」），明確標 unknown 讓 prompt 走 fallback 文案
 - **`stock_count` 在 today 物件內**：給 LLM 判斷「資料完整度」用；若 stock_count < 1000 代表 ETL 還沒完整同步，建議在 prompt 內寫保守判讀
 
+## M26 個股 expectation price 預測（2026-05-26）
+
+### 範圍
+- 對「已被魚尾系統抓到」的個股，輸出未來 1 個月內的「資金行情可期待價格區間」：保守價 + 夢想價 + 估值模式 + 追高風險 + 信心度
+- **不**取代魚尾 WATCH/REMOVE，也**不**輸出 BUY/SELL；純粹給使用者「資金行情可期待的價位」參考
+- prompt 對齊使用者沉澱的 buy-side 分析師方法論（5 種 valuation_mode：PE_VALUATION / THEME_RE_RATING / MOMENTUM_MARKUP / EXTREME_MOMENTUM_MARKUP / FAILED_FOLLOW_THROUGH）
+
+### 資料模型
+- 新 DB 表 `signal_expectation_prices`：
+  - UNIQUE `(stock_id, first_detected_date)` — 一檔股票一個追蹤 cycle 一筆，重產覆寫；同檔股票若被砍掉後再次進入新 cycle，會以新的 first_detected_date 新增一列
+  - 欄位：conservative_price / dream_price / valuation_mode / valuation_basis / current_price_position / chase_risk / confidence + scorecard JSON / classification JSON / valuation_detail JSON + reason_50_words / risk_note_30_words + raw_payload（LLM 原始 JSON）
+  - 達標旗標：`hit_conservative_at` / `hit_dream_at`（首次觸及才寫，後續不覆寫）
+  - 元資料：detected_day_high / detected_day_close / current_price / source (cron|manual) / status (ok|failed) / llm_model / llm_diagnostic
+- lifespan `_ensure_m23_tables()` 自動 idempotent create_all（與 M23 其他表同批）
+
+### 後端模組
+- prompt: [backend/app/prompts/expectation_price.md](backend/app/prompts/expectation_price.md)（使用者沉澱的完整 buy-side 分析師 prompt）
+- 服務模組: [backend/app/signals/expectation_price.py](backend/app/signals/expectation_price.py)
+  - `build_expectation_context(db, stock_id, first_detected_date=None)` — 從 DB 組裝 prompt INPUT JSON（含 7 大區塊 + meta）
+  - `generate_for_stock(db, stock_id, *, source)` — 呼叫 OpenAI + UPSERT；失敗時寫 status='failed' + error_message
+  - `generate_for_new_signals(db, snapshot_date, source="cron")` — cron 入口：抓 `first_seen_date == snapshot_date` 的新進股，逐檔跑
+  - `update_hit_targets(db, target_date)` — 每日對所有 active row 比對當日收盤是否觸發保守 / 夢想；首次達標才寫旗標
+- cron 入口: [backend/run_signal_expectation_prices.py](backend/run_signal_expectation_prices.py)（exit 0/1/2/3 對齊 run_daily_signals.py）
+- API endpoints（擴充 [backend/app/routers/signals.py](backend/app/routers/signals.py)）:
+  - `GET /api/signals/expectation-prices?snapshot_date=YYYY-MM-DD`（公開）
+  - `GET /api/signals/expectation-prices/quota`（需登入）
+  - `GET /api/signals/expectation-prices/{stock_id}`（公開）
+  - `POST /api/signals/expectation-prices/regenerate { stock_id }`（需登入 + BackgroundTasks）
+
+### theme_score deterministic mapping
+從現有 signal_watch_hits + SignalSnapshot.watchlist 推算 0-3：
+- LEADER + theme_fit=HIGH → 3
+- LEADER + theme_fit=MEDIUM, FOLLOWER + HIGH, 其他 HIGH → 2
+- MEDIUM → 1, LOW/NONE → 0
+若 watchlist payload 已有 theme_score 則優先用該值；deterministic mapping 是 fallback
+
+### Rate limit（手動重產）
+- 每帳號每日 30 次、全站每日 100 次
+- 以 `SignalExpectationPrice.updated_at` 落在今天 UTC 00:00 後計次（含 ok / failed，避免使用者用 retry 繞過）
+- 常數：`USER_DAILY_EXPECTATION_LIMIT = 30` / `GLOBAL_DAILY_EXPECTATION_LIMIT = 100`
+
+### GitHub Action
+- [`.github/workflows/signal_expectation_prices.yml`](.github/workflows/signal_expectation_prices.yml)：
+  - `workflow_run` 接在 `daily_signals.yml` 完成之後（success 才跑），確保 signal_watch_hits 已寫入
+  - workflow_dispatch 備援（手動補跑 / 指定 target_date）
+  - timeout 60 min；exit 0/1/2 視為 pass（no_data / partial 是合理結果），exit 3 才 fail
+  - 模型：env `OPENAI_EXPECTATION_PRICE_MODEL`（fallback `gpt-5.4-mini`）
+
+### 前端
+- [frontend/src/lib/api.ts](frontend/src/lib/api.ts) 加 8 個型別 + 4 個 fetch helper（fetchExpectationPrices / fetchExpectationPrice / fetchExpectationQuota / regenerateExpectationPrice）
+- [frontend/src/components/DailySignalsPanel.tsx](frontend/src/components/DailySignalsPanel.tsx)：
+  - `ExpectationPriceChips`：SignalCard 底部 2 個 chip（保 / 夢），達標時自動染綠 ✓ / 染金 🎯
+  - `ExpectationPricePanel`：插入 SignalDetailDialog 5 panel grid 之後、margin_analysis 之前。顯示完整資訊（保守 / 夢想兩塊大價格區塊 + valuation_mode / current_price_position / chase_risk / confidence chip + 50字 reason + 30字 risk_note + 6 項 scorecard 明細）
+  - 「重新預測」按鈕：登入即可觸發 POST → BackgroundTask → 24s 內輪詢拉新結果
+  - 主 panel root 多一個 `fetchExpectationPrices(snapshot_date)` 一次抓批次，建 `expectationByStock: Map`
+
+### Gotcha
+- **`/expectation-prices/quota` 必須放在 `/{stock_id}` 之前**：FastAPI 路徑解析會被 `/{stock_id}` 吃掉，初版踩到坑後 reorder
+- **detected_day_high / detected_day_close 不是「近 21 日」算出來**：是 `first_seen_date` 那天的 OHLC，要從 signal_watch_hits 取得 first_seen_date 後 join daily_price；context_builder 內顯式 inject 進 `price_data` dict（不能交給 `_compute_price_data`）
+- **`generate_for_stock` 失敗 row 也算進當日 quota**：避免 OpenAI 暫時掛掉時使用者瘋狂 retry 拖垮系統；UI 對 status='failed' 顯示重試按鈕
+- **hit_target 首次達標才寫**：避免後續 cron 用更晚日期覆寫；「最早觸及日」是更有用的資訊
+- **prompt 內 `unknown` enum 必填**：DB 沒有 forward EPS、gross_margin_trend、earnings_momentum → 後端必須顯式填 None / "unknown"，不可省略欄位
+- **rate limit 用 source='manual' 計次**：cron source='cron' 不算進手動配額（個人 + 全站額度都只看 manual）；但「全站每日 100 次」現在用 `updated_at` 過濾不分 source — 簡化為「全站總操作量」上限
+- **stock 必須先進 signal_watch_hits**：未被 M23 抓過的 stock POST regenerate 會直接 404，避免使用者誤觸發任意股票
+- **同 first_detected_date UPSERT，舊 hit_conservative_at / hit_dream_at 保留**：使用者重新預測新的價格區間時，已達標旗標不該被覆寫；`_upsert_expectation_row` 只在新增 row 時才寫 None，update 路徑不動旗標欄
+
+### 測試
+- [backend/tests/test_signal_expectation_price.py](backend/tests/test_signal_expectation_price.py) — 12 案例（context builder happy / unknown stock / no signal hit / generate_for_stock ok+UPSERT / generate_for_stock failed / hit_target first-touch / list endpoint / single endpoint / 404 / regenerate 404 / regenerate 202 / quota）
+- 全 backend 93 個 M23 相關測試 pass，baseline 20 fail 保持（皆為 site-passwordless 改動後未同步的 disable-auth 相關 test，與本切片無關）
+
 ## M23 再偵測閘門：tracking_status + 3 條派發硬閘門（2026-05-26）
 
 ### 背景

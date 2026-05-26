@@ -143,6 +143,7 @@ npm run dev
 | `financial_statement` | 季財報各科目（EPS、營益率等） | 2019-Q1 ~ 最新一季 | FinMind 財報資料集 |
 | `broker_trade_agg` | 分點買賣超聚合 | 2024-01 ~ today（GitHub Actions 每小時推進） | FinMind `TaiwanStockTradingDailyReportSecIdAgg` |
 | `signal_watch_completed_archives` | M23：完成 30 個交易日追蹤後的封存摘要（first_seen / hit_count / day10/20/30 return） | 2026-04 ~ today | 從 `signal_watch_hits` + `daily_price` 計算 |
+| `signal_expectation_prices` | M26：個股「未來 1 個月資金行情可期待價格區間」預測（保守 / 夢想價 + valuation_mode + 追高風險 + 信心 + scorecard + 達標旗標） | 2026-05 ~ today | OpenAI 依 prompt 推估，cron 跑「今日新進股」+ 使用者手動重產 |
 
 ### M18 / M19 資料表（使用者系統）
 
@@ -168,6 +169,7 @@ npm run dev
 | [`daily_etl_update.yml`](.github/workflows/daily_etl_update.yml) | 週一~五 **18:00**（cron）+ 手動 | 每個交易日傍晚全量刷新 Render PostgreSQL（FinMind ETL：stocks_master / daily_price / inst_flow / daily_valuation / monthly_revenue / financial_statement / margin_trade / industry_flow 聚合；broker_trade_agg 已拆到獨立 workflow）。配額耗盡（exit 2）時 sleep 1.5h 後自動 retry 一次；假日由 daily_price 空資料 + 配額健康判定自動短路（exit 5）。**ETL 結束（exit 0/1）後串跑 M25 watchlist trade quality refresh**，對全使用者 watchlist 跑 trade quality 寫入 `watchlist_trade_quality_snapshots`，給 `/watchlist` 卡片與個股頁報告直接讀 |
 | [`daily_signals.yml`](.github/workflows/daily_signals.yml) | 週一~五 **19:00**（cron）+ 手動 | M23 每日異常訊號 pipeline（`run_daily_signals.py`）：deterministic filter 建候選池 → LLM batch 分析公司業務／集團／龍頭比對 → 寫入 `signal_snapshots`，產出 LEADER / FOLLOWER / LAGGARD 三類訊號清單。exit 0/1（ok / no_data）→ workflow pass；exit 2/3（llm_error / db_error）→ workflow fail |
 | [`signal_archive_returns.yml`](.github/workflows/signal_archive_returns.yml) | 週一~五 **20:00**（cron）+ 手動 | M23 30 個交易日訊號追蹤報酬率更新（`run_signal_archive_returns.py`）：對 active hits 同步 `latest_eval_price` / `return_pct`；完成 30 個交易日 cycle 後封存到 `signal_watch_completed_archives`（2026-05-21 起 retention 從 40 改 30）。可帶 `target_date` 手動補跑 |
+| [`signal_expectation_prices.yml`](.github/workflows/signal_expectation_prices.yml) | `workflow_run` 接在 `daily_signals.yml` 完成（success）後 + 手動 | M26 個股保守 / 夢想價預測（`run_signal_expectation_prices.py`）：對「今日新進」`first_seen_date == target_date` 的股票呼叫 OpenAI 推估「未來 1 個月可期待價格區間」；同時 `update_hit_targets` 用當日收盤價標 `hit_conservative_at` / `hit_dream_at`。exit 0/1/2 視為 pass（no_data / partial 合理），exit 3 才 fail |
 | [`broker_trade_backfill.yml`](.github/workflows/broker_trade_backfill.yml) | **手動觸發**（cron 已停用，2026-04-21 起） | 找出 `broker_trade_agg` 在 `[min_backfill_date, end_date]` 範圍內缺漏的週一~五交易日，每批 N 天（預設 3）補資料；FinMind 6000 req/hr 限制下，1 日 ≈ 1588 req |
 | [`aggregate_industry_flow.yml`](.github/workflows/aggregate_industry_flow.yml) | **手動觸發** | 純本地 DB 聚合 `industry_daily_flow`（不打 FinMind）；用於 `daily_etl_update` 在 inst_flow 後斷掉（quota / timeout）時補聚合，或歷史資料 backfill 後重算 industry 層 |
 
@@ -205,6 +207,10 @@ npm run dev
 | GET | `/api/signals/archive` | M23：最近 30 個交易日訊號追蹤總表（2026-05-21 起 retention 從 40 改 30） |
 | GET | `/api/signals/archive/{stock_id}` | M23：單一股票 30 個交易日追蹤報告時間軸 |
 | GET | `/api/signals/archive/completed` | M23：追蹤期滿移出後的封存表（含 day10/20/30 報酬） |
+| GET | `/api/signals/expectation-prices?snapshot_date=` | M26：當日 watchlist 對應的「保守 / 夢想價」批次預測（公開） |
+| GET | `/api/signals/expectation-prices/{stock_id}` | M26：單檔最新預測（公開） |
+| GET | `/api/signals/expectation-prices/quota` | M26：手動重新預測今日剩餘額度（需登入；30/day per user、100/day 全站） |
+| POST | `/api/signals/expectation-prices/regenerate` | M26：手動重新預測指定股票（需登入；背景跑 + UPSERT） |
 | POST | `/api/analysis/trade-quality` | 首頁 AI 交易質量分析（公開；未登入 3/day、已登入 30/day） |
 | GET | `/api/analysis/context` | M21：Trade Quality Context 6 section 預聚合 JSON（需登入；deterministic + no-hindsight） |
 | POST | `/api/backtest/run` | L3：回測執行（需登入） |
