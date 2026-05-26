@@ -12,6 +12,7 @@ import {
   regenerateSignals,
   type SignalDecisionType,
   type SignalRegenerateQuotaResponse,
+  type SignalMarginAnalysis,
   type SignalSnapshotResponse,
   type SignalWatchlistItem,
 } from "@/lib/api"
@@ -279,6 +280,13 @@ function SignalDetailDialog({
             })}
           </div>
 
+          {/* 2026-05-25：融資融券專屬結構化分析卡（比重 大盤 30% / 個股 70%） */}
+          {item.margin_analysis ? (
+            <div className="mt-4">
+              <MarginAnalysisPanel analysis={item.margin_analysis} stockId={item.stock} />
+            </div>
+          ) : null}
+
           {/* Footer：兩個對等大按鈕（回上一頁 + 前往個股研究頁） */}
           <div className="mt-6 grid grid-cols-1 gap-3 border-t border-zinc-700 pt-5 sm:grid-cols-2">
             <button
@@ -320,6 +328,127 @@ function ChipWithLabel({
       <span>{signalValueLabel(value, kind)}</span>
     </span>
   )
+}
+
+// 2026-05-25：融資融券專屬結構化分析卡（比重 大盤 30% / 個股 70%）
+function MarginAnalysisPanel({
+  analysis,
+  stockId,
+}: {
+  analysis: SignalMarginAnalysis
+  stockId: string
+}) {
+  const t = analysis.stock_table
+  const rows: { label: string; value: string; tone?: "green" | "red" | "neutral" }[] = [
+    { label: "收盤價", value: formatPrice(t.close_price) },
+    { label: "融資餘額", value: formatShares(t.margin_balance_shares) },
+    {
+      label: "融資增減",
+      value: formatChangeShares(t.margin_change_shares),
+      tone: chgTone(t.margin_change_shares),
+    },
+    { label: "融券餘額", value: formatShares(t.short_balance_shares) },
+    {
+      label: "融券增減",
+      value: formatChangeShares(t.short_change_shares),
+      tone: chgTone(t.short_change_shares),
+    },
+    { label: "券資比", value: formatPct(t.margin_short_ratio_pct) },
+  ]
+
+  return (
+    <section className="rounded-xl border border-rose-500/30 bg-rose-500/[0.04] p-4 shadow-inner">
+      <header className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+        <h3 className="text-sm font-semibold text-rose-200">
+          融資融券分析
+          <span className="ml-2 text-[11px] font-normal text-rose-300/70">
+            {stockId} · 個股 70% / 大盤 30%
+          </span>
+        </h3>
+        {analysis.weight_ratio ? (
+          <span className="rounded-full border border-rose-400/40 bg-rose-500/15 px-2 py-0.5 text-[10px] font-medium text-rose-100">
+            {analysis.weight_ratio}
+          </span>
+        ) : null}
+      </header>
+
+      {/* 表格 */}
+      <div className="grid grid-cols-2 gap-x-4 gap-y-2 rounded-lg border border-zinc-700 bg-zinc-900/40 p-3 text-sm sm:grid-cols-3">
+        {rows.map((row) => (
+          <div key={row.label} className="flex items-baseline justify-between gap-3">
+            <span className="text-slate-400">{row.label}</span>
+            <span
+              className={`font-mono font-semibold ${
+                row.tone === "green"
+                  ? "text-emerald-300"
+                  : row.tone === "red"
+                  ? "text-rose-300"
+                  : "text-slate-100"
+              }`}
+            >
+              {row.value}
+            </span>
+          </div>
+        ))}
+      </div>
+
+      {/* 個股解讀（70%） */}
+      {analysis.stock_interpretation ? (
+        <p className="mt-3 text-sm leading-relaxed text-slate-200">
+          {analysis.stock_interpretation}
+        </p>
+      ) : null}
+
+      {analysis.stock_conclusion ? (
+        <p className="mt-2 text-base font-bold text-rose-200">
+          → {analysis.stock_conclusion}
+        </p>
+      ) : null}
+
+      {/* 大盤摘要（30%） */}
+      {analysis.market_summary ? (
+        <div className="mt-3 rounded-lg border border-zinc-700/60 bg-zinc-800/40 px-3 py-2 text-xs text-slate-400">
+          <span className="font-semibold text-slate-300">大盤融資環境：</span>
+          {analysis.market_summary}
+        </div>
+      ) : null}
+
+      {/* 風險提示 */}
+      {analysis.risk_note ? (
+        <div className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/[0.06] px-3 py-2 text-xs text-amber-200">
+          <span className="font-semibold">風險提示：</span>
+          {analysis.risk_note}
+        </div>
+      ) : null}
+    </section>
+  )
+}
+
+function formatPrice(v: number | null | undefined): string {
+  if (v == null || Number.isNaN(v)) return "—"
+  return v >= 1000 ? v.toFixed(0) : v.toFixed(2)
+}
+
+function formatShares(v: number | null | undefined): string {
+  if (v == null || Number.isNaN(v)) return "—"
+  return `${Math.round(v).toLocaleString()} 張`
+}
+
+function formatChangeShares(v: number | null | undefined): string {
+  if (v == null || Number.isNaN(v)) return "—"
+  const sign = v > 0 ? "+" : v < 0 ? "" : ""
+  return `${sign}${Math.round(v).toLocaleString()} 張`
+}
+
+function formatPct(v: number | null | undefined): string {
+  if (v == null || Number.isNaN(v)) return "—"
+  return `${v.toFixed(2)}%`
+}
+
+function chgTone(v: number | null | undefined): "green" | "red" | "neutral" {
+  if (v == null || v === 0) return "neutral"
+  // 台股慣例：融資/融券增加 = 散戶活躍 = 紅色；減少 = 退場 = 綠色
+  return v > 0 ? "red" : "green"
 }
 
 function SignalCardGrid({

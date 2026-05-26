@@ -1,0 +1,106 @@
+name: Margin Trade Backfill
+
+# 為什麼獨立出一個 workflow：
+# daily_etl_update.yml 在台北 18:00 cron 跑時，FinMind
+# TaiwanStockMarginPurchaseShortSale dataset 多半尚未同步當日餘額
+# （券商 ~21:00 才公告），導致 margin step 經常 no_data，DB 大量交易日 0 rows，
+# 進而讓 M23 daily signals 的 margin_change_3d / short_change_3d 全部變 null，
+# 前端「融券」欄全部顯示「無感 / 中性」。
+#
+# 本 workflow 在台北 22:30 跑（FinMind 21:00 後同步，留 1.5h buffer），
+# 預設自動掃描最近 14 個交易日的 margin_trade 缺漏並補抓，不動其他 step。
+
+on:
+  schedule:
+    # 台北 22:30（週一到週五）= UTC 14:30
+    - cron: '30 14 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      date:
+        description: '單日 backfill (YYYY-MM-DD)，留空走 lookback 模式'
+        required: false
+      start_date:
+        description: '區間起日 (YYYY-MM-DD)'
+        required: false
+      end_date:
+        description: '區間迄日 (YYYY-MM-DD)'
+        required: false
+      lookback:
+        description: '未帶日期時掃描的交易日數 (預設 14)'
+        required: false
+        default: '14'
+      force:
+        description: '不檢查現有資料，強制重抓 (true / false)'
+        required: false
+        default: 'false'
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      TZ: Asia/Taipei
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --quiet -r backend/requirements.txt
+
+      - name: Build CLI args
+        id: args
+        env:
+          INPUT_DATE: ${{ github.event.inputs.date }}
+          INPUT_START: ${{ github.event.inputs.start_date }}
+          INPUT_END: ${{ github.event.inputs.end_date }}
+          INPUT_LOOKBACK: ${{ github.event.inputs.lookback }}
+          INPUT_FORCE: ${{ github.event.inputs.force }}
+        run: |
+          ARGS=""
+          if [ -n "$INPUT_DATE" ]; then
+            ARGS="--date $INPUT_DATE"
+          elif [ -n "$INPUT_START" ] && [ -n "$INPUT_END" ]; then
+            ARGS="--start-date $INPUT_START --end-date $INPUT_END"
+          fi
+
+          if [ -n "$INPUT_LOOKBACK" ] && [ "$INPUT_LOOKBACK" != "14" ]; then
+            ARGS="$ARGS --lookback $INPUT_LOOKBACK"
+          fi
+
+          if [ "$INPUT_FORCE" = "true" ]; then
+            ARGS="$ARGS --force"
+          fi
+
+          echo "args=$ARGS" >> "$GITHUB_OUTPUT"
+          echo "Resolved args: $ARGS"
+
+      - name: Run margin backfill
+        id: backfill
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
+        run: |
+          set +e
+          python3 run_margin_backfill.py ${{ steps.args.outputs.args }}
+          EXIT_CODE=$?
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+          echo "Backfill exit code: $EXIT_CODE"
+          # 0 = ok / 1 = partial / 2 = all_failed / 5 = holiday (整體沒交易日資料)
+          # workflow 視 0 / 1 / 5 為 pass，2 為 fail
+          if [ "$EXIT_CODE" = "0" ] || [ "$EXIT_CODE" = "1" ] || [ "$EXIT_CODE" = "5" ]; then
+            exit 0
+          fi
+          exit "$EXIT_CODE"
+
+      - name: Report result
+        if: always()
+        run: |
+          echo "Args: ${{ steps.args.outputs.args }}"
+          echo "Exit code: ${{ steps.backfill.outputs.exit_code }}"

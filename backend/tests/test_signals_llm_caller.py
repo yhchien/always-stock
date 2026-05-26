@@ -831,3 +831,70 @@ def test_load_system_prompt_market_stage_drops_other_steps():
     assert "重要限制" in fragment
     # input 描述（preamble）也保留
     assert "stock_pool" in fragment
+
+
+# ---------- tracking_status evidence（2026-05-26 1.3）----------
+
+
+def test_to_evidence_view_includes_tracking_status_for_tracked_stock():
+    from datetime import date
+    candidate = {
+        "stock_id": "2330",
+        "name": "台積電",
+        "industry": "半導體",
+        "prelim_type": "LEADER",
+        "is_tracked": True,
+        "first_seen_date": date(2026, 4, 13),
+        "days_since_first_seen": 5,
+        "hit_count": 2,
+        "max_positive_return_pct": 2.8,
+        "max_negative_return_pct": -4.5,
+        "failed_follow_through": False,
+    }
+    out = llm_caller._to_evidence_view([candidate])
+    ts = out[0]["tracking_status"]
+    assert ts["is_tracked"] is True
+    assert ts["first_seen_date"] == "2026-04-13"  # ISO 字串
+    assert ts["days_since_first_seen"] == 5
+    assert ts["hit_count"] == 2
+    assert ts["max_positive_return_pct"] == 2.8
+    assert ts["max_negative_return_pct"] == -4.5
+    # 不暴露 failed_follow_through 給 LLM（hard filter 已過濾，保留會誤導）
+    assert "failed_follow_through" not in ts
+
+
+def test_to_evidence_view_handles_untracked_stock():
+    """首次進候選池 → tracking_status.is_tracked=False，其他欄位 None。"""
+    candidate = {
+        "stock_id": "2330",
+        "name": "台積電",
+        "industry": "半導體",
+        "prelim_type": "LEADER",
+        # 沒有 tracking 欄位
+    }
+    out = llm_caller._to_evidence_view([candidate])
+    ts = out[0]["tracking_status"]
+    assert ts["is_tracked"] is False
+    assert ts["first_seen_date"] is None
+    assert ts["days_since_first_seen"] is None
+    assert ts["hit_count"] is None
+    assert ts["max_positive_return_pct"] is None
+    assert ts["max_negative_return_pct"] is None
+
+
+def test_to_evidence_view_handles_already_serialized_date_string():
+    """first_seen_date 已是字串時不應再 isoformat 出錯。"""
+    candidate = {
+        "stock_id": "2330",
+        "name": "台積電",
+        "industry": "半導體",
+        "prelim_type": "LEADER",
+        "is_tracked": True,
+        "first_seen_date": "2026-04-13",
+        "days_since_first_seen": 5,
+        "hit_count": 1,
+        "max_positive_return_pct": 1.0,
+        "max_negative_return_pct": -2.0,
+    }
+    out = llm_caller._to_evidence_view([candidate])
+    assert out[0]["tracking_status"]["first_seen_date"] == "2026-04-13"

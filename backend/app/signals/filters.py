@@ -11,6 +11,14 @@ Slice 5：實作完成。
     3. price_change_3d > 15%（過熱避免追高）
     4. 流動性不足（5d 平均成交金額 < 5,000 萬 TWD）
 
+    2026-05-26 新增（再偵測閘門 + 後段 FOLLOWER 防護）：
+    5. failed_follow_through：candidate_pool 算的「首次抓到後 3 日內 max<+3% 且 max_neg<-6%」
+       → 該股已被市場驗證為弱化訊號，不再進入新的候選池
+    6. price_extended_inst_selling：price_change_10d > +25% 且 total_institution_flow_1d < 0
+       → 短期已大漲且當日法人轉賣，典型派發前兆
+    7. inst_3d_pos_1d_neg_price_dropping：flow_3d > 0 且 flow_1d < 0 且 price_change_1d < -1.5%
+       → 三日累積買超但今日反轉大賣 + 股價大跌 = 主力出貨確認
+
   §9.2 Soft Filters（標 hint，最終由 LLM 在 Step 8 決定 WATCH / REMOVE）
     - weakening：total_institution_flow_3d > 0 且 total_institution_flow_1d
       < -total_institution_flow_3d × 0.5（前三日大買、昨日大賣）
@@ -39,6 +47,10 @@ HINT_RANGE_BOUND = "range_bound"
 # Spec §9.1 Hard Exclusions thresholds
 _HARD_PRICE_3D_OVERHEAT_PCT = 15.0
 _HARD_LIQUIDITY_MIN_TWD = 5e7  # 5,000 萬
+
+# 2026-05-26 新增（spec §再偵測閘門）
+_HARD_PRICE_EXTENDED_10D_PCT = 25.0  # 短期已大漲門檻
+_HARD_DIVERGENCE_PRICE_1D_DROP_PCT = -1.5  # 1d 大跌門檻（負值）
 
 # Spec §9.2 Soft Filters thresholds
 _SOFT_WEAKENING_RATIO = 0.5
@@ -125,6 +137,34 @@ def _is_hard_excluded(candidate: Dict[str, Any]) -> bool:
     # 4. 流動性不足（5d avg turnover < 5,000 萬 TWD）
     turnover_5d = candidate.get("avg_turnover_5d")
     if turnover_5d is not None and turnover_5d < _HARD_LIQUIDITY_MIN_TWD:
+        return True
+
+    # 5. failed_follow_through：首次抓到後 3 日驗證失敗（再偵測閘門）
+    if candidate.get("failed_follow_through"):
+        return True
+
+    # 6. 短期已大漲且當日法人轉賣（派發前兆）
+    pct_10d = candidate.get("price_change_10d")
+    flow_1d = candidate.get("total_institution_flow_1d")
+    if (
+        pct_10d is not None
+        and pct_10d > _HARD_PRICE_EXTENDED_10D_PCT
+        and flow_1d is not None
+        and flow_1d < 0
+    ):
+        return True
+
+    # 7. 3d 累積買超但 1d 反轉大賣 + 股價大跌（主力出貨確認）
+    flow_3d = candidate.get("total_institution_flow_3d")
+    pct_1d = candidate.get("price_change_1d")
+    if (
+        flow_3d is not None
+        and flow_3d > 0
+        and flow_1d is not None
+        and flow_1d < 0
+        and pct_1d is not None
+        and pct_1d < _HARD_DIVERGENCE_PRICE_1D_DROP_PCT
+    ):
         return True
 
     return False

@@ -246,3 +246,97 @@ def test_soft_filter_does_not_mutate_input():
 
 def test_soft_filter_handles_empty_pool():
     assert apply_soft_filters(None, date(2026, 4, 25), []) == []
+
+
+# ---------- 2026-05-26 新增：再偵測閘門 + 派發確認硬閘門 ----------
+
+
+def test_hard_exclusions_drops_failed_follow_through():
+    """tracking_status 顯示 3 日驗證失敗 → 不再進候選池。"""
+    pool = [_candidate(failed_follow_through=True)]
+    out = apply_hard_exclusions(None, date(2026, 4, 25), pool)
+    assert out == []
+
+
+def test_hard_exclusions_keeps_when_failed_follow_through_false():
+    pool = [_candidate(failed_follow_through=False)]
+    out = apply_hard_exclusions(None, date(2026, 4, 25), pool)
+    assert len(out) == 1
+
+
+def test_hard_exclusions_drops_price_extended_with_inst_selling():
+    """price_change_10d=+27% 且 flow_1d<0 → 派發前兆，剔除。"""
+    pool = [
+        _candidate(
+            price_change_10d=27.0,
+            total_institution_flow_1d=-1.0e7,
+            price_change_3d=8.0,  # 不被 3d 過熱規則攔到
+        )
+    ]
+    out = apply_hard_exclusions(None, date(2026, 4, 25), pool)
+    assert out == []
+
+
+def test_hard_exclusions_keeps_extended_when_inst_still_buying():
+    """price_change_10d=+27% 但 flow_1d>0 → 主升段未確認反轉，保留。"""
+    pool = [
+        _candidate(
+            price_change_10d=27.0,
+            total_institution_flow_1d=1.0e7,
+            price_change_3d=8.0,
+        )
+    ]
+    out = apply_hard_exclusions(None, date(2026, 4, 25), pool)
+    assert len(out) == 1
+
+
+def test_hard_exclusions_keeps_at_extended_boundary_25_pct():
+    """price_change_10d=25.0 不嚴格 > 25 → 不剔除。"""
+    pool = [
+        _candidate(
+            price_change_10d=25.0,
+            total_institution_flow_1d=-1.0e7,
+            price_change_3d=8.0,
+        )
+    ]
+    out = apply_hard_exclusions(None, date(2026, 4, 25), pool)
+    assert len(out) == 1
+
+
+def test_hard_exclusions_drops_inst_divergence_with_price_drop():
+    """3d 累積買超 + 1d 反轉大賣 + 股價跌 1.6% → 主力出貨確認。"""
+    pool = [
+        _candidate(
+            total_institution_flow_3d=1.0e8,
+            total_institution_flow_1d=-3.0e7,
+            price_change_1d=-1.6,
+        )
+    ]
+    out = apply_hard_exclusions(None, date(2026, 4, 25), pool)
+    assert out == []
+
+
+def test_hard_exclusions_keeps_inst_divergence_when_price_drop_mild():
+    """price_change_1d=-1.4% → 還沒到 -1.5% 確認門檻，保留。"""
+    pool = [
+        _candidate(
+            total_institution_flow_3d=1.0e8,
+            total_institution_flow_1d=-3.0e7,
+            price_change_1d=-1.4,
+        )
+    ]
+    out = apply_hard_exclusions(None, date(2026, 4, 25), pool)
+    assert len(out) == 1
+
+
+def test_hard_exclusions_keeps_inst_divergence_when_flow_1d_positive():
+    """flow_1d 還是正的 → 沒有反轉訊號。"""
+    pool = [
+        _candidate(
+            total_institution_flow_3d=1.0e8,
+            total_institution_flow_1d=2.0e7,
+            price_change_1d=-2.0,
+        )
+    ]
+    out = apply_hard_exclusions(None, date(2026, 4, 25), pool)
+    assert len(out) == 1

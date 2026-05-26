@@ -23,6 +23,7 @@ from app.models import (
     DailyPrice,
     InstStockFlow,
     MarginTrade,
+    SignalWatchHit,
     StockMaster,
 )
 from app.signals.exclusions import (
@@ -30,6 +31,13 @@ from app.signals.exclusions import (
     get_group_members,
     should_exclude,
 )
+
+# Spec §再偵測閘門（2026-05-26）：首次抓到後驗證失敗的閾值
+# 與 archive.py 的兩條 early-exit（-30% / drawdown 30%）是不同層級的早期警示
+# 這條更早觸發（3 個交易日內未驗證主升段），但只用來「不再進入新候選池」，不主動結算 cycle
+TRACKING_FAILED_DAYS_THRESHOLD = 3
+TRACKING_FAILED_MAX_POSITIVE_PCT = 3.0
+TRACKING_FAILED_MAX_NEGATIVE_PCT = -6.0
 
 logger = logging.getLogger(__name__)
 
@@ -210,6 +218,9 @@ def build_candidate_pool(
     # 3. 計算每檔的 metrics（一次性 query，不 per-stock）
     metrics = _compute_pool_metrics(db, ingestion, filtered_ids)
 
+    # 3b. 追蹤狀態：join signal_watch_hits 抓「首次抓到後的驗證表現」
+    tracking_by_stock = _load_tracking_status(db, filtered_ids, target_date)
+
     # 4. 為每檔 enrich 集團 / industry / top flag
     top_stock_id_set = {s["stock_id"] for s in top_stocks}
 
@@ -219,6 +230,7 @@ def build_candidate_pool(
         if master is None:
             continue
         m = metrics.get(sid) or _empty_metrics()
+        ts = tracking_by_stock.get(sid) or _empty_tracking_status()
         in_top = master.industry_name in industry_set
         candidates.append(
             {
@@ -232,6 +244,7 @@ def build_candidate_pool(
                 "in_top_industries_3d": in_top,
                 "in_top_stocks_3d": sid in top_stock_id_set,
                 **m,
+                **ts,
             }
         )
 
@@ -257,6 +270,108 @@ def build_candidate_pool(
         candidates = candidates[:POOL_HARD_LIMIT]
 
     return candidates
+
+
+# ---------- helpers：tracking_status（再偵測閘門用） ----------
+
+
+def _empty_tracking_status() -> Dict[str, Any]:
+    """無歷史命中的股票預設值（首次出現在候選池）。"""
+    return {
+        "is_tracked": False,
+        "first_seen_date": None,
+        "days_since_first_seen": None,
+        "hit_count": None,
+        "max_positive_return_pct": None,
+        "max_negative_return_pct": None,
+        "failed_follow_through": False,
+    }
+
+
+def _load_tracking_status(
+    db: Session,
+    stock_ids: Sequence[str],
+    target_date: date,
+) -> Dict[str, Dict[str, Any]]:
+    """讀 `signal_watch_hits` 算每檔 active tracking 的驗證表現。
+
+    重點欄位：
+      - first_seen_date：MIN(snapshot_date)，該檔在當前 cycle 內第一次被抓到的日子
+      - days_since_first_seen：first_seen_date 之後（不含當天）到 target_date 為止的交易日數
+        - first_seen_date == target_date → 0（首日，尚未進入驗證期）
+        - target_date 為 first_seen_date 後第 1 個交易日 → 1
+      - max_positive_return_pct / max_negative_return_pct：archive cron 每天更新後的當前 cycle 累計值
+      - hit_count：同 stock_id 命中過幾個 snapshot_date（DISTINCT）
+      - failed_follow_through：days >= 3 AND max_pos < +3% AND max_neg < -6%（spec §再偵測閘門）
+
+    Note: 若該 stock 已被 archive 早退（hits 已被刪），此函式不會看到資料，回 empty_tracking_status。
+          這是刻意設計：早退結算（機制 A）是另一條獨立路徑，與此處的「再偵測閘門」分工明確。
+    """
+    if not stock_ids:
+        return {}
+
+    hit_rows = (
+        db.query(
+            SignalWatchHit.stock_id,
+            SignalWatchHit.snapshot_date,
+            SignalWatchHit.max_positive_return_pct,
+            SignalWatchHit.max_negative_return_pct,
+        )
+        .filter(SignalWatchHit.stock_id.in_(list(stock_ids)))
+        .all()
+    )
+    if not hit_rows:
+        return {}
+
+    by_stock: Dict[str, List[Any]] = {}
+    for row in hit_rows:
+        by_stock.setdefault(row.stock_id, []).append(row)
+
+    # 一次取出區間內所有交易日（用 daily_price.trade_date 為準），避免 N+1
+    oldest_first_seen = min(
+        min(r.snapshot_date for r in rows) for rows in by_stock.values()
+    )
+    trade_date_rows = (
+        db.query(DailyPrice.trade_date)
+        .filter(
+            DailyPrice.trade_date >= oldest_first_seen,
+            DailyPrice.trade_date <= target_date,
+        )
+        .distinct()
+        .all()
+    )
+    trade_dates_sorted = sorted({d[0] for d in trade_date_rows})
+
+    out: Dict[str, Dict[str, Any]] = {}
+    for sid, rows in by_stock.items():
+        first_seen = min(r.snapshot_date for r in rows)
+
+        # archive cron 每天會把同 cycle 內每筆 hit 的 max_* 都同步更新成最新值，
+        # 但保守起見用 max/min 聚合，避免某 row 因 partial update 殘留舊值
+        pos_values = [r.max_positive_return_pct for r in rows if r.max_positive_return_pct is not None]
+        neg_values = [r.max_negative_return_pct for r in rows if r.max_negative_return_pct is not None]
+        max_pos = max(pos_values) if pos_values else None
+        max_neg = min(neg_values) if neg_values else None
+        hit_count = len({r.snapshot_date for r in rows})
+
+        days_since = sum(1 for d in trade_dates_sorted if first_seen < d <= target_date)
+
+        failed = (
+            days_since >= TRACKING_FAILED_DAYS_THRESHOLD
+            and max_pos is not None and max_pos < TRACKING_FAILED_MAX_POSITIVE_PCT
+            and max_neg is not None and max_neg < TRACKING_FAILED_MAX_NEGATIVE_PCT
+        )
+
+        out[sid] = {
+            "is_tracked": True,
+            "first_seen_date": first_seen,
+            "days_since_first_seen": days_since,
+            "hit_count": hit_count,
+            "max_positive_return_pct": max_pos,
+            "max_negative_return_pct": max_neg,
+            "failed_follow_through": failed,
+        }
+    return out
 
 
 # ---------- helpers：metrics 計算 ----------
@@ -297,6 +412,13 @@ def _empty_metrics() -> Dict[str, Any]:
         "margin_change_3d": None,
         "short_change_1d": None,
         "short_change_3d": None,
+        # M23 2026-05-25：加細數據給 LLM margin_analysis 用（張數絕對值 + 券資比）
+        # 與 *_change_1d / 3d（百分比變動率）並存，前者是「值」，後者是「率」。
+        "margin_balance_shares": None,
+        "margin_change_shares": None,
+        "short_balance_shares": None,
+        "short_change_shares": None,
+        "margin_short_ratio_pct": None,
     }
 
 
@@ -537,21 +659,34 @@ def _fill_margin_metrics(
     margin_by_day: Dict[date, Dict[str, Optional[int]]],
     trade_dates_3d: Sequence[date],
 ) -> None:
-    """spec §10.1 margin_change_1d / 3d 為「相對昨日餘額的變動率」。"""
+    """spec §10.1 margin_change_1d / 3d 為「相對昨日餘額的變動率」。
+
+    2026-05-25 加塞絕對張數 + 券資比，讓 LLM margin_analysis 能寫表格。
+    """
     if not trade_dates_3d:
         return
     today = trade_dates_3d[-1]
     today_row = margin_by_day.get(today)
 
     if today_row:
-        bal = today_row.get("margin_balance") or 0
+        bal = today_row.get("margin_balance")
         chg = today_row.get("margin_change")
+        s_bal = today_row.get("short_balance")
+        s_chg = today_row.get("short_change")
+
+        # 絕對值（無論變動率算不算得出）
+        out["margin_balance_shares"] = bal
+        out["margin_change_shares"] = chg
+        out["short_balance_shares"] = s_bal
+        out["short_change_shares"] = s_chg
+        if bal and s_bal is not None and bal != 0:
+            out["margin_short_ratio_pct"] = round(s_bal / bal * 100.0, 4)
+
+        # 既有變動率
         if chg is not None and bal:
             prev = bal - chg
             if prev:
                 out["margin_change_1d"] = chg / prev
-        s_bal = today_row.get("short_balance") or 0
-        s_chg = today_row.get("short_change")
         if s_chg is not None and s_bal:
             prev_s = s_bal - s_chg
             if prev_s:

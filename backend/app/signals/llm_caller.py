@@ -388,6 +388,8 @@ _PROMPT_FRAGMENT_CACHE: Dict[str, str] = {}
 _WATCH_REASON_HEADERS = {
     "WATCH 長理由寫作規則",
     "WATCH 五段 bullet 寫作規則",
+    # 2026-05-25：margin_analysis 段
+    "WATCH margin_analysis 寫作規則",
 }
 
 # M2：WATCH reason 拆分後的 5 段欄位名（與 prompt schema 對齊）
@@ -716,9 +718,10 @@ def _run_watch_reason_chunk(
     """
     system_prompt = _load_system_prompt(stage="watch_reason")
     user_msg = (
-        "[執行 STEP 7 / STEP 8 / STEP 9：只對 WATCH 名單補 5 段 bullet 分析]\n"
+        "[執行 STEP 7 / STEP 8 / STEP 9：只對 WATCH 名單補 5 段 bullet + margin_analysis]\n"
         "你現在只處理已經判定為 WATCH 的股票。"
-        "請根據 research、evidence、market_state,為每檔輸出 5 段 bullet array 繁體中文分析。"
+        "請根據 research、evidence、market_state,為每檔輸出 5 段 bullet array 繁體中文分析,"
+        "以及一段結構化的「融資融券分析」(margin_analysis)。"
         "不要重做 WATCH / REMOVE 判斷,也不要處理 REMOVE 股票。\n\n"
         "[硬規則]\n"
         "1. 必須完全照 prompt「WATCH 五段 bullet 寫作規則」section 的格式輸出 5 段 string[]。\n"
@@ -728,6 +731,25 @@ def _run_watch_reason_chunk(
         "   避免「籌碼穩定」「題材延續」這類空話。\n"
         "4. `type` 已由後端鎖定不可修改;capital_reason 內可帶到「身為 LEADER 的角色」等敘述。\n"
         "5. 禁止把同樣資訊重複寫在不同段;禁止 capital_reason 寫籌碼、technical_reason 寫法人。\n\n"
+        "[margin_analysis 規則 — 用使用者要求的格式]\n"
+        "請回答這個問題:「告訴我 <stock_id> 在 <date> 那天這個股票的融資融券狀況」,"
+        "並依下列 schema 輸出結構化結果:\n"
+        "  - stock_table 必填:close_price / margin_balance_shares / margin_change_shares /\n"
+        "    short_balance_shares / short_change_shares / margin_short_ratio_pct,\n"
+        "    直接抄 evidence 對應數字(margin_balance_shares / margin_change_shares /\n"
+        "    short_balance_shares / short_change_shares / margin_short_ratio_pct / close_price),\n"
+        "    禁止自編或四捨五入(margin_short_ratio_pct 保留 2 位小數即可)。\n"
+        "  - stock_interpretation:1~2 句繁體中文,40~80 字,描述融資融券當下動向\n"
+        "    (例「融資大增代表散戶追價,融券回補空單壓力解除」)。\n"
+        "  - stock_conclusion:1 句 15~30 字結論標籤(例「融資追價 + 空單回補推升」)。\n"
+        "  - market_summary:1 句 25~50 字,引用 market_context.margin_climate 的\n"
+        "    climate_label / climate_reason / today / trend_5d,說明大盤融資環境如何\n"
+        "    影響本檔判讀。資料不可用時直接寫「大盤融資資料不足」。\n"
+        "  - risk_note:1 句 20~50 字,點出後續觀察重點(例「若股價橫盤而融資續增,\n"
+        "    視為散戶過熱訊號」)。\n"
+        "  - weight_ratio:固定填 \"market:stock=3:7\",代表分析權重(大盤 30%、個股 70%)。\n"
+        "整段融資融券分析應比照使用者範例的口吻:先擺數字表、再用 1~2 句白話解讀、\n"
+        "最後給結論 + 風險提示。個股篇幅應顯著大於大盤(個股 7 成、大盤 3 成)。\n\n"
         f"[market_context]\n"
         f"{json.dumps(market_context, ensure_ascii=False, indent=2)}\n\n"
         f"[watch_items]\n"
@@ -741,7 +763,22 @@ def _run_watch_reason_chunk(
         '      "capital_reason": ["bullet 1", "..."],\n'
         '      "chip_reason": ["bullet 1", "..."],\n'
         '      "margin_reason": ["bullet 1", "..."],\n'
-        '      "technical_reason": ["bullet 1", "..."]\n'
+        '      "technical_reason": ["bullet 1", "..."],\n'
+        '      "margin_analysis": {\n'
+        '        "stock_table": {\n'
+        '          "close_price": number,\n'
+        '          "margin_balance_shares": number,\n'
+        '          "margin_change_shares": number,\n'
+        '          "short_balance_shares": number,\n'
+        '          "short_change_shares": number,\n'
+        '          "margin_short_ratio_pct": number\n'
+        '        },\n'
+        '        "stock_interpretation": "1~2 句白話解讀",\n'
+        '        "stock_conclusion": "1 句結論標籤",\n'
+        '        "market_summary": "1 句大盤融資環境",\n'
+        '        "risk_note": "1 句後續觀察重點",\n'
+        '        "weight_ratio": "market:stock=3:7"\n'
+        '      }\n'
         '    }\n'
         '  ]\n'
         "}\n"
@@ -782,11 +819,67 @@ def _run_watch_reason_chunk(
             sections = _coerce_reason_sections(by_id[sid])
             merged.update(sections)
             merged["reason"] = _join_reason_sections_to_markdown(sections)
+            # 2026-05-25：margin_analysis 結構化欄位（前端表格 + 解讀）
+            merged["margin_analysis"] = _coerce_margin_analysis(
+                by_id[sid].get("margin_analysis"),
+                evidence=watch.get("evidence") if isinstance(watch.get("evidence"), dict) else None,
+            )
             merged["llm_diagnostic"] = diagnostic
         else:
             merged.update(_watch_reason_fallback(watch, diagnostic=diagnostic))
         aligned.append(merged)
     return aligned
+
+
+def _coerce_margin_analysis(
+    raw: Any,
+    *,
+    evidence: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """從 LLM 回應抽出 margin_analysis 物件；缺漏 / 型別不對 → 用 evidence 補表格部分。"""
+    if not isinstance(raw, dict):
+        raw = {}
+
+    raw_table = raw.get("stock_table") if isinstance(raw.get("stock_table"), dict) else {}
+
+    def _maybe_num(v: Any) -> Optional[float]:
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return float(v)
+        return None
+
+    def _from(field_in_table: str, ev_key: str) -> Optional[float]:
+        candidate = _maybe_num(raw_table.get(field_in_table))
+        if candidate is not None:
+            return candidate
+        if evidence:
+            return _maybe_num(evidence.get(ev_key))
+        return None
+
+    stock_table = {
+        "close_price": _from("close_price", "close_price"),
+        "margin_balance_shares": _from("margin_balance_shares", "margin_balance_shares"),
+        "margin_change_shares": _from("margin_change_shares", "margin_change_shares"),
+        "short_balance_shares": _from("short_balance_shares", "short_balance_shares"),
+        "short_change_shares": _from("short_change_shares", "short_change_shares"),
+        "margin_short_ratio_pct": _from("margin_short_ratio_pct", "margin_short_ratio_pct"),
+    }
+
+    def _maybe_str(v: Any, *, max_len: int = 120) -> str:
+        if isinstance(v, str):
+            s = v.strip()
+            if s:
+                return s[:max_len]
+        return ""
+
+    return {
+        "stock_table": stock_table,
+        "stock_interpretation": _maybe_str(raw.get("stock_interpretation"), max_len=160),
+        "stock_conclusion": _maybe_str(raw.get("stock_conclusion"), max_len=60),
+        "market_summary": _maybe_str(raw.get("market_summary"), max_len=120),
+        "risk_note": _maybe_str(raw.get("risk_note"), max_len=120),
+        "weight_ratio": _maybe_str(raw.get("weight_ratio"), max_len=32)
+            or "market:stock=3:7",
+    }
 
 
 def _coerce_reason_sections(item: Dict[str, Any]) -> Dict[str, List[str]]:
@@ -856,6 +949,9 @@ def _format_watch_entry(item: Dict[str, Any]) -> Dict[str, Any]:
     for key in WATCH_REASON_SECTIONS:
         value = item.get(key)
         entry[key] = value if isinstance(value, list) else []
+    # 2026-05-25：margin_analysis 結構化欄位
+    margin = item.get("margin_analysis")
+    entry["margin_analysis"] = margin if isinstance(margin, dict) else None
     return entry
 
 
@@ -987,14 +1083,42 @@ def _to_evidence_view(stocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "dealer_flow_3d_twd": s.get("dealer_flow_3d"),
                 "total_institution_flow_3d_twd": s.get("total_institution_flow_3d"),
                 "total_institution_flow_5d_twd": s.get("total_institution_flow_5d"),
+                "margin_change_1d": s.get("margin_change_1d"),
                 "margin_change_3d": s.get("margin_change_3d"),
+                "short_change_1d": s.get("short_change_1d"),
                 "short_change_3d": s.get("short_change_3d"),
+                # 2026-05-25：margin_analysis 用的絕對值 / 券資比
+                "margin_balance_shares": s.get("margin_balance_shares"),
+                "margin_change_shares": s.get("margin_change_shares"),
+                "short_balance_shares": s.get("short_balance_shares"),
+                "short_change_shares": s.get("short_change_shares"),
+                "margin_short_ratio_pct": s.get("margin_short_ratio_pct"),
+                "close_price": s.get("close_1d"),
                 "in_top_stocks_3d": bool(s.get("in_top_stocks_3d")),
                 "in_top_industries_3d": bool(s.get("in_top_industries_3d")),
             },
+            "tracking_status": _tracking_status_view(s),
             "soft_hints": s.get("soft_hints", []),
         })
     return out
+
+
+def _tracking_status_view(candidate: Dict[str, Any]) -> Dict[str, Any]:
+    """把 candidate_pool flat 的 tracking 欄位投影成 nested dict 給 LLM。
+
+    Why: prompt INPUT 已宣告 tracking_status 為 nested 結構，evidence 也用同樣 shape 才能
+         與 prompt 描述對齊。failed_follow_through 不暴露給 LLM（因為這類股票已被 hard filter
+         排除，LLM 看不到；保留欄位反而誤導）。
+    """
+    first_seen = candidate.get("first_seen_date")
+    return {
+        "is_tracked": bool(candidate.get("is_tracked", False)),
+        "first_seen_date": first_seen.isoformat() if hasattr(first_seen, "isoformat") else first_seen,
+        "days_since_first_seen": candidate.get("days_since_first_seen"),
+        "hit_count": candidate.get("hit_count"),
+        "max_positive_return_pct": candidate.get("max_positive_return_pct"),
+        "max_negative_return_pct": candidate.get("max_negative_return_pct"),
+    }
 
 
 def _normalize_prelim_type(raw: Any) -> str:
@@ -1086,6 +1210,10 @@ def _watch_reason_fallback(
             out[key] = [fallback_msg]
         else:
             out[key] = item.get(key)
+    # 2026-05-25：margin_analysis 至少回傳表格（從 evidence 補），其他欄位空字串
+    if not isinstance(item.get("margin_analysis"), dict):
+        evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else None
+        out["margin_analysis"] = _coerce_margin_analysis(None, evidence=evidence)
     return out
 
 

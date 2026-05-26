@@ -31,7 +31,7 @@ from app.database import SessionLocal
 from app.models import SignalGenerationJob, SignalSnapshot
 from app.signals import archive as signal_archive
 from app.signals import candidate_pool, classification, filters, llm_caller
-from app.signals import market_snapshot
+from app.signals import market_margin, market_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +141,20 @@ def run_signal_pipeline_sync(
             )
             db_market_snapshot = market_snapshot.build_db_market_snapshot(db, target_date)
             market_context = llm_caller.assemble_market_context(db_market_snapshot)
+            # 2026-05-25：把大盤融資融券盤勢塞進 market_context，供 explanation /
+            # watch_reason 兩 stage 共用（cache 4h，多檔 batch 不重算）
+            try:
+                market_context["margin_climate"] = market_margin.compute_market_margin_snapshot(
+                    db, target_date
+                )
+            except Exception:
+                logger.exception("compute_market_margin_snapshot failed; continuing without it")
+                market_context["margin_climate"] = {
+                    "target_date": target_date.isoformat(),
+                    "data_available": False,
+                    "climate_label": "unknown",
+                    "climate_reason": "大盤融資融券資料聚合失敗。",
+                }
             research_batch_size = llm_caller.DEFAULT_RESEARCH_BATCH_SIZE
             research_batches = [
                 after_soft[i : i + research_batch_size]

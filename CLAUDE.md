@@ -28,7 +28,7 @@
 - **排程**:
   - macOS launchd（本地）
   - Render Cron Job（雲端，週一至五）
-  - GitHub Actions：`daily_etl_update.yml`（台北週一~五 18:00 全量 ETL）、`broker_trade_backfill.yml`（每小時 broker_trade_agg backfill）
+  - GitHub Actions：`daily_etl_update.yml`（台北週一~五 18:00 全量 ETL）、`broker_trade_backfill.yml`（每小時 broker_trade_agg backfill）、`margin_trade_backfill.yml`（台北週一~五 22:30 補抓 margin_trade，自動掃描近 14 個交易日缺漏）
 - **部署**: Render（後端 API + Bot + ETL + Postgres）+ Vercel（前端）
 
 ## FinMind 決策記憶
@@ -2029,3 +2029,125 @@ function update(next) {
 - **規則 1 vs 規則 2 互斥取早者**：兩規則並存但同一 cycle 只結算一次；若兩規則同日觸發，drawdown 優先（畢竟漲過再跌的紀律更嚴）
 - **drawdown 規則需 max_positive > 0**：從未漲過正報酬的股票（baseline 之後直接一路跌）只會被舊規則「return ≤ -30%」抓到，不會被新規則
 - **既有 4 baseline test failure 不變**：site-passwordless 改動後未同步的 4 個 signals_router test 仍 fail，與本輪無關（驗證 baseline 20 fail = 20 fail）
+
+## M23 融資融券資料缺漏修復（2026-05-25）
+
+### 問題
+- 魚尾 daily signals 的「融券」欄位幾乎全部顯示「無感 / 中性」，使用者抓不到融資融券訊號
+- Root cause：`margin_trade` 表大量交易日 0 rows
+- 對比 5/4~5/22 過去三週：`daily_price` 每天連續完整，`margin_trade` 只有 5/4、5/11、5/18、5/21、5/22 五天有資料，中間 10 個交易日全 0 rows
+
+### Root cause
+- `daily_etl_update.yml` cron `0 10 * * 1-5` UTC = 台北 18:00，加 GitHub Actions delay 通常落在 19:30–20:45
+- **FinMind `TaiwanStockMarginPurchaseShortSale` dataset 需要台北 21:00 之後**（券商公告當日餘額後）才同步
+- 18:00 cron 跑時 margin step 拿到 `no_data`（FinMind 回 0 筆），整天 0 rows
+- candidate_pool 算 `margin_change_3d` / `short_change_3d` 需要 3 個連續交易日 row，缺一天就回 None
+- evidence card [llm_caller.py:990](backend/app/signals/llm_caller.py#L990) 只送 3d 不送 1d，LLM 看到 null 就保守標 `margin_short_signal=neutral`，前端「融券」欄就顯示「無感」
+
+### 修法（方案 A：獨立 backfill workflow）
+- 新增 [backend/run_margin_backfill.py](backend/run_margin_backfill.py)：lookback / 區間 / 單日 三模式；預設掃描最近 14 個交易日，比對 `margin_rows / price_rows < 0.85` 視為缺漏自動補抓
+- 新增 [.github/workflows/margin_trade_backfill.yml](.github/workflows/margin_trade_backfill.yml)：cron `30 14 * * 1-5` UTC = 台北 22:30（FinMind 21:00 後同步留 1.5h buffer）；workflow_dispatch 支援 `date / start_date / end_date / lookback / force`
+- 不動 `daily_etl_update.yml` 既有時程；不動 `run_finmind_etl_sdk.py` step 7 邏輯（margin step 仍在 18:00 跑，no_data 時純當作前哨偵測，22:30 backfill 才是 source of truth）
+- 一次性手動補 2026-05-05 ~ 2026-05-20 缺漏 10 個交易日，每天 ~1267~1270 筆，配額消耗 8 quota / 6000
+
+### Gotcha
+- **MIN_COVERAGE_RATIO = 0.85**：因為 ETF / 無融資資格標的會被 FinMind 過濾，實際 margin_rows / price_rows 約 91%；門檻 0.85 預留彈性，避免合理的「ETF 多了」誤判為缺漏
+- **18:00 step 仍保留**：偶爾遇到 cron 延遲到 22:00 後可能直接抓到資料（如 5/22 case），這時 22:30 backfill 就 skip（coverage >= 0.85），不浪費 quota
+- **script 用 BETWEEN + GROUP BY**：兩個獨立查詢然後 Python 合併，不用 `WHERE trade_date IN :tuple`（SQLAlchemy `text()` 不認，要 `bindparam(expanding=True)` 才行，太繞）
+- **exit code**：`0 ok / 1 partial / 2 all_failed / 5 holiday`；workflow 視 0/1/5 為 pass，2 為 fail
+- **evidence card 仍只送 3d**：本輪只解決資料缺漏；未來若要讓 LLM 更敏銳，可考慮在 [llm_caller.py:990](backend/app/signals/llm_caller.py#L990) 加 `margin_change_1d / short_change_1d`，給單日訊號 fallback
+
+## M23 融資融券深度分析（2026-05-25 第二輪）
+
+### 需求
+- 魚尾 SignalCard 的「融券」chip 太薄，使用者要求加深層分析
+- 必須包含「大盤融資融券盤勢」（瞭解整體環境）+「個股融資融券狀況」（具體解讀）
+- 權重 3:7（大盤 30% / 個股 70%）
+- 個股部分要用使用者範例的格式：表格 + 解讀 + 結論 + 風險提示
+
+### 實作
+- **後端新檔** [backend/app/signals/market_margin.py](backend/app/signals/market_margin.py)
+  - `compute_market_margin_snapshot(db, target_date, *, short_lookback=5)`：聚合全市場融資融券；輸出 today + trend_5d + climate_label/reason
+  - `climate_label` 純規則：5 日融資 +2% 以上→`expansive`、-2% 以下→`contractive`、否則 `neutral`、無資料 `unknown`
+  - `climate_reason` 寫成 LLM 可直接引用的繁體中文一句話
+- **candidate_pool** 加 5 個欄位給 LLM 寫表格用：`margin_balance_shares / margin_change_shares / short_balance_shares / short_change_shares / margin_short_ratio_pct`
+- **llm_caller**：
+  - `_to_evidence_view` 加 6 個欄位（上述 5 + `close_price`）
+  - `_run_watch_reason_chunk` user_msg 加 margin_analysis schema + 嚴格 3:7 規則 + 抄 evidence 不可自編
+  - `_coerce_margin_analysis(raw, *, evidence)` 從 LLM 回應抽出物件；缺漏時用 evidence 補表格部分
+  - `_watch_reason_fallback` 也產 margin_analysis（至少有表格）
+  - `_WATCH_REASON_HEADERS` 加「WATCH margin_analysis 寫作規則」確保 stage 切片時保留
+- **pipeline** 在 explanation stage 前算一次 `market_margin.compute_market_margin_snapshot`，塞進 `market_context["margin_climate"]`，供後續 batch 共用
+- **prompt** [backend/app/prompts/watch-list-stock.md](backend/app/prompts/watch-list-stock.md)
+  - INPUT 個股欄位加 5 個張數欄 + `close_price`
+  - INPUT market_context 加 `margin_climate` 物件
+  - OUTPUT watchlist[] 加 `margin_analysis` 物件
+  - 新增「WATCH margin_analysis 寫作規則」section（含 3:7 權重、欄位規則、白話口吻範例）
+- **前端**：
+  - [api.ts](frontend/src/lib/api.ts) 加 `SignalMarginAnalysis / SignalMarginAnalysisTable / SignalMarketMarginClimate / SignalMarketMarginToday / SignalMarketMarginTrend` 型別
+  - [DailySignalsPanel.tsx](frontend/src/components/DailySignalsPanel.tsx) 加 `MarginAnalysisPanel` 元件（表格 + 個股解讀 + 結論 + 大盤摘要 + 風險提示，rose-themed）
+  - 注入到 `SignalDetailDialog` 5 panel grid 之後、footer 之前
+  - 台股慣例配色：融資/融券「增加」紅色（散戶活躍）、「減少」綠色（退場）
+
+### Gotcha
+- **大盤資料是 deterministic 算的，不是 LLM 上網查**：保證 pipeline 重跑結果一致；LLM 只負責把數字寫成白話 reason
+- **個股 stock_table 必須抄 evidence 不可自編**：prompt 已硬寫；後端 `_coerce_margin_analysis` 用 evidence 兜底，LLM 失敗時前端仍能看到正確張數
+- **`margin_change_shares` 是當日 - 昨日**：ETL 階段已用 `MarginPurchaseTodayBalance - MarginPurchaseYesterdayBalance` 算好；候選池只需從 margin_trade 一次撈
+- **券資比保留 4 位小數但前端顯示 2 位**：DB 算 ratio 用 `round(x, 4)` 留精度，前端 `formatPct` toFixed(2) 給可讀性
+- **margin_climate 在 explanation / watch_reason 兩段共用**：pipeline 一次算後塞 market_context，兩 stage batch 都從 market_context 拿；不重算
+- **`_WATCH_REASON_HEADERS` 必須加新 section**：A4 prompt 切片時 watch_reason stage 只保留指定 section，漏加會導致新規則被裁掉、LLM 看不到
+- **`market_margin` 用 `inspect()` 不會跑**：本實作純 SQL `SUM / GROUP BY`，沒用 ORM session inspector；測試環境用 in-memory SQLite + 隨機 seed 即可驗證
+- **空資料 climate=unknown**：所有 metric None 時不該回 neutral（會誤導 LLM 寫「區間震盪」），明確標 unknown 讓 prompt 走 fallback 文案
+- **`stock_count` 在 today 物件內**：給 LLM 判斷「資料完整度」用；若 stock_count < 1000 代表 ETL 還沒完整同步，建議在 prompt 內寫保守判讀
+
+## M23 再偵測閘門：tracking_status + 3 條派發硬閘門（2026-05-26）
+
+### 背景
+- 觀察 6515 / 6805 績效檔：首次抓到後 max_positive 只有 +0.99%~+7.13%，但 max_negative 跌到 -14%~-16%
+- Root cause：FOLLOWER 預分類只看 `0 < price_change_5d < leader_gain × 0.7` + `flow_3d > 0`，沒檢查 leader 已漲到第幾段 / 自己有沒有真的突破 / 漲幅是否還在主升段早期
+- 既有 soft hints（HINT_WEAKENING / HINT_DISTRIBUTION）只是描述欄位，不是硬性閘門
+
+### 範圍（Phase 1.1 ~ 1.3）
+- **不**動 `archive.py`：這次只做「再偵測閘門」（防止重複推薦剛失敗的股票），不動 early-exit 結算邏輯
+- **不**改 LLM 決策格式：仍維持 WATCH / REMOVE 二元；不加 grade / quality_tier
+- 目的：把後段 FOLLOWER 在 candidate_pool 階段就攔下，不讓它進入 LLM 推薦清單
+
+### 1.1 candidate_pool 注入 tracking_status
+- 新 helper `_load_tracking_status(db, stock_ids, target_date)`：join `signal_watch_hits`
+- 計算 7 個欄位（全部 flat 灌進 candidate dict）：
+  - `is_tracked`（bool）
+  - `first_seen_date`（date | None）= MIN(snapshot_date) per stock
+  - `days_since_first_seen`（int）= `daily_price.trade_date` 介於 (first_seen, target_date] 的天數
+  - `hit_count`（int）= COUNT DISTINCT snapshot_date
+  - `max_positive_return_pct` / `max_negative_return_pct`：用 max / min 聚合（多筆 row 防部分 update 殘留舊值）
+  - `failed_follow_through`（bool）：`days >= 3 AND max_pos < 3.0 AND max_neg < -6.0`
+- 常數集中在 [candidate_pool.py](backend/app/signals/candidate_pool.py) 頂部：`TRACKING_FAILED_DAYS_THRESHOLD = 3` / `TRACKING_FAILED_MAX_POSITIVE_PCT = 3.0` / `TRACKING_FAILED_MAX_NEGATIVE_PCT = -6.0`
+- 無歷史命中（首次出現）→ `_empty_tracking_status()` 灌全 None / False
+
+### 1.2 filters.py 新增 3 條 hard exclusion
+[filters.py](backend/app/signals/filters.py) `_is_hard_excluded` 在既有 4 條後追加：
+
+5. **failed_follow_through**：直接讀 candidate `failed_follow_through == True` → 剔除
+6. **price_extended_inst_selling**：`price_change_10d > 25.0` AND `total_institution_flow_1d < 0` → 派發前兆剔除
+7. **inst_3d_pos_1d_neg_price_dropping**：`flow_3d > 0` AND `flow_1d < 0` AND `price_change_1d < -1.5` → 主力出貨確認剔除
+
+### 1.3 prompt + evidence card
+- [watch-list-stock.md](backend/app/prompts/watch-list-stock.md) INPUT 段加 `tracking_status` 物件描述 + 三條 backend deterministic exclusion 說明（告訴 LLM「你看到的池子已是相對乾淨的候選」）
+- WATCH `capital_reason` 寫作規則加一條：「若 tracking_status.is_tracked=true 且 days_since_first_seen>=3，必須引用追蹤表現」
+- [llm_caller.py](backend/app/signals/llm_caller.py) `_to_evidence_view` 加 `tracking_status` nested dict（不暴露 failed_follow_through 給 LLM，因為這類股票已被 hard filter 排除）
+- 新 helper `_tracking_status_view(candidate)`：處理 `first_seen_date` 可能已是字串或 date object
+
+### Gotcha
+- **早退結算（機制 A）不在本範圍**：6515 / 6805 若已被 archive 早退（hits 表刪除），本實作 `_load_tracking_status` 拿不到資料，會回 `_empty_tracking_status`。這是刻意的：若未來要加「30 天內曾 early_exit_failed_follow_through 就不准重新進池」，需要另外 join `signal_watch_completed_archives`（機制 B 擴充）
+- **failed_follow_through 不暴露給 LLM**：hard filter 已過濾，evidence card 留著反而誤導 LLM「為什麼這檔還在池子裡」；只暴露 raw 欄位（first_seen / days / hit_count / max_pos / max_neg）讓 LLM 自己理解
+- **days_since_first_seen 計算用 daily_price.trade_date**：不用 calendar days（會誤吃到週末 / 春節）；用 distinct trade_date 反推交易日數
+- **多筆 SignalWatchHit row 的 max_pos / max_neg 聚合用 max / min**：archive cron 每天會把同 cycle 內每筆 hit 的 max_* 都同步更新（per 2026-04-30 修正），但保守起見用 aggregate 避免某 row 因 partial update 殘留舊值
+- **boundary 測試嚴格 > / <**：`price_change_10d > 25.0`（25.0 不剔除）/ `price_change_1d < -1.5`（-1.5 不剔除）；測試 `test_hard_exclusions_keeps_at_extended_boundary_25_pct` 與 `test_hard_exclusions_keeps_inst_divergence_when_price_drop_mild` 守邊界
+- **既有 4 個 baseline test 仍 fail**：site-passwordless 改動後未同步的 `test_signals_router.py` 那 4 個 regenerate auth 測試與本輪無關（驗證 baseline 4 fail = 4 fail）
+
+### 預期效果（待 prod 觀察）
+- 6515 那類「max_pos +0.99% / max_neg -14.20%」5 天內就會 hit failed_follow_through，下次跑 pipeline 直接從候選池被剔除
+- price_change_10d > 25% + 法人轉賣的派發前兆股提早被攔（不需要等到實際跌破才反應）
+- 候選池更乾淨 → LLM 看到的 stock_pool 品質更高 → WATCH 清單命中率應提升
+- Trade-off：可能會誤殺一些短期回檔但仍有題材的健康股；觀察 prod 後若太嚴，可放寬 `_HARD_PRICE_EXTENDED_10D_PCT` 從 25 → 30，或要求 `price_change_1d < -2.0`（更嚴的 1d 跌幅確認）
+

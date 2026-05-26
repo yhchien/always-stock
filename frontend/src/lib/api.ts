@@ -1220,6 +1220,26 @@ export interface SignalWatchlistItem {
   chip_reason?: string[] | null
   margin_reason?: string[] | null
   technical_reason?: string[] | null
+  /** 2026-05-25：融資融券專屬結構化分析，比重 大盤 30% / 個股 70%。 */
+  margin_analysis?: SignalMarginAnalysis | null
+}
+
+export interface SignalMarginAnalysisTable {
+  close_price: number | null
+  margin_balance_shares: number | null
+  margin_change_shares: number | null
+  short_balance_shares: number | null
+  short_change_shares: number | null
+  margin_short_ratio_pct: number | null
+}
+
+export interface SignalMarginAnalysis {
+  stock_table: SignalMarginAnalysisTable
+  stock_interpretation: string
+  stock_conclusion: string
+  market_summary: string
+  risk_note: string
+  weight_ratio: string
 }
 
 export interface SignalSummary {
@@ -1230,6 +1250,31 @@ export interface SignalSummary {
   risk_note?: string | null
 }
 
+export interface SignalMarketMarginToday {
+  margin_balance_shares: number | null
+  margin_change_shares: number | null
+  short_balance_shares: number | null
+  short_change_shares: number | null
+  margin_short_ratio_pct: number | null
+  stock_count: number | null
+}
+
+export interface SignalMarketMarginTrend {
+  baseline_date: string | null
+  margin_change_pct: number | null
+  short_change_pct: number | null
+  margin_short_ratio_pct_change: number | null
+}
+
+export interface SignalMarketMarginClimate {
+  target_date: string
+  data_available: boolean
+  today?: SignalMarketMarginToday | null
+  trend_5d?: SignalMarketMarginTrend | null
+  climate_label: "expansive" | "neutral" | "contractive" | "unknown"
+  climate_reason: string
+}
+
 export interface SignalMarketContext {
   market_state?: string | null
   taiex_change_pct?: number | null
@@ -1237,6 +1282,8 @@ export interface SignalMarketContext {
   vix_status?: string | null
   futures_bias?: string | null
   market_state_reason?: string | null
+  /** 2026-05-25：大盤融資融券盤勢，從 backend market_margin.py 注入。 */
+  margin_climate?: SignalMarketMarginClimate | null
 }
 
 export interface SignalSnapshotData {

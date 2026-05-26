@@ -15,6 +15,7 @@ from app.models import (
     IndustryDailyFlow,
     InstStockFlow,
     MarginTrade,
+    SignalWatchHit,
     StockMaster,
 )
 from app.signals import candidate_pool as cp_mod
@@ -365,3 +366,182 @@ def test_build_candidate_pool_returns_empty_when_no_inputs(db):
         {"top_industries_3d": [], "top_stocks_3d": []},
     )
     assert out == []
+
+
+# ---------- tracking_status（再偵測閘門，2026-05-26）----------
+
+
+def _seed_signal_watch_hit(
+    db,
+    *,
+    stock_id,
+    snapshot_date,
+    max_positive_return_pct=None,
+    max_negative_return_pct=None,
+    signal_type="LEADER",
+    industry="半導體業",
+):
+    """最精簡的 SignalWatchHit seed（補必填欄位 reason/theme/group_info/leader_check/signals）。"""
+    db.add(
+        SignalWatchHit(
+            snapshot_date=snapshot_date,
+            stock_id=stock_id,
+            stock_name=f"S{stock_id}",
+            signal_type=signal_type,
+            industry_name=industry,
+            reason="test reason",
+            theme={},
+            group_info={},
+            leader_check={},
+            signals={},
+            max_positive_return_pct=max_positive_return_pct,
+            max_negative_return_pct=max_negative_return_pct,
+        )
+    )
+
+
+def _seed_min_candidate_for(db, sid, *, industry="半導體業", dates=None):
+    """為 tracking_status 測試 seed 一檔最小可進候選池的股票（master + price + flow）。"""
+    if dates is None:
+        dates = [date(2026, 4, d) for d in range(13, 23)]  # 10 個交易日
+    _seed_master(db, sid, f"S{sid}", industry)
+    for d in dates:
+        _seed_price(db, d, sid)
+        _seed_flow(db, d, sid, "foreign", 1.0e8)
+    for d in dates[-3:]:
+        _seed_industry_flow(db, d, industry, 5.0e9)
+
+
+def test_tracking_status_defaults_when_no_prior_hits(db):
+    """從未被抓過 → is_tracked=False / 各欄位 None / failed_follow_through=False。"""
+    _seed_min_candidate_for(db, "2330")
+    db.commit()
+
+    ingestion = ingest_data(db, date(2026, 4, 22))
+    rankings = compute_rankings(db, date(2026, 4, 22), ingestion)
+    pool = build_candidate_pool(db, date(2026, 4, 22), ingestion, rankings)
+
+    cand = next(c for c in pool if c["stock_id"] == "2330")
+    assert cand["is_tracked"] is False
+    assert cand["first_seen_date"] is None
+    assert cand["days_since_first_seen"] is None
+    assert cand["hit_count"] is None
+    assert cand["max_positive_return_pct"] is None
+    assert cand["max_negative_return_pct"] is None
+    assert cand["failed_follow_through"] is False
+
+
+def test_tracking_status_populated_from_signal_watch_hits(db):
+    """SignalWatchHit 有資料 → 欄位正確填上，failed_follow_through 計算正確。
+
+    Scenario: 2330 在 4/13 首次抓到，到 4/22 已 7 個交易日，max_pos=2.5 / max_neg=-7.0
+    → days_since=7 >= 3, max_pos<3, max_neg<-6 → failed_follow_through=True
+    """
+    _seed_min_candidate_for(db, "2330")
+    _seed_signal_watch_hit(
+        db,
+        stock_id="2330",
+        snapshot_date=date(2026, 4, 13),
+        max_positive_return_pct=2.5,
+        max_negative_return_pct=-7.0,
+    )
+    db.commit()
+
+    ingestion = ingest_data(db, date(2026, 4, 22))
+    rankings = compute_rankings(db, date(2026, 4, 22), ingestion)
+    pool = build_candidate_pool(db, date(2026, 4, 22), ingestion, rankings)
+
+    cand = next(c for c in pool if c["stock_id"] == "2330")
+    assert cand["is_tracked"] is True
+    assert cand["first_seen_date"] == date(2026, 4, 13)
+    # 4/14, 4/15, ..., 4/22 = 9 個交易日（不含 4/13 當天）
+    assert cand["days_since_first_seen"] == 9
+    assert cand["hit_count"] == 1
+    assert cand["max_positive_return_pct"] == 2.5
+    assert cand["max_negative_return_pct"] == -7.0
+    assert cand["failed_follow_through"] is True
+
+
+def test_tracking_status_not_failed_when_days_under_threshold(db):
+    """days_since=2 → 還沒到 3 個交易日驗證期 → failed_follow_through=False。"""
+    _seed_min_candidate_for(db, "2330")
+    # 4/20 首次抓到，target 4/22 → days_since=2
+    _seed_signal_watch_hit(
+        db,
+        stock_id="2330",
+        snapshot_date=date(2026, 4, 20),
+        max_positive_return_pct=0.5,
+        max_negative_return_pct=-8.0,  # 已經 -8 但天數還沒到
+    )
+    db.commit()
+
+    ingestion = ingest_data(db, date(2026, 4, 22))
+    rankings = compute_rankings(db, date(2026, 4, 22), ingestion)
+    pool = build_candidate_pool(db, date(2026, 4, 22), ingestion, rankings)
+
+    cand = next(c for c in pool if c["stock_id"] == "2330")
+    assert cand["days_since_first_seen"] == 2
+    assert cand["failed_follow_through"] is False
+
+
+def test_tracking_status_not_failed_when_max_positive_passes_threshold(db):
+    """max_pos=3.5 ≥ 3.0 → 已驗證主升段啟動 → failed=False。"""
+    _seed_min_candidate_for(db, "2330")
+    _seed_signal_watch_hit(
+        db,
+        stock_id="2330",
+        snapshot_date=date(2026, 4, 14),
+        max_positive_return_pct=3.5,
+        max_negative_return_pct=-7.0,
+    )
+    db.commit()
+
+    ingestion = ingest_data(db, date(2026, 4, 22))
+    rankings = compute_rankings(db, date(2026, 4, 22), ingestion)
+    pool = build_candidate_pool(db, date(2026, 4, 22), ingestion, rankings)
+
+    cand = next(c for c in pool if c["stock_id"] == "2330")
+    assert cand["failed_follow_through"] is False
+
+
+def test_tracking_status_not_failed_when_max_negative_above_threshold(db):
+    """max_neg=-5.0 > -6.0 → 回撤可控 → failed=False。"""
+    _seed_min_candidate_for(db, "2330")
+    _seed_signal_watch_hit(
+        db,
+        stock_id="2330",
+        snapshot_date=date(2026, 4, 14),
+        max_positive_return_pct=2.0,
+        max_negative_return_pct=-5.0,
+    )
+    db.commit()
+
+    ingestion = ingest_data(db, date(2026, 4, 22))
+    rankings = compute_rankings(db, date(2026, 4, 22), ingestion)
+    pool = build_candidate_pool(db, date(2026, 4, 22), ingestion, rankings)
+
+    cand = next(c for c in pool if c["stock_id"] == "2330")
+    assert cand["failed_follow_through"] is False
+
+
+def test_tracking_status_hit_count_counts_distinct_snapshot_dates(db):
+    """3 筆 hits（不同 snapshot_date）→ hit_count=3。"""
+    _seed_min_candidate_for(db, "2330")
+    for d in (date(2026, 4, 14), date(2026, 4, 15), date(2026, 4, 16)):
+        _seed_signal_watch_hit(
+            db,
+            stock_id="2330",
+            snapshot_date=d,
+            max_positive_return_pct=1.0,
+            max_negative_return_pct=-2.0,
+        )
+    db.commit()
+
+    ingestion = ingest_data(db, date(2026, 4, 22))
+    rankings = compute_rankings(db, date(2026, 4, 22), ingestion)
+    pool = build_candidate_pool(db, date(2026, 4, 22), ingestion, rankings)
+
+    cand = next(c for c in pool if c["stock_id"] == "2330")
+    assert cand["hit_count"] == 3
+    # first_seen 為最早的 snapshot
+    assert cand["first_seen_date"] == date(2026, 4, 14)
