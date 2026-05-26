@@ -183,6 +183,38 @@ function ExtremeReturnCell({
   )
 }
 
+// M26：合併單欄顯示「保 / 夢」預測價；舊資料兩值皆 null → 整格顯示 —
+function PredictionCell({
+  conservative,
+  dream,
+}: {
+  conservative?: number | null
+  dream?: number | null
+}) {
+  if (conservative == null && dream == null) {
+    return <span className="font-mono text-sm text-slate-500">--</span>
+  }
+  return (
+    <div className="flex flex-col leading-tight">
+      <span className="font-mono text-xs text-emerald-200">
+        <span className="mr-1 text-slate-400">保</span>
+        {conservative == null ? "--" : conservative.toFixed(2)}
+      </span>
+      <span className="font-mono text-xs text-amber-200">
+        <span className="mr-1 text-slate-400">夢</span>
+        {dream == null ? "--" : dream.toFixed(2)}
+      </span>
+    </div>
+  )
+}
+
+// 凍結第一欄（股票）的 sticky 樣式：用比表格深的背景區分「凍結欄」視覺
+// hover / selected row 不影響第一欄，視覺一致（spreadsheet freeze panes 慣例）
+const STICKY_FIRST_COL_HEAD =
+  "sticky left-0 z-20 bg-slate-950 border-r border-slate-700"
+const STICKY_FIRST_COL_CELL =
+  "sticky left-0 z-10 bg-slate-950 border-r border-slate-700"
+
 function SignalArchiveContent() {
   const router = useRouter()
   const pathname = usePathname()
@@ -469,13 +501,14 @@ function SignalArchiveContent() {
           <Table>
             <TableHeader>
               <TableRow className="border-slate-700">
-                <TableHead className="text-slate-300">股票</TableHead>
+                <TableHead className={`text-slate-300 ${STICKY_FIRST_COL_HEAD}`}>股票</TableHead>
                 <TableHead className="text-slate-300">首次抓到</TableHead>
                 <TableHead className="text-slate-300">最近抓到</TableHead>
                 <TableHead className="text-slate-300">追蹤第幾天</TableHead>
                 <TableHead className="text-slate-300">命中次數</TableHead>
                 <TableHead className="text-slate-300">最新類型</TableHead>
                 <TableHead className="text-slate-300">報酬率</TableHead>
+                <TableHead className="text-slate-300">預測價</TableHead>
                 <TableHead className="text-slate-300">最大正報酬</TableHead>
                 <TableHead className="text-slate-300">最大負報酬</TableHead>
                 <TableHead className="text-slate-300">操作</TableHead>
@@ -484,7 +517,7 @@ function SignalArchiveContent() {
             <TableBody>
               {filteredActiveItems.length === 0 && activeSearch.trim() !== "" && (
                 <TableRow className="border-slate-800">
-                  <TableCell colSpan={10} className="text-center text-sm text-slate-400">
+                  <TableCell colSpan={11} className="text-center text-sm text-slate-400">
                     找不到符合「{activeSearch}」的股票
                   </TableCell>
                 </TableRow>
@@ -501,7 +534,7 @@ function SignalArchiveContent() {
                     <TableRow
                       className={`border-slate-800 ${active ? "bg-slate-800/40" : ""}`}
                     >
-                      <TableCell className="align-top">
+                      <TableCell className={`align-top ${STICKY_FIRST_COL_CELL}`}>
                         <div className="flex flex-col">
                           <button
                             type="button"
@@ -541,6 +574,12 @@ function SignalArchiveContent() {
                         <ReturnCell value={item.return_pct} />
                       </TableCell>
                       <TableCell>
+                        <PredictionCell
+                          conservative={item.conservative_price}
+                          dream={item.dream_price}
+                        />
+                      </TableCell>
+                      <TableCell>
                         <ExtremeReturnCell
                           value={item.max_positive_return_pct}
                           tradeDate={item.max_positive_return_trade_date}
@@ -572,7 +611,7 @@ function SignalArchiveContent() {
                     </TableRow>
                     {active && (
                       <TableRow className="border-slate-800 bg-slate-900/30 hover:bg-slate-900/30">
-                        <TableCell colSpan={10} className="p-0">
+                        <TableCell colSpan={11} className="p-0">
                           <div className="border-t border-slate-700 px-4 py-4">
                             {detailLoading && (
                               <p className="text-sm text-slate-400">載入報告中…</p>
@@ -741,10 +780,11 @@ function SignalArchiveContent() {
           <Table>
             <TableHeader>
               <TableRow className="border-slate-700">
-                <TableHead className="text-slate-300">股票 / 產業</TableHead>
+                <TableHead className={`text-slate-300 ${STICKY_FIRST_COL_HEAD}`}>股票 / 產業</TableHead>
                 <TableHead className="text-slate-300">首次抓到</TableHead>
                 <TableHead className="text-slate-300">抓到次數</TableHead>
                 <TableHead className="text-slate-300">類型</TableHead>
+                <TableHead className="text-slate-300">預測價</TableHead>
                 <TableHead className="text-slate-300">最大正報酬</TableHead>
                 <TableHead className="text-slate-300">最大負報酬</TableHead>
                 <TableHead className="text-slate-300">移出原因</TableHead>
@@ -754,7 +794,7 @@ function SignalArchiveContent() {
             <TableBody>
               {filteredCompletedItems.length === 0 && completedSearch.trim() !== "" && (
                 <TableRow className="border-slate-800">
-                  <TableCell colSpan={8} className="text-center text-sm text-slate-400">
+                  <TableCell colSpan={9} className="text-center text-sm text-slate-400">
                     找不到符合「{completedSearch}」的股票
                   </TableCell>
                 </TableRow>
@@ -767,7 +807,7 @@ function SignalArchiveContent() {
                     key={`${item.stock_id}-${item.first_seen_date}`}
                     className="border-slate-800"
                   >
-                    <TableCell className="align-top">
+                    <TableCell className={`align-top ${STICKY_FIRST_COL_CELL}`}>
                       <div className="flex flex-col">
                         <span className="text-sm font-semibold text-slate-100">
                           {item.stock_id} {item.stock_name}
@@ -791,6 +831,12 @@ function SignalArchiveContent() {
                     </TableCell>
                     <TableCell>
                       <SignalTypeChip type={item.latest_signal_type} />
+                    </TableCell>
+                    <TableCell>
+                      <PredictionCell
+                        conservative={item.conservative_price}
+                        dream={item.dream_price}
+                      />
                     </TableCell>
                     <TableCell>
                       <ExtremeReturnCell

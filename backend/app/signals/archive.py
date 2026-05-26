@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     DailyPrice,
+    SignalExpectationPrice,
     SignalSnapshot,
     SignalWatchCompletedArchive,
     SignalWatchHit,
@@ -74,6 +75,9 @@ class ArchiveSummaryItem:
     max_positive_return_trade_date: Optional[date]
     max_negative_return_pct: Optional[float]
     max_negative_return_trade_date: Optional[date]
+    # M26：對應 (stock_id, first_seen_date) 的 SignalExpectationPrice 預測；舊資料無 → None
+    conservative_price: Optional[float] = None
+    dream_price: Optional[float] = None
 
 
 @dataclass
@@ -97,6 +101,9 @@ class CompletedArchiveItem:
     max_negative_return_trade_date: Optional[date]
     completed_trade_date: date
     closure_reason: str = CLOSURE_REASON_COMPLETED_30_DAYS
+    # M26：對應 (stock_id, first_seen_date) 的 SignalExpectationPrice 預測；舊資料無 → None
+    conservative_price: Optional[float] = None
+    dream_price: Optional[float] = None
 
 
 def persist_signal_watch_hits(
@@ -158,6 +165,42 @@ def persist_signal_watch_hits(
     db.commit()
 
 
+def _load_expectation_prices_map(
+    db: Session,
+    keys: Iterable[tuple[str, date]],
+) -> dict[tuple[str, date], tuple[Optional[float], Optional[float]]]:
+    """批次撈 (stock_id, first_detected_date) → (conservative_price, dream_price)。
+
+    舊 archive row（M26 上線前）不會有對應 expectation 資料 → 該 key 不在回傳 dict 中。
+    只取 status='ok' 的 row，failed/null 視同沒有預測（前端顯示「—」）。
+    """
+    key_list = list(keys)
+    if not key_list:
+        return {}
+    stock_ids = list({sid for sid, _ in key_list})
+    first_dates = list({d for _, d in key_list})
+    rows = (
+        db.query(
+            SignalExpectationPrice.stock_id,
+            SignalExpectationPrice.first_detected_date,
+            SignalExpectationPrice.conservative_price,
+            SignalExpectationPrice.dream_price,
+        )
+        .filter(
+            SignalExpectationPrice.stock_id.in_(stock_ids),
+            SignalExpectationPrice.first_detected_date.in_(first_dates),
+            SignalExpectationPrice.status == "ok",
+        )
+        .all()
+    )
+    wanted = set(key_list)
+    return {
+        (sid, fdate): (cp, dp)
+        for sid, fdate, cp, dp in rows
+        if (sid, fdate) in wanted
+    }
+
+
 def _prune_signal_watch_hits(db: Session) -> None:
     keep_dates = [
         row[0]
@@ -210,6 +253,16 @@ def list_archive_summary(
     ordered = sorted(items, key=lambda item: _summary_sort_key(item, sort_by))
     if limit > 0:
         ordered = ordered[:limit]
+
+    # M26：批次補上 expectation_price 預測
+    expectation_map = _load_expectation_prices_map(
+        db, [(item.stock_id, item.first_seen_date) for item in ordered]
+    )
+    for item in ordered:
+        prediction = expectation_map.get((item.stock_id, item.first_seen_date))
+        if prediction is not None:
+            item.conservative_price, item.dream_price = prediction
+
     return {
         "as_of_trade_date": as_of_trade_date,
         "retention_trade_days": ARCHIVE_RETENTION_TRADE_DAYS,
@@ -236,6 +289,13 @@ def get_archive_detail(
         as_of_trade_date=as_of_trade_date,
         tracking_day_cache={},
     )
+    # M26：補上 expectation_price 預測
+    expectation_map = _load_expectation_prices_map(
+        db, [(summary.stock_id, summary.first_seen_date)]
+    )
+    prediction = expectation_map.get((summary.stock_id, summary.first_seen_date))
+    if prediction is not None:
+        summary.conservative_price, summary.dream_price = prediction
     reports = [
         {
             "snapshot_date": row.snapshot_date,
@@ -335,35 +395,43 @@ def list_completed_archive_summary(
         query = query.limit(limit)
     rows = query.all()
 
+    # M26：批次補上 expectation_price 預測
+    expectation_map = _load_expectation_prices_map(
+        db, [(row.stock_id, row.first_seen_date) for row in rows]
+    )
+
+    items: list[CompletedArchiveItem] = []
+    for row in rows:
+        item = CompletedArchiveItem(
+            stock_id=row.stock_id,
+            stock_name=row.stock_name,
+            industry_name=row.industry_name,
+            sub_industry=row.sub_industry,
+            first_seen_date=row.first_seen_date,
+            latest_hit_date=row.latest_hit_date,
+            hit_count=row.hit_count,
+            latest_signal_type=row.latest_signal_type,
+            baseline_trade_date=row.baseline_trade_date,
+            baseline_price=row.baseline_price,
+            return_day_10_pct=row.return_day_10_pct,
+            return_day_20_pct=row.return_day_20_pct,
+            return_day_30_pct=row.return_day_30_pct,
+            max_positive_return_pct=row.max_positive_return_pct,
+            max_positive_return_trade_date=row.max_positive_return_trade_date,
+            max_negative_return_pct=row.max_negative_return_pct,
+            max_negative_return_trade_date=row.max_negative_return_trade_date,
+            completed_trade_date=row.completed_trade_date,
+            closure_reason=(
+                row.closure_reason or CLOSURE_REASON_COMPLETED_30_DAYS
+            ),
+        )
+        prediction = expectation_map.get((row.stock_id, row.first_seen_date))
+        if prediction is not None:
+            item.conservative_price, item.dream_price = prediction
+        items.append(item)
+
     return {
-        "items": [
-            _serialize_completed_archive_item(
-                CompletedArchiveItem(
-                    stock_id=row.stock_id,
-                    stock_name=row.stock_name,
-                    industry_name=row.industry_name,
-                    sub_industry=row.sub_industry,
-                    first_seen_date=row.first_seen_date,
-                    latest_hit_date=row.latest_hit_date,
-                    hit_count=row.hit_count,
-                    latest_signal_type=row.latest_signal_type,
-                    baseline_trade_date=row.baseline_trade_date,
-                    baseline_price=row.baseline_price,
-                    return_day_10_pct=row.return_day_10_pct,
-                    return_day_20_pct=row.return_day_20_pct,
-                    return_day_30_pct=row.return_day_30_pct,
-                    max_positive_return_pct=row.max_positive_return_pct,
-                    max_positive_return_trade_date=row.max_positive_return_trade_date,
-                    max_negative_return_pct=row.max_negative_return_pct,
-                    max_negative_return_trade_date=row.max_negative_return_trade_date,
-                    completed_trade_date=row.completed_trade_date,
-                    closure_reason=(
-                        row.closure_reason or CLOSURE_REASON_COMPLETED_30_DAYS
-                    ),
-                )
-            )
-            for row in rows
-        ],
+        "items": [_serialize_completed_archive_item(item) for item in items],
         "periods": periods,
         "selected_period_start": period_start,
     }
@@ -1206,6 +1274,8 @@ def _serialize_summary_item(item: ArchiveSummaryItem) -> dict[str, Any]:
         "max_positive_return_trade_date": item.max_positive_return_trade_date,
         "max_negative_return_pct": item.max_negative_return_pct,
         "max_negative_return_trade_date": item.max_negative_return_trade_date,
+        "conservative_price": item.conservative_price,
+        "dream_price": item.dream_price,
     }
 
 
@@ -1230,6 +1300,8 @@ def _serialize_completed_archive_item(item: CompletedArchiveItem) -> dict[str, A
         "max_negative_return_trade_date": item.max_negative_return_trade_date,
         "completed_trade_date": item.completed_trade_date,
         "closure_reason": item.closure_reason,
+        "conservative_price": item.conservative_price,
+        "dream_price": item.dream_price,
     }
 
 

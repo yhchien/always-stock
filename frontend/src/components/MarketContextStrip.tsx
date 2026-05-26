@@ -143,7 +143,8 @@ export default function MarketContextStrip({
           </p>
         ) : null}
 
-        {riskNote ? (
+        {/* 2026-05-27：暫時隱藏市場風險提示黃色框框（保留邏輯便於日後開回） */}
+        {false && riskNote ? (
           <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
             <span className="mt-0.5 shrink-0 rounded bg-amber-500/30 px-1.5 py-0.5 text-[10px] font-black text-amber-100">
               ⚠ 風險提示

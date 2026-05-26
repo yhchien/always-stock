@@ -120,6 +120,9 @@ class SignalArchiveSummaryItemResponse(BaseModel):
     max_positive_return_trade_date: Optional[date]
     max_negative_return_pct: Optional[float]
     max_negative_return_trade_date: Optional[date]
+    # M26：對應 (stock_id, first_seen_date) 的 SignalExpectationPrice 預測；舊資料 = None
+    conservative_price: Optional[float] = None
+    dream_price: Optional[float] = None
 
 
 class SignalArchiveSummaryResponse(BaseModel):
@@ -148,6 +151,9 @@ class SignalArchiveCompletedItemResponse(BaseModel):
     max_negative_return_trade_date: Optional[date]
     completed_trade_date: date
     closure_reason: str = "completed_30_days"
+    # M26：對應 (stock_id, first_seen_date) 的 SignalExpectationPrice 預測;舊資料 = None
+    conservative_price: Optional[float] = None
+    dream_price: Optional[float] = None
 
 
 class SignalArchiveCompletedPeriodMeta(BaseModel):

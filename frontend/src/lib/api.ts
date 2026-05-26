@@ -1355,6 +1355,9 @@ export interface SignalArchiveSummaryItem {
   max_positive_return_trade_date: string | null
   max_negative_return_pct: number | null
   max_negative_return_trade_date: string | null
+  // M26：對應 (stock_id, first_seen_date) 的 expectation price 預測；舊資料 = null
+  conservative_price?: number | null
+  dream_price?: number | null
 }
 
 export interface SignalArchiveSummaryResponse {
@@ -1383,6 +1386,9 @@ export interface SignalArchiveCompletedItem {
   max_negative_return_trade_date: string | null
   completed_trade_date: string
   closure_reason: SignalClosureReason
+  // M26：對應 (stock_id, first_seen_date) 的 expectation price 預測；舊資料 = null
+  conservative_price?: number | null
+  dream_price?: number | null
 }
 
 export type SignalClosureReason =

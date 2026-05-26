@@ -662,7 +662,8 @@ function SignalDetailDialog({
           </div>
 
           {/* 2026-05-25：融資融券專屬結構化分析卡（比重 大盤 30% / 個股 70%） */}
-          {item.margin_analysis ? (
+          {/* 2026-05-27：暫時隱藏融資融券分析紅色框框（保留邏輯便於日後開回） */}
+          {false && item.margin_analysis ? (
             <div className="mt-4">
               <MarginAnalysisPanel analysis={item.margin_analysis} stockId={item.stock} />
             </div>
