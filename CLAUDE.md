@@ -2221,3 +2221,38 @@ function update(next) {
 - 候選池更乾淨 → LLM 看到的 stock_pool 品質更高 → WATCH 清單命中率應提升
 - Trade-off：可能會誤殺一些短期回檔但仍有題材的健康股；觀察 prod 後若太嚴，可放寬 `_HARD_PRICE_EXTENDED_10D_PCT` 從 25 → 30，或要求 `price_change_1d < -2.0`（更嚴的 1d 跌幅確認）
 
+## M23 daily_signals workflow `date is not JSON serializable` 修復（2026-05-26 第二輪）
+
+### 症狀
+- commit `bca09f0` 部署後，2026-05-26 daily_signals cron 在 `llm_explain` stage 炸：
+  ```
+  TypeError: Object of type date is not JSON serializable
+  File ".../app/signals/llm_caller.py", line 650, in _run_decision_chunk
+      f"{json.dumps(chunk, ensure_ascii=False, indent=2)}\n\n"
+  ```
+- workflow exit code 3，pipeline 直接失敗無 snapshot 產出
+
+### Root cause
+- M23 Phase 1.1 `_load_tracking_status` 把 `first_seen_date` (date 物件) 注入 candidate dict
+- `run_research_batch` line 255-265 用 `**stock` spread 把原始 candidate dict（含 date）併進 aligned 結果
+- `_tracking_status_view` 雖然把 `first_seen_date` 轉成 ISO string，但只發生在 evidence_view (給 LLM 看的 user_msg)；下游 stage 拿到的 `aligned[]` 仍保留原 date 物件
+- 後續 `_run_decision_chunk` / `_run_watch_reason_chunk` 對 chunk 跑 `json.dumps` 時無法序列化 date 物件
+
+### 修法
+- 在 [llm_caller.py](backend/app/signals/llm_caller.py) 新增 `_serialize_dates(value)` helper：遞迴把 dict / list 內所有 `hasattr(..., "isoformat")` 的物件轉成 ISO string
+- `run_research_batch` line 255 `**stock` → `**_serialize_dates(stock)`
+- `_research_fallback` line 1144 `**stock` → `**_serialize_dates(stock)`
+- 兩處共用同一 helper，治本：未來 candidate_pool / 其他 deterministic 模組再注入任何 date / datetime 欄位都自動安全
+
+### Regression test
+- [test_signals_llm_caller.py](backend/tests/test_signals_llm_caller.py) 新增 2 案例：
+  - `test_run_research_batch_serializes_date_fields_for_downstream_json_dumps`：candidate 含 `first_seen_date: date` → aligned 結果可被 `json.dumps` 序列化
+  - `test_run_research_batch_fallback_serializes_date_fields`：LLM 失敗走 fallback path 也須 stringify
+- 49 個 llm_caller 測試全 pass
+
+### Gotcha
+- **不能只在 `_tracking_status_view` 處理 date**：那個 helper 只組「給 LLM 看的 view」；下游 stage 拿到的 raw aligned dict 是另一條 path，要在 alignment 階段就 stringify
+- **不要選「7 處 json.dumps 全加 default=str」方案**：使用者選擇治本路徑 — 在 aligned 組裝階段就 stringify，下游 stage 看到的就是乾淨 dict
+- **`hasattr(value, "isoformat")` 同時 cover date / datetime / time**：不需要 isinstance 多個型別
+- **遞迴 walk dict / list**：candidate 含 nested 結構（例如 `soft_hints` list、未來可能 nested config），單層淺 copy 不夠
+

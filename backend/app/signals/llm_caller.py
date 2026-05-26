@@ -254,7 +254,7 @@ def run_research_batch(
         if sid in by_id:
             aligned.append(
                 {
-                    **stock,
+                    **_serialize_dates(stock),
                     **by_id[sid],
                     "stock": sid,
                     # B4：type 鎖死 deterministic prelim_type，LLM 不可改判分類
@@ -1121,6 +1121,24 @@ def _tracking_status_view(candidate: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _serialize_dates(value: Any) -> Any:
+    """遞迴把 dict / list 內的 date / datetime 物件轉成 ISO string。
+
+    Why: candidate_pool 的 `first_seen_date`（M23 Phase 1.1 注入）與其他模組未來可能注入的
+         date 欄位，會被 `run_research_batch` 透過 `**stock` spread 進下游 stage payload；
+         下游 `_run_decision_chunk` / `_run_watch_reason_chunk` 對 chunk 跑 `json.dumps`
+         會 raise `TypeError: Object of type date is not JSON serializable`。
+         在 aligned 組裝時統一過一次，未來再加任何 date 欄位都自動安全。
+    """
+    if hasattr(value, "isoformat"):  # date / datetime / time
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {k: _serialize_dates(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_serialize_dates(v) for v in value]
+    return value
+
+
 def _normalize_prelim_type(raw: Any) -> str:
     """把 candidate_pool 的 prelim_type 映射到 watchlist[].type 接受的 3 個值。
 
@@ -1141,7 +1159,7 @@ def _research_fallback(
 ) -> Dict[str, Any]:
     sid = stock.get("stock_id") or stock.get("stock") or ""
     return {
-        **stock,
+        **_serialize_dates(stock),
         "stock": sid,
         "name": stock.get("name", ""),
         "industry": stock.get("industry"),

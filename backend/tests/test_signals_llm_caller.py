@@ -249,6 +249,71 @@ def test_run_research_batch_aligns_response_by_stock_id(monkeypatch):
     assert fake_client._responses_api.calls[0]["prompt_cache_key"] == llm_caller._CACHE_KEY_RESEARCH
 
 
+def test_run_research_batch_serializes_date_fields_for_downstream_json_dumps(monkeypatch):
+    """Regression：candidate_pool 注入的 first_seen_date 是 date 物件；aligned 結果必須
+    可被 json.dumps 序列化，避免 _run_decision_chunk / _run_watch_reason_chunk 炸
+    TypeError: Object of type date is not JSON serializable。
+    """
+    from datetime import date
+
+    response = {
+        "research": [
+            {
+                "stock": "2330",
+                "name": "台積電",
+                "type": "LEADER",
+                "business_summary": "晶圓代工龍頭",
+                "supply_chain_position": "midstream",
+                "theme_fit": "HIGH",
+                "theme": {"main_theme": "AI", "theme_duration": "2Q_plus", "theme_score": 3, "theme_reason": "AI"},
+                "group_info": {"is_group_stock": False, "group_name": None, "related_group_stocks": [], "group_price_sync": "none"},
+                "leader_check": {"industry_leader": "2330", "leader_price_trend": "strong_up", "leader_supports_theme": True},
+            },
+        ]
+    }
+    _patch_openai(monkeypatch, json.dumps(response, ensure_ascii=False))
+    batch = [
+        {
+            "stock_id": "2330",
+            "name": "台積電",
+            "industry": "半導體業",
+            "prelim_type": "LEADER",
+            # M23 Phase 1.1 注入的 date 物件
+            "first_seen_date": date(2026, 5, 20),
+            "is_tracked": True,
+            "days_since_first_seen": 4,
+        },
+    ]
+    out = llm_caller.run_research_batch(batch)
+    assert len(out) == 1
+    # 整個 aligned dict 必須能被 json.dumps 序列化（不可 raise TypeError）
+    serialized = json.dumps(out, ensure_ascii=False)
+    # first_seen_date 應被轉成 ISO string
+    assert "2026-05-20" in serialized
+
+
+def test_run_research_batch_fallback_serializes_date_fields(monkeypatch):
+    """_research_fallback 走 `**stock` spread，同樣需要先把 date 物件 stringify。"""
+    from datetime import date
+
+    # LLM 回非 JSON → 所有 stock 走 fallback path
+    _patch_openai(monkeypatch, "not json at all")
+    batch = [
+        {
+            "stock_id": "2330",
+            "name": "台積電",
+            "industry": "半導體業",
+            "prelim_type": "LEADER",
+            "first_seen_date": date(2026, 5, 20),
+        },
+    ]
+    out = llm_caller.run_research_batch(batch)
+    assert len(out) == 1
+    # fallback 結果也必須能被 json.dumps 序列化
+    serialized = json.dumps(out, ensure_ascii=False)
+    assert "2026-05-20" in serialized
+
+
 def test_run_research_batch_falls_back_for_missing_stock_in_response(monkeypatch):
     """LLM 只回 1 檔，另一檔走 fallback。"""
     response = {
