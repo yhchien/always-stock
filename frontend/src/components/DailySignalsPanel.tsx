@@ -40,6 +40,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 const LAST_SEEN_KEY = "always-stock:signals:last_seen_snapshot_date"
 const COLLAPSED_KEY = "always-stock:signals:collapsed"
 const TAB_QUERY_KEY = "signals_tab"
+
+// 2026-05-27：暫時隱藏 SignalDetailDialog 內的融資融券分析紅色框框
+// 改回顯示時把這個常數改成 true 即可（保留 MarginAnalysisPanel 函式與後端資料）
+// 明確標型別 boolean（不能用 const false literal，否則 TS 會把三元 truthy branch narrow 成 unreachable）
+const SHOW_MARGIN_ANALYSIS: boolean = false
 type SignalsTab = "leader" | "follower" | "laggard"
 
 const VALID_TABS: ReadonlySet<SignalsTab> = new Set(["leader", "follower", "laggard"])
@@ -662,8 +667,8 @@ function SignalDetailDialog({
           </div>
 
           {/* 2026-05-25：融資融券專屬結構化分析卡（比重 大盤 30% / 個股 70%） */}
-          {/* 2026-05-27：暫時隱藏融資融券分析紅色框框（保留邏輯便於日後開回） */}
-          {false && item.margin_analysis ? (
+          {/* 2026-05-27：暫時隱藏紅色框框（改回顯示請把 SHOW_MARGIN_ANALYSIS 改 true） */}
+          {SHOW_MARGIN_ANALYSIS && item.margin_analysis ? (
             <div className="mt-4">
               <MarginAnalysisPanel analysis={item.margin_analysis} stockId={item.stock} />
             </div>
