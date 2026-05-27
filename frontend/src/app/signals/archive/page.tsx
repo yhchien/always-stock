@@ -210,10 +210,12 @@ function PredictionCell({
 
 // 凍結第一欄（股票）的 sticky 樣式：用比表格深的背景區分「凍結欄」視覺
 // hover / selected row 不影響第一欄，視覺一致（spreadsheet freeze panes 慣例）
+// md: 前綴 → 僅在 ≥ 768px 套用，手機直立 (< 768px) 第一欄正常 scroll，
+// 避免「股票欄」把窄視口塞滿後完全無法看右側內容。
 const STICKY_FIRST_COL_HEAD =
-  "sticky left-0 z-20 bg-slate-950 border-r border-slate-700"
+  "md:sticky md:left-0 md:z-20 md:bg-slate-950 md:border-r md:border-slate-700"
 const STICKY_FIRST_COL_CELL =
-  "sticky left-0 z-10 bg-slate-950 border-r border-slate-700"
+  "md:sticky md:left-0 md:z-10 md:bg-slate-950 md:border-r md:border-slate-700"
 
 function SignalArchiveContent() {
   const router = useRouter()

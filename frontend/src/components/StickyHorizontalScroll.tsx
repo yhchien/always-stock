@@ -27,10 +27,18 @@ export default function StickyHorizontalScroll({
   const [wrapperWidth, setWrapperWidth] = useState(0)
   const [showFakeBar, setShowFakeBar] = useState(false)
   const [mounted, setMounted] = useState(false)
+  // 手機（< 768px）觸控直接滑表格本身即可，fake bar 反而視覺干擾且無法用滑鼠拖；
+  // 桌機 / 平板（≥ 768px）才 portal 視口底部那條 sticky bar。
+  const [isDesktop, setIsDesktop] = useState(false)
 
   // 必須等 client mount 後才能 createPortal 到 document.body
   useEffect(() => {
     setMounted(true)
+    const mq = window.matchMedia("(min-width: 768px)")
+    const update = () => setIsDesktop(mq.matches)
+    update()
+    mq.addEventListener("change", update)
+    return () => mq.removeEventListener("change", update)
   }, [])
 
   // 雙向同步 scrollLeft（用 ref guard 避免無限 loop）
@@ -116,7 +124,7 @@ export default function StickyHorizontalScroll({
       >
         {children}
       </div>
-      {mounted &&
+      {mounted && isDesktop &&
         createPortal(
           <>
             {/* 視口底部 sticky fake scrollbar；20px 高、深色背景 + 陰影讓使用者明顯感受到 */}
