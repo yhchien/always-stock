@@ -118,23 +118,37 @@ export default function StickyHorizontalScroll({
       </div>
       {mounted &&
         createPortal(
-          <div
-            ref={fakeBarRef}
-            aria-hidden
-            className="pointer-events-auto fixed bottom-0 left-0 right-0 z-50 overflow-x-auto border-t border-slate-700/50 bg-slate-900/60 backdrop-blur-sm"
-            style={{
-              display: fakeBarVisible ? "block" : "none",
-              height: 14,
-            }}
-          >
-            {/* spacer 撐出對應 contentWidth 讓 browser 渲染原生水平 scrollbar */}
+          <>
+            {/* 視口底部 sticky fake scrollbar；20px 高、深色背景 + 陰影讓使用者明顯感受到 */}
             <div
+              ref={fakeBarRef}
+              aria-hidden
+              className="pointer-events-auto fixed bottom-0 left-0 right-0 z-50 overflow-x-auto border-t-2 border-sky-500/50 bg-slate-800/95 shadow-[0_-6px_16px_rgba(0,0,0,0.45)] backdrop-blur-sm"
               style={{
-                width: contentWidth,
-                height: 1,
+                display: fakeBarVisible ? "block" : "none",
+                height: 20,
               }}
-            />
-          </div>,
+            >
+              {/* spacer 撐出對應 contentWidth 讓 browser 渲染原生水平 scrollbar */}
+              <div
+                style={{
+                  width: contentWidth,
+                  height: 1,
+                }}
+              />
+            </div>
+            {/* 提示文字浮在 sticky bar 上方，告知使用者此處可水平拖動 */}
+            <div
+              aria-hidden
+              className="pointer-events-none fixed left-1/2 z-50 -translate-x-1/2 select-none text-[10px] font-medium tracking-wider text-sky-300"
+              style={{
+                display: fakeBarVisible ? "block" : "none",
+                bottom: 24,
+              }}
+            >
+              ◀ 此處可水平捲動表格 ▶
+            </div>
+          </>,
           document.body,
         )}
     </>
