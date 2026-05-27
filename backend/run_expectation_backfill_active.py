@@ -125,6 +125,9 @@ def main(argv: List[str]) -> int:
     model_seen = None
 
     for i, (sid, fdate) in enumerate(targets, 1):
+        # 必須在 session 內把欄位讀進 dict，否則 with exit 後 ORM instance detached
+        # 訪問 row.status / row.llm_diagnostic 會炸 DetachedInstanceError
+        snapshot = {"status": "error", "model": None, "tokens": 0}
         try:
             with SessionLocal() as db:
                 row = svc.generate_for_stock(
@@ -133,22 +136,23 @@ def main(argv: List[str]) -> int:
                     first_detected_date=fdate,
                     source="manual",
                 )
-            model_seen = row.llm_model or model_seen
-            tokens = 0
-            if row.llm_diagnostic:
-                tokens = int(row.llm_diagnostic.get("total_tokens") or 0)
-            total_tokens += tokens
+                snapshot["status"] = row.status
+                snapshot["model"] = row.llm_model
+                if row.llm_diagnostic:
+                    snapshot["tokens"] = int(row.llm_diagnostic.get("total_tokens") or 0)
+            model_seen = snapshot["model"] or model_seen
+            total_tokens += snapshot["tokens"]
 
             elapsed = time_mod.time() - start_ts
             rate = i / max(elapsed, 1e-6)
             eta_sec = (total - i) / max(rate, 1e-6)
             logger.info(
                 "[%d/%d] %s first_seen=%s status=%s tokens=%s (avg_tokens=%d, eta=%.0fs)",
-                i, total, sid, fdate, row.status, tokens,
+                i, total, sid, fdate, snapshot["status"], snapshot["tokens"],
                 total_tokens // max(i, 1),
                 eta_sec,
             )
-            if row.status == "ok":
+            if snapshot["status"] == "ok":
                 ok += 1
             else:
                 failed.append(sid)
