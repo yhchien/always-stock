@@ -497,6 +497,14 @@ def refresh_completed_signal_cycles(
         # 走滿期路徑（retention 屆滿），顯式覆寫 closure_reason（避免被舊 early-exit 殘留錯標）。
         completed_item.closure_reason = CLOSURE_REASON_COMPLETED_30_DAYS
         _upsert_completed_archive(db, completed_item)
+        # archive 寫入後清掉 active hits，與 early-exit 行為對齊：
+        # 該股下次再被魚尾抓到時 first_seen_date = 那天的 snapshot_date，
+        # 算「全新 cycle」而非繼續用舊基準。
+        # （不清的話 _prune_signal_watch_hits 雖會自然汰換，但邊界 case 下舊 hits
+        #  仍可能殘留導致 first_seen_date 指向舊 cycle。）
+        db.query(SignalWatchHit).filter(
+            SignalWatchHit.stock_id == stock_id
+        ).delete(synchronize_session=False)
         upserted += 1
 
     return upserted
