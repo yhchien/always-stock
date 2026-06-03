@@ -414,7 +414,12 @@ def get_latest_job(db: Session = Depends(get_db)) -> Optional[JobResponse]:
 def get_signal_archive(
     sort_by: str = Query(default="tracking_days_desc"),
     signal_type: Optional[str] = Query(default=None, alias="type"),
-    limit: int = Query(default=200, ge=1, le=500),
+    limit: int = Query(
+        default=0,
+        ge=0,
+        le=5000,
+        description="0 = 不限筆數（魚尾追蹤期內全部回傳並留存）",
+    ),
     db: Session = Depends(get_db),
 ) -> SignalArchiveSummaryResponse:
     payload = signal_archive.list_archive_summary(
@@ -428,7 +433,12 @@ def get_signal_archive(
 
 @router.get("/archive/completed", response_model=SignalArchiveCompletedResponse)
 def get_completed_signal_archive(
-    limit: int = Query(default=200, ge=1, le=500),
+    limit: int = Query(
+        default=0,
+        ge=0,
+        le=5000,
+        description="0 = 不限筆數（封存紀錄全部回傳並留存）",
+    ),
     period_start: Optional[date] = Query(
         default=None,
         description=(

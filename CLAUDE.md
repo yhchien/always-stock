@@ -115,6 +115,13 @@
 - 前端以深色主題為主
 - Brian 的個人專案，目標是從法人籌碼面輔助台股交易決策
 
+## 魚尾追蹤清單顯示上限移除（2026-06-03）
+- 症狀：`/signals/archive` 的「30 日追蹤」一直卡在 `200 / 200 檔`，使用者反映魚尾應該有多少就顯示並留存多少
+- 根因：`GET /api/signals/archive` 與 `GET /api/signals/archive/completed` 的 `limit` Query 預設 `200`（且 `le=500`），前端 [archive/page.tsx](frontend/src/app/signals/archive/page.tsx) 又硬傳 `limit: 200`，被後端 `ordered[:limit]` 截斷
+- 修法：兩個 endpoint `limit` 改 `default=0, ge=0, le=5000`，`0` 代表不限筆數（沿用既有 `if limit > 0` 才切片的邏輯）；前端 `fetchSignalArchive` / `fetchCompletedSignalArchive` 改傳 `limit: 0`
+- 不動 30 個交易日 retention（active 清單仍是滾動追蹤窗，滿期才封存到 completed）；「留存」靠 completed archive，本次只拔掉顯示截斷
+- Gotcha：前端 `if (params?.limit != null)` 下 `0 != null` 為真會帶上 `limit=0`，後端 `ge=0` 接受；不要改成不傳 limit（會與未來想顯式關閉上限的語意混淆）
+
 ## M25 完工（2026-05-02）
 
 ### 範圍

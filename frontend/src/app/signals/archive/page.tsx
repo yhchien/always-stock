@@ -299,7 +299,8 @@ function SignalArchiveContent() {
     setLoading(true)
     setError(null)
     try {
-      const data = await fetchSignalArchive({ sort_by: sortBy, limit: 200 })
+      // limit: 0 = 不限筆數，魚尾追蹤期內有多少就顯示多少
+      const data = await fetchSignalArchive({ sort_by: sortBy, limit: 0 })
       setSummary(data)
       // 預設不展開任何一檔（inline expand UX：使用者主動點才展開）
     } catch (err) {
@@ -325,7 +326,7 @@ function SignalArchiveContent() {
       setCompletedError(null)
       try {
         const data = await fetchCompletedSignalArchive({
-          limit: 200,
+          limit: 0, // 0 = 不限筆數，封存紀錄全部留存
           periodStart: selectedPeriodStart,
         })
         if (!cancelled) {
