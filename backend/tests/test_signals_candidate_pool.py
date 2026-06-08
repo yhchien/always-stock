@@ -219,6 +219,30 @@ def test_compute_rankings_skips_financial_industries_and_backfills(db):
     assert "水泥" in inds
 
 
+def test_compute_rankings_industry_ranking_uses_two_day_window(db):
+    """排序窗 = 2 日：只有最舊一天爆量的產業不該贏過近 2 日穩定買超的產業。"""
+    stocks = {"2330": {"name": "台積電", "industry": "半導體業"}}
+    dates = [date(2026, 4, 20), date(2026, 4, 21), date(2026, 4, 22)]
+    _seed_full_market(db, dates, stocks)
+    # A：只有最舊一天爆量 → 3 日總額高(10.2e9)、近 2 日低(0.2e9)
+    _seed_industry_flow(db, dates[0], "塑膠", 10.0e9)
+    _seed_industry_flow(db, dates[1], "塑膠", 0.1e9)
+    _seed_industry_flow(db, dates[2], "塑膠", 0.1e9)
+    # B：近 2 日穩定買超 → 2 日總額高(10e9)
+    _seed_industry_flow(db, dates[0], "鋼鐵", 0.0)
+    _seed_industry_flow(db, dates[1], "鋼鐵", 5.0e9)
+    _seed_industry_flow(db, dates[2], "鋼鐵", 5.0e9)
+    db.commit()
+
+    ingestion = ingest_data(db, date(2026, 4, 22))
+    rankings = compute_rankings(db, date(2026, 4, 22), ingestion)
+
+    nets = sorted((r["net_3d"] for r in rankings["top_industries_3d"]), reverse=True)
+    # 2 日窗：鋼鐵 10e9 居首、塑膠近 2 日僅 0.2e9；若是 3 日窗塑膠會以 10.2e9 居首
+    assert nets[0] == pytest.approx(10.0e9)
+    assert min(nets) == pytest.approx(0.2e9)
+
+
 def test_compute_rankings_drops_industry_in_today_sell_blacklist(db):
     """三日買超前段的產業，若當日淨賣超落在賣超前 N → 剔除（不回補）。"""
     stocks = {"2330": {"name": "台積電", "industry": "半導體業"}}

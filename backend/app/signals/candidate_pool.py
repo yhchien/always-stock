@@ -45,7 +45,12 @@ logger = logging.getLogger(__name__)
 _INST_TYPES = ("foreign", "trust", "dealer")
 
 # Spec §5 Step 1 / Step 2
-# 產業：三日法人買超前 10 大「非金融」產業（金融類順延），再剔除「當日賣超前 10」（2026-06-05 改版）
+# 進池排序窗（2026-06-08）：個股 + 產業排行從 3 日縮為 2 日搶反應速度（更早抓到主線啟動）。
+# 下游 classification / metrics 仍用 3d/5d 評強度，當日賣超煞車維持 1 日。
+# 注意：rankings dict key 與 candidate flag 沿用 `_3d` 歷史命名（避免下游連動改名），
+#       實際窗已是 RANKING_WINDOW_DAYS；語義以本常數為準。
+RANKING_WINDOW_DAYS = 2
+# 產業：N 日法人買超前 10 大「非金融」產業（金融類順延），再剔除「當日賣超前 10」（2026-06-05 改版）
 TOP_INDUSTRIES_LIMIT = 10
 TODAY_SELL_BLACKLIST_LIMIT = 10  # 當日（1 日）淨額最賣超的前 N 產業，落在此名單的產業剔除
 TOP_STOCKS_LIMIT = 30
@@ -76,6 +81,7 @@ def ingest_data(db: Session, target_date: date) -> Dict[str, Any]:
     if not trade_dates_60d:
         return {
             "target_date": target_date,
+            "trade_dates_2d": [],
             "trade_dates_3d": [],
             "trade_dates_5d": [],
             "trade_dates_10d": [],
@@ -84,6 +90,7 @@ def ingest_data(db: Session, target_date: date) -> Dict[str, Any]:
         }
     trade_dates_5d = trade_dates_60d[-5:]
     trade_dates_3d = trade_dates_60d[-3:]
+    trade_dates_2d = trade_dates_60d[-RANKING_WINDOW_DAYS:]
     trade_dates_10d = trade_dates_60d[-10:]
 
     masters = (
@@ -94,6 +101,7 @@ def ingest_data(db: Session, target_date: date) -> Dict[str, Any]:
 
     return {
         "target_date": target_date,
+        "trade_dates_2d": trade_dates_2d,
         "trade_dates_3d": trade_dates_3d,
         "trade_dates_5d": trade_dates_5d,
         "trade_dates_10d": trade_dates_10d,
@@ -110,29 +118,29 @@ def compute_rankings(
     target_date: date,
     ingestion: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """spec §5 Step 1 / Step 2：產業排行 + 個股 3d 熱錢前 30。
+    """spec §5 Step 1 / Step 2：產業排行 + 個股熱錢前 30（排序窗 = RANKING_WINDOW_DAYS）。
 
-    產業規則（2026-06-05 改版）：
-      1. 全市場各產業以「三日」法人淨買超排序（維持 3 日）
+    產業規則（2026-06-05 改版，2026-06-08 排序窗 3→2 日）：
+      1. 全市場各產業以「N 日（RANKING_WINDOW_DAYS）」法人淨買超排序
       2. 由高往低取，遇金融類產業跳過順延，湊滿 TOP_INDUSTRIES_LIMIT 個非金融產業
       3. 另算「當日（1 日）」各產業淨額，最賣超的前 TODAY_SELL_BLACKLIST_LIMIT 個產業為黑名單
       4. 步驟 2 結果落在黑名單者剔除（不再回補，剩幾個算幾個）
     """
-    trade_dates_3d = ingestion.get("trade_dates_3d") or []
+    trade_dates_rank = ingestion.get("trade_dates_2d") or []
     masters: Dict[str, StockMaster] = ingestion.get("stocks_master") or {}
 
-    if not trade_dates_3d:
+    if not trade_dates_rank:
         return {"top_industries_3d": [], "top_stocks_3d": []}
 
-    # 產業三日累計淨買超（維持 3 日；直接從 industry_daily_flow 聚合，已含三大法人總額）
-    industry_totals_3d: Dict[str, float] = {}
-    for row in load_industry_flow_rows_for_dates(db, trade_dates_3d):
-        industry_totals_3d[row.industry_name] = (
-            industry_totals_3d.get(row.industry_name, 0.0) + float(row.total_net_amount or 0.0)
+    # 產業 N 日累計淨買超（排序窗 = RANKING_WINDOW_DAYS；從 industry_daily_flow 聚合，已含三大法人總額）
+    industry_totals_rank: Dict[str, float] = {}
+    for row in load_industry_flow_rows_for_dates(db, trade_dates_rank):
+        industry_totals_rank[row.industry_name] = (
+            industry_totals_rank.get(row.industry_name, 0.0) + float(row.total_net_amount or 0.0)
         )
 
-    # 當日（1 日）各產業淨額 → 取最賣超的前 N 個產業為黑名單
-    today = trade_dates_3d[-1]
+    # 當日（1 日）各產業淨額 → 取最賣超的前 N 個產業為黑名單（煞車維持 1 日）
+    today = trade_dates_rank[-1]
     industry_totals_1d: Dict[str, float] = {}
     for row in load_industry_flow_rows_for_dates(db, [today]):
         industry_totals_1d[row.industry_name] = (
@@ -148,9 +156,9 @@ def compute_rankings(
         if net < 0
     }
 
-    # 三日由高往低取，遇金融類順延，湊滿 TOP_INDUSTRIES_LIMIT 個非金融產業
+    # 由高往低取，遇金融類順延，湊滿 TOP_INDUSTRIES_LIMIT 個非金融產業
     selected: List[Tuple[str, float]] = []
-    for ind, net in sorted(industry_totals_3d.items(), key=lambda item: item[1], reverse=True):
+    for ind, net in sorted(industry_totals_rank.items(), key=lambda item: item[1], reverse=True):
         if is_financial(ind):
             continue
         selected.append((ind, net))
@@ -177,8 +185,8 @@ def compute_rankings(
         for idx, (ind, net) in enumerate(industry_rows, start=1)
     ]
 
-    # 個股排行：沿用 M22 hot_money_service
-    hot_result = compute_hot_money(db, target_date, days=3, limit=TOP_STOCKS_LIMIT)
+    # 個股排行：沿用 M22 hot_money_service（排序窗 = RANKING_WINDOW_DAYS）
+    hot_result = compute_hot_money(db, target_date, days=RANKING_WINDOW_DAYS, limit=TOP_STOCKS_LIMIT)
     top_stocks = [
         {
             "stock_id": item.stock_id,
