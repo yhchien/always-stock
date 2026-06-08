@@ -198,6 +198,50 @@ def test_compute_rankings_handles_empty_ingestion(db):
     assert out == {"top_industries_3d": [], "top_stocks_3d": []}
 
 
+def test_compute_rankings_skips_financial_industries_and_backfills(db):
+    """金融類產業即使三日淨買超最高，也要被跳過順延，由非金融產業遞補。"""
+    stocks = {"2330": {"name": "台積電", "industry": "半導體業"}}
+    dates = [date(2026, 4, 20), date(2026, 4, 21), date(2026, 4, 22)]
+    _seed_full_market(db, dates, stocks)
+    for d in dates:
+        _seed_industry_flow(db, d, "金融保險業", 9.0e9)  # 最高，但金融 → 跳過
+        _seed_industry_flow(db, d, "半導體業", 5.0e9)
+        _seed_industry_flow(db, d, "水泥", 1.0e9)
+    db.commit()
+
+    ingestion = ingest_data(db, date(2026, 4, 22))
+    rankings = compute_rankings(db, date(2026, 4, 22), ingestion)
+
+    inds = [r["industry_name"] for r in rankings["top_industries_3d"]]
+    assert "金融保險業" not in inds
+    # canonical 後半導體業 → 半導體
+    assert inds[0] == "半導體"
+    assert "水泥" in inds
+
+
+def test_compute_rankings_drops_industry_in_today_sell_blacklist(db):
+    """三日買超前段的產業，若當日淨賣超落在賣超前 N → 剔除（不回補）。"""
+    stocks = {"2330": {"name": "台積電", "industry": "半導體業"}}
+    dates = [date(2026, 4, 20), date(2026, 4, 21), date(2026, 4, 22)]
+    _seed_full_market(db, dates, stocks)
+    # 半導體三日累計仍正（前兩天大買、當日大賣）；水泥三日穩定買超
+    _seed_industry_flow(db, dates[0], "半導體業", 9.0e9)
+    _seed_industry_flow(db, dates[1], "半導體業", 9.0e9)
+    _seed_industry_flow(db, dates[2], "半導體業", -5.0e9)  # 當日大賣超
+    for d in dates:
+        _seed_industry_flow(db, d, "水泥", 1.0e9)
+    db.commit()
+
+    ingestion = ingest_data(db, date(2026, 4, 22))
+    rankings = compute_rankings(db, date(2026, 4, 22), ingestion)
+
+    inds = [r["industry_name"] for r in rankings["top_industries_3d"]]
+    # 半導體三日淨額最高，但當日 -5e9 賣超 → 被剔除
+    assert "半導體" not in inds
+    # 水泥當日買超，不在賣超黑名單 → 保留
+    assert "水泥" in inds
+
+
 # ---------- build_candidate_pool ----------
 
 

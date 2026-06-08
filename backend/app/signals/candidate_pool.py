@@ -29,6 +29,7 @@ from app.models import (
 from app.signals.exclusions import (
     find_group_for_stock,
     get_group_members,
+    is_financial,
     should_exclude,
 )
 
@@ -44,7 +45,9 @@ logger = logging.getLogger(__name__)
 _INST_TYPES = ("foreign", "trust", "dealer")
 
 # Spec §5 Step 1 / Step 2
-TOP_INDUSTRIES_LIMIT = 6
+# 產業：三日法人買超前 10 大「非金融」產業（金融類順延），再剔除「當日賣超前 10」（2026-06-05 改版）
+TOP_INDUSTRIES_LIMIT = 10
+TODAY_SELL_BLACKLIST_LIMIT = 10  # 當日（1 日）淨額最賣超的前 N 產業，落在此名單的產業剔除
 TOP_STOCKS_LIMIT = 30
 TOP_STOCKS_INNER = 6  # spec §6 group expansion 取 top 6
 
@@ -107,24 +110,55 @@ def compute_rankings(
     target_date: date,
     ingestion: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """spec §5 Step 1 / Step 2：產業 3d 熱錢前 10 + 個股 3d 熱錢前 40。"""
+    """spec §5 Step 1 / Step 2：產業排行 + 個股 3d 熱錢前 30。
+
+    產業規則（2026-06-05 改版）：
+      1. 全市場各產業以「三日」法人淨買超排序（維持 3 日）
+      2. 由高往低取，遇金融類產業跳過順延，湊滿 TOP_INDUSTRIES_LIMIT 個非金融產業
+      3. 另算「當日（1 日）」各產業淨額，最賣超的前 TODAY_SELL_BLACKLIST_LIMIT 個產業為黑名單
+      4. 步驟 2 結果落在黑名單者剔除（不再回補，剩幾個算幾個）
+    """
     trade_dates_3d = ingestion.get("trade_dates_3d") or []
     masters: Dict[str, StockMaster] = ingestion.get("stocks_master") or {}
 
     if not trade_dates_3d:
         return {"top_industries_3d": [], "top_stocks_3d": []}
 
-    # 產業排行：直接從 industry_daily_flow 聚合（已含三大法人總額）
-    industry_totals: Dict[str, float] = {}
+    # 產業三日累計淨買超（維持 3 日；直接從 industry_daily_flow 聚合，已含三大法人總額）
+    industry_totals_3d: Dict[str, float] = {}
     for row in load_industry_flow_rows_for_dates(db, trade_dates_3d):
-        industry_totals[row.industry_name] = (
-            industry_totals.get(row.industry_name, 0.0) + float(row.total_net_amount or 0.0)
+        industry_totals_3d[row.industry_name] = (
+            industry_totals_3d.get(row.industry_name, 0.0) + float(row.total_net_amount or 0.0)
         )
-    industry_rows = sorted(
-        industry_totals.items(),
-        key=lambda item: item[1],
-        reverse=True,
-    )[:TOP_INDUSTRIES_LIMIT]
+
+    # 當日（1 日）各產業淨額 → 取最賣超的前 N 個產業為黑名單
+    today = trade_dates_3d[-1]
+    industry_totals_1d: Dict[str, float] = {}
+    for row in load_industry_flow_rows_for_dates(db, [today]):
+        industry_totals_1d[row.industry_name] = (
+            industry_totals_1d.get(row.industry_name, 0.0) + float(row.total_net_amount or 0.0)
+        )
+    # 只有「當日真的淨賣超（net < 0）」的產業才可能進黑名單；買超產業永遠不算賣超。
+    # 由最賣超往上取前 N；若當日淨賣超產業不足 N 個，黑名單就只有那幾個。
+    today_sell_blacklist: Set[str] = {
+        ind
+        for ind, net in sorted(industry_totals_1d.items(), key=lambda item: item[1])[
+            :TODAY_SELL_BLACKLIST_LIMIT
+        ]
+        if net < 0
+    }
+
+    # 三日由高往低取，遇金融類順延，湊滿 TOP_INDUSTRIES_LIMIT 個非金融產業
+    selected: List[Tuple[str, float]] = []
+    for ind, net in sorted(industry_totals_3d.items(), key=lambda item: item[1], reverse=True):
+        if is_financial(ind):
+            continue
+        selected.append((ind, net))
+        if len(selected) >= TOP_INDUSTRIES_LIMIT:
+            break
+
+    # 剔除當日賣超前 N 的產業（不再回補）
+    industry_rows = [(ind, net) for ind, net in selected if ind not in today_sell_blacklist]
 
     industry_counts: Dict[str, int] = {}
     for master in masters.values():

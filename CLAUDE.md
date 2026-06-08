@@ -2263,3 +2263,28 @@ function update(next) {
 - **`hasattr(value, "isoformat")` 同時 cover date / datetime / time**：不需要 isinstance 多個型別
 - **遞迴 walk dict / list**：candidate 含 nested 結構（例如 `soft_hints` list、未來可能 nested config），單層淺 copy 不夠
 
+
+## M23 候選池產業規則改版：金融順延 + 當日賣超剔除（2026-06-08）
+
+### 改動範圍
+- 只動 [backend/app/signals/candidate_pool.py](backend/app/signals/candidate_pool.py) 的 `compute_rankings` 產業排行段；個股來源（A）、`build_candidate_pool`、集團股擴散、classification、enrich flag **完全不動**（維持三日語義）
+
+### 候選池三來源（聯集）
+- **A 個股（不動）**：`compute_hot_money(days=3, limit=30)` → 三日法人買超前 30 大個股
+- **B+C 產業（合併新規則）**：
+  1. 全市場各產業以**三日**法人淨買超排序（維持 3 日）
+  2. 由高往低取，**遇金融類產業跳過順延**（用 `exclusions.is_financial(industry_name)`），湊滿 `TOP_INDUSTRIES_LIMIT=10` 個非金融產業
+  3. 另算**當日(1 日)** 各產業淨額，取最賣超的前 `TODAY_SELL_BLACKLIST_LIMIT=10` 個產業為黑名單
+  4. 步驟 2 的 10 個產業中，落在當日賣超黑名單者**剔除（不回補，剩幾個算幾個）**
+  5. 存活產業成分股全進池
+- **集團股擴散（保留）**：top_stocks 前 `TOP_STOCKS_INNER=6` 的同集團成員照舊進池
+
+### 常數變更
+- `TOP_INDUSTRIES_LIMIT`：6 → **10**
+- 新增 `TODAY_SELL_BLACKLIST_LIMIT = 10`
+
+### Gotcha
+- **「當日賣超」只算 net < 0 的產業**：黑名單 comprehension 加 `if net < 0` guard；若一個產業當日是買超（正值），永遠不該被當賣超剔除。否則市場當日淨賣超產業不足 10 個時，會誤把買超產業也塞進黑名單（現有測試只 seed 2 個正值產業就會全被殺光）
+- **金融順延 vs 當日賣超剔除順序**：先三日排名 + 金融順延湊滿 10 個非金融，**再**用當日賣超黑名單剔除；金融會回補（順延），當日賣超不回補
+- **產業 canonical name 落差仍在**：industry flow 經 `normalize_industry_name` canonicalize（「半導體業」→「半導體」），但 `stocks_master.industry_name` 是原始名；`build_candidate_pool` 的 industry membership 比對可能對不上 → 實務上靠個股來源（A）與集團擴散補進池，這是既有行為非本次改動引入
+- 測試：[test_signals_candidate_pool.py](backend/tests/test_signals_candidate_pool.py) 新增 `test_compute_rankings_skips_financial_industries_and_backfills` + `test_compute_rankings_drops_industry_in_today_sell_blacklist`；21 candidate_pool + 62 classification/filters/pipeline 全 pass
