@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
-import { usePathname, useRouter, useSearchParams } from "next/navigation"
 
 import {
   fetchExpectationPrices,
@@ -35,23 +34,14 @@ import TradingPlanPanel, {
   type TradingPlanAccent,
 } from "@/components/TradingPlanPanel"
 import WatchlistAddButton from "@/components/WatchlistAddButton"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
 const LAST_SEEN_KEY = "always-stock:signals:last_seen_snapshot_date"
 const COLLAPSED_KEY = "always-stock:signals:collapsed"
-const TAB_QUERY_KEY = "signals_tab"
 
 // 2026-05-27：暫時隱藏 SignalDetailDialog 內的融資融券分析紅色框框
 // 改回顯示時把這個常數改成 true 即可（保留 MarginAnalysisPanel 函式與後端資料）
 // 明確標型別 boolean（不能用 const false literal，否則 TS 會把三元 truthy branch narrow 成 unreachable）
 const SHOW_MARGIN_ANALYSIS: boolean = false
-type SignalsTab = "leader" | "follower" | "laggard"
-
-const VALID_TABS: ReadonlySet<SignalsTab> = new Set(["leader", "follower", "laggard"])
-
-function isSignalsTab(value: string | null): value is SignalsTab {
-  return value !== null && VALID_TABS.has(value as SignalsTab)
-}
 
 function formatTpeDateTime(iso: string | null | undefined): string {
   if (!iso) return ""
@@ -878,12 +868,6 @@ export default function DailySignalsPanel({
   initialJobLoaded?: boolean
 }) {
   const { status: authStatus } = useAuth()
-  const router = useRouter()
-  const pathname = usePathname()
-  const searchParams = useSearchParams()
-  const tabParam = searchParams.get(TAB_QUERY_KEY)
-  const tab: SignalsTab = isSignalsTab(tabParam) ? tabParam : "leader"
-
   const [snapshot, setSnapshot] = useState<SignalSnapshotResponse | null>(initialSnapshot ?? null)
   const [snapshotLoading, setSnapshotLoading] = useState(!initialSnapshotLoaded)
   const [snapshotError, setSnapshotError] = useState<string | null>(null)
@@ -1019,22 +1003,6 @@ export default function DailySignalsPanel({
     setHasNewSignals(false)
   }, [snapshot])
 
-  const handleTabChange = useCallback(
-    (next: SignalsTab) => {
-      const params = new URLSearchParams(searchParams.toString())
-      if (next === "leader") {
-        // 預設 tab 不寫進 URL，避免 query 過於雜亂
-        params.delete(TAB_QUERY_KEY)
-      } else {
-        params.set(TAB_QUERY_KEY, next)
-      }
-      const queryString = params.toString()
-      router.replace(queryString ? `${pathname}?${queryString}` : pathname, { scroll: false })
-      markSeen()
-    },
-    [markSeen, pathname, router, searchParams],
-  )
-
   const handleToggleCollapse = useCallback(() => {
     const next = !collapsed
     persistCollapsed(next)
@@ -1098,9 +1066,13 @@ export default function DailySignalsPanel({
     regenerateDisabled = true
   }
 
-  const filteredLeader = watchlist.filter((w) => w.type === "LEADER")
-  const filteredFollower = watchlist.filter((w) => w.type === "FOLLOWER")
-  const filteredLaggard = watchlist.filter((w) => w.type === "LAGGARD")
+  // 不分頁：領漲 → 跟漲 → 補漲 順序合併成單一清單
+  const allSignals = useMemo(() => {
+    const order: Record<string, number> = { LEADER: 0, FOLLOWER: 1, LAGGARD: 2 }
+    return [...watchlist].sort(
+      (a, b) => (order[a.type ?? ""] ?? 99) - (order[b.type ?? ""] ?? 99),
+    )
+  }, [watchlist])
 
   // 收集所有 SignalCard 顯示的股票 ID，一次抓 batch realtime quote。
   // 折疊狀態下不抓（避免無謂打 API），展開後 hook 會自動觸發。
@@ -1207,53 +1179,23 @@ export default function DailySignalsPanel({
           )}
           {!snapshotLoading && !snapshotError && snapshot && (
             <div className="flex flex-col gap-3">
-              <Tabs value={tab} onValueChange={(v) => handleTabChange(v as SignalsTab)}>
-                <TabsList className="bg-slate-800/50 border border-slate-600/40">
-                  <TabsTrigger
-                    value="leader"
-                    className="data-[state=active]:bg-slate-700 data-[state=active]:text-white text-slate-300"
-                  >
-                    領漲 ({leaderCount})
-                  </TabsTrigger>
-                  <TabsTrigger
-                    value="follower"
-                    className="data-[state=active]:bg-slate-700 data-[state=active]:text-white text-slate-300"
-                  >
-                    跟漲 ({followerCount})
-                  </TabsTrigger>
-                  <TabsTrigger
-                    value="laggard"
-                    className="data-[state=active]:bg-slate-700 data-[state=active]:text-white text-slate-300"
-                  >
-                    補漲 ({laggardCount})
-                  </TabsTrigger>
-                </TabsList>
-
-                <TabsContent value="leader" className="mt-3">
-                  <SignalCardGrid
-                    items={filteredLeader}
-                    realtimeQuotes={realtimeQuotes}
-                    expectationByStock={expectationByStock}
-                    emptyText="本日無領漲訊號。"
-                  />
-                </TabsContent>
-                <TabsContent value="follower" className="mt-3">
-                  <SignalCardGrid
-                    items={filteredFollower}
-                    realtimeQuotes={realtimeQuotes}
-                    expectationByStock={expectationByStock}
-                    emptyText="本日無跟漲訊號。"
-                  />
-                </TabsContent>
-                <TabsContent value="laggard" className="mt-3">
-                  <SignalCardGrid
-                    items={filteredLaggard}
-                    realtimeQuotes={realtimeQuotes}
-                    expectationByStock={expectationByStock}
-                    emptyText="本日無補漲訊號。"
-                  />
-                </TabsContent>
-              </Tabs>
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <span className="inline-flex items-center rounded border border-emerald-500/50 bg-emerald-500/10 px-2 py-0.5 font-medium text-emerald-200">
+                  領漲 {leaderCount}
+                </span>
+                <span className="inline-flex items-center rounded border border-sky-500/50 bg-sky-500/10 px-2 py-0.5 font-medium text-sky-200">
+                  跟漲 {followerCount}
+                </span>
+                <span className="inline-flex items-center rounded border border-amber-500/50 bg-amber-500/10 px-2 py-0.5 font-medium text-amber-200">
+                  補漲 {laggardCount}
+                </span>
+              </div>
+              <SignalCardGrid
+                items={allSignals}
+                realtimeQuotes={realtimeQuotes}
+                expectationByStock={expectationByStock}
+                emptyText="本日無訊號。"
+              />
             </div>
           )}
         </div>

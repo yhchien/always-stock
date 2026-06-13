@@ -49,6 +49,9 @@ function isSortBy(value: string | null): value is SignalArchiveSortBy {
 
 const PERIOD_PATTERN = /^\d{4}-\d{2}-\d{2}$/
 
+const ACTIVE_COLLAPSED_KEY = "always-stock:signals-archive:active-collapsed"
+const COMPLETED_COLLAPSED_KEY = "always-stock:signals-archive:completed-collapsed"
+
 function formatPct(value: number | null): string {
   if (value == null) return "--"
   return `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`
@@ -273,6 +276,43 @@ function SignalArchiveContent() {
   const [activeSearch, setActiveSearch] = useState("")
   const [completedSearch, setCompletedSearch] = useState("")
 
+  // 兩張表各自可折疊；偏好存 localStorage（預設展開）
+  const [activeCollapsed, setActiveCollapsed] = useState(false)
+  const [completedCollapsed, setCompletedCollapsed] = useState(false)
+
+  useEffect(() => {
+    try {
+      if (window.localStorage.getItem(ACTIVE_COLLAPSED_KEY) === "true") setActiveCollapsed(true)
+      if (window.localStorage.getItem(COMPLETED_COLLAPSED_KEY) === "true") setCompletedCollapsed(true)
+    } catch {
+      // ignore
+    }
+  }, [])
+
+  const toggleActiveCollapsed = useCallback(() => {
+    setActiveCollapsed((prev) => {
+      const next = !prev
+      try {
+        window.localStorage.setItem(ACTIVE_COLLAPSED_KEY, String(next))
+      } catch {
+        // ignore
+      }
+      return next
+    })
+  }, [])
+
+  const toggleCompletedCollapsed = useCallback(() => {
+    setCompletedCollapsed((prev) => {
+      const next = !prev
+      try {
+        window.localStorage.setItem(COMPLETED_COLLAPSED_KEY, String(next))
+      } catch {
+        // ignore
+      }
+      return next
+    })
+  }, [])
+
   const filteredActiveItems = useMemo(() => {
     if (!summary?.items) return []
     const q = activeSearch.trim().toLowerCase()
@@ -472,6 +512,22 @@ function SignalArchiveContent() {
       </header>
 
       <section className="rounded-xl border border-slate-700 bg-slate-900/40 p-4">
+        <button
+          type="button"
+          onClick={toggleActiveCollapsed}
+          className="mb-3 flex w-full items-center gap-2 text-left text-base font-semibold text-slate-100 hover:text-sky-300"
+          aria-expanded={!activeCollapsed}
+        >
+          <span aria-hidden className="text-slate-400">
+            {activeCollapsed ? "▸" : "▾"}
+          </span>
+          <span>追蹤中（30 個交易日）</span>
+          {summary && summary.items.length > 0 && (
+            <span className="text-xs font-normal text-slate-500">{summary.items.length} 檔</span>
+          )}
+        </button>
+        {!activeCollapsed && (
+        <>
         {!loading && !error && summary && summary.items.length > 0 && (
           <div className="mb-3 flex items-center gap-2">
             <input
@@ -714,18 +770,30 @@ function SignalArchiveContent() {
             </TableBody>
           </Table>
         )}
+        </>
+        )}
       </section>
 
       <section className="rounded-xl border border-slate-700 bg-slate-900/40 p-4">
         <header className="mb-4 flex flex-col gap-3">
           <div>
-            <h2 className="text-lg font-semibold text-slate-100">追蹤期滿移出紀錄</h2>
+            <button
+              type="button"
+              onClick={toggleCompletedCollapsed}
+              className="flex w-full items-center gap-2 text-left text-lg font-semibold text-slate-100 hover:text-sky-300"
+              aria-expanded={!completedCollapsed}
+            >
+              <span aria-hidden className="text-slate-400">
+                {completedCollapsed ? "▸" : "▾"}
+              </span>
+              <span>追蹤期滿移出紀錄</span>
+            </button>
             <p className="mt-1 text-sm text-slate-400">
               當股票完成一個追蹤 cycle 後（追蹤 30 個交易日期滿 / 跌破 -30% / 從高點回落 30%），會在這裡留下封存摘要；
               依移出時間切半年一張表（2026/05 起算），同一檔之後若重新被抓到會以新的首次抓到日新增一列。
             </p>
           </div>
-          {completedSummary && completedSummary.periods.length > 0 && (
+          {!completedCollapsed && completedSummary && completedSummary.periods.length > 0 && (
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-xs text-slate-400">半年區間：</span>
               {completedSummary.periods.map((p) => {
@@ -748,7 +816,7 @@ function SignalArchiveContent() {
               })}
             </div>
           )}
-          {completedSummary && completedSummary.items.length > 0 && (
+          {!completedCollapsed && completedSummary && completedSummary.items.length > 0 && (
             <div className="flex items-center gap-2">
               <input
                 type="text"
@@ -772,6 +840,8 @@ function SignalArchiveContent() {
             </div>
           )}
         </header>
+        {!completedCollapsed && (
+        <>
         {completedLoading && <p className="text-sm text-slate-400">載入中…</p>}
         {completedError && !completedLoading && (
           <p className="text-sm text-rose-300">{completedError}</p>
@@ -874,6 +944,8 @@ function SignalArchiveContent() {
               })}
             </TableBody>
           </Table>
+        )}
+        </>
         )}
       </section>
 

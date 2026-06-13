@@ -183,8 +183,10 @@ function DeferredSection({
     return () => observer.disconnect()
   }, [visible])
 
+  // minHeight 只在「尚未載入的 placeholder」階段保留版位；一旦內容載入後就放掉，
+  // 否則 section 折疊起來時外框仍被撐到 minHeight，會在下方留下大片空白。
   return (
-    <div ref={ref} style={{ minHeight }}>
+    <div ref={ref} style={visible ? undefined : { minHeight }}>
       {visible ? (
         children
       ) : (
