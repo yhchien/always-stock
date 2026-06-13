@@ -19,19 +19,19 @@ const TONE_CLASSES: Record<
     label: string
   }
 > = {
-  // M23 三類魚尾，全部都看漲，色階遞減；不用綠（綠 = 跌台股慣例衝突）
+  // M23 三類魚尾，全部都看漲，用「紅→橘→黃」三個明確不同色相區分；不用綠（綠 = 跌台股慣例衝突）
   leader: {
     base: "bg-rose-900/40 border-rose-600/60 hover:bg-rose-900/55",
     title: "text-rose-100",
     label: "領漲",
   },
   follower: {
-    base: "bg-rose-900/20 border-rose-700/40 hover:bg-rose-900/35",
-    title: "text-rose-100",
+    base: "bg-orange-900/30 border-orange-600/50 hover:bg-orange-900/45",
+    title: "text-orange-100",
     label: "跟漲",
   },
   laggard: {
-    base: "bg-amber-900/30 border-amber-600/50 hover:bg-amber-900/45",
+    base: "bg-amber-900/30 border-amber-500/50 hover:bg-amber-900/45",
     title: "text-amber-100",
     label: "補漲",
   },
