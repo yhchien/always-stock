@@ -79,10 +79,28 @@ function SummaryTable({
   const indicator = (key: SummarySortKey) =>
     sortKey === key ? (sortAsc ? " \u25B2" : " \u25BC") : ""
 
+  const maxTotalAbs = useMemo(
+    () => Math.max(1, ...rows.map((r) => Math.abs(r.total_net_amount))),
+    [rows],
+  )
+
   function AmountCell({ value }: { value: number }) {
     const formatted = fmtAmount(value)
     const color = value > 0 ? "text-red-400" : value < 0 ? "text-green-400" : "text-slate-400"
     return <span className={`font-mono text-sm ${color}`}>{formatted}</span>
+  }
+
+  // \u5408\u8A08\u6B04\u91CF\u80FD bar\uFF0C\u5C0D\u9F4A L0 IndustryDashboard \u7684 BarAmountCell
+  function BarAmountCell({ value, maxAbs }: { value: number; maxAbs: number }) {
+    const pct = maxAbs > 0 ? Math.min((Math.abs(value) / maxAbs) * 100, 100) : 0
+    const barColor = value > 0 ? "bg-red-500/15" : value < 0 ? "bg-green-500/15" : ""
+    const textColor = value > 0 ? "text-red-400" : value < 0 ? "text-green-400" : "text-slate-400"
+    return (
+      <div className="relative flex items-center justify-end">
+        <div className={`absolute inset-y-0 right-0 rounded-sm ${barColor}`} style={{ width: `${pct}%` }} />
+        <span className={`relative font-mono text-sm ${textColor}`}>{fmtAmount(value)}</span>
+      </div>
+    )
   }
 
   return (
@@ -121,7 +139,7 @@ function SummaryTable({
                 <TableCell className="text-right"><AmountCell value={row.foreign_net_amount} /></TableCell>
                 <TableCell className="text-right"><AmountCell value={row.trust_net_amount} /></TableCell>
                 <TableCell className="text-right"><AmountCell value={row.dealer_net_amount} /></TableCell>
-                <TableCell className="text-right"><AmountCell value={row.total_net_amount} /></TableCell>
+                <TableCell className="text-right"><BarAmountCell value={row.total_net_amount} maxAbs={maxTotalAbs} /></TableCell>
                 <TableCell className="text-center">
                   <span className={`text-xs font-medium ${row.streak > 0 ? "text-red-400" : row.streak < 0 ? "text-green-400" : "text-slate-500"}`}>
                     {fmtStreak(row.streak)}

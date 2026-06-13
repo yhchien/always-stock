@@ -1,5 +1,5 @@
 import React from "react"
-import { render, screen, waitFor, fireEvent } from "@testing-library/react"
+import { render, screen, waitFor, fireEvent, within } from "@testing-library/react"
 import IndustryDashboard from "@/components/IndustryDashboard"
 import * as api from "@/lib/api"
 
@@ -85,18 +85,19 @@ describe("IndustryDashboard", () => {
     })
   })
 
-  it("calls onSelectIndustry when a row is clicked", async () => {
+  it("calls onSelectIndustry when the 進入 button is clicked", async () => {
     jest.spyOn(api, "fetchIndustries").mockResolvedValue(MOCK_ROWS)
     const onSelect = jest.fn()
 
     render(<IndustryDashboard defaultDate="2026-04-01" onSelectIndustry={onSelect} />)
     await waitFor(() => screen.getByText("半導體"))
 
-    fireEvent.click(screen.getByText("半導體"))
+    const row = screen.getByText("半導體").closest("tr")!
+    fireEvent.click(within(row).getByRole("button", { name: /進入/ }))
     expect(onSelect).toHaveBeenCalledWith("半導體", "2026-04-01")
   })
 
-  it("passes the latest selected date when a row is clicked", async () => {
+  it("passes the latest selected date when the 進入 button is clicked", async () => {
     jest.spyOn(api, "fetchIndustries").mockResolvedValue(MOCK_ROWS)
     const onSelect = jest.fn()
 
@@ -106,8 +107,36 @@ describe("IndustryDashboard", () => {
     fireEvent.change(screen.getByDisplayValue("2026-04-01"), { target: { value: "2026-03-04" } })
     await waitFor(() => expect(screen.getByDisplayValue("2026-03-04")).toBeInTheDocument())
 
-    fireEvent.click(screen.getByText("半導體"))
+    const row = screen.getByText("半導體").closest("tr")!
+    fireEvent.click(within(row).getByRole("button", { name: /進入/ }))
     expect(onSelect).toHaveBeenCalledWith("半導體", "2026-03-04")
+  })
+
+  it("expands sub-industries on row click and navigates on sub-industry click", async () => {
+    jest.spyOn(api, "fetchIndustries").mockResolvedValue(MOCK_ROWS)
+    const subSpy = jest.spyOn(api, "fetchSubIndustrySummary").mockResolvedValue([
+      {
+        sub_industry: "記憶體 IC",
+        total_net_amount: 800_000_000,
+        foreign_net_amount: 600_000_000,
+        trust_net_amount: 150_000_000,
+        dealer_net_amount: 50_000_000,
+        streak: 2,
+      },
+    ])
+    const onSelectSub = jest.fn()
+
+    render(<IndustryDashboard defaultDate="2026-04-01" onSelectSubIndustry={onSelectSub} />)
+    await waitFor(() => screen.getByText("半導體"))
+
+    // 點產業名稱 → 展開（非導航）
+    fireEvent.click(screen.getByText("半導體"))
+    await waitFor(() => expect(subSpy).toHaveBeenCalledWith("半導體", "2026-04-01"))
+    await waitFor(() => expect(screen.getByText("記憶體 IC")).toBeInTheDocument())
+
+    // 點子產業 → 帶 sub 導航
+    fireEvent.click(screen.getByText("記憶體 IC"))
+    expect(onSelectSub).toHaveBeenCalledWith("半導體", "記憶體 IC", "2026-04-01")
   })
 
   it("displays amounts in 億 with correct sign colors", async () => {

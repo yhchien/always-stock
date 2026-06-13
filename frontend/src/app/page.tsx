@@ -366,6 +366,11 @@ function HomeContent() {
                 onSelectIndustry={(name, selectedDate) =>
                   router.push(`/industries/${encodeURIComponent(name)}?date=${selectedDate}`)
                 }
+                onSelectSubIndustry={(name, subIndustry, selectedDate) =>
+                  router.push(
+                    `/industries/${encodeURIComponent(name)}?date=${selectedDate}&sub=${encodeURIComponent(subIndustry)}`,
+                  )
+                }
               />
             </DeferredSection>
           </>

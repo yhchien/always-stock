@@ -2297,3 +2297,28 @@ function update(next) {
 - **產業 canonical name 落差仍在**：industry flow 經 `normalize_industry_name` canonicalize（「半導體業」→「半導體」），但 `stocks_master.industry_name` 是原始名；`build_candidate_pool` 的 industry membership 比對可能對不上 → 實務上靠個股來源（A）與集團擴散補進池，這是既有行為非本次改動引入
 - **命名債（刻意接受）**：rankings dict key `top_stocks_3d` / `top_industries_3d` 與 candidate flag `in_top_*_3d` 沿用 `_3d` 歷史命名，但實際窗已是 `RANKING_WINDOW_DAYS=2`；語義以常數為準，未改名是為了不連動 classification / llm_caller evidence / 測試。改窗只需動 `RANKING_WINDOW_DAYS`
 - 測試：[test_signals_candidate_pool.py](backend/tests/test_signals_candidate_pool.py) 新增 `test_compute_rankings_skips_financial_industries_and_backfills` + `test_compute_rankings_drops_industry_in_today_sell_blacklist` + `test_compute_rankings_industry_ranking_uses_two_day_window`；22 candidate_pool + 62 classification/filters/pipeline 全 pass
+
+## L0 產業流向改成可展開樹 + 子產業量能 bar（2026-06-13）
+
+### 範圍
+- 純前端 + jest 設定；**後端零改動**（子產業沿用既有 `GET /api/industries/{name}/summary`）
+
+### 改動
+- **L0 [IndustryDashboard.tsx](frontend/src/components/IndustryDashboard.tsx) 樹狀化**：
+  - 產業列點一下 = 展開/收合子產業（取代舊的「點列即跳頁」）；產業名稱旁加「進入 →」按鈕（`e.stopPropagation()`）才跳 L1
+  - 展開時 **lazy-fetch** `fetchSubIndustrySummary`，以 `${date}::${industry}` 為 key 存 `subCache` Map；重複展開即時顯示。`subLoading` / `subError` 兩個獨立 state 控制載入中 / 失敗列（colSpan=7）
+  - 換日期 → `useEffect([date])` 收合全部（cache 依日期區隔，重展開抓新日資料）
+  - 子產業列點擊 → `onSelectSubIndustry(name, sub, date)` → 跳 `/industries/{name}?date=&sub=`（既有 filter 深連結，L1 `page.tsx` 讀 `sub` + `StockList` 吃 `defaultSubFilter`，零成本）
+  - 子產業列複用既有 `AmountCell` / `BarAmountCell` / `StreakCell`，合計欄帶量能 bar（maxAbs 取該產業內子產業最大絕對值）
+- **page.tsx** 接 `onSelectSubIndustry` callback
+- **L1 [StockList.tsx](frontend/src/components/StockList.tsx) `SummaryTable`**：合計欄從純文字 `AmountCell` 換成 `BarAmountCell`（對齊 L0 樣式），maxAbs 取該表 rows 最大絕對值
+
+### jest 設定修復（順手）
+- [src/__tests__/setup.ts](frontend/src/__tests__/setup.ts) 補 `window.matchMedia` + `ResizeObserver` polyfill
+- 根因：共用 `<Table>` 內含 `StickyHorizontalScroll`，effect 內呼叫 `matchMedia` / `new ResizeObserver`，jsdom 沒有 → **所有用 `<Table>` 的測試 mount 即 crash**（pre-existing，非本輪引入）
+- 修完後 IndustryDashboard suite 16/16 全綠；全前端 suite 從 baseline 35 fail → 18 fail
+
+### Gotcha
+- **`toggleExpand` 用 render 當下的 `expanded.has(industry)` 快照判斷展開/收合**：`wasExpanded=true` → 收合不抓資料；`false` → 展開才 fetch。不可在 setExpanded 的 functional updater 後讀 state（stale）
+- **`onSelectIndustry` 測試改點「進入」按鈕**：`IndustryDashboard.test.tsx` 兩個 onSelect 測試從點產業名稱改成 `within(row).getByRole("button", { name: /進入/ })`，因為點名稱現在是展開不是導航
+- **StockList / StockChart / BacktestPanel suite 仍 fail 與本輪無關**：StockList 是 `useAuth must be used within <AuthProvider>`（M19 `WatchlistAddButton` 測試沒包 provider），StockChart 是 ECharts，BacktestPanel 是 jest type 設定；都是 pre-existing
