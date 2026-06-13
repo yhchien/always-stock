@@ -1179,14 +1179,15 @@ export default function DailySignalsPanel({
           )}
           {!snapshotLoading && !snapshotError && snapshot && (
             <div className="flex flex-col gap-3">
+              {/* chip 配色對齊 SignalEmotionCard：領漲/跟漲 rose 色階遞減、補漲 amber（刻意不用綠，綠=跌） */}
               <div className="flex flex-wrap items-center gap-2 text-xs">
-                <span className="inline-flex items-center rounded border border-emerald-500/50 bg-emerald-500/10 px-2 py-0.5 font-medium text-emerald-200">
+                <span className="inline-flex items-center rounded border border-rose-600/60 bg-rose-900/40 px-2 py-0.5 font-medium text-rose-100">
                   領漲 {leaderCount}
                 </span>
-                <span className="inline-flex items-center rounded border border-sky-500/50 bg-sky-500/10 px-2 py-0.5 font-medium text-sky-200">
+                <span className="inline-flex items-center rounded border border-rose-700/40 bg-rose-900/20 px-2 py-0.5 font-medium text-rose-100">
                   跟漲 {followerCount}
                 </span>
-                <span className="inline-flex items-center rounded border border-amber-500/50 bg-amber-500/10 px-2 py-0.5 font-medium text-amber-200">
+                <span className="inline-flex items-center rounded border border-amber-600/50 bg-amber-900/30 px-2 py-0.5 font-medium text-amber-100">
                   補漲 {laggardCount}
                 </span>
               </div>
