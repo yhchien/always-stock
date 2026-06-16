@@ -2345,3 +2345,4 @@ function update(next) {
 - **既有測試抓不到**：`test_signal_archive_returns.py` 的 session 是 `sessionmaker(bind=engine)`（預設 `autoflush=True`），delete 前會自動 flush 掉 UPDATE，撞不到 bug。新增 regression test `test_update_signal_watch_returns_early_exit_commits_with_autoflush_false` 鏡像 production 的 `autoflush=False`，舊行為會重現同一個 StaleDataError
 - **這類修正 deploy 後要手動補跑**：`gh workflow run "Signal Archive Returns Update" --ref main -f target_date=<YYYY-MM-DD>`，把當天卡住的 active rows 回補正確
 - **觸發背景**：本次是順著「GitHub schedule 6/15 整批被丟掉 → 手動補跑」連帶發現的潛伏 bug；GitHub `schedule` 事件 best-effort，高負載時整點 cron（`0 10`/`0 11`/`0 12`）容易被延遲甚至整批丟棄，必要時用 workflow_dispatch 補
+- **同日已把整點 cron 錯開（降低再被丟機率）**：`daily_etl_update` `0 10`→`17 10`（台北 18:17）、`daily_signals` `0 11`→`23 11`（台北 19:23）、`signal_archive_returns` `0 12`→`41 12`（台北 20:41）；維持 ETL→Signals→Archive 相依順序。`telegram_daily_report`（`30 13`）/ `margin_trade_backfill`（`30 14`）本就非整點不動
