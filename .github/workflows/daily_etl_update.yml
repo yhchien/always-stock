@@ -2,10 +2,10 @@ name: Daily ETL Update
 
 on:
   schedule:
-    # 台北 18:00（週一到週五）= UTC 10:00
+    # 台北 18:17（週一到週五）= UTC 10:17（刻意錯開整點，降低 GitHub schedule 被高負載丟棄的機率）
     # GitHub Actions cron 只吃 UTC，無法直接指定 Asia/Taipei
     # 若遇國定假日，ETL 會由 daily_price 空資料自動短路為 holiday
-    - cron: '0 10 * * 1-5'
+    - cron: '17 10 * * 1-5'
   workflow_dispatch:
     inputs:
       target_date:

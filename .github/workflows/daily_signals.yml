@@ -2,9 +2,9 @@ name: Daily Signals Generation
 
 on:
   schedule:
-    # 台北 19:00（週一到週五）= UTC 11:00
+    # 台北 19:23（週一到週五）= UTC 11:23（刻意錯開整點，降低 GitHub schedule 被丟棄的機率）
     # GitHub Actions 無法直接指定 Asia/Taipei；若遇國定假日，pipeline 會因當日無交易資料而 no_data pass。
-    - cron: '0 11 * * 1-5'
+    - cron: '23 11 * * 1-5'
   workflow_dispatch:
     inputs:
       target_date:

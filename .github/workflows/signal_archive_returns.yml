@@ -2,8 +2,8 @@ name: Signal Archive Returns Update
 
 on:
   schedule:
-    # 台北 20:00（週一到週五）= UTC 12:00
-    - cron: '0 12 * * 1-5'
+    # 台北 20:41（週一到週五）= UTC 12:41（刻意錯開整點，降低 GitHub schedule 被丟棄的機率）
+    - cron: '41 12 * * 1-5'
   workflow_dispatch:
     inputs:
       target_date:
