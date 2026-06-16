@@ -2322,3 +2322,26 @@ function update(next) {
 - **`toggleExpand` 用 render 當下的 `expanded.has(industry)` 快照判斷展開/收合**：`wasExpanded=true` → 收合不抓資料；`false` → 展開才 fetch。不可在 setExpanded 的 functional updater 後讀 state（stale）
 - **`onSelectIndustry` 測試改點「進入」按鈕**：`IndustryDashboard.test.tsx` 兩個 onSelect 測試從點產業名稱改成 `within(row).getByRole("button", { name: /進入/ })`，因為點名稱現在是展開不是導航
 - **StockList / StockChart / BacktestPanel suite 仍 fail 與本輪無關**：StockList 是 `useAuth must be used within <AuthProvider>`（M19 `WatchlistAddButton` 測試沒包 provider），StockChart 是 ECharts，BacktestPanel 是 jest type 設定；都是 pre-existing
+
+## M23 提前結算 StaleDataError 修復（2026-06-15）
+
+### 症狀
+- GitHub Actions `Signal Archive Returns Update`（手動補跑 6/15）fail，exit code 2
+- log：`sqlalchemy.orm.exc.StaleDataError: UPDATE statement on table 'signal_watch_hits' expected to update 10 row(s); 9 were matched.`，發生在 `update_signal_watch_returns` 的 `db.commit()`（[archive.py](backend/app/signals/archive.py)）
+- 6/12 排程能成功、6/15 失敗，因為**剛好有股票在 6/15 觸發提前結算**（-30% 或高點回落 30%）才會走到 delete 路徑
+
+### 根因
+- `update_signal_watch_returns` 對提前結算股先在 1170-1179 改寫 `SignalWatchHit` rows（變 session dirty，待 UPDATE），稍後又 `db.query(SignalWatchHit).filter(stock_id==X).delete(synchronize_session=False)`
+- production session 是 `autoflush=False`（[database.py:84](backend/app/database.py)）→ delete 前那批 dirty UPDATE **不會先 flush**；`synchronize_session=False` 又**不會把被刪 row 移出 session**
+- 最後 `db.commit()` flush 時對「已刪除的 row」發 UPDATE → StaleDataError，**整個 transaction rollback**：不只提前結算那檔，當天**所有追蹤股的報酬率更新全部沒寫進去**
+
+### 修法（[archive.py](backend/app/signals/archive.py) early-exit delete）
+- `.delete(synchronize_session=False)` → `.delete(synchronize_session="evaluate")`
+- `stock_id == X` 是單純等值條件，`evaluate` 會在 Python 端比對並把對應 dirty 物件移出 session，丟棄那筆注定被刪 row 的無效 UPDATE
+- 提前結算股的最終結果不變：永久紀錄（`signal_watch_completed_archives`）在 delete **之前**就由 `_build_early_exit_archive_item` 用 row 靜態欄位 + 即時查 DB 組好，**不依賴**被丟棄的 UPDATE 欄位；active hits 照樣刪除
+
+### Gotcha
+- **只改 early-exit 那一處 delete**：`persist_signal_watch_hits` 內另一處 `delete(synchronize_session=False)`（依 snapshot_date 刪）無 dirty-row 衝突，維持 False
+- **既有測試抓不到**：`test_signal_archive_returns.py` 的 session 是 `sessionmaker(bind=engine)`（預設 `autoflush=True`），delete 前會自動 flush 掉 UPDATE，撞不到 bug。新增 regression test `test_update_signal_watch_returns_early_exit_commits_with_autoflush_false` 鏡像 production 的 `autoflush=False`，舊行為會重現同一個 StaleDataError
+- **這類修正 deploy 後要手動補跑**：`gh workflow run "Signal Archive Returns Update" --ref main -f target_date=<YYYY-MM-DD>`，把當天卡住的 active rows 回補正確
+- **觸發背景**：本次是順著「GitHub schedule 6/15 整批被丟掉 → 手動補跑」連帶發現的潛伏 bug；GitHub `schedule` 事件 best-effort，高負載時整點 cron（`0 10`/`0 11`/`0 12`）容易被延遲甚至整批丟棄，必要時用 workflow_dispatch 補
