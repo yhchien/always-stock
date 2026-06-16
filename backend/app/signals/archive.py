@@ -1252,9 +1252,13 @@ def update_signal_watch_returns(
             closure_reason=closure_reason,
         )
         _upsert_completed_archive(db, item)
+        # synchronize_session="evaluate"：這些 row 在 1170-1179 已被改寫成 dirty（待 UPDATE）。
+        # session 為 autoflush=False，若用 False 不會把它們移出 session，commit flush 時會對
+        # 已刪除的 row 發 UPDATE → StaleDataError。evaluate 會以 stock_id == X 在 Python 端
+        # 比對並把對應物件移出 session，丟棄那筆注定被刪 row 的無效 UPDATE。
         db.query(SignalWatchHit).filter(
             SignalWatchHit.stock_id == stock_id
-        ).delete(synchronize_session=False)
+        ).delete(synchronize_session="evaluate")
 
     completed_upserts = refresh_completed_signal_cycles(db, as_of_trade_date=trade_date)
     if updated or completed_upserts or early_exits:

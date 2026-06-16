@@ -874,3 +874,102 @@ def test_list_completed_archive_summary_period_filter_returns_only_matching_rows
         stock_ids = sorted(item["stock_id"] for item in first_half["items"])
         assert stock_ids == ["AAAA", "BBBB"]
         assert first_half["selected_period_start"] == date(2026, 5, 1)
+
+
+def test_update_signal_watch_returns_early_exit_commits_with_autoflush_false():
+    """Regression：production session 為 autoflush=False。
+
+    提前結算股的 hit rows 會先被改寫成 dirty（待 UPDATE），隨後又被 bulk delete。
+    若 delete 用 synchronize_session=False，autoflush=False 下這些 dirty row 不會被移出
+    session，commit flush 時會對已刪除的 row 發 UPDATE → StaleDataError
+    （expected to update N row(s); M were matched）。本測試鏡像 production 設定，
+    同時放一檔正常追蹤股一起 dirty，確認整批 commit 成功、各自結果正確。
+    """
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine, autoflush=False)
+
+    with Session() as db:
+        first_seen = date(2026, 4, 1)
+
+        # 提前結算股 9999：baseline 4/2=100，之後連 4 日 < -30% → 4/6 結算
+        _seed_price(db, "9999", date(2026, 4, 2), 100.0, 100.0)
+        _seed_price(db, "9999", date(2026, 4, 3), 68.0, 68.0)
+        _seed_price(db, "9999", date(2026, 4, 4), 67.0, 67.0)
+        _seed_price(db, "9999", date(2026, 4, 5), 65.0, 65.0)
+        _seed_price(db, "9999", date(2026, 4, 6), 64.0, 64.0)
+
+        # 正常追蹤股 8888：baseline 4/2=50，4/6 收 55（+10%），不觸發提前結算
+        _seed_price(db, "8888", date(2026, 4, 2), 50.0, 50.0)
+        _seed_price(db, "8888", date(2026, 4, 6), 55.0, 55.0)
+
+        def _hit(stock_id: str, baseline_price: float) -> SignalWatchHit:
+            return SignalWatchHit(
+                snapshot_date=first_seen,
+                stock_id=stock_id,
+                stock_name="測試股",
+                signal_type="LEADER",
+                industry_name="半導體業",
+                sub_industry="x",
+                business_summary="a",
+                reason="a",
+                theme={},
+                group_info={},
+                leader_check={},
+                signals={},
+                baseline_trade_date=date(2026, 4, 2),
+                baseline_price=baseline_price,
+                latest_eval_trade_date=date(2026, 4, 2),
+                latest_eval_price=baseline_price,
+                return_pct=0.0,
+            )
+
+        # 9999 給兩列（同 cycle 多 hit），確保 delete 移除多列
+        db.add(_hit("9999", 100.0))
+        db.add(
+            SignalWatchHit(
+                snapshot_date=date(2026, 4, 3),
+                stock_id="9999",
+                stock_name="測試股",
+                signal_type="LEADER",
+                industry_name="半導體業",
+                sub_industry="x",
+                business_summary="a",
+                reason="a",
+                theme={},
+                group_info={},
+                leader_check={},
+                signals={},
+                baseline_trade_date=date(2026, 4, 2),
+                baseline_price=100.0,
+                latest_eval_trade_date=date(2026, 4, 3),
+                latest_eval_price=68.0,
+                return_pct=-32.0,
+            )
+        )
+        db.add(_hit("8888", 50.0))
+        db.commit()
+
+        # 修法前：此呼叫的 db.commit() 會丟 StaleDataError；修法後應正常完成
+        archive.update_signal_watch_returns(db, as_of_trade_date=date(2026, 4, 6))
+
+        # 提前結算股：active 全清 + 寫入 completed archive
+        assert db.query(SignalWatchHit).filter(SignalWatchHit.stock_id == "9999").all() == []
+        completed = (
+            db.query(SignalWatchCompletedArchive)
+            .filter(SignalWatchCompletedArchive.stock_id == "9999")
+            .one()
+        )
+        assert completed.closure_reason == archive.CLOSURE_REASON_EARLY_EXIT_STOP_LOSS
+        assert completed.completed_trade_date == date(2026, 4, 6)
+
+        # 正常追蹤股：未被清掉，報酬率有更新（+10%）
+        normal_rows = db.query(SignalWatchHit).filter(SignalWatchHit.stock_id == "8888").all()
+        assert len(normal_rows) == 1
+        assert normal_rows[0].return_pct == 10.0
+        assert (
+            db.query(SignalWatchCompletedArchive)
+            .filter(SignalWatchCompletedArchive.stock_id == "8888")
+            .first()
+            is None
+        )
