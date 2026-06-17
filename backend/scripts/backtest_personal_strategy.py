@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import random
 import time
 from datetime import date
@@ -59,6 +60,7 @@ ROTATE_GAP_V21 = 0.15             # B 至少比 A 強 15 個百分點（v2 是 0
 MAX_ROTATIONS_V21 = 1             # 每天最多輪動 1 次（v2 是 2）
 MAX_DISTANCE_FROM_MA5 = 0.06      # B 不可高於 5 日線超過 6%（避免追已噴出的）
 MIN_SIGNAL_AGE_FOR_ROTATE = 2     # 一般新魚尾至少觀察 2 天才可當輪動標的（極強訊號例外）
+CONVICTION_MIN = 5                # priority_buy_pool：B 的 conviction 分數門檻（接 M23 燈號）
 
 
 # ============================================================
@@ -301,6 +303,60 @@ SIGNAL_RANK = {"LEADER": 0, "FOLLOWER": 1, "LAGGARD": 2}
 
 
 # ============================================================
+# conviction（接 M23 燈號）：讀 signal_snapshots，as-of 防後見之明
+# ============================================================
+def _conviction_score(it: dict) -> int:
+    """把單日燈號換成 0~7 的 conviction 分數。"""
+    s = 0
+    if (it.get("type") or "").upper() == "LEADER":
+        s += 1
+    tf = (it.get("theme_fit") or "").upper()
+    if tf == "HIGH":
+        s += 2
+    elif tf == "MEDIUM":
+        s += 1
+    sig = it.get("signals") or {}
+    if (sig.get("capital_flow") or "").lower() == "strong":
+        s += 1
+    if (sig.get("chip_trend") or "").lower() in ("accumulating", "short_squeeze_potential"):
+        s += 1
+    if (sig.get("technical_status") or "").lower() in ("breakout", "steady_uptrend"):
+        s += 1
+    if (sig.get("margin_short_signal") or "").lower() == "positive":
+        s += 1
+    return s
+
+
+class Conviction:
+    """每檔每日的燈號歷史（來自 signal_snapshots，retained、封存不刪）。"""
+
+    def __init__(self, engine):
+        from collections import defaultdict
+        self.by_stock: Dict[str, list] = defaultdict(list)
+        with engine.connect() as c:
+            for sd, wl in c.execute(text(
+                "SELECT snapshot_date, watchlist FROM signal_snapshots ORDER BY snapshot_date"
+            )):
+                lst = wl if isinstance(wl, list) else (json.loads(wl) if wl else [])
+                for it in lst:
+                    sid = it.get("stock") or it.get("stock_id")
+                    if sid:
+                        self.by_stock[sid].append((sd, it))
+        for sid in self.by_stock:
+            self.by_stock[sid].sort(key=lambda x: x[0])
+
+    def score(self, sid, d) -> int:
+        """取 snapshot_date <= d 的最近一筆燈號計分（無資料回 0）。"""
+        best = None
+        for sd, it in self.by_stock.get(sid, []):
+            if sd <= d:
+                best = it
+            else:
+                break
+        return _conviction_score(best) if best else 0
+
+
+# ============================================================
 # v1 / v1_5：每檔獨立
 # ============================================================
 def sim_independent(arc: dict, md: MarketData, version: str) -> dict:
@@ -446,7 +502,8 @@ def _result(pos: Position, exit_d, exit_p, reason, bh_ret) -> dict:
 # ============================================================
 # v2：組合資金池 + 賣弱買強
 # ============================================================
-def sim_portfolio(picks: List[dict], md: MarketData, variant: str = "v2") -> dict:
+def sim_portfolio(picks: List[dict], md: MarketData, variant: str = "v2", conviction=None,
+                  window_days: Optional[int] = None, record_daily: bool = False) -> dict:
     patient = (variant == "v2_1")
     rotate_gap = ROTATE_GAP_V21 if patient else ROTATE_GAP
     max_rot = MAX_ROTATIONS_V21 if patient else MAX_ROTATIONS_PER_DAY
@@ -461,19 +518,23 @@ def sim_portfolio(picks: List[dict], md: MarketData, variant: str = "v2") -> dic
     win_start = min(a["baseline_trade_date"] for a in picks)
     win_end = max(a["completed_trade_date"] for a in picks)
     dates = [d for d in md.dates if win_start <= d <= win_end]
+    if window_days:                       # 只跑前 N 個交易日（日期驅動 timeline）
+        dates = dates[:window_days]
+        # 不強制平倉：跑滿 N 天後，未到追蹤期滿的部位仍持有，用市價標記（顯示未實現損益）
 
     cash = TOTAL_CAPITAL
     holdings: Dict[str, Position] = {}
     sold_ever: set = set()        # spec §21：賣出後剩餘期間不再買回
     trades: List[dict] = []
     closed: List[dict] = []
+    daily: List[dict] = []
     equity_curve: List[float] = []
     peak = TOTAL_CAPITAL
     max_dd = 0.0
     util_sum = 0.0
 
     def log(d, sid, action, price, amount, pos, reason, paired=None):
-        trades.append({"date": d, "sid": sid, "action": action, "price": price,
+        trades.append({"date": d, "sid": sid, "name": pos.name, "action": action, "price": price,
                        "amount": amount, "reason": reason, "paired": paired})
 
     def close_position(d, sid, price, reason):
@@ -639,20 +700,26 @@ def sim_portfolio(picks: List[dict], md: MarketData, variant: str = "v2") -> dic
                 if signal_age < MIN_SIGNAL_AGE_FOR_ROTATE and not fresh_super:
                     continue
                 eligible = score >= ROTATE_STRENGTH_SCORE_MIN and B2 and B6 and B7 and B8
+                # conviction（M23 燈號）：只有進 priority_buy_pool 才可當輪動 B
+                conv = conviction.score(sid, d) if conviction is not None else None
+                if conviction is not None and conv < CONVICTION_MIN:
+                    eligible = False
                 dist = abs(dist_signed)
             else:
                 score = sum([B1, B2, B3, B4, B5, B6])
                 eligible = score >= STRENGTH_SCORE_MIN and B2 and B6
+                conv = None
                 dist = abs(close / ma5 - 1.0) if ma5 else 9.9
             if eligible:
                 ftn = md.ftnet.get(sid)
                 chip = float(ftn[d]) if (ftn is not None and d in ftn.index and pd.notna(ftn[d])) else 0.0
                 strong.append({"sid": sid, "score": score, "r_entry": r_entry, "held": held,
-                               "invested": invested, "close": close, "dist": dist, "chip": chip})
+                               "invested": invested, "close": close, "dist": dist, "chip": chip,
+                               "conv": conv if conv is not None else 0})
 
         # 9) 賣弱買強，最多 2 次
         weak.sort(key=lambda x: (-x["score"], x["r_avg"], x["r_entry"], -x["days"], x["sid"]))
-        strong.sort(key=lambda x: (-x["score"], -x["r_entry"], x["dist"], -x["chip"], x["sid"]))
+        strong.sort(key=lambda x: (-x.get("conv", 0), -x["score"], -x["r_entry"], x["dist"], -x["chip"], x["sid"]))
         rotations = 0
         used_b = set()
         for A in weak:
@@ -696,7 +763,10 @@ def sim_portfolio(picks: List[dict], md: MarketData, variant: str = "v2") -> dic
 
         # 10) 當日新進場候選
         cands = by_entry.get(d, [])
-        cands_sorted = sorted(cands, key=lambda a: (SIGNAL_RANK.get(a["latest_signal_type"], 9), a["stock_id"]))
+        # 挑喜歡的買：有 conviction 時優先買信心度高的，其次照訊號類型
+        cands_sorted = sorted(cands, key=lambda a: (
+            -(conviction.score(a["stock_id"], d) if conviction is not None else 0),
+            SIGNAL_RANK.get(a["latest_signal_type"], 9), a["stock_id"]))
         for a in cands_sorted:
             sid = a["stock_id"]
             if sid in holdings or sid in sold_ever:
@@ -722,6 +792,14 @@ def sim_portfolio(picks: List[dict], md: MarketData, variant: str = "v2") -> dic
         peak = max(peak, equity)
         max_dd = max(max_dd, (peak - equity) / peak)
         util_sum += mv / TOTAL_CAPITAL
+        if record_daily:
+            holds = []
+            for p in holdings.values():
+                c = md.get_close(p.sid, d) or p.avg_cost
+                holds.append({"sid": p.sid, "name": p.name, "r_avg": p.r_avg(c),
+                              "value": p.shares * c, "days": p.days_held, "state": p.state})
+            daily.append({"date": d, "cash": cash, "mv": mv, "equity": equity,
+                          "trades": [t for t in trades if t["date"] == d], "holdings": holds})
 
     # 結算剩餘（理論上都已 period_end）
     last = dates[-1]
@@ -732,7 +810,7 @@ def sim_portfolio(picks: List[dict], md: MarketData, variant: str = "v2") -> dic
     return {
         "closed": closed, "trades": trades, "final_cash": cash,
         "max_dd": max_dd, "util": util_sum / len(dates) if dates else 0.0,
-        "n_days": len(dates),
+        "n_days": len(dates), "daily": daily,
     }
 
 
@@ -802,7 +880,7 @@ def print_portfolio(res: dict, variant: str = "v2"):
 
 
 # ============================================================
-def run_groups(engine, pool, n_groups, version, positions=10):
+def run_groups(engine, pool, n_groups, version, positions=10, conviction=None):
     import math
     # 保證每組檔數 ≤ positions（守持股上限，避免變相加槓桿）
     if pool and math.ceil(len(pool) / n_groups) > positions:
@@ -826,7 +904,7 @@ def run_groups(engine, pool, n_groups, version, positions=10):
     invested_rets = []
     for gi, g in enumerate(groups, 1):
         if version in ("v2", "v2_1"):
-            res = sim_portfolio(g, md, variant=version)
+            res = sim_portfolio(g, md, variant=version, conviction=conviction)
             closed = res["closed"]
             tp = sum(r["profit"] for r in closed)
             tc = sum(r["cost"] for r in closed)
@@ -867,6 +945,71 @@ def run_groups(engine, pool, n_groups, version, positions=10):
         print(f"（v1/v1_5 每檔獨立，未受資金池/檔數上限約束；/資金僅在每組投入≤{TOTAL_CAPITAL:,.0f} 時才有意義）")
 
 
+ACTION_LABEL = {"buy": "買進", "strength_add": "走強加碼", "loss_add": "虧損補倉",
+                "rotate_buy": "輪動買進", "rotate_add": "輪動加碼"}
+SELL_LABEL = {"stop_loss": "停損", "market_weak": "大盤轉弱出場", "sector_weak": "族群轉弱出場",
+              "chip_bad": "籌碼轉壞出場", "sideways": "盤整出場", "period_end": "視窗結束出場",
+              "stop_reentry": "二次破停損", "rotate_sell": "輪動賣出", "force_close": "視窗結束出場"}
+
+
+def print_daily_timeline(res: dict):
+    daily = res["daily"]
+    for i, day in enumerate(daily, 1):
+        ts = day["trades"]
+        if not ts and i not in (1, len(daily)):
+            continue  # 沒動作的日子略過
+        eq = day["equity"]; ret = (eq / TOTAL_CAPITAL - 1) * 100
+        print(f"\n── 第 {i} 天 {day['date']}　持股 {len(day['holdings'])}/{MAX_POSITIONS}　"
+              f"現金 {day['cash']:,.0f}　總值 {eq:,.0f}（{ret:+.1f}%）")
+        # 輪動配對先呈現
+        for t in ts:
+            if t["action"] == "sell":
+                lab = SELL_LABEL.get(t["reason"], t["reason"])
+                pair = f"（換股賣出，資金轉 {t['paired']}）" if t.get("paired") else ""
+                print(f"     ✗ {lab}：{t['sid']} {t['name']} @ {t['price']:.1f}　回收 {t['amount']:,.0f}{pair}")
+            else:
+                lab = ACTION_LABEL.get(t["action"], t["action"])
+                pair = f"（承接 {t['paired']} 的資金）" if t.get("paired") else ""
+                print(f"     ＋ {lab}：{t['sid']} {t['name']} @ {t['price']:.1f}　投入 {t['amount']:,.0f}{pair}")
+        if i == 1 or i == len(daily):
+            for h in sorted(day["holdings"], key=lambda x: -x["value"]):
+                print(f"        持有 {h['sid']} {h['name']}　{h['days']} 天　{h['r_avg']*100:+.1f}%　市值 {h['value']:,.0f}")
+
+    last = daily[-1] if daily else None
+    print("\n" + "=" * 60)
+    if last:
+        print(f"第 {len(daily)} 天（{last['date']}）結束持倉：")
+        for h in sorted(last["holdings"], key=lambda x: -x["value"]):
+            print(f"   {h['sid']} {h['name']}　持有 {h['days']} 天　報酬 {h['r_avg']*100:+.1f}%　市值 {h['value']:,.0f}　[{h['state']}]")
+        eq = last["equity"]
+        print(f"\n期末總值 {eq:,.0f}（起始 {TOTAL_CAPITAL:,.0f}　{(eq/TOTAL_CAPITAL-1)*100:+.2f}%）　最大回撤 {res['max_dd']*100:.2f}%")
+    stats = {}
+    for t in res["trades"]:
+        key = t["reason"] if t["action"] == "sell" else t["action"]
+        stats[key] = stats.get(key, 0) + 1
+    print("動作統計：", stats)
+
+
+def run_daily_timeline(engine, version, n_days, conviction):
+    # 候選 = 已封存 + 追蹤中 聯集（dedupe 取最早 baseline）＝當天魚尾全集
+    completed = load_pool(engine)
+    active = load_pool_active(engine, 0)
+    by_id: Dict[str, dict] = {}
+    for a in completed + active:
+        sid = a["stock_id"]
+        if sid not in by_id or a["baseline_trade_date"] < by_id[sid]["baseline_trade_date"]:
+            by_id[sid] = a
+    pool = list(by_id.values())
+    win_start = min(a["baseline_trade_date"] for a in pool)
+    md = MarketData(engine, win_start, max(a["completed_trade_date"] for a in pool))
+    label = "v2.1（持倉耐心）" if version == "v2_1" else version
+    print(f"\n日期驅動 timeline　策略 {label}　前 {n_days} 個交易日　起點 {win_start}　候選池 {len(pool)} 檔"
+          f"{'　＋conviction' if conviction is not None else ''}")
+    res = sim_portfolio(pool, md, variant=version, conviction=conviction,
+                        window_days=n_days, record_daily=True)
+    print_daily_timeline(res)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--version", choices=["v1", "v1_5", "v2", "v2_1", "best"], default="v2")
@@ -883,6 +1026,11 @@ def main():
     ap.add_argument("--min-age", type=int, default=15, help="active：篩追蹤交易日數 > N")
     ap.add_argument("--capital", type=float, default=1_000_000, help="總資金")
     ap.add_argument("--positions", type=int, default=10, help="持股上限檔數")
+    ap.add_argument("--use-conviction", action="store_true",
+                    help="v2_1：接 M23 燈號 conviction 分數當輪動/挑股門檻")
+    ap.add_argument("--timeline", action="store_true",
+                    help="日期驅動：單一連續帳戶逐日 timeline（第N天買/加/換什麼）")
+    ap.add_argument("--days", type=int, default=30, help="timeline 跑幾個交易日")
     args = ap.parse_args()
 
     global BEST_INIT_PARTS, BEST_MAX_PARTS, BEST_USE_TRAIL, TOTAL_CAPITAL, PART, SINGLE_CAP, MAX_POSITIONS
@@ -906,8 +1054,17 @@ def main():
         pool = [a for a in pool if a["latest_signal_type"] != "LAGGARD"]
         print(f"排除 LAGGARD 後：{len(pool)} 檔")
 
+    conviction = None
+    if args.use_conviction:
+        conviction = Conviction(engine)
+        print(f"已載入 conviction 燈號：{len(conviction.by_stock)} 檔有歷史（門檻 {CONVICTION_MIN}）")
+
+    if args.timeline:
+        run_daily_timeline(engine, args.version, args.days, conviction)
+        return
+
     if args.groups:
-        run_groups(engine, pool, args.groups, args.version, positions=args.positions)
+        run_groups(engine, pool, args.groups, args.version, positions=args.positions, conviction=conviction)
         return
 
     if args.all:
@@ -925,7 +1082,7 @@ def main():
     md = MarketData(engine, win_start, win_end)
 
     if args.version in ("v2", "v2_1"):
-        res = sim_portfolio(picks, md, variant=args.version)
+        res = sim_portfolio(picks, md, variant=args.version, conviction=conviction)
         print_portfolio(res, args.version)
     else:
         if args.version == "best":
