@@ -51,6 +51,15 @@ STRENGTH_SCORE_MIN = 3
 MAX_ROTATIONS_PER_DAY = 2
 TOP_SELL_RANK = 50              # 全市場賣超壓力前 50 名
 
+# ===== v2.1：持倉耐心 + 高門檻輪動（降低過度輪動，貼近真實交易）=====
+MIN_HOLD_DAYS_BEFORE_ROTATE = 5   # 買進後至少持有 5 天，才允許「一般輪動」賣出（停損/籌碼/族群/大盤例外）
+ROTATE_WEAK_SCORE_MIN = 3         # 弱股至少 3 分才可被輪動賣出（v2 是 2）
+ROTATE_STRENGTH_SCORE_MIN = 4     # 強股至少 4 分才可承接資金（v2 是 3）
+ROTATE_GAP_V21 = 0.15             # B 至少比 A 強 15 個百分點（v2 是 0.10）
+MAX_ROTATIONS_V21 = 1             # 每天最多輪動 1 次（v2 是 2）
+MAX_DISTANCE_FROM_MA5 = 0.06      # B 不可高於 5 日線超過 6%（避免追已噴出的）
+MIN_SIGNAL_AGE_FOR_ROTATE = 2     # 一般新魚尾至少觀察 2 天才可當輪動標的（極強訊號例外）
+
 
 # ============================================================
 # 資料載入與訊號預計算
@@ -247,6 +256,47 @@ def load_pool(engine) -> List[dict]:
         return [dict(r._mapping) for r in c.execute(sql)]
 
 
+def load_pool_active(engine, min_age_trading_days: int) -> List[dict]:
+    """追蹤中（signal_watch_hits）的魚尾，篩追蹤交易日數 > min_age。
+
+    無 completed_trade_date → 用『最新交易日、最多 30 個交易日』當追蹤終點，
+    等於用策略還原這些活倉到目前為止的損益。
+    """
+    with engine.connect() as c:
+        rows = [dict(r._mapping) for r in c.execute(text(
+            """SELECT h.stock_id,
+                      MAX(h.stock_name) AS stock_name,
+                      MAX(h.signal_type) AS latest_signal_type,
+                      MIN(h.baseline_trade_date) AS baseline_trade_date,
+                      MAX(h.baseline_price) AS baseline_price,
+                      MAX(sm.sub_industry) AS sub_industry,
+                      MAX(sm.market) AS market
+               FROM signal_watch_hits h
+               LEFT JOIN stocks_master sm ON sm.stock_id = h.stock_id
+               WHERE h.baseline_price IS NOT NULL AND h.baseline_price > 0
+                 AND h.baseline_trade_date IS NOT NULL
+               GROUP BY h.stock_id"""
+        ))]
+        tds = [r[0] for r in c.execute(text(
+            "SELECT DISTINCT trade_date FROM daily_price WHERE trade_date >= '2026-03-01' ORDER BY trade_date"
+        ))]
+    idx = {d: i for i, d in enumerate(tds)}
+    latest_i = len(tds) - 1
+    out = []
+    for r in rows:
+        b = r["baseline_trade_date"]
+        if b not in idx:
+            continue
+        age = latest_i - idx[b]  # 追蹤交易日數
+        if age <= min_age_trading_days:
+            continue
+        end_i = min(idx[b] + MAX_TRACK_DAYS, latest_i)
+        r["completed_trade_date"] = tds[end_i]
+        r["_age"] = age
+        out.append(r)
+    return out
+
+
 SIGNAL_RANK = {"LEADER": 0, "FOLLOWER": 1, "LAGGARD": 2}
 
 
@@ -396,7 +446,10 @@ def _result(pos: Position, exit_d, exit_p, reason, bh_ret) -> dict:
 # ============================================================
 # v2：組合資金池 + 賣弱買強
 # ============================================================
-def sim_portfolio(picks: List[dict], md: MarketData) -> dict:
+def sim_portfolio(picks: List[dict], md: MarketData, variant: str = "v2") -> dict:
+    patient = (variant == "v2_1")
+    rotate_gap = ROTATE_GAP_V21 if patient else ROTATE_GAP
+    max_rot = MAX_ROTATIONS_V21 if patient else MAX_ROTATIONS_PER_DAY
     by_entry: Dict[date, List[dict]] = {}
     completed_of: Dict[str, date] = {}
     arc_of: Dict[str, dict] = {}
@@ -541,7 +594,14 @@ def sim_portfolio(picks: List[dict], md: MarketData) -> dict:
             A4 = md.is_sector_weak(sid, d)
             A5 = pos.days_held >= SIDEWAYS_DAYS and r_entry < SIDEWAYS_RENTRY
             score = sum([A1, A2, A3, A4, A5])
-            if score >= WEAK_SCORE_MIN and (A1 or A5):
+            if patient:
+                # v2.1：剛買不因新魚尾就換；A 必須真的弱（沒效率/籌碼壞/族群壞/已近停損帶）
+                enough_days = pos.days_held >= MIN_HOLD_DAYS_BEFORE_ROTATE
+                truly_weak = A5 or A3 or A4 or r_avg <= -0.08
+                eligible = enough_days and truly_weak and score >= ROTATE_WEAK_SCORE_MIN
+            else:
+                eligible = score >= WEAK_SCORE_MIN and (A1 or A5)
+            if eligible:
                 weak.append({"sid": sid, "score": score, "r_avg": r_avg, "r_entry": r_entry,
                              "days": pos.days_held, "close": close})
 
@@ -566,9 +626,25 @@ def sim_portfolio(picks: List[dict], md: MarketData) -> dict:
             B4 = not md.is_chip_bad(sid, d)
             B5 = not md.is_sector_weak(sid, d)
             B6 = invested < SINGLE_CAP
-            score = sum([B1, B2, B3, B4, B5, B6])
-            if score >= STRENGTH_SCORE_MIN and B2 and B6:
+            if patient:
+                if ma5 is None:
+                    continue
+                dist_signed = close / ma5 - 1.0
+                B7 = dist_signed <= MAX_DISTANCE_FROM_MA5      # 不追離 5 日線太遠的
+                B8 = a["latest_signal_type"] != "LAGGARD"
+                score = sum([B1, B2, B3, B4, B5, B6, B7, B8])
+                # 一般新魚尾至少觀察 2 天；極強訊號（LEADER+強+站上5日線+籌碼好）可當天進池
+                signal_age = md.date_idx.get(d, 0) - md.date_idx.get(a["baseline_trade_date"], 0)
+                fresh_super = (a["latest_signal_type"] == "LEADER" and B2 and B3 and B4)
+                if signal_age < MIN_SIGNAL_AGE_FOR_ROTATE and not fresh_super:
+                    continue
+                eligible = score >= ROTATE_STRENGTH_SCORE_MIN and B2 and B6 and B7 and B8
+                dist = abs(dist_signed)
+            else:
+                score = sum([B1, B2, B3, B4, B5, B6])
+                eligible = score >= STRENGTH_SCORE_MIN and B2 and B6
                 dist = abs(close / ma5 - 1.0) if ma5 else 9.9
+            if eligible:
                 ftn = md.ftnet.get(sid)
                 chip = float(ftn[d]) if (ftn is not None and d in ftn.index and pd.notna(ftn[d])) else 0.0
                 strong.append({"sid": sid, "score": score, "r_entry": r_entry, "held": held,
@@ -580,7 +656,7 @@ def sim_portfolio(picks: List[dict], md: MarketData) -> dict:
         rotations = 0
         used_b = set()
         for A in weak:
-            if rotations >= MAX_ROTATIONS_PER_DAY:
+            if rotations >= max_rot:
                 break
             if A["sid"] not in holdings:
                 continue
@@ -588,7 +664,7 @@ def sim_portfolio(picks: List[dict], md: MarketData) -> dict:
             for cand in strong:
                 if cand["sid"] in used_b or cand["sid"] == A["sid"]:
                     continue
-                if cand["r_entry"] - A["r_entry"] >= ROTATE_GAP and cand["invested"] < SINGLE_CAP:
+                if cand["r_entry"] - A["r_entry"] >= rotate_gap and cand["invested"] < SINGLE_CAP:
                     B = cand
                     break
             if B is None:
@@ -685,14 +761,14 @@ def print_independent(results: List[dict], version: str):
     print(f"勝率：{win}/{len(results)} = {win/len(results)*100:.0f}%")
     print(f"投入合計：{tc:,.0f}　賣出合計：{tpro:,.0f}　總損益：{tp:,.0f}")
     print(f"投入資金報酬率：{tp/tc*100:.2f}%")
-    print(f"總資金報酬率（/100萬）：{tp/TOTAL_CAPITAL*100:.2f}%")
+    print(f"總資金報酬率：{tp/TOTAL_CAPITAL*100:.2f}%")
     print("-" * 60)
     bh_cost = INIT_PARTS * PART * len(results)
     print(f"[對照 B&H] 投入：{bh_cost:,.0f}　損益：{tbh:,.0f}　報酬率：{tbh/bh_cost*100:.2f}%")
     print(f"[對照 B&H] 策略超額損益：{tp-tbh:,.0f}")
 
 
-def print_portfolio(res: dict):
+def print_portfolio(res: dict, variant: str = "v2"):
     closed = res["closed"]
     hdr = (f"{'代號':<6}{'名稱':<9}{'類型':<9}{'進場':<11}{'出場':<11}"
            f"{'出場原因':<13}{'加碼':<5}{'補倉':<5}{'投入':>9}{'損益':>10}{'報酬%':>8}")
@@ -708,9 +784,11 @@ def print_portfolio(res: dict):
               f"{r['cost']:>9,.0f}{r['profit']:>10,.0f}{r['ret_on_cost']*100:>7.1f}")
     win = sum(1 for r in closed if r["profit"] > 0)
     final_equity = res["final_cash"]
+    avg_hold = sum(r["held_days"] for r in closed) / len(closed) if closed else 0.0
+    label = "v2.1（持倉耐心 + 高門檻輪動）" if variant == "v2_1" else "v2（組合資金池 + 賣弱買強）"
     print("\n" + "=" * 60)
-    print(f"版本：v2（組合資金池 + 賣弱買強）")
-    print(f"交易筆數：{len(res['trades'])}　出場筆數：{len(closed)}　出場原因：{reasons}")
+    print(f"版本：{label}")
+    print(f"交易筆數：{len(res['trades'])}　出場筆數：{len(closed)}　平均持有天數：{avg_hold:.1f}　出場原因：{reasons}")
     action_count = {}
     for t in res["trades"]:
         action_count[t["action"]] = action_count.get(t["action"], 0) + 1
@@ -718,13 +796,18 @@ def print_portfolio(res: dict):
     print(f"勝率（出場筆）：{win}/{len(closed)} = {win/len(closed)*100:.0f}%" if closed else "無出場")
     print(f"投入合計：{tc:,.0f}　總損益（已實現）：{tp:,.0f}")
     print(f"期末總資產：{final_equity:,.0f}（起始 {TOTAL_CAPITAL:,.0f}）")
-    print(f"總資金報酬率（/100萬）：{(final_equity-TOTAL_CAPITAL)/TOTAL_CAPITAL*100:.2f}%")
+    print(f"總資金報酬率：{(final_equity-TOTAL_CAPITAL)/TOTAL_CAPITAL*100:.2f}%")
     print(f"投入資金報酬率：{tp/tc*100:.2f}%" if tc else "")
     print(f"最大回撤：{res['max_dd']*100:.2f}%　平均資金使用率：{res['util']*100:.1f}%　模擬天數：{res['n_days']}")
 
 
 # ============================================================
-def run_groups(engine, pool, n_groups, version):
+def run_groups(engine, pool, n_groups, version, positions=10):
+    import math
+    # 保證每組檔數 ≤ positions（守持股上限，避免變相加槓桿）
+    if pool and math.ceil(len(pool) / n_groups) > positions:
+        n_groups = math.ceil(len(pool) / positions)
+        print(f"（為守 ≤{positions} 檔上限，自動改成 {n_groups} 組）")
     # round-robin 分組：標的已依 baseline_trade_date 排序，round-robin 讓進場日分散到各組
     groups: List[List[dict]] = [[] for _ in range(n_groups)]
     for i, a in enumerate(pool):
@@ -736,14 +819,14 @@ def run_groups(engine, pool, n_groups, version):
 
     print(f"\n分成 {n_groups} 組（round-robin）　版本：{version}")
     print("=" * 78)
-    hdr = f"{'組':<4}{'檔數':>4}{'總資產':>13}{'/100萬報酬%':>13}{'投入報酬%':>11}{'勝率':>9}{'最大回撤%':>11}"
+    hdr = f"{'組':<4}{'檔數':>4}{'總資產':>13}{'/資金報酬%':>13}{'投入報酬%':>11}{'勝率':>9}{'最大回撤%':>11}"
     print(hdr); print("-" * len(hdr))
 
     rets = []
     invested_rets = []
     for gi, g in enumerate(groups, 1):
-        if version == "v2":
-            res = sim_portfolio(g, md)
+        if version in ("v2", "v2_1"):
+            res = sim_portfolio(g, md, variant=version)
             closed = res["closed"]
             tp = sum(r["profit"] for r in closed)
             tc = sum(r["cost"] for r in closed)
@@ -774,17 +857,19 @@ def run_groups(engine, pool, n_groups, version):
     print("-" * len(hdr))
     avg = sum(rets) / len(rets)
     avg_inv = sum(invested_rets) / len(invested_rets)
-    print(f"7 組平均：/100萬報酬 {avg:.2f}%　投入報酬 {avg_inv:.2f}%")
+    print(f"{n_groups} 組平均：/資金報酬 {avg:.2f}%　投入報酬 {avg_inv:.2f}%")
     print(f"最佳組：{max(rets):.2f}%　最差組：{min(rets):.2f}%")
-    if version == "v2":
-        print("（v2 每組都在獨立的 100 萬資金池內、受 10 檔上限與賣弱買強約束）")
+    if version in ("v2", "v2_1"):
+        print(f"（{version} 每組都在獨立的 {TOTAL_CAPITAL:,.0f} 資金池內、受 {MAX_POSITIONS} 檔上限與賣弱買強約束）")
+    elif version == "best":
+        print(f"（best 每組 ≤{positions} 檔、每檔全部署，/資金報酬有效；每檔 1 份={PART:,.0f}）")
     else:
-        print("（v1/v1_5 每檔獨立，未受資金池/檔數上限約束；/100萬僅在每組投入≤100萬時才有意義）")
+        print(f"（v1/v1_5 每檔獨立，未受資金池/檔數上限約束；/資金僅在每組投入≤{TOTAL_CAPITAL:,.0f} 時才有意義）")
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--version", choices=["v1", "v1_5", "v2", "best"], default="v2")
+    ap.add_argument("--version", choices=["v1", "v1_5", "v2", "v2_1", "best"], default="v2")
     ap.add_argument("-n", type=int, default=10)
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--all", action="store_true")
@@ -793,22 +878,36 @@ def main():
     ap.add_argument("--max-parts", type=float, default=1.0, help="best：加碼上限份數")
     ap.add_argument("--trail", action="store_true", help="best：掛移動停利")
     ap.add_argument("--skip-laggard", action="store_true", help="排除 LAGGARD 類型")
+    ap.add_argument("--source", choices=["completed", "active"], default="completed",
+                    help="completed=永久紀錄區；active=追蹤中（signal_watch_hits）")
+    ap.add_argument("--min-age", type=int, default=15, help="active：篩追蹤交易日數 > N")
+    ap.add_argument("--capital", type=float, default=1_000_000, help="總資金")
+    ap.add_argument("--positions", type=int, default=10, help="持股上限檔數")
     args = ap.parse_args()
 
-    global BEST_INIT_PARTS, BEST_MAX_PARTS, BEST_USE_TRAIL
+    global BEST_INIT_PARTS, BEST_MAX_PARTS, BEST_USE_TRAIL, TOTAL_CAPITAL, PART, SINGLE_CAP, MAX_POSITIONS
     BEST_INIT_PARTS = args.init_parts
     BEST_MAX_PARTS = args.max_parts
     BEST_USE_TRAIL = args.trail
+    TOTAL_CAPITAL = args.capital
+    MAX_POSITIONS = args.positions
+    PART = args.capital / args.positions      # 1 份（1 個持股位子）= 總資金 / 檔數上限
+    SINGLE_CAP = PART                          # 單檔上限 = 1 份
+    print(f"資金設定：總資金 {TOTAL_CAPITAL:,.0f}　持股上限 {MAX_POSITIONS} 檔　每檔 1 份 = {PART:,.0f}")
 
     engine = create_engine(DATABASE_URL)
-    pool = load_pool(engine)
-    print(f"永久紀錄區可用標的：{len(pool)} 檔")
+    if args.source == "active":
+        pool = load_pool_active(engine, args.min_age)
+        print(f"追蹤中（>{args.min_age} 交易日）可用標的：{len(pool)} 檔")
+    else:
+        pool = load_pool(engine)
+        print(f"永久紀錄區可用標的：{len(pool)} 檔")
     if args.skip_laggard:
         pool = [a for a in pool if a["latest_signal_type"] != "LAGGARD"]
         print(f"排除 LAGGARD 後：{len(pool)} 檔")
 
     if args.groups:
-        run_groups(engine, pool, args.groups, args.version)
+        run_groups(engine, pool, args.groups, args.version, positions=args.positions)
         return
 
     if args.all:
@@ -825,9 +924,9 @@ def main():
     win_end = max(a["completed_trade_date"] for a in picks)
     md = MarketData(engine, win_start, win_end)
 
-    if args.version == "v2":
-        res = sim_portfolio(picks, md)
-        print_portfolio(res)
+    if args.version in ("v2", "v2_1"):
+        res = sim_portfolio(picks, md, variant=args.version)
+        print_portfolio(res, args.version)
     else:
         if args.version == "best":
             results = [sim_best(a, md) for a in picks]
