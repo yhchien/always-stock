@@ -31,7 +31,7 @@ from app.database import SessionLocal
 from app.models import SignalGenerationJob, SignalSnapshot
 from app.signals import archive as signal_archive
 from app.signals import candidate_pool, classification, filters, llm_caller
-from app.signals import market_margin, market_snapshot
+from app.signals import market_margin, market_regime, market_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -130,17 +130,29 @@ def run_signal_pipeline_sync(
             llm_input = _cap_llm_input(after_hard, limit=LLM_INPUT_HARD_LIMIT)
             after_soft = filters.apply_soft_filters(db, target_date, llm_input)
 
+            # M27 Market Regime Gate（deterministic）：依大盤狀態收斂候選範圍。
+            # 震盪 / 退潮盤剔除單次命中 Follower-Laggard、distribution、急拉突破；
+            # 存活者標 regime_conviction。regime 從 TAIEX 指數 deterministic 算，LLM 不可改寫。
+            regime_info = market_regime.compute_market_regime(db, target_date)
+            after_regime = filters.apply_regime_gate(after_soft, regime_info["regime"])
+            conviction_by_stock = {
+                str(c.get("stock_id") or ""): c.get("regime_conviction")
+                for c in after_regime
+            }
+
             # Step 5：LLM Research（batch）
-            total_for_llm = max(len(after_soft), 1)
+            total_for_llm = max(len(after_regime), 1)
             _set_progress(
                 db,
                 job,
                 stage=STAGE_LLM_RESEARCH,
                 pct=45,
-                label=f"LLM 上網查詢（共 {len(after_soft)} 檔）",
+                label=f"LLM 上網查詢（共 {len(after_regime)} 檔）",
             )
             db_market_snapshot = market_snapshot.build_db_market_snapshot(db, target_date)
             market_context = llm_caller.assemble_market_context(db_market_snapshot)
+            # M27：把 deterministic regime 掛進 market_context（backend authoritative）
+            market_context["market_regime"] = regime_info
             # 2026-05-25：把大盤融資融券盤勢塞進 market_context，供 explanation /
             # watch_reason 兩 stage 共用（cache 4h，多檔 batch 不重算）
             try:
@@ -157,8 +169,8 @@ def run_signal_pipeline_sync(
                 }
             research_batch_size = llm_caller.DEFAULT_RESEARCH_BATCH_SIZE
             research_batches = [
-                after_soft[i : i + research_batch_size]
-                for i in range(0, len(after_soft), research_batch_size)
+                after_regime[i : i + research_batch_size]
+                for i in range(0, len(after_regime), research_batch_size)
             ]
             research_results = _run_parallel_batches(
                 research_batches,
@@ -169,7 +181,7 @@ def run_signal_pipeline_sync(
                     job,
                     stage=STAGE_LLM_RESEARCH,
                     pct=45 + int(30 * done_count / total_for_llm),
-                    label=f"研究第 {done_count} / {len(after_soft)} 檔",
+                    label=f"研究第 {done_count} / {len(after_regime)} 檔",
                 ),
             )
 
@@ -255,6 +267,11 @@ def run_signal_pipeline_sync(
             final_payload = llm_caller.assemble_final_output(
                 market_context, explanation, candidate_pool_size=len(pool)
             )
+            # M27：把 deterministic conviction 蓋回每筆 watchlist item（不依賴 LLM）
+            for item in final_payload.get("watchlist", []):
+                sid = str(item.get("stock") or "")
+                item["regime"] = regime_info["regime"]
+                item["conviction"] = conviction_by_stock.get(sid)
             _persist_snapshot(db, target_date, final_payload, job_id)
             signal_archive.persist_signal_watch_hits(db, target_date, final_payload, job_id)
 

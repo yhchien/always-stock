@@ -1224,6 +1224,10 @@ export interface SignalWatchlistItem {
   margin_analysis?: SignalMarginAnalysis | null
   /** 2026-06-26：產生這檔的 prompt 版本（v1 / v2 …）；舊快照無 → 視為 v1。 */
   prompt_version?: string | null
+  /** 2026-06-26 M27：deterministic regime 信心度（high/medium/low）；舊快照無 → null。 */
+  conviction?: SignalConviction | null
+  /** 2026-06-26 M27：產生當下的大盤 regime；舊快照無 → null。 */
+  regime?: SignalRegime | null
 }
 
 export interface SignalMarginAnalysisTable {
@@ -1277,8 +1281,21 @@ export interface SignalMarketMarginClimate {
   climate_reason: string
 }
 
+export type SignalRegime = "BULL_TREND" | "VOLATILE_RANGE" | "RISK_OFF"
+export type SignalConviction = "high" | "medium" | "low"
+
+/** 2026-06-26 M27：deterministic 大盤 regime（從 TAIEX MA 結構算）。 */
+export interface SignalMarketRegime {
+  regime: SignalRegime
+  regime_label: string
+  reason: string
+  metrics?: Record<string, number | null> | null
+}
+
 export interface SignalMarketContext {
   market_state?: string | null
+  /** 2026-06-26 M27：backend deterministic 大盤狀態 gate。 */
+  market_regime?: SignalMarketRegime | null
   taiex_change_pct?: number | null
   otc_change_pct?: number | null
   vix_status?: string | null

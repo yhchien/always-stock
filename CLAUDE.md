@@ -2392,3 +2392,40 @@ function update(next) {
 - **completed archive 取「最新一次命中」的版本**：若一個 cycle 橫跨 v1→v2 改版日，會以最後命中那天的版本為準（與 `latest_signal_type` 同口徑）
 - **bump 後不回溯**：改 v2 只影響之後新產生的 snapshot；已存的 v1 列不動（這正是版本欄的用途——區分新舊方法論的成效）
 - 本輪一併提交既有未提交 WIP：`_run_decision_chunk` 取消「只保留 top-3」硬性 cap，改成逐檔獨立判斷（+ 對應測試 `test_run_explanation_batch_prompt_does_not_force_top_3_cap`）
+
+## M27 魚尾 Market Regime Gate（2026-06-26）
+
+### 背景
+- 使用者分析 6/26 匯出的兩份魚尾 CSV：完成追蹤 cohort（4/28~5/14）30 日平均 +18.9% / 勝率 67%；6/5 後 active cohort 目前平均 +1.3% / 勝率 39% / 虧損率 52%。
+- 根因：prompt 在**震盪盤**仍用「多頭追強」邏輯，把 Follower / Laggard / 單次命中 / 急拉突破股評太高。CSV 證據：6/5 後 hit_count>=3 勝率 77%、hit_count=1 僅 24%；LEADER 平均 -2.8%（追高被反殺）。
+- 決策（使用者選）：做進**魚尾 M23**（不是 trade_quality M17）、regime 用 **deterministic 指數算**、降級規則以 **deterministic 為主**。
+
+### 關鍵洞見：regime 不是看指數漲跌，是看「盤中波動 / 創高急殺」
+- 6 月指數其實一路創高（46k→47k），純 MA-trend 分類器會把整段判 BULL_TREND → 對使用者的問題完全無效。
+- 使用者的「震盪盤」= 盤中震盪大（6/8 振幅 4.9%）、創高後急殺（6/23 收距高 -2.3% 收黑）、強勢股輪動快。
+- 解法：在趨勢判斷上**疊加波動度 overlay**——指數即使創高，只要近 5 日盤中振幅大 / 出現創高急殺反轉日 / 近 3 日有大跌，就視為 VOLATILE_RANGE。
+
+### 實作（deterministic 為骨幹）
+- 新模組 [market_regime.py](backend/app/signals/market_regime.py)：用 `daily_price` 的 `TAIEX` OHLC 歷史（297 天可用）算 MA10/20/60 + 報酬 + 盤中振幅 + 創高急殺反轉日；`classify_regime(metrics)` 純函式回 BULL_TREND / VOLATILE_RANGE / RISK_OFF。優先序：RISK_OFF（跌破 MA20 + 短均壓制/5 日大跌）> 高波動 VOLATILE（overlay）> BULL（多頭排列 + MA20 上揚 + 波動可控）> VOLATILE（fallback）。資料不足→保守 VOLATILE。
+- 門檻常數：`_VOL_RANGE_HIGH_PCT=2.8`（近 5 日均振幅）、`_BIG_DOWN_1D_PCT=-2.5`（近 3 日單日跌幅）、創高急殺 = 收盤距高點 ≤ -2% 且收黑、近 5 日 ≥1 根即算高波動。2026-06 實測校準：5/14~6/5 BULL、6/8~6/12 + 6/23 + 6/25 VOLATILE。
+- [filters.py](backend/app/signals/filters.py) `apply_regime_gate(candidates, regime)`：deterministic 降級/剔除 + 標 `regime_conviction`(high/medium/low)：
+  - BULL_TREND：不額外剔除
+  - VOLATILE_RANGE：剔除 distribution / 單次命中（hit_count<=1）的非 LEADER / 急拉突破（量>5日均量×2 且當日漲>5%）
+  - RISK_OFF：只留 LEADER + hit_count>=3 + 近 5 日法人>0 + 非 distribution，其餘剔除
+- [pipeline.py](backend/app/signals/pipeline.py)：candidate→classify→hard→soft→**regime_gate**→LLM；regime 掛進 `market_context["market_regime"]`；assemble 後用 `conviction_by_stock` deterministic 蓋回每筆 watchlist item 的 `conviction`/`regime`（不依賴 LLM）。
+
+### Prompt（輔助層）+ 版本
+- [watch-list-stock.md](backend/app/prompts/watch-list-stock.md)：STEP 8 改為 regime-aware（regime 為最高優先、覆寫 market_state）；input 標 `market_regime`/`regime_conviction` 為 backend authoritative 不可改寫/上調；output schema 加 `market_context.market_regime` + 每檔 `conviction`。
+- `_to_evidence_view` 加 market_regime + regime_conviction 給 LLM。
+- **PROMPT_VERSION v1 → v2**（[llm_caller.py](backend/app/signals/llm_caller.py)）：方法論改版，讓 30 日追蹤可比較 v1（無 gate）vs v2（有 gate）cohort。
+
+### 前端
+- [api.ts](frontend/src/lib/api.ts)：`SignalMarketRegime` / `SignalConviction` 型別；`SignalMarketContext.market_regime`、`SignalWatchlistItem.conviction`/`regime`。
+- [DailySignalsPanel.tsx](frontend/src/components/DailySignalsPanel.tsx)：header `RegimeBadge`（大盤：大多頭/震盪盤/風險退潮，色碼綠/琥珀/紅）+ 卡片 `ConvictionChip`（信心高/中/低）。
+
+### Gotcha
+- **regime 是波動度 overlay，不是純指數漲跌**：純 MA 分類器在創高震盪盤會誤判 BULL；必須用盤中振幅 + 創高急殺反轉日才抓得到使用者要的「震盪」。
+- **conviction 是 deterministic 蓋回，不信任 LLM**：pipeline 在 assemble_final_output 後用 candidate 的 `regime_conviction` 覆寫，prompt 只要求 LLM 語氣對齊。
+- **RISK_OFF / VOLATILE 可能讓 watchlist 變很少甚至空**：這是刻意的（退潮盤不新買）；空 watchlist 不視為 no_data（候選池空才 raise），snapshot 正常 done。
+- **OTC 指數沒進 daily_price**：regime 只用 TAIEX；OTC 僅 market_snapshot 漲跌幅。
+- **門檻是用 2026-06 一段資料校準**：未來可再調 `_VOL_RANGE_HIGH_PCT` 等常數；集中在 market_regime.py 頂部。

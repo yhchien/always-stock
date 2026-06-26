@@ -101,6 +101,49 @@ function InlinePrice({
   )
 }
 
+// M27：大盤 regime badge（panel header）
+function RegimeBadge({
+  regime,
+}: {
+  regime?: { regime: string; regime_label: string; reason?: string } | null
+}) {
+  if (!regime) return null
+  const cls =
+    regime.regime === "BULL_TREND"
+      ? "border-emerald-500/60 bg-emerald-500/15 text-emerald-200"
+      : regime.regime === "RISK_OFF"
+        ? "border-rose-500/60 bg-rose-500/15 text-rose-200"
+        : "border-amber-500/60 bg-amber-500/15 text-amber-200"
+  return (
+    <span
+      className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[11px] font-medium ${cls}`}
+      title={regime.reason || ""}
+    >
+      大盤：{regime.regime_label}
+    </span>
+  )
+}
+
+// M27：個股 deterministic 信心度 chip
+function ConvictionChip({ conviction }: { conviction?: string | null }) {
+  if (!conviction) return null
+  const map: Record<string, { label: string; cls: string }> = {
+    high: { label: "信心高", cls: "border-emerald-500/60 bg-emerald-500/15 text-emerald-200" },
+    medium: { label: "信心中", cls: "border-slate-500/60 bg-slate-600/30 text-slate-200" },
+    low: { label: "信心低", cls: "border-rose-500/50 bg-rose-500/10 text-rose-200" },
+  }
+  const m = map[conviction]
+  if (!m) return null
+  return (
+    <span
+      className={`inline-flex whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px] font-medium ${m.cls}`}
+      title="backend deterministic 信心度（依大盤 regime + 命中次數）"
+    >
+      {m.label}
+    </span>
+  )
+}
+
 function decisionToTone(type: SignalDecisionType | null | undefined): EmotionTone {
   if (type === "FOLLOWER") return "follower"
   if (type === "LAGGARD") return "laggard"
@@ -458,6 +501,7 @@ function SignalCard({
           <div className="flex items-center justify-between gap-2">
             <InlinePrice quote={quote} />
             <div className="flex shrink-0 items-center gap-1.5">
+              <ConvictionChip conviction={item.conviction} />
               {themeFit ? (
                 <span
                   className={`inline-flex whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px] font-medium ${toneChipClass(signalValueTone("theme_fit", themeFit))}`}
@@ -1121,6 +1165,7 @@ export default function DailySignalsPanel({
               {snapshot.generated_at ? ` · ${formatTpeDateTime(snapshot.generated_at)}` : ""}
             </span>
           )}
+          <RegimeBadge regime={snapshot?.data.market_context?.market_regime} />
           <span className="text-[11px] text-slate-500">每日將於晚上 21:30 更新</span>
         </div>
         <div className="flex items-center gap-2">

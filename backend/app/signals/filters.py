@@ -35,8 +35,16 @@ from typing import Any, Dict, List
 
 from sqlalchemy.orm import Session
 
-from app.signals.classification import PRELIM_TYPE_LAGGARD_CANDIDATE
+from app.signals.classification import (
+    PRELIM_TYPE_LAGGARD_CANDIDATE,
+    PRELIM_TYPE_LEADER,
+)
 from app.signals.exclusions import should_exclude
+from app.signals.market_regime import (
+    REGIME_BULL_TREND,
+    REGIME_RISK_OFF,
+    REGIME_VOLATILE_RANGE,
+)
 
 # Soft filter hint 字串（slice 5 / 6 共用）
 HINT_WEAKENING = "weakening"
@@ -111,6 +119,131 @@ def apply_soft_filters(
         # 不修改原 dict（pipeline 可能對候選池有其他引用）；shallow copy + 加欄位
         out.append({**c, "soft_hints": hints})
     return out
+
+
+# ---------- M27 Market Regime Gate（regime-aware deterministic 降級）----------
+
+# 震盪 / 退潮盤的「急拉突破」判定（避免追剛噴的）
+_REGIME_SPIKE_VOL_RATIO = 2.0       # 當日量 / 5 日均量
+_REGIME_SPIKE_PRICE_1D_PCT = 5.0    # 當日漲幅
+
+
+def apply_regime_gate(
+    candidates: List[Dict[str, Any]],
+    market_regime: str,
+) -> List[Dict[str, Any]]:
+    """M27：依大盤 regime 對候選池做 deterministic 降級 / 剔除（spec 外，2026-06-26）。
+
+    背景：6/5 後魚尾命中勝率大跌，主因是震盪盤仍用「多頭追強」邏輯把
+    Follower / Laggard / 單次命中 / 急拉突破股送進 LLM。regime gate 在 LLM 之前
+    先依大盤狀態收斂候選範圍，並對存活者標 `regime_conviction`（high/medium/low）。
+
+    - BULL_TREND：不額外剔除（維持原行為），只標 conviction
+    - VOLATILE_RANGE：剔除 distribution / 單次命中的 Follower-Laggard / 急拉突破
+    - RISK_OFF：只保留「LEADER + hit_count>=3 + 近 5 日法人為正 + 非 distribution」，其餘剔除
+
+    每筆存活者新增欄位（不 mutate 原 dict）：
+      `market_regime` / `regime_conviction` / `regime_gate_note`
+    """
+    out: List[Dict[str, Any]] = []
+    for c in candidates:
+        if _regime_should_remove(c, market_regime):
+            continue
+        conviction = _regime_conviction(c, market_regime)
+        out.append(
+            {
+                **c,
+                "market_regime": market_regime,
+                "regime_conviction": conviction,
+                "regime_gate_note": _regime_gate_note(market_regime, conviction),
+            }
+        )
+    return out
+
+
+def _hit_count(candidate: Dict[str, Any]) -> int:
+    return int(candidate.get("hit_count") or 0)
+
+
+def _is_leader(candidate: Dict[str, Any]) -> bool:
+    return candidate.get("prelim_type") == PRELIM_TYPE_LEADER
+
+
+def _has_distribution(candidate: Dict[str, Any]) -> bool:
+    return HINT_DISTRIBUTION in (candidate.get("soft_hints") or [])
+
+
+def _is_spike_breakout(candidate: Dict[str, Any]) -> bool:
+    """急拉突破：當日量 > 5 日均量 ×2 且當日漲幅 > 5%（震盪盤不該追）。"""
+    vol = candidate.get("volume_1d_to_5d_ratio")
+    pct = candidate.get("price_change_1d")
+    return (
+        vol is not None
+        and vol > _REGIME_SPIKE_VOL_RATIO
+        and pct is not None
+        and pct > _REGIME_SPIKE_PRICE_1D_PCT
+    )
+
+
+def _regime_should_remove(candidate: Dict[str, Any], market_regime: str) -> bool:
+    if market_regime == REGIME_BULL_TREND:
+        return False
+
+    if market_regime == REGIME_VOLATILE_RANGE:
+        if _has_distribution(candidate):
+            return True
+        # 單次命中（含未追蹤）的 Follower / Laggard：震盪盤勝率最低，剔除
+        if _hit_count(candidate) <= 1 and not _is_leader(candidate):
+            return True
+        if _is_spike_breakout(candidate):
+            return True
+        return False
+
+    if market_regime == REGIME_RISK_OFF:
+        # 退潮盤只留最強的：LEADER + 重複命中 + 法人續買 + 非派發
+        flow_5d = candidate.get("total_institution_flow_5d")
+        keep = (
+            _is_leader(candidate)
+            and _hit_count(candidate) >= 3
+            and flow_5d is not None
+            and flow_5d > 0
+            and not _has_distribution(candidate)
+        )
+        return not keep
+
+    return False
+
+
+def _regime_conviction(candidate: Dict[str, Any], market_regime: str) -> str:
+    hit = _hit_count(candidate)
+    leader = _is_leader(candidate)
+
+    if market_regime == REGIME_BULL_TREND:
+        if leader and hit >= 2:
+            return "high"
+        if hit >= 2 or leader:
+            return "medium"
+        return "low"
+
+    if market_regime == REGIME_VOLATILE_RANGE:
+        if leader and hit >= 3:
+            return "high"
+        if hit >= 3 or (leader and hit >= 2):
+            return "medium"
+        return "low"
+
+    # RISK_OFF：能存活的已是 leader + hit>=3，最高給 medium（退潮盤不追高）
+    return "medium"
+
+
+def _regime_gate_note(market_regime: str, conviction: str) -> str:
+    label = {
+        REGIME_BULL_TREND: "大多頭",
+        REGIME_VOLATILE_RANGE: "震盪盤",
+        REGIME_RISK_OFF: "風險退潮",
+    }.get(market_regime, market_regime)
+    conv = {"high": "高", "medium": "中", "low": "低"}.get(conviction, conviction)
+    return f"{label}：信心度 {conv}"
 
 
 # ---------- helpers ----------

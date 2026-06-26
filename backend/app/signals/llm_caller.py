@@ -70,7 +70,9 @@ _PROMPT_PATH = (
 # 魚尾 prompt 版本標記：每次對 watch-list-stock.md 做有意義的方法論改版時 bump（v1 → v2 …）。
 # 會蓋進每筆 watchlist item + signal_snapshots / signal_watch_hits / completed_archives，
 # 讓 30 日追蹤可以區分「這檔是哪一版 prompt 抓出來的」做績效歸因。
-PROMPT_VERSION = "v1"
+# v2（2026-06-26）：新增 M27 Market Regime Gate — deterministic 大盤狀態收斂選股 +
+#                   regime_conviction，震盪 / 退潮盤大幅收斂候選範圍。
+PROMPT_VERSION = "v2"
 
 # OpenAI 回應的 max tokens；reason 規則要求 500-1000 字 × batch 8 → 預留充足
 _MAX_OUTPUT_TOKENS = 8000
@@ -1109,6 +1111,9 @@ def _to_evidence_view(stocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             },
             "tracking_status": _tracking_status_view(s),
             "soft_hints": s.get("soft_hints", []),
+            # M27：deterministic 大盤 regime + 該檔信心度（LLM 須遵守，不可自行上調）
+            "market_regime": s.get("market_regime"),
+            "regime_conviction": s.get("regime_conviction"),
         })
     return out
 

@@ -2,6 +2,7 @@
 from datetime import date
 
 from app.signals.classification import (
+    PRELIM_TYPE_FOLLOWER,
     PRELIM_TYPE_LAGGARD_CANDIDATE,
     PRELIM_TYPE_LEADER,
 )
@@ -11,7 +12,13 @@ from app.signals.filters import (
     HINT_RETAIL_OVERHEATED,
     HINT_WEAKENING,
     apply_hard_exclusions,
+    apply_regime_gate,
     apply_soft_filters,
+)
+from app.signals.market_regime import (
+    REGIME_BULL_TREND,
+    REGIME_RISK_OFF,
+    REGIME_VOLATILE_RANGE,
 )
 
 
@@ -417,3 +424,89 @@ def test_hard_exclusions_keeps_inst_divergence_when_flow_1d_positive():
     ]
     out = apply_hard_exclusions(None, date(2026, 4, 25), pool)
     assert len(out) == 1
+
+
+# ---------- M27 Market Regime Gate ----------
+
+
+def _regime_candidate(**overrides):
+    base = {
+        "stock_id": "2330",
+        "prelim_type": PRELIM_TYPE_LEADER,
+        "hit_count": 3,
+        "soft_hints": [],
+        "total_institution_flow_5d": 1.0e8,
+        "volume_1d_to_5d_ratio": 1.0,
+        "price_change_1d": 1.0,
+    }
+    base.update(overrides)
+    return base
+
+
+def test_regime_gate_bull_keeps_all_and_stamps_conviction():
+    pool = [
+        _regime_candidate(stock_id="A", prelim_type=PRELIM_TYPE_LEADER, hit_count=3),
+        _regime_candidate(stock_id="B", prelim_type=PRELIM_TYPE_FOLLOWER, hit_count=1),
+        _regime_candidate(stock_id="C", soft_hints=[HINT_DISTRIBUTION]),
+    ]
+    out = apply_regime_gate(pool, REGIME_BULL_TREND)
+    assert len(out) == 3  # 大多頭不額外剔除
+    by = {c["stock_id"]: c for c in out}
+    assert by["A"]["regime_conviction"] == "high"  # leader + hit>=2
+    assert by["B"]["regime_conviction"] == "low"   # follower hit=1
+    assert all(c["market_regime"] == REGIME_BULL_TREND for c in out)
+
+
+def test_regime_gate_volatile_drops_single_hit_follower():
+    pool = [_regime_candidate(prelim_type=PRELIM_TYPE_FOLLOWER, hit_count=1)]
+    assert apply_regime_gate(pool, REGIME_VOLATILE_RANGE) == []
+
+
+def test_regime_gate_volatile_drops_single_hit_laggard():
+    pool = [_regime_candidate(prelim_type=PRELIM_TYPE_LAGGARD_CANDIDATE, hit_count=0)]
+    assert apply_regime_gate(pool, REGIME_VOLATILE_RANGE) == []
+
+
+def test_regime_gate_volatile_keeps_single_hit_leader_as_low():
+    pool = [_regime_candidate(prelim_type=PRELIM_TYPE_LEADER, hit_count=0)]
+    out = apply_regime_gate(pool, REGIME_VOLATILE_RANGE)
+    assert len(out) == 1
+    assert out[0]["regime_conviction"] == "low"
+
+
+def test_regime_gate_volatile_drops_distribution():
+    pool = [_regime_candidate(soft_hints=[HINT_DISTRIBUTION])]
+    assert apply_regime_gate(pool, REGIME_VOLATILE_RANGE) == []
+
+
+def test_regime_gate_volatile_drops_spike_breakout():
+    pool = [_regime_candidate(volume_1d_to_5d_ratio=3.0, price_change_1d=8.0)]
+    assert apply_regime_gate(pool, REGIME_VOLATILE_RANGE) == []
+
+
+def test_regime_gate_volatile_keeps_repeat_hit_leader_as_high():
+    pool = [_regime_candidate(prelim_type=PRELIM_TYPE_LEADER, hit_count=3)]
+    out = apply_regime_gate(pool, REGIME_VOLATILE_RANGE)
+    assert len(out) == 1
+    assert out[0]["regime_conviction"] == "high"
+
+
+def test_regime_gate_risk_off_keeps_only_strong_leader():
+    pool = [
+        _regime_candidate(stock_id="strong", prelim_type=PRELIM_TYPE_LEADER, hit_count=3,
+                          total_institution_flow_5d=1.0e8),
+        _regime_candidate(stock_id="weakhit", prelim_type=PRELIM_TYPE_LEADER, hit_count=1),
+        _regime_candidate(stock_id="follower", prelim_type=PRELIM_TYPE_FOLLOWER, hit_count=5),
+        _regime_candidate(stock_id="negflow", prelim_type=PRELIM_TYPE_LEADER, hit_count=3,
+                          total_institution_flow_5d=-1.0),
+    ]
+    out = apply_regime_gate(pool, REGIME_RISK_OFF)
+    assert [c["stock_id"] for c in out] == ["strong"]
+    assert out[0]["regime_conviction"] == "medium"  # 退潮盤最高 medium
+
+
+def test_regime_gate_does_not_mutate_input():
+    c = _regime_candidate()
+    apply_regime_gate([c], REGIME_VOLATILE_RANGE)
+    assert "regime_conviction" not in c
+    assert "market_regime" not in c
