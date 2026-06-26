@@ -1111,8 +1111,7 @@ def _to_evidence_view(stocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             },
             "tracking_status": _tracking_status_view(s),
             "soft_hints": s.get("soft_hints", []),
-            # M27：deterministic 大盤 regime + 該檔信心度（LLM 須遵守，不可自行上調）
-            "market_regime": s.get("market_regime"),
+            # M27：該檔 deterministic 信心度（大盤 regime 在 market_context，全市場一致，不重複帶）
             "regime_conviction": s.get("regime_conviction"),
         })
     return out

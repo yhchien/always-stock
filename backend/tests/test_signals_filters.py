@@ -14,6 +14,7 @@ from app.signals.filters import (
     apply_hard_exclusions,
     apply_regime_gate,
     apply_soft_filters,
+    regime_watch_intensity,
 )
 from app.signals.market_regime import (
     REGIME_BULL_TREND,
@@ -467,11 +468,41 @@ def test_regime_gate_volatile_drops_single_hit_laggard():
     assert apply_regime_gate(pool, REGIME_VOLATILE_RANGE) == []
 
 
-def test_regime_gate_volatile_keeps_single_hit_leader_as_low():
+def test_regime_gate_volatile_keeps_single_hit_leader_as_medium():
+    # LEADER 即使單次命中，震盪盤仍給 medium（比單次命中的 follower 有理由），留校 watch
     pool = [_regime_candidate(prelim_type=PRELIM_TYPE_LEADER, hit_count=0)]
     out = apply_regime_gate(pool, REGIME_VOLATILE_RANGE)
     assert len(out) == 1
+    assert out[0]["regime_conviction"] == "medium"
+
+
+def test_regime_gate_volatile_keeps_low_when_tracked_and_holding():
+    # 單次命中 follower（conviction=low）但已追蹤且表現中 → 留校例外
+    pool = [
+        _regime_candidate(
+            prelim_type=PRELIM_TYPE_FOLLOWER,
+            hit_count=1,
+            is_tracked=True,
+            max_positive_return_pct=4.0,
+            max_negative_return_pct=-3.0,
+        )
+    ]
+    out = apply_regime_gate(pool, REGIME_VOLATILE_RANGE)
+    assert len(out) == 1
     assert out[0]["regime_conviction"] == "low"
+
+
+def test_regime_gate_volatile_drops_low_when_tracked_but_underwater():
+    pool = [
+        _regime_candidate(
+            prelim_type=PRELIM_TYPE_FOLLOWER,
+            hit_count=1,
+            is_tracked=True,
+            max_positive_return_pct=1.0,   # < 3
+            max_negative_return_pct=-8.0,  # < -6
+        )
+    ]
+    assert apply_regime_gate(pool, REGIME_VOLATILE_RANGE) == []
 
 
 def test_regime_gate_volatile_drops_distribution():
@@ -502,7 +533,7 @@ def test_regime_gate_risk_off_keeps_only_strong_leader():
     ]
     out = apply_regime_gate(pool, REGIME_RISK_OFF)
     assert [c["stock_id"] for c in out] == ["strong"]
-    assert out[0]["regime_conviction"] == "medium"  # 退潮盤最高 medium
+    assert out[0]["regime_conviction"] == "high"  # 退潮盤存活者是最強的一批
 
 
 def test_regime_gate_does_not_mutate_input():
@@ -510,3 +541,13 @@ def test_regime_gate_does_not_mutate_input():
     apply_regime_gate([c], REGIME_VOLATILE_RANGE)
     assert "regime_conviction" not in c
     assert "market_regime" not in c
+
+
+def test_regime_watch_intensity_mapping():
+    assert regime_watch_intensity(REGIME_BULL_TREND, "high") == "aggressive"
+    assert regime_watch_intensity(REGIME_BULL_TREND, "medium") == "normal"
+    assert regime_watch_intensity(REGIME_BULL_TREND, "low") == "cautious"
+    assert regime_watch_intensity(REGIME_VOLATILE_RANGE, "high") == "normal"
+    assert regime_watch_intensity(REGIME_VOLATILE_RANGE, "medium") == "cautious"
+    assert regime_watch_intensity(REGIME_RISK_OFF, "high") == "cautious"
+    assert regime_watch_intensity(REGIME_RISK_OFF, None) == "cautious"

@@ -31,7 +31,7 @@ Slice 5：實作完成。
 from __future__ import annotations
 
 from datetime import date
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
@@ -139,8 +139,14 @@ def apply_regime_gate(
     先依大盤狀態收斂候選範圍，並對存活者標 `regime_conviction`（high/medium/low）。
 
     - BULL_TREND：不額外剔除（維持原行為），只標 conviction
-    - VOLATILE_RANGE：剔除 distribution / 單次命中的 Follower-Laggard / 急拉突破
+    - VOLATILE_RANGE：剔除 distribution / 急拉突破 / conviction=low（單次命中非 LEADER），
+      但「已追蹤且表現中（max_pos>=3% 且 max_neg>-6%）」的 low 給留校 watch
     - RISK_OFF：只保留「LEADER + hit_count>=3 + 近 5 日法人為正 + 非 distribution」，其餘剔除
+
+    conviction 採資料導向（2026-06 CSV：hit_count>=3 勝率 77%、單次命中僅 24%）：
+    - VOLATILE_RANGE：hit>=3 → high；LEADER 或 hit==2 → medium；其餘 → low
+    - RISK_OFF：存活者皆為強 LEADER → high
+    - BULL_TREND：leader+hit>=2 → high；hit>=2 或 leader → medium；其餘 → low
 
     每筆存活者新增欄位（不 mutate 原 dict）：
       `market_regime` / `regime_conviction` / `regime_gate_note`
@@ -185,6 +191,20 @@ def _is_spike_breakout(candidate: Dict[str, Any]) -> bool:
     )
 
 
+def _is_tracked_and_holding(candidate: Dict[str, Any]) -> bool:
+    """已追蹤且表現中：max_pos >= +3% 且 max_neg > -6%（給 low conviction 的留校例外）。"""
+    if not candidate.get("is_tracked"):
+        return False
+    max_pos = candidate.get("max_positive_return_pct")
+    max_neg = candidate.get("max_negative_return_pct")
+    return (
+        max_pos is not None
+        and max_pos >= 3.0
+        and max_neg is not None
+        and max_neg > -6.0
+    )
+
+
 def _regime_should_remove(candidate: Dict[str, Any], market_regime: str) -> bool:
     if market_regime == REGIME_BULL_TREND:
         return False
@@ -192,10 +212,12 @@ def _regime_should_remove(candidate: Dict[str, Any], market_regime: str) -> bool
     if market_regime == REGIME_VOLATILE_RANGE:
         if _has_distribution(candidate):
             return True
-        # 單次命中（含未追蹤）的 Follower / Laggard：震盪盤勝率最低，剔除
-        if _hit_count(candidate) <= 1 and not _is_leader(candidate):
-            return True
         if _is_spike_breakout(candidate):
+            return True
+        # conviction=low（單次命中且非 LEADER）→ 剔除，除非已追蹤且表現中
+        if _regime_conviction(candidate, market_regime) == "low" and not _is_tracked_and_holding(
+            candidate
+        ):
             return True
         return False
 
@@ -226,14 +248,34 @@ def _regime_conviction(candidate: Dict[str, Any], market_regime: str) -> str:
         return "low"
 
     if market_regime == REGIME_VOLATILE_RANGE:
-        if leader and hit >= 3:
+        # 資料導向：重複命中（hit>=3）是震盪盤最可靠訊號 → high
+        if hit >= 3:
             return "high"
-        if hit >= 3 or (leader and hit >= 2):
+        if leader or hit >= 2:
             return "medium"
         return "low"
 
-    # RISK_OFF：能存活的已是 leader + hit>=3，最高給 medium（退潮盤不追高）
-    return "medium"
+    # RISK_OFF：能存活的已是 LEADER + hit>=3，是當下最強的一批 → high
+    return "high"
+
+
+def regime_watch_intensity(market_regime: str, conviction: Optional[str]) -> str:
+    """(regime, conviction) → watch_intensity（前端一眼判斷今日清單要不要積極看）。
+
+    aggressive：值得明天積極盯；normal：正常觀察；cautious：保留 / 嚴守紀律。
+    """
+    conv = conviction or "low"
+    table = {
+        (REGIME_BULL_TREND, "high"): "aggressive",
+        (REGIME_BULL_TREND, "medium"): "normal",
+        (REGIME_BULL_TREND, "low"): "cautious",
+        (REGIME_VOLATILE_RANGE, "high"): "normal",
+        (REGIME_VOLATILE_RANGE, "medium"): "cautious",
+        (REGIME_VOLATILE_RANGE, "low"): "cautious",
+    }
+    if market_regime == REGIME_RISK_OFF:
+        return "cautious"
+    return table.get((market_regime, conv), "cautious")
 
 
 def _regime_gate_note(market_regime: str, conviction: str) -> str:

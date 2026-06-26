@@ -101,43 +101,72 @@ function InlinePrice({
   )
 }
 
-// M27：大盤 regime badge（panel header）
+// M27：大盤 regime badge（panel header）。market_regime 已攤平為字串。
 function RegimeBadge({
   regime,
+  label,
+  reason,
 }: {
-  regime?: { regime: string; regime_label: string; reason?: string } | null
+  regime?: string | null
+  label?: string | null
+  reason?: string | null
 }) {
   if (!regime) return null
   const cls =
-    regime.regime === "BULL_TREND"
+    regime === "BULL_TREND"
       ? "border-emerald-500/60 bg-emerald-500/15 text-emerald-200"
-      : regime.regime === "RISK_OFF"
+      : regime === "RISK_OFF"
         ? "border-rose-500/60 bg-rose-500/15 text-rose-200"
         : "border-amber-500/60 bg-amber-500/15 text-amber-200"
+  const fallback =
+    regime === "BULL_TREND" ? "大多頭" : regime === "RISK_OFF" ? "風險退潮" : "震盪盤"
   return (
     <span
       className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[11px] font-medium ${cls}`}
-      title={regime.reason || ""}
+      title={reason || ""}
     >
-      大盤：{regime.regime_label}
+      大盤：{label || fallback}
     </span>
   )
 }
 
-// M27：個股 deterministic 信心度 chip
-function ConvictionChip({ conviction }: { conviction?: string | null }) {
-  if (!conviction) return null
-  const map: Record<string, { label: string; cls: string }> = {
-    high: { label: "信心高", cls: "border-emerald-500/60 bg-emerald-500/15 text-emerald-200" },
-    medium: { label: "信心中", cls: "border-slate-500/60 bg-slate-600/30 text-slate-200" },
-    low: { label: "信心低", cls: "border-rose-500/50 bg-rose-500/10 text-rose-200" },
+// M27：個股 deterministic 觀察積極度 chip（一眼判斷今天要不要積極看）
+function ConvictionChip({
+  conviction,
+  intensity,
+}: {
+  conviction?: string | null
+  intensity?: string | null
+}) {
+  // 優先用 watch_intensity（積極/正常/保留）；舊快照無 intensity 時 fallback 用 conviction
+  const intensityMap: Record<string, { label: string; cls: string }> = {
+    aggressive: { label: "積極", cls: "border-emerald-500/60 bg-emerald-500/15 text-emerald-200" },
+    normal: { label: "正常", cls: "border-slate-500/60 bg-slate-600/30 text-slate-200" },
+    cautious: { label: "保留", cls: "border-amber-500/55 bg-amber-500/10 text-amber-200" },
   }
-  const m = map[conviction]
-  if (!m) return null
+  const convLabel: Record<string, string> = { high: "高", medium: "中", low: "低" }
+  const m = intensity ? intensityMap[intensity] : undefined
+  if (!m) {
+    if (!conviction) return null
+    const cls =
+      conviction === "high"
+        ? "border-emerald-500/60 bg-emerald-500/15 text-emerald-200"
+        : conviction === "low"
+          ? "border-rose-500/50 bg-rose-500/10 text-rose-200"
+          : "border-slate-500/60 bg-slate-600/30 text-slate-200"
+    return (
+      <span
+        className={`inline-flex whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px] font-medium ${cls}`}
+        title="backend deterministic 信心度"
+      >
+        信心{convLabel[conviction] ?? conviction}
+      </span>
+    )
+  }
   return (
     <span
       className={`inline-flex whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px] font-medium ${m.cls}`}
-      title="backend deterministic 信心度（依大盤 regime + 命中次數）"
+      title={`backend deterministic 觀察積極度（信心度 ${convLabel[conviction ?? ""] ?? conviction ?? "—"}）`}
     >
       {m.label}
     </span>
@@ -501,7 +530,7 @@ function SignalCard({
           <div className="flex items-center justify-between gap-2">
             <InlinePrice quote={quote} />
             <div className="flex shrink-0 items-center gap-1.5">
-              <ConvictionChip conviction={item.conviction} />
+              <ConvictionChip conviction={item.conviction} intensity={item.watch_intensity} />
               {themeFit ? (
                 <span
                   className={`inline-flex whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px] font-medium ${toneChipClass(signalValueTone("theme_fit", themeFit))}`}
@@ -1165,7 +1194,11 @@ export default function DailySignalsPanel({
               {snapshot.generated_at ? ` · ${formatTpeDateTime(snapshot.generated_at)}` : ""}
             </span>
           )}
-          <RegimeBadge regime={snapshot?.data.market_context?.market_regime} />
+          <RegimeBadge
+            regime={snapshot?.data.market_context?.market_regime}
+            label={snapshot?.data.market_context?.market_regime_label}
+            reason={snapshot?.data.market_context?.market_regime_reason}
+          />
           <span className="text-[11px] text-slate-500">每日將於晚上 21:30 更新</span>
         </div>
         <div className="flex items-center gap-2">

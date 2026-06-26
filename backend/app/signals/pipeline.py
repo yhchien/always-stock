@@ -151,8 +151,11 @@ def run_signal_pipeline_sync(
             )
             db_market_snapshot = market_snapshot.build_db_market_snapshot(db, target_date)
             market_context = llm_caller.assemble_market_context(db_market_snapshot)
-            # M27：把 deterministic regime 掛進 market_context（backend authoritative）
-            market_context["market_regime"] = regime_info
+            # M27：把 deterministic regime 掛進 market_context（backend authoritative，全市場一個）。
+            # 攤平成 string + label + reason，避免 LLM 把巢狀 object 當每檔不同的 regime。
+            market_context["market_regime"] = regime_info["regime"]
+            market_context["market_regime_label"] = regime_info["regime_label"]
+            market_context["market_regime_reason"] = regime_info["reason"]
             # 2026-05-25：把大盤融資融券盤勢塞進 market_context，供 explanation /
             # watch_reason 兩 stage 共用（cache 4h，多檔 batch 不重算）
             try:
@@ -267,11 +270,16 @@ def run_signal_pipeline_sync(
             final_payload = llm_caller.assemble_final_output(
                 market_context, explanation, candidate_pool_size=len(pool)
             )
-            # M27：把 deterministic conviction 蓋回每筆 watchlist item（不依賴 LLM）
+            # M27：把 deterministic conviction / watch_intensity 蓋回每筆 watchlist item
+            # （不依賴 LLM；regime 為全市場一致）
             for item in final_payload.get("watchlist", []):
                 sid = str(item.get("stock") or "")
+                conv = conviction_by_stock.get(sid)
                 item["regime"] = regime_info["regime"]
-                item["conviction"] = conviction_by_stock.get(sid)
+                item["conviction"] = conv
+                item["watch_intensity"] = filters.regime_watch_intensity(
+                    regime_info["regime"], conv
+                )
             _persist_snapshot(db, target_date, final_payload, job_id)
             signal_archive.persist_signal_watch_hits(db, target_date, final_payload, job_id)
 

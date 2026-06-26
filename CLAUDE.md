@@ -2429,3 +2429,22 @@ function update(next) {
 - **RISK_OFF / VOLATILE 可能讓 watchlist 變很少甚至空**：這是刻意的（退潮盤不新買）；空 watchlist 不視為 no_data（候選池空才 raise），snapshot 正常 done。
 - **OTC 指數沒進 daily_price**：regime 只用 TAIEX；OTC 僅 market_snapshot 漲跌幅。
 - **門檻是用 2026-06 一段資料校準**：未來可再調 `_VOL_RANGE_HIGH_PCT` 等常數；集中在 market_regime.py 頂部。
+
+### M27 v2 refinement（2026-06-26 第二輪 review 修正）
+
+使用者 review v2 後挑出 6 個會影響結果的問題 + 2 個增強，本輪修掉（仍在 `feat/m27-regime-gate`，PROMPT_VERSION 維持 v2，因 M27 尚未產生 prod 資料）：
+
+1. **market_regime 欄位定位**：大盤狀態是**全市場一個**，移到 `market_context.market_regime`（攤平成 string + `market_regime_label` + `market_regime_reason`，pipeline 設定）；`regime_conviction` 才是每檔一個。`_to_evidence_view` 移除 per-stock market_regime（避免 LLM 以為每檔不同）。前端 `SignalMarketContext.market_regime` 改 flat string、`RegimeBadge` 讀攤平欄位。
+2. **時空隔離**：prompt 開頭 + STEP 0 加 date-bounded 規則（歷史日期不可用 date 之後新聞/股價/財報；無法確認發布時間視為不可用；外部查詢只能用於業務/產業鏈定位）。否則 v1/v2 回測會被後見之明污染。
+3. **震盪盤 low 硬剔除**：`apply_regime_gate` 在 VOLATILE_RANGE 把 `conviction=low`（單次命中非 LEADER）直接剔除，**例外**：已追蹤且 max_pos>=3% 且 max_neg>-6% 留校；conviction 改資料導向（hit>=3→high、LEADER 或 hit==2→medium、其餘→low；RISK_OFF 存活者→high）。STEP 8 同步寫 A/B 組硬條件 + 強制 REMOVE 清單。
+4. **LAGGARD regime 限制**：核心原則 #8「必須納入 LAGGARD」加註只在 BULL_TREND 成立；VOLATILE 不可因 Leader 已漲就強塞 LAGGARD（需另符合震盪盤硬條件）、RISK_OFF LAGGARD 原則 REMOVE。
+5. **theme_score deterministic**：STEP 2 把「原則上降級或排除」改硬規則（score=0 一律 REMOVE；score=1 只有 BULL_TREND + LEADER + conviction!=low 可 WATCH，VOLATILE/RISK_OFF 一律 REMOVE）。
+6. **deterministic chip/technical（部分，前向相容）**：STEP 6/7 加註「若 backend 提供 deterministic chip_trend/technical_status 必須直接採用」，但**實際 backend 計算延後**（需逐股技術型態偵測，較大；可接 M11 `backtest_patterns.py`）。目前仍由 LLM 從 price_change/volume fallback 判。
+- **watch_intensity（增強）**：新 deterministic 欄位（aggressive/normal/cautious），`filters.regime_watch_intensity(regime, conviction)` 算、pipeline 蓋回 watchlist item；前端卡片 chip 顯示「積極/正常/保留」（舊快照無則 fallback 顯示信心度）。
+- **removed 結構化（增強）**：STEP 9 removed 加 `remove_category`（theme_mismatch / weak_chip / bad_technical / low_conviction / regime_filter / overextended / data_insufficient），方便日後統計 v1/v2 排除原因差異。
+
+#### Gotcha（本輪）
+- **conviction 是資料導向不是 type 導向**：震盪盤 hit_count>=3 一律 high（CSV 證據 77% 勝率），不分 LEADER/FOLLOWER；單次命中 LEADER 給 medium（留校）、單次命中非 LEADER 給 low（剔除，除非追蹤中表現好）。
+- **market_regime 攤平後 snapshot.market_context 結構改變**：`market_regime` 從 object 變 string + 另兩個欄位；前端與任何讀 market_context 的地方都要用 flat 欄位。
+- **watch_intensity / conviction deterministic 蓋回**：LLM 輸出的同名欄位會被 pipeline 覆寫，prompt 只要求 LLM「原樣回填」對齊語氣。
+- **#6 尚未真正 deterministic**：prompt 已前向相容，但 chip_trend/technical_status 目前仍是 LLM 判；要完全落地需另開一個「backend 技術/籌碼訊號計算」工作。
