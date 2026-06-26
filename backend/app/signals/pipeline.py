@@ -344,6 +344,7 @@ def _persist_snapshot(
         "final_watchlist_size": payload.get("final_watchlist_size"),
         "llm_model": payload.get("llm_model"),
         "llm_total_tokens": payload.get("llm_total_tokens"),
+        "prompt_version": payload.get("prompt_version") or "v1",
         "job_id": job_id,
     }
     if existing is not None:

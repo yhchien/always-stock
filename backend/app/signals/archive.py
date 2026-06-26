@@ -75,6 +75,8 @@ class ArchiveSummaryItem:
     max_positive_return_trade_date: Optional[date]
     max_negative_return_pct: Optional[float]
     max_negative_return_trade_date: Optional[date]
+    # 產生這筆追蹤的 prompt 版本（取最新一次命中）；舊資料 → v1
+    prompt_version: str = "v1"
     # M26：對應 (stock_id, first_seen_date) 的 SignalExpectationPrice 預測；舊資料無 → None
     conservative_price: Optional[float] = None
     dream_price: Optional[float] = None
@@ -101,6 +103,8 @@ class CompletedArchiveItem:
     max_negative_return_trade_date: Optional[date]
     completed_trade_date: date
     closure_reason: str = CLOSURE_REASON_COMPLETED_30_DAYS
+    # 產生此 cycle 的 prompt 版本（取最新一次命中）；舊資料 → v1
+    prompt_version: str = "v1"
     # M26：對應 (stock_id, first_seen_date) 的 SignalExpectationPrice 預測；舊資料無 → None
     conservative_price: Optional[float] = None
     dream_price: Optional[float] = None
@@ -143,6 +147,7 @@ def persist_signal_watch_hits(
                 group_info=item.get("group_info") or {},
                 leader_check=item.get("leader_check") or {},
                 signals=item.get("signals") or {},
+                prompt_version=str(item.get("prompt_version") or "v1"),
                 baseline_trade_date=prior.get("baseline_trade_date"),
                 baseline_price=prior.get("baseline_price"),
                 latest_eval_trade_date=prior.get("latest_eval_trade_date"),
@@ -424,6 +429,7 @@ def list_completed_archive_summary(
             closure_reason=(
                 row.closure_reason or CLOSURE_REASON_COMPLETED_30_DAYS
             ),
+            prompt_version=row.prompt_version or "v1",
         )
         prediction = expectation_map.get((row.stock_id, row.first_seen_date))
         if prediction is not None:
@@ -637,6 +643,7 @@ def _build_completed_archive_item(
         max_negative_return_pct=max_negative_return_pct,
         max_negative_return_trade_date=max_negative_return_trade_date,
         completed_trade_date=completed_trade_date,
+        prompt_version=latest_row.prompt_version or "v1",
     )
 
 
@@ -678,6 +685,7 @@ def _build_archive_summary_item(
         max_positive_return_trade_date=latest_row.max_positive_return_trade_date,
         max_negative_return_pct=latest_row.max_negative_return_pct,
         max_negative_return_trade_date=latest_row.max_negative_return_trade_date,
+        prompt_version=latest_row.prompt_version or "v1",
     )
 
 
@@ -1041,6 +1049,7 @@ def _build_early_exit_archive_item(
         max_negative_return_trade_date=max_negative_return_trade_date,
         completed_trade_date=settle_trade_date,
         closure_reason=closure_reason,
+        prompt_version=latest_row.prompt_version or "v1",
     )
 
 
@@ -1078,6 +1087,7 @@ def _upsert_completed_archive(
                 max_negative_return_trade_date=item.max_negative_return_trade_date,
                 completed_trade_date=item.completed_trade_date,
                 closure_reason=item.closure_reason,
+                prompt_version=item.prompt_version or "v1",
             )
         )
     else:
@@ -1098,6 +1108,7 @@ def _upsert_completed_archive(
         existing.max_negative_return_trade_date = item.max_negative_return_trade_date
         existing.completed_trade_date = item.completed_trade_date
         existing.closure_reason = item.closure_reason
+        existing.prompt_version = item.prompt_version or "v1"
         existing.updated_at = datetime.utcnow()
 
 
@@ -1286,6 +1297,7 @@ def _serialize_summary_item(item: ArchiveSummaryItem) -> dict[str, Any]:
         "max_positive_return_trade_date": item.max_positive_return_trade_date,
         "max_negative_return_pct": item.max_negative_return_pct,
         "max_negative_return_trade_date": item.max_negative_return_trade_date,
+        "prompt_version": item.prompt_version or "v1",
         "conservative_price": item.conservative_price,
         "dream_price": item.dream_price,
     }
@@ -1312,6 +1324,7 @@ def _serialize_completed_archive_item(item: CompletedArchiveItem) -> dict[str, A
         "max_negative_return_trade_date": item.max_negative_return_trade_date,
         "completed_trade_date": item.completed_trade_date,
         "closure_reason": item.closure_reason,
+        "prompt_version": item.prompt_version or "v1",
         "conservative_price": item.conservative_price,
         "dream_price": item.dream_price,
     }

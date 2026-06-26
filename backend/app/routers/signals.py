@@ -71,6 +71,7 @@ class SnapshotResponse(BaseModel):
     snapshot_date: date
     generated_at: datetime
     llm_model: Optional[str]
+    prompt_version: str = "v1"
     data: Dict[str, Any]
 
 
@@ -120,6 +121,7 @@ class SignalArchiveSummaryItemResponse(BaseModel):
     max_positive_return_trade_date: Optional[date]
     max_negative_return_pct: Optional[float]
     max_negative_return_trade_date: Optional[date]
+    prompt_version: str = "v1"
     # M26：對應 (stock_id, first_seen_date) 的 SignalExpectationPrice 預測；舊資料 = None
     conservative_price: Optional[float] = None
     dream_price: Optional[float] = None
@@ -151,6 +153,7 @@ class SignalArchiveCompletedItemResponse(BaseModel):
     max_negative_return_trade_date: Optional[date]
     completed_trade_date: date
     closure_reason: str = "completed_30_days"
+    prompt_version: str = "v1"
     # M26：對應 (stock_id, first_seen_date) 的 SignalExpectationPrice 預測;舊資料 = None
     conservative_price: Optional[float] = None
     dream_price: Optional[float] = None
@@ -253,6 +256,7 @@ def _serialize_snapshot(snap: SignalSnapshot) -> SnapshotResponse:
         snapshot_date=snap.snapshot_date,
         generated_at=snap.generated_at,
         llm_model=snap.llm_model,
+        prompt_version=snap.prompt_version or "v1",
         data=data,
     )
 

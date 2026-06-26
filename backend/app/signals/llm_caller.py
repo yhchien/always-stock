@@ -67,6 +67,11 @@ _PROMPT_PATH = (
     Path(__file__).resolve().parents[1] / "prompts" / "watch-list-stock.md"
 )
 
+# 魚尾 prompt 版本標記：每次對 watch-list-stock.md 做有意義的方法論改版時 bump（v1 → v2 …）。
+# 會蓋進每筆 watchlist item + signal_snapshots / signal_watch_hits / completed_archives，
+# 讓 30 日追蹤可以區分「這檔是哪一版 prompt 抓出來的」做績效歸因。
+PROMPT_VERSION = "v1"
+
 # OpenAI 回應的 max tokens；reason 規則要求 500-1000 字 × batch 8 → 預留充足
 _MAX_OUTPUT_TOKENS = 8000
 _WEB_SEARCH_TOOL = {"type": "web_search"}
@@ -335,6 +340,10 @@ def assemble_final_output(
     # watchlist = _cap_final_watchlist(watchlist_candidates)
     watchlist = watchlist_candidates
 
+    # 每筆蓋上 prompt 版本，往下流到 signal_snapshots / signal_watch_hits。
+    for entry in watchlist:
+        entry["prompt_version"] = PROMPT_VERSION
+
     type_counts = {"LEADER": 0, "FOLLOWER": 0, "LAGGARD": 0}
     industries: List[str] = []
     seen_industries = set()
@@ -363,6 +372,7 @@ def assemble_final_output(
         "final_watchlist_size": len(watchlist),
         "llm_model": model,
         "llm_total_tokens": total_tokens,
+        "prompt_version": PROMPT_VERSION,
     }
 
 
@@ -638,7 +648,7 @@ def _run_decision_chunk(
     user_msg = (
         "[執行 STEP 5 / STEP 6：先對全候選做短 decision]\n"
         "你現在只需要判斷 WATCH / REMOVE，並給 1-2 句短理由。"
-        "最終 WATCH 名單只保留最值得追蹤的 3 檔，條件普通或排序偏後者請直接判 REMOVE。"
+        "請對每一檔獨立判斷，不要因為名額限制、批次內相對排序或同批有更強股票，就把原本符合條件的股票判成 REMOVE。"
         "不要產生長文分析，長理由只留給最後的 WATCH 名單。\n\n"
         "[硬規則]\n"
         "1. `type` 由 research_results 帶入，**不可修改**（後端 deterministic 決定）。\n"

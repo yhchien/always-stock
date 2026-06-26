@@ -11,6 +11,9 @@ def ensure_signal_watch_hit_return_columns(engine: Engine) -> None:
     """Backfill M23 archive tracking columns for older DBs."""
     inspector = inspect(engine)
     table_alters = {
+        "signal_snapshots": {
+            "prompt_version": "ALTER TABLE signal_snapshots ADD COLUMN prompt_version VARCHAR(16) NOT NULL DEFAULT 'v1'",
+        },
         "signal_watch_hits": {
             "baseline_trade_date": "ALTER TABLE signal_watch_hits ADD COLUMN baseline_trade_date DATE",
             "baseline_price": "ALTER TABLE signal_watch_hits ADD COLUMN baseline_price FLOAT",
@@ -21,6 +24,7 @@ def ensure_signal_watch_hit_return_columns(engine: Engine) -> None:
             "max_positive_return_trade_date": "ALTER TABLE signal_watch_hits ADD COLUMN max_positive_return_trade_date DATE",
             "max_negative_return_pct": "ALTER TABLE signal_watch_hits ADD COLUMN max_negative_return_pct FLOAT",
             "max_negative_return_trade_date": "ALTER TABLE signal_watch_hits ADD COLUMN max_negative_return_trade_date DATE",
+            "prompt_version": "ALTER TABLE signal_watch_hits ADD COLUMN prompt_version VARCHAR(16) NOT NULL DEFAULT 'v1'",
         },
         "signal_watch_completed_archives": {
             "max_positive_return_pct": "ALTER TABLE signal_watch_completed_archives ADD COLUMN max_positive_return_pct FLOAT",
@@ -28,6 +32,7 @@ def ensure_signal_watch_hit_return_columns(engine: Engine) -> None:
             "max_negative_return_pct": "ALTER TABLE signal_watch_completed_archives ADD COLUMN max_negative_return_pct FLOAT",
             "max_negative_return_trade_date": "ALTER TABLE signal_watch_completed_archives ADD COLUMN max_negative_return_trade_date DATE",
             "closure_reason": "ALTER TABLE signal_watch_completed_archives ADD COLUMN closure_reason VARCHAR(32) NOT NULL DEFAULT 'completed_30_days'",
+            "prompt_version": "ALTER TABLE signal_watch_completed_archives ADD COLUMN prompt_version VARCHAR(16) NOT NULL DEFAULT 'v1'",
         },
     }
 

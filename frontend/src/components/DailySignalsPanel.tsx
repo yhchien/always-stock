@@ -428,6 +428,7 @@ function SignalCard({
 }) {
   const [detailOpen, setDetailOpen] = useState(false)
   const themeFit = item.theme_fit
+  const promptVersion = item.prompt_version || "v1"
   const subtitle =
     item.industry != null ? (
       <>
@@ -456,13 +457,21 @@ function SignalCard({
         <div className="space-y-2">
           <div className="flex items-center justify-between gap-2">
             <InlinePrice quote={quote} />
-            {themeFit ? (
+            <div className="flex shrink-0 items-center gap-1.5">
+              {themeFit ? (
+                <span
+                  className={`inline-flex whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px] font-medium ${toneChipClass(signalValueTone("theme_fit", themeFit))}`}
+                >
+                  題材 {signalValueLabel(themeFit, "theme_fit")}
+                </span>
+              ) : null}
               <span
-                className={`shrink-0 inline-flex whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px] font-medium ${toneChipClass(signalValueTone("theme_fit", themeFit))}`}
+                className="inline-flex whitespace-nowrap rounded border border-slate-600 bg-slate-700/40 px-1.5 py-0.5 text-[11px] font-medium text-slate-300"
+                title="產生這檔的 prompt 版本"
               >
-                題材 {signalValueLabel(themeFit, "theme_fit")}
+                {promptVersion}
               </span>
-            ) : null}
+            </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-1.5">

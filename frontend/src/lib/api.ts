@@ -1222,6 +1222,8 @@ export interface SignalWatchlistItem {
   technical_reason?: string[] | null
   /** 2026-05-25：融資融券專屬結構化分析，比重 大盤 30% / 個股 70%。 */
   margin_analysis?: SignalMarginAnalysis | null
+  /** 2026-06-26：產生這檔的 prompt 版本（v1 / v2 …）；舊快照無 → 視為 v1。 */
+  prompt_version?: string | null
 }
 
 export interface SignalMarginAnalysisTable {
@@ -1298,6 +1300,8 @@ export interface SignalSnapshotResponse {
   snapshot_date: string
   generated_at: string
   llm_model: string | null
+  /** 2026-06-26：產生這份快照的 prompt 版本（v1 / v2 …）。 */
+  prompt_version?: string | null
   data: SignalSnapshotData
 }
 
@@ -1355,6 +1359,8 @@ export interface SignalArchiveSummaryItem {
   max_positive_return_trade_date: string | null
   max_negative_return_pct: number | null
   max_negative_return_trade_date: string | null
+  /** 2026-06-26：產生這檔的 prompt 版本（取最新一次命中）；舊資料 = v1。 */
+  prompt_version?: string | null
   // M26：對應 (stock_id, first_seen_date) 的 expectation price 預測；舊資料 = null
   conservative_price?: number | null
   dream_price?: number | null
@@ -1386,6 +1392,8 @@ export interface SignalArchiveCompletedItem {
   max_negative_return_trade_date: string | null
   completed_trade_date: string
   closure_reason: SignalClosureReason
+  /** 2026-06-26：產生此 cycle 的 prompt 版本（取最新一次命中）；舊資料 = v1。 */
+  prompt_version?: string | null
   // M26：對應 (stock_id, first_seen_date) 的 expectation price 預測；舊資料 = null
   conservative_price?: number | null
   dream_price?: number | null

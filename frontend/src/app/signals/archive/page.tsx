@@ -148,6 +148,19 @@ function SignalTypeChip({ type }: { type: string }) {
   return <span className="text-xs text-slate-400">{upper}</span>
 }
 
+function VersionChip({ version }: { version?: string | null }) {
+  // 產生這檔的 prompt 版本（v1 / v2 …）；舊資料無 → 視為 v1
+  const label = version || "v1"
+  return (
+    <span
+      className="inline-flex items-center rounded border border-slate-600 bg-slate-700/40 px-1.5 py-0.5 text-[11px] font-medium text-slate-300"
+      title="產生這檔的 prompt 版本"
+    >
+      {label}
+    </span>
+  )
+}
+
 function formatPeriodLabel(period: SignalArchiveCompletedPeriod): string {
   const [sy, sm] = period.period_start.split("-")
   const [ey, em] = period.period_end.split("-")
@@ -566,6 +579,7 @@ function SignalArchiveContent() {
                 <TableHead className="text-slate-300">追蹤第幾天</TableHead>
                 <TableHead className="text-slate-300">命中次數</TableHead>
                 <TableHead className="text-slate-300">最新類型</TableHead>
+                <TableHead className="text-slate-300">版本</TableHead>
                 <TableHead className="text-slate-300">報酬率</TableHead>
                 <TableHead className="text-slate-300">預測價</TableHead>
                 <TableHead className="text-slate-300">最大正報酬</TableHead>
@@ -576,7 +590,7 @@ function SignalArchiveContent() {
             <TableBody>
               {filteredActiveItems.length === 0 && activeSearch.trim() !== "" && (
                 <TableRow className="border-slate-800">
-                  <TableCell colSpan={11} className="text-center text-sm text-slate-400">
+                  <TableCell colSpan={12} className="text-center text-sm text-slate-400">
                     找不到符合「{activeSearch}」的股票
                   </TableCell>
                 </TableRow>
@@ -630,6 +644,9 @@ function SignalArchiveContent() {
                         {item.latest_signal_type}
                       </TableCell>
                       <TableCell>
+                        <VersionChip version={item.prompt_version} />
+                      </TableCell>
+                      <TableCell>
                         <ReturnCell value={item.return_pct} />
                       </TableCell>
                       <TableCell>
@@ -670,7 +687,7 @@ function SignalArchiveContent() {
                     </TableRow>
                     {active && (
                       <TableRow className="border-slate-800 bg-slate-900/30 hover:bg-slate-900/30">
-                        <TableCell colSpan={11} className="p-0">
+                        <TableCell colSpan={12} className="p-0">
                           <div className="border-t border-slate-700 px-4 py-4">
                             {detailLoading && (
                               <p className="text-sm text-slate-400">載入報告中…</p>
@@ -857,6 +874,7 @@ function SignalArchiveContent() {
                 <TableHead className="text-slate-300">首次抓到</TableHead>
                 <TableHead className="text-slate-300">抓到次數</TableHead>
                 <TableHead className="text-slate-300">類型</TableHead>
+                <TableHead className="text-slate-300">版本</TableHead>
                 <TableHead className="text-slate-300">預測價</TableHead>
                 <TableHead className="text-slate-300">最大正報酬</TableHead>
                 <TableHead className="text-slate-300">最大負報酬</TableHead>
@@ -867,7 +885,7 @@ function SignalArchiveContent() {
             <TableBody>
               {filteredCompletedItems.length === 0 && completedSearch.trim() !== "" && (
                 <TableRow className="border-slate-800">
-                  <TableCell colSpan={9} className="text-center text-sm text-slate-400">
+                  <TableCell colSpan={10} className="text-center text-sm text-slate-400">
                     找不到符合「{completedSearch}」的股票
                   </TableCell>
                 </TableRow>
@@ -904,6 +922,9 @@ function SignalArchiveContent() {
                     </TableCell>
                     <TableCell>
                       <SignalTypeChip type={item.latest_signal_type} />
+                    </TableCell>
+                    <TableCell>
+                      <VersionChip version={item.prompt_version} />
                     </TableCell>
                     <TableCell>
                       <PredictionCell

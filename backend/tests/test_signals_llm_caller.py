@@ -419,6 +419,18 @@ def test_run_explanation_batch_attaches_decision_and_short_reason(monkeypatch):
     assert fake_client._responses_api.calls[0]["prompt_cache_key"] == llm_caller._CACHE_KEY_DECISION
 
 
+def test_run_explanation_batch_prompt_does_not_force_top_3_cap(monkeypatch):
+    response = {"items": []}
+    fake_client = _patch_openai(monkeypatch, json.dumps(response, ensure_ascii=False))
+    research = [
+        {"stock": "1303", "name": "南亞", "type": "FOLLOWER"},
+    ]
+    llm_caller.run_explanation_batch(research, market_context={"market_state": "RANGE"})
+    prompt = fake_client._responses_api.calls[0]["input"]
+    assert "最終 WATCH 名單只保留最值得追蹤的 3 檔" not in prompt
+    assert "不要因為名額限制、批次內相對排序或同批有更強股票" in prompt
+
+
 def test_run_explanation_batch_chunks_by_default_batch_size(monkeypatch):
     """13 檔 + DEFAULT_BATCH_SIZE=4 應該分 4 個 chunk（4+4+4+1）。"""
     monkeypatch.setattr(llm_caller, "DEFAULT_EXPLANATION_BATCH_SIZE", 4)
@@ -692,6 +704,19 @@ def test_assemble_final_output_handles_empty_explanation():
     assert out["watchlist"] == []
     assert out["summary"]["leader_count"] == 0
     assert out["summary"]["risk_note"] == "下跌"
+
+
+def test_assemble_final_output_stamps_prompt_version():
+    """payload 與每筆 watchlist item 都帶 prompt_version（給 30 日追蹤做版本歸因）。"""
+    explanation = [
+        _watch_item("2330", "台積電", "LEADER", "半導體業"),
+        _watch_item("2454", "聯發科", "FOLLOWER", "半導體業"),
+    ]
+    out = llm_caller.assemble_final_output(
+        {"market_state": "RANGE"}, explanation, candidate_pool_size=5
+    )
+    assert out["prompt_version"] == llm_caller.PROMPT_VERSION
+    assert all(item["prompt_version"] == llm_caller.PROMPT_VERSION for item in out["watchlist"])
 
 
 def test_assemble_final_output_unknown_decision_is_dropped():

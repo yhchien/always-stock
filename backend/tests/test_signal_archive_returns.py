@@ -116,6 +116,35 @@ def test_persist_signal_watch_hits_carries_prior_return_state():
         assert latest.return_pct == 0.0
 
 
+def test_persist_signal_watch_hits_stores_prompt_version():
+    """watchlist item 的 prompt_version 要寫進 SignalWatchHit；缺值 fallback v1。"""
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+
+    with Session() as db:
+        job_id = _seed_job_and_snapshot(db, date(2026, 4, 30))
+        archive.persist_signal_watch_hits(
+            db,
+            date(2026, 4, 30),
+            {
+                "watchlist": [
+                    {"stock": "2330", "name": "台積電", "type": "LEADER", "prompt_version": "v2"},
+                    {"stock": "2454", "name": "聯發科", "type": "FOLLOWER"},  # 缺 → v1
+                ]
+            },
+            job_id,
+        )
+        by_id = {
+            row.stock_id: row
+            for row in db.query(SignalWatchHit)
+            .filter(SignalWatchHit.snapshot_date == date(2026, 4, 30))
+            .all()
+        }
+        assert by_id["2330"].prompt_version == "v2"
+        assert by_id["2454"].prompt_version == "v1"
+
+
 def test_update_signal_watch_returns_applies_requested_rules():
     engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
     Base.metadata.create_all(bind=engine)
@@ -497,12 +526,14 @@ def test_refresh_completed_signal_cycles_upserts_full_cycle_archive_rows():
         assert row.max_positive_return_trade_date is not None
         assert row.max_negative_return_pct is None
         assert row.max_negative_return_trade_date is None
+        assert row.prompt_version == "v1"  # 缺值 → server_default v1
 
         payload = archive.list_completed_archive_summary(db)
         assert payload["items"][0]["stock_id"] == "2330"
         assert payload["items"][0]["completed_trade_date"] == expected_completed
         assert payload["items"][0]["max_positive_return_pct"] is not None
         assert payload["items"][0]["closure_reason"] == archive.CLOSURE_REASON_COMPLETED_30_DAYS
+        assert payload["items"][0]["prompt_version"] == "v1"
 
 
 def _seed_consecutive_prices(

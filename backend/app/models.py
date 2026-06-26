@@ -338,6 +338,9 @@ class SignalSnapshot(Base):
     final_watchlist_size = Column(Integer, nullable=True)      # filter 後 WATCH 數
     llm_model = Column(String(64), nullable=True)              # e.g. gpt-4o-search-preview
     llm_total_tokens = Column(Integer, nullable=True)          # cost tracking
+    prompt_version = Column(                                   # 產生這份快照的 prompt 版本（v1 / v2 …）
+        String(16), nullable=False, default="v1", server_default="v1"
+    )
     generated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     job_id = Column(
         String(36),
@@ -367,6 +370,9 @@ class SignalWatchHit(Base):
     group_info = Column(JSON, nullable=False)
     leader_check = Column(JSON, nullable=False)
     signals = Column(JSON, nullable=False)
+    prompt_version = Column(                                   # 命中當天所用 prompt 版本（v1 / v2 …）
+        String(16), nullable=False, default="v1", server_default="v1"
+    )
     baseline_trade_date = Column(Date, nullable=True)
     baseline_price = Column(Float, nullable=True)
     latest_eval_trade_date = Column(Date, nullable=True)
@@ -426,6 +432,9 @@ class SignalWatchCompletedArchive(Base):
         nullable=False,
         default="completed_30_days",
         server_default="completed_30_days",
+    )
+    prompt_version = Column(                                   # 此 cycle 最新一次命中所用 prompt 版本
+        String(16), nullable=False, default="v1", server_default="v1"
     )
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)

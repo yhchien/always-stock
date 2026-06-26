@@ -2366,3 +2366,29 @@ function update(next) {
 - **price 或 volume 為 None → 不剔除**：沿用 turnover filter 慣例，避免資料缺漏日把整池清空
 - **級距邊界**：股價剛好 1000 元落入中間級距（門檻 800）、剛好 5000 元落入高價級距（門檻 500）
 - 測試：[test_signals_filters.py](backend/tests/test_signals_filters.py) 新增 9 案例（三級距 above/below + 1500 exact + 兩邊界 + price/volume None）；全 62 個 filters+candidate_pool 測試 pass
+
+## 魚尾 / 30 日追蹤新增 prompt 版本欄（2026-06-26）
+
+為了讓未來改 prompt 後能做績效歸因，魚尾清單與 30 日追蹤都加一欄「版本」，標記「這檔是哪一版 prompt 產生的」。目前全部是 `v1`。
+
+### 版本來源（single source of truth）
+- [llm_caller.py](backend/app/signals/llm_caller.py) 常數 `PROMPT_VERSION = "v1"`
+- **改 prompt 方法論時**：同步 bump 此常數 + [watch-list-stock.md](backend/app/prompts/watch-list-stock.md) 檔頭 `<!-- PROMPT_VERSION -->` 註記（v1 → v2 …）
+- `assemble_final_output` 把版本蓋進 payload 頂層 + 每筆 watchlist item
+
+### 資料流
+- `signal_snapshots.prompt_version`（_persist_snapshot 從 payload 帶入）
+- `signal_watch_hits.prompt_version`（persist_signal_watch_hits 從 watchlist item 帶入；缺值 fallback v1）
+- `signal_watch_completed_archives.prompt_version`（取該 cycle 最新一次命中 `latest_row.prompt_version`）
+- 三張表都 `ADD COLUMN ... NOT NULL DEFAULT 'v1'`（[signal_watch_schema.py](backend/app/signal_watch_schema.py) idempotent migration，既有列自動 backfill v1）
+
+### API / 前端
+- `SnapshotResponse.prompt_version` + `SignalArchiveSummaryItemResponse.prompt_version` + `SignalArchiveCompletedItemResponse.prompt_version`（皆 default `"v1"`）
+- 魚尾 SignalCard 右上多一顆灰色版本 chip（讀 `item.prompt_version`）
+- 30 日追蹤 active + completed 兩張表各加「版本」欄（`VersionChip`，在「最新類型/類型」之後）；colSpan 同步 +1（active 11→12、completed 9→10）
+
+### Gotcha
+- **舊資料一律視為 v1**：DB server_default + 後端序列化 `or "v1"` + 前端 `version || "v1"` 三層保底；舊快照 watchlist JSON 沒這欄也會顯示 v1
+- **completed archive 取「最新一次命中」的版本**：若一個 cycle 橫跨 v1→v2 改版日，會以最後命中那天的版本為準（與 `latest_signal_type` 同口徑）
+- **bump 後不回溯**：改 v2 只影響之後新產生的 snapshot；已存的 v1 列不動（這正是版本欄的用途——區分新舊方法論的成效）
+- 本輪一併提交既有未提交 WIP：`_run_decision_chunk` 取消「只保留 top-3」硬性 cap，改成逐檔獨立判斷（+ 對應測試 `test_run_explanation_batch_prompt_does_not_force_top_3_cap`）

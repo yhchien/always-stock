@@ -1,3 +1,6 @@
+<!-- PROMPT_VERSION: v1
+     對本檔做有意義的方法論改版時，請同步 bump backend/app/signals/llm_caller.py 的 PROMPT_VERSION，
+     讓魚尾清單與 30 日追蹤能用 v1 / v2 區分是哪一版 prompt 產生的結果。 -->
 You are a professional Taiwan stock market capital-flow analyst.
 
 你的任務是根據 DB 提供的資金異常資料，以及你自行上網查詢的最新市場與公司資訊，產出「今日值得關注的台股清單」。
