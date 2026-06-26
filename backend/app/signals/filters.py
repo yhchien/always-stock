@@ -52,6 +52,13 @@ _HARD_LIQUIDITY_MIN_TWD = 5e7  # 5,000 萬
 _HARD_PRICE_EXTENDED_10D_PCT = 25.0  # 短期已大漲門檻
 _HARD_DIVERGENCE_PRICE_1D_DROP_PCT = -1.5  # 1d 大跌門檻（負值）
 
+# 2026-06-26 新增：當日成交量死線（依股價級距要求最低張數，不足直接剔除）
+# 1 張 = 1000 股；DB volume 為股數，故門檻乘以 _SHARES_PER_LOT 比對。
+_SHARES_PER_LOT = 1000
+_HARD_MIN_LOTS_PRICE_UNDER_1000 = 1500  # 股價 < 1000 元 → 日量需 > 1500 張
+_HARD_MIN_LOTS_PRICE_1000_TO_5000 = 800  # 1000 <= 股價 < 5000 元 → 日量需 > 800 張
+_HARD_MIN_LOTS_PRICE_OVER_5000 = 500  # 股價 >= 5000 元 → 日量需 > 500 張
+
 # Spec §9.2 Soft Filters thresholds
 _SOFT_WEAKENING_RATIO = 0.5
 _SOFT_RETAIL_MARGIN_PCT = 0.05  # 5%（margin_change_3d 是 ratio：0.05 = +5%）
@@ -139,6 +146,10 @@ def _is_hard_excluded(candidate: Dict[str, Any]) -> bool:
     if turnover_5d is not None and turnover_5d < _HARD_LIQUIDITY_MIN_TWD:
         return True
 
+    # 4b. 當日成交量死線（依股價級距要求最低張數）
+    if _below_volume_deadline(candidate):
+        return True
+
     # 5. failed_follow_through：首次抓到後 3 日驗證失敗（再偵測閘門）
     if candidate.get("failed_follow_through"):
         return True
@@ -168,6 +179,33 @@ def _is_hard_excluded(candidate: Dict[str, Any]) -> bool:
         return True
 
     return False
+
+
+def _below_volume_deadline(candidate: Dict[str, Any]) -> bool:
+    """當日成交量未達股價級距對應的最低張數 → True（應剔除）。
+
+    級距（股價以 close_1d 判斷）：
+      - < 1000 元：日量需 > 1500 張
+      - 1000 ~ 5000 元（含 1000、不含 5000）：日量需 > 800 張
+      - >= 5000 元：日量需 > 500 張
+
+    price 或 volume 任一缺值（None）→ 不剔除（沿用流動性 filter 慣例，
+    避免資料缺漏日把整池清空）。
+    """
+    price = candidate.get("close_1d")
+    volume = candidate.get("volume_1d")
+    if price is None or volume is None:
+        return False
+
+    if price < 1000:
+        min_lots = _HARD_MIN_LOTS_PRICE_UNDER_1000
+    elif price < 5000:
+        min_lots = _HARD_MIN_LOTS_PRICE_1000_TO_5000
+    else:
+        min_lots = _HARD_MIN_LOTS_PRICE_OVER_5000
+
+    lots = volume / _SHARES_PER_LOT
+    return lots <= min_lots
 
 
 def _detect_soft_hints(candidate: Dict[str, Any]) -> List[str]:

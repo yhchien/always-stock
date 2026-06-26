@@ -38,6 +38,7 @@ def _candidate(**overrides):
         "low_1d": 98.0,
         "open_1d": 99.0,
         "close_1d": 99.5,
+        "volume_1d": 2_000_000,  # 2000 張，過所有級距死線
         "high_10d": 105.0,
         "low_10d": 95.0,
     }
@@ -112,6 +113,82 @@ def test_hard_exclusions_keeps_when_5d_flow_unknown():
 
 def test_hard_exclusions_handles_empty_pool():
     assert apply_hard_exclusions(None, date(2026, 4, 25), []) == []
+
+
+# ---------- 當日成交量死線（依股價級距） ----------
+
+
+def test_volume_deadline_drops_low_price_thin_volume():
+    """股價 < 1000 元、日量 1499 張（< 1500）→ 剔除。"""
+    pool = [_candidate(close_1d=500.0, volume_1d=1_499_000)]
+    out = apply_hard_exclusions(None, date(2026, 4, 25), pool)
+    assert out == []
+
+
+def test_volume_deadline_keeps_low_price_above_threshold():
+    """股價 < 1000 元、日量 1501 張（> 1500）→ 保留。"""
+    pool = [_candidate(close_1d=500.0, volume_1d=1_501_000)]
+    out = apply_hard_exclusions(None, date(2026, 4, 25), pool)
+    assert len(out) == 1
+
+
+def test_volume_deadline_drops_exact_threshold_not_breakout():
+    """剛好 1500 張不算「突破」→ 剔除。"""
+    pool = [_candidate(close_1d=500.0, volume_1d=1_500_000)]
+    out = apply_hard_exclusions(None, date(2026, 4, 25), pool)
+    assert out == []
+
+
+def test_volume_deadline_mid_price_tier():
+    """1000 <= 股價 < 5000 元 → 門檻 800 張。"""
+    assert apply_hard_exclusions(
+        None, date(2026, 4, 25), [_candidate(close_1d=2000.0, volume_1d=799_000)]
+    ) == []
+    assert len(
+        apply_hard_exclusions(
+            None, date(2026, 4, 25), [_candidate(close_1d=2000.0, volume_1d=801_000)]
+        )
+    ) == 1
+
+
+def test_volume_deadline_price_1000_boundary_uses_mid_tier():
+    """股價剛好 1000 元 → 落入中間級距（門檻 800 張，不是 1500）。"""
+    pool = [_candidate(close_1d=1000.0, volume_1d=900_000)]  # 900 張 > 800
+    out = apply_hard_exclusions(None, date(2026, 4, 25), pool)
+    assert len(out) == 1
+
+
+def test_volume_deadline_high_price_tier():
+    """股價 >= 5000 元 → 門檻 500 張。"""
+    assert apply_hard_exclusions(
+        None, date(2026, 4, 25), [_candidate(close_1d=6000.0, volume_1d=499_000)]
+    ) == []
+    assert len(
+        apply_hard_exclusions(
+            None, date(2026, 4, 25), [_candidate(close_1d=6000.0, volume_1d=501_000)]
+        )
+    ) == 1
+
+
+def test_volume_deadline_price_5000_boundary_uses_high_tier():
+    """股價剛好 5000 元 → 落入高價級距（門檻 500 張）。"""
+    pool = [_candidate(close_1d=5000.0, volume_1d=600_000)]  # 600 張 > 500
+    out = apply_hard_exclusions(None, date(2026, 4, 25), pool)
+    assert len(out) == 1
+
+
+def test_volume_deadline_keeps_when_volume_unknown():
+    """volume_1d=None → 不剔除（資料缺）。"""
+    pool = [_candidate(close_1d=500.0, volume_1d=None)]
+    out = apply_hard_exclusions(None, date(2026, 4, 25), pool)
+    assert len(out) == 1
+
+
+def test_volume_deadline_keeps_when_price_unknown():
+    """close_1d=None → 不剔除（資料缺）。"""
+    pool = [_candidate(close_1d=None, volume_1d=100_000)]
+    out = apply_hard_exclusions(None, date(2026, 4, 25), pool)
+    assert len(out) == 1
 
 
 # ---------- §9.2 Soft Filters ----------

@@ -2346,3 +2346,23 @@ function update(next) {
 - **這類修正 deploy 後要手動補跑**：`gh workflow run "Signal Archive Returns Update" --ref main -f target_date=<YYYY-MM-DD>`，把當天卡住的 active rows 回補正確
 - **觸發背景**：本次是順著「GitHub schedule 6/15 整批被丟掉 → 手動補跑」連帶發現的潛伏 bug；GitHub `schedule` 事件 best-effort，高負載時整點 cron（`0 10`/`0 11`/`0 12`）容易被延遲甚至整批丟棄，必要時用 workflow_dispatch 補
 - **同日已把整點 cron 錯開（降低再被丟機率）**：`daily_etl_update` `0 10`→`17 10`（台北 18:17）、`daily_signals` `0 11`→`23 11`（台北 19:23）、`signal_archive_returns` `0 12`→`41 12`（台北 20:41）；維持 ETL→Signals→Archive 相依順序。`telegram_daily_report`（`30 13`）/ `margin_trade_backfill`（`30 14`）本就非整點不動
+
+## M23 候選池當日成交量死線（2026-06-26）
+
+針對魚尾候選池新增一條 hard exclusion：當日成交量未達股價級距對應最低張數即剔除（不進候選池），與既有「流動性 < 5000 萬 TWD」同層。
+
+### 級距規則（股價以 `close_1d` 判斷；1 張 = 1000 股）
+- 股價 `< 1000` 元 → 日量需 **> 1500 張**
+- 股價 `1000 ~ 5000` 元（含 1000、不含 5000）→ 日量需 **> 800 張**
+- 股價 `>= 5000` 元 → 日量需 **> 500 張**
+
+### 實作
+- [candidate_pool.py](backend/app/signals/candidate_pool.py)：`_compute_price_data` 新增 `out["volume_1d"] = last_row.volume`（當日成交量股數）；空模板補 `"volume_1d": None`
+- [filters.py](backend/app/signals/filters.py)：`_is_hard_excluded` 第 4b 條呼叫新 helper `_below_volume_deadline`；常數 `_SHARES_PER_LOT=1000` + 三個 `_HARD_MIN_LOTS_*`
+- 比對用 `lots = volume_1d / 1000`，`lots <= min_lots` → 剔除
+
+### Gotcha
+- **「突破」= 嚴格大於**：剛好等於門檻（例 1500 張）不算突破，仍剔除（`<=` 判斷）
+- **price 或 volume 為 None → 不剔除**：沿用 turnover filter 慣例，避免資料缺漏日把整池清空
+- **級距邊界**：股價剛好 1000 元落入中間級距（門檻 800）、剛好 5000 元落入高價級距（門檻 500）
+- 測試：[test_signals_filters.py](backend/tests/test_signals_filters.py) 新增 9 案例（三級距 above/below + 1500 exact + 兩邊界 + price/volume None）；全 62 個 filters+candidate_pool 測試 pass

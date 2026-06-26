@@ -425,6 +425,7 @@ def _empty_metrics() -> Dict[str, Any]:
         "price_change_3d": None,
         "price_change_5d": None,
         "price_change_10d": None,
+        "volume_1d": None,
         "volume_5d_to_60d_ratio": None,
         "volume_1d_to_60d_ratio": None,
         "volume_1d_to_5d_ratio": None,
@@ -601,6 +602,7 @@ def _build_stock_metrics(
     out["high_1d"] = last_row.high_price
     out["low_1d"] = last_row.low_price
     out["close_1d"] = last_row.close_price
+    out["volume_1d"] = last_row.volume  # 當日成交量（股數）；流動性死線用
 
     # price_change_*：close(target) / close(target-Nd 前一交易日) - 1
     out["price_change_1d"] = _pct_change(price_rows, n=1)
