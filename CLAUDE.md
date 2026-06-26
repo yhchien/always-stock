@@ -2448,3 +2448,11 @@ function update(next) {
 - **market_regime 攤平後 snapshot.market_context 結構改變**：`market_regime` 從 object 變 string + 另兩個欄位；前端與任何讀 market_context 的地方都要用 flat 欄位。
 - **watch_intensity / conviction deterministic 蓋回**：LLM 輸出的同名欄位會被 pipeline 覆寫，prompt 只要求 LLM「原樣回填」對齊語氣。
 - **#6 尚未真正 deterministic**：prompt 已前向相容，但 chip_trend/technical_status 目前仍是 LLM 判；要完全落地需另開一個「backend 技術/籌碼訊號計算」工作。
+
+### 30 日追蹤 prompt 版本改成「cycle 版本集合」（2026-06-26）
+
+- 需求：一檔在追蹤週期內跨版本被抓到（之前 v1、今天 v2）→ 追蹤摘要要顯示 `v1, v2`，不是只看最新一次。
+- 改法：`archive.py::_distinct_versions(rows)` 把 cycle 內所有 hit 的 `prompt_version` 去重 + 排序 + 逗號相連（如 `"v1,v2"`）；`_build_archive_summary_item` / `_build_completed_archive_item` / `_build_early_exit_archive_item` 從 `latest_row.prompt_version` 改用 `_distinct_versions(rows)`。
+- per-hit `signal_watch_hits.prompt_version` 與 per-snapshot `signal_snapshots.prompt_version` **不變**（仍各存單一版本）；只有追蹤聚合改集合語意。完成封存的 `signal_watch_completed_archives.prompt_version` 在封存當下就寫入聚合字串（hits 之後會被刪，無法回算）。
+- 前端 archive `VersionChip` 把 `"v1,v2"` 拆成多顆小 chip 顯示；魚尾首頁卡片版本 chip 維持單一（today snapshot）。
+- Gotcha：欄位仍 VARCHAR(16)，`"v1,v2,v3"` 等短字串夠用（30 交易日內不可能 bump 到溢位）；單一版本時 `_distinct_versions` 回 `"v1"`，既有測試不破。

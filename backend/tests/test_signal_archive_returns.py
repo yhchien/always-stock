@@ -309,6 +309,38 @@ def test_archive_summary_uses_persisted_return_fields():
         assert item["max_negative_return_trade_date"] is None
 
 
+def test_archive_summary_aggregates_distinct_prompt_versions():
+    """同一檔在追蹤 cycle 內跨 v1 / v2 命中 → 摘要顯示 "v1,v2"（集合，非只取最新）。"""
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+
+    def _hit(snapshot_date, version):
+        return SignalWatchHit(
+            snapshot_date=snapshot_date,
+            stock_id="2330",
+            stock_name="台積電",
+            signal_type="LEADER",
+            industry_name="半導體業",
+            sub_industry="晶圓代工",
+            business_summary="a",
+            reason="a",
+            theme={},
+            group_info={},
+            leader_check={},
+            signals={},
+            prompt_version=version,
+        )
+
+    with Session() as db:
+        db.add_all([_hit(date(2026, 4, 28), "v1"), _hit(date(2026, 4, 30), "v2")])
+        db.commit()
+        payload = archive.list_archive_summary(db, now=None)
+        item = payload["items"][0]
+        assert item["stock_id"] == "2330"
+        assert item["prompt_version"] == "v1,v2"
+
+
 def test_update_signal_watch_returns_keeps_baseline_day_at_zero_on_rerun():
     engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
     Base.metadata.create_all(bind=engine)

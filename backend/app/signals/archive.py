@@ -110,6 +110,16 @@ class CompletedArchiveItem:
     dream_price: Optional[float] = None
 
 
+def _distinct_versions(rows: list[SignalWatchHit]) -> str:
+    """聚合一個追蹤 cycle 內所有 hit 的 prompt 版本，回逗號相連的去重集合（如 "v1,v2"）。
+
+    用途：30 日追蹤要顯示「這檔被哪些版本的 prompt 抓過」，不是只看最新一次。
+    每個 hit row 各自存當天 prompt_version；這裡做 union + 排序。
+    """
+    versions = sorted({(r.prompt_version or "v1") for r in rows})
+    return ",".join(versions) if versions else "v1"
+
+
 def persist_signal_watch_hits(
     db: Session,
     target_date: date,
@@ -643,7 +653,7 @@ def _build_completed_archive_item(
         max_negative_return_pct=max_negative_return_pct,
         max_negative_return_trade_date=max_negative_return_trade_date,
         completed_trade_date=completed_trade_date,
-        prompt_version=latest_row.prompt_version or "v1",
+        prompt_version=_distinct_versions(rows),
     )
 
 
@@ -685,7 +695,7 @@ def _build_archive_summary_item(
         max_positive_return_trade_date=latest_row.max_positive_return_trade_date,
         max_negative_return_pct=latest_row.max_negative_return_pct,
         max_negative_return_trade_date=latest_row.max_negative_return_trade_date,
-        prompt_version=latest_row.prompt_version or "v1",
+        prompt_version=_distinct_versions(rows),
     )
 
 
@@ -1049,7 +1059,7 @@ def _build_early_exit_archive_item(
         max_negative_return_trade_date=max_negative_return_trade_date,
         completed_trade_date=settle_trade_date,
         closure_reason=closure_reason,
-        prompt_version=latest_row.prompt_version or "v1",
+        prompt_version=_distinct_versions(rows),
     )
 
 

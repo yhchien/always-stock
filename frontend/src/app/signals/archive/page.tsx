@@ -149,14 +149,24 @@ function SignalTypeChip({ type }: { type: string }) {
 }
 
 function VersionChip({ version }: { version?: string | null }) {
-  // 產生這檔的 prompt 版本（v1 / v2 …）；舊資料無 → 視為 v1
-  const label = version || "v1"
+  // 整個追蹤 cycle 抓過的 prompt 版本集合（後端回 "v1,v2"）；舊資料無 → 視為 v1
+  const versions = (version || "v1")
+    .split(",")
+    .map((v) => v.trim())
+    .filter(Boolean)
   return (
     <span
-      className="inline-flex items-center rounded border border-slate-600 bg-slate-700/40 px-1.5 py-0.5 text-[11px] font-medium text-slate-300"
-      title="產生這檔的 prompt 版本"
+      className="inline-flex flex-wrap items-center gap-1"
+      title="此追蹤週期內抓到這檔的 prompt 版本（若跨版本會同時顯示）"
     >
-      {label}
+      {versions.map((v) => (
+        <span
+          key={v}
+          className="inline-flex items-center rounded border border-slate-600 bg-slate-700/40 px-1.5 py-0.5 text-[11px] font-medium text-slate-300"
+        >
+          {v}
+        </span>
+      ))}
     </span>
   )
 }
