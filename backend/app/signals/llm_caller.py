@@ -62,17 +62,40 @@ DEFAULT_WATCH_REASON_MODEL = os.getenv(
     "gpt-5.4-mini",
 ).strip()
 
-# 系統 prompt 路徑（spec §10 LLM I/O contract 全文）
-_PROMPT_PATH = (
-    Path(__file__).resolve().parents[1] / "prompts" / "watch-list-stock.md"
-)
-
-# 魚尾 prompt 版本標記：每次對 watch-list-stock.md 做有意義的方法論改版時 bump（v1 → v2 …）。
+# 魚尾 prompt 版本標記：每次對 prompt 做有意義的方法論改版時 bump（v1 → v2 …）。
 # 會蓋進每筆 watchlist item + signal_snapshots / signal_watch_hits / completed_archives，
 # 讓 30 日追蹤可以區分「這檔是哪一版 prompt 抓出來的」做績效歸因。
-# v2（2026-06-26）：新增 M27 Market Regime Gate — deterministic 大盤狀態收斂選股 +
-#                   regime_conviction，震盪 / 退潮盤大幅收斂候選範圍。
-PROMPT_VERSION = "v2"
+#
+# 2026-07-02：改為「依大盤 regime 選 prompt 版本」——
+#   - 多頭（BULL_TREND）→ v1（watch-list-stock-v1.md，追強方法論）
+#   - 震盪（VOLATILE_RANGE）/ 退潮（RISK_OFF）/ 未知 → v4（watch-list-stock.md，收斂方法論，
+#     含 M27 Regime Gate + entry_quality / sector_rotation_status / institution_flow_momentum /
+#     theme_maturity 等 deterministic_signals 語意）
+# regime 由 pipeline 以 TAIEX 指數 deterministic 算出後塞進 market_context["market_regime"]，
+# 各 LLM stage 讀該欄位 resolve 對應版本；label 也跟著 regime 走（見 _resolve_prompt_version）。
+PROMPT_VERSION_BULL = "v1"
+PROMPT_VERSION_VOLATILE = "v4"
+# 向後相容：舊 caller / 未提供 market_regime 時的預設版本（收斂版）
+PROMPT_VERSION = PROMPT_VERSION_VOLATILE
+
+# 系統 prompt 路徑（spec §10 LLM I/O contract 全文）：一版一檔。
+_PROMPTS_DIR = Path(__file__).resolve().parents[1] / "prompts"
+_PROMPT_PATHS: Dict[str, Path] = {
+    PROMPT_VERSION_BULL: _PROMPTS_DIR / "watch-list-stock-v1.md",
+    PROMPT_VERSION_VOLATILE: _PROMPTS_DIR / "watch-list-stock.md",
+}
+# 保留舊常數名（部分工具 / 訊息引用）指向預設版檔案
+_PROMPT_PATH = _PROMPT_PATHS[PROMPT_VERSION_VOLATILE]
+
+
+def _resolve_prompt_version(market_regime: Optional[str]) -> str:
+    """依大盤 regime 決定要跑哪一版 prompt。
+
+    多頭 → v1（追強）；震盪 / 退潮 / 未知 → v4（收斂）。
+    """
+    if str(market_regime or "").upper() == "BULL_TREND":
+        return PROMPT_VERSION_BULL
+    return PROMPT_VERSION_VOLATILE
 
 # OpenAI 回應的 max tokens；reason 規則要求 500-1000 字 × batch 8 → 預留充足
 _MAX_OUTPUT_TOKENS = 8000
@@ -191,7 +214,8 @@ def run_research_batch(
         return []
 
     market_context = market_context or {}
-    system_prompt = _load_system_prompt(stage="research")
+    version = _resolve_prompt_version(market_context.get("market_regime"))
+    system_prompt = _load_system_prompt(stage="research", version=version)
     evidence_view = _to_evidence_view(stocks_batch)
     user_msg = (
         "[只執行 STEP 2 / STEP 3 / STEP 4：research 部分]\n"
@@ -218,7 +242,7 @@ def run_research_batch(
         '      "business_summary": "公司主要業務說明",\n'
         '      "supply_chain_position": "upstream | midstream | downstream | equipment | component | material | brand | channel | service | other",\n'
         '      "theme_fit": "HIGH | MEDIUM | LOW | NONE",\n'
-        '      "theme": { "main_theme": "...", "theme_duration": "short | 1Q | 2Q_plus", "theme_score": 0-3, "theme_reason": "..." },\n'
+        '      "theme": { "main_theme": "...", "theme_duration": "short | 1Q | 2Q_plus", "theme_maturity": "early | mid | late | post_event | unclear", "theme_score": 0-3, "theme_reason": "..." },\n'
         '      "group_info": { "is_group_stock": bool, "group_name": "..." | null, "related_group_stocks": [...], "group_price_sync": "strong | moderate | weak | none" },\n'
         '      "leader_check": { "industry_leader": "...", "leader_price_trend": "strong_up | up | flat | down", "leader_supports_theme": bool }\n'
         '    }\n'
@@ -342,9 +366,12 @@ def assemble_final_output(
     # watchlist = _cap_final_watchlist(watchlist_candidates)
     watchlist = watchlist_candidates
 
+    # 依大盤 regime resolve 這次實際跑的 prompt 版本（多頭 v1 / 震盪 / 退潮 v4）。
+    prompt_version = _resolve_prompt_version(market_context.get("market_regime"))
+
     # 每筆蓋上 prompt 版本，往下流到 signal_snapshots / signal_watch_hits。
     for entry in watchlist:
-        entry["prompt_version"] = PROMPT_VERSION
+        entry["prompt_version"] = prompt_version
 
     type_counts = {"LEADER": 0, "FOLLOWER": 0, "LAGGARD": 0}
     industries: List[str] = []
@@ -374,7 +401,7 @@ def assemble_final_output(
         "final_watchlist_size": len(watchlist),
         "llm_model": model,
         "llm_total_tokens": total_tokens,
-        "prompt_version": PROMPT_VERSION,
+        "prompt_version": prompt_version,
     }
 
 
@@ -414,22 +441,24 @@ WATCH_REASON_SECTIONS = (
 )
 
 
-def _load_system_prompt(stage: str = "full") -> str:
-    """A4：依 stage 載入對應 STEP fragment。
+def _load_system_prompt(stage: str = "full", version: str = PROMPT_VERSION) -> str:
+    """A4：依 version + stage 載入對應 prompt 的 STEP fragment。
 
+    `version` 決定讀哪一份 prompt 檔（v1=多頭追強 / v4=震盪收斂）。
     `stage="full"` 維持原行為（整份 prompt），給未明確指定 stage 的 caller 用。
     其餘 stage 只保留 preamble + 該 stage 需要的 STEP + WATCH 寫作規則（reason stage）
-    + 重要限制段。fragment 結果 in-process cache，避免每次 LLM call 重新切割。
+    + 重要限制段。fragment 結果以 `version:stage` in-process cache，避免每次 LLM call 重新切割。
     """
-    cache_key = stage
+    cache_key = f"{version}:{stage}"
     if cache_key in _PROMPT_FRAGMENT_CACHE:
         return _PROMPT_FRAGMENT_CACHE[cache_key]
-    if not _PROMPT_PATH.exists():
+    path = _PROMPT_PATHS.get(version, _PROMPT_PATHS[PROMPT_VERSION_VOLATILE])
+    if not path.exists():
         raise FileNotFoundError(
-            f"M23 system prompt not found at {_PROMPT_PATH}. "
-            "請確認 backend/app/prompts/watch-list-stock.md 已部署。"
+            f"M23 system prompt not found at {path}. "
+            f"請確認 {path.name} 已部署。"
         )
-    full = _PROMPT_PATH.read_text(encoding="utf-8")
+    full = path.read_text(encoding="utf-8")
     fragment = _build_stage_prompt(full, stage)
     _PROMPT_FRAGMENT_CACHE[cache_key] = fragment
     return fragment
@@ -646,7 +675,8 @@ def _run_decision_chunk(
     model: str,
 ) -> List[Dict[str, Any]]:
     """單個 chunk 的短 decision call。"""
-    system_prompt = _load_system_prompt(stage="decision")
+    version = _resolve_prompt_version(market_context.get("market_regime"))
+    system_prompt = _load_system_prompt(stage="decision", version=version)
     user_msg = (
         "[執行 STEP 5 / STEP 6：先對全候選做短 decision]\n"
         "你現在只需要判斷 WATCH / REMOVE，並給 1-2 句短理由。"
@@ -665,7 +695,7 @@ def _run_decision_chunk(
         '  "items": [\n'
         '    {\n'
         '      "stock": "股票代碼",\n'
-        '      "signals": { "capital_flow": "strong | moderate | weak", "chip_trend": "accumulating | neutral | weakening | retail_overheated | short_squeeze_potential", "margin_short_signal": "positive | neutral | negative", "technical_status": "breakout | steady_uptrend | early_turn | range_bound | distribution | weak" },\n'
+        '      "signals": { "capital_flow": "strong | moderate | weak", "chip_trend": "accumulating | neutral | weakening | retail_overheated | short_squeeze_potential", "margin_short_signal": "positive | neutral | negative", "technical_status": "breakout | steady_uptrend | early_turn | range_bound | distribution | weak", "entry_quality": "breakout_confirmed | pullback_setup | extended_chase | failed_rotation | neutral", "sector_rotation_status": "inflow | cooling | failed_rotation | neutral", "institution_flow_momentum": "accelerating | stable | decelerating | reversal | neutral" },\n'
         '      "decision": "WATCH | REMOVE",\n'
         '      "short_reason": "1-2 句繁體中文，120 字內，說明保留或排除主因"\n'
         '    }\n'
@@ -728,7 +758,8 @@ def _run_watch_reason_chunk(
     輸出 schema 從單一 `reason` 字串 → 5 段 string[]
     對應前端 5 個 TradingPlanPanel 編號 panel：題材 / 資金 / 籌碼 / 融券 / 技術。
     """
-    system_prompt = _load_system_prompt(stage="watch_reason")
+    version = _resolve_prompt_version(market_context.get("market_regime"))
+    system_prompt = _load_system_prompt(stage="watch_reason", version=version)
     user_msg = (
         "[執行 STEP 7 / STEP 8 / STEP 9：只對 WATCH 名單補 5 段 bullet + margin_analysis]\n"
         "你現在只處理已經判定為 WATCH 的股票。"
@@ -1111,6 +1142,7 @@ def _to_evidence_view(stocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             },
             "tracking_status": _tracking_status_view(s),
             "soft_hints": s.get("soft_hints", []),
+            "deterministic_signals": s.get("deterministic_signals", {}),
             # M27：該檔 deterministic 信心度（大盤 regime 在 market_context，全市場一致，不重複帶）
             "regime_conviction": s.get("regime_conviction"),
         })
@@ -1185,6 +1217,7 @@ def _research_fallback(
         "theme": {
             "main_theme": "",
             "theme_duration": "short",
+            "theme_maturity": "unclear",
             "theme_score": 0,
             "theme_reason": "LLM 不可用",
         },
@@ -1315,6 +1348,9 @@ def _default_signals() -> Dict[str, str]:
         "chip_trend": "neutral",
         "margin_short_signal": "neutral",
         "technical_status": "range_bound",
+        "entry_quality": "neutral",
+        "sector_rotation_status": "neutral",
+        "institution_flow_momentum": "neutral",
     }
 
 

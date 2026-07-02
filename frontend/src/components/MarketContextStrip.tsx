@@ -53,13 +53,6 @@ function ToneDot({ tone }: { tone: "green" | "amber" | "red" | "slate" }) {
   return <span className={`h-2.5 w-2.5 rounded-full ${cls}`} aria-hidden="true" />
 }
 
-const MARKET_STATE_LEGEND = [
-  { label: "強多", tone: "green" as const },
-  { label: "結構偏多", tone: "green" as const },
-  { label: "盤整", tone: "amber" as const },
-  { label: "偏弱", tone: "red" as const },
-]
-
 export interface MarketContextStripProps {
   market: SignalMarketContext
   riskNote?: string | null
@@ -122,19 +115,6 @@ export default function MarketContextStrip({
               期貨 <span className="font-bold">{signalValueLabel(market.futures_bias)}</span>
             </span>
           ) : null}
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2 pt-1">
-          <span className="text-xs text-slate-500">燈號說明：</span>
-          {MARKET_STATE_LEGEND.map((item) => (
-            <span
-              key={item.label}
-              className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] ${toneChipClass(item.tone)}`}
-            >
-              <ToneDot tone={item.tone} />
-              {item.label}
-            </span>
-          ))}
         </div>
 
         {market.market_state_reason ? (

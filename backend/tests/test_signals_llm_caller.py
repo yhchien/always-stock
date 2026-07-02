@@ -76,7 +76,7 @@ def _patch_openai(
     monkeypatch.setattr(llm_caller, "OpenAI", _factory)
     monkeypatch.setattr(llm_caller, "get_openai_api_key", lambda: api_key)
     # 確保 prompt 載入不會因檔案缺失炸掉
-    monkeypatch.setattr(llm_caller, "_load_system_prompt", lambda stage="full": "FAKE_SYSTEM_PROMPT")
+    monkeypatch.setattr(llm_caller, "_load_system_prompt", lambda stage="full", version="v4": "FAKE_SYSTEM_PROMPT")
     return fake_client
 
 
@@ -451,7 +451,7 @@ def test_run_explanation_batch_chunks_by_default_batch_size(monkeypatch):
 
     monkeypatch.setattr(llm_caller, "OpenAI", lambda **_: client)
     monkeypatch.setattr(llm_caller, "get_openai_api_key", lambda: "fake-key")
-    monkeypatch.setattr(llm_caller, "_load_system_prompt", lambda stage="full": "S")
+    monkeypatch.setattr(llm_caller, "_load_system_prompt", lambda stage="full", version="v4": "S")
 
     research = [{"stock": f"S{i:03d}", "name": "x"} for i in range(13)]
     out = llm_caller.run_explanation_batch(research, market_context={})
@@ -717,6 +717,41 @@ def test_assemble_final_output_stamps_prompt_version():
     )
     assert out["prompt_version"] == llm_caller.PROMPT_VERSION
     assert all(item["prompt_version"] == llm_caller.PROMPT_VERSION for item in out["watchlist"])
+
+
+def test_resolve_prompt_version_routes_by_regime():
+    """多頭跑 v1、震盪 / 退潮 / 未知跑 v4（收斂版）。"""
+    assert llm_caller._resolve_prompt_version("BULL_TREND") == llm_caller.PROMPT_VERSION_BULL
+    assert llm_caller._resolve_prompt_version("VOLATILE_RANGE") == llm_caller.PROMPT_VERSION_VOLATILE
+    assert llm_caller._resolve_prompt_version("RISK_OFF") == llm_caller.PROMPT_VERSION_VOLATILE
+    assert llm_caller._resolve_prompt_version(None) == llm_caller.PROMPT_VERSION_VOLATILE
+
+
+def test_assemble_final_output_prompt_version_follows_regime():
+    """prompt_version label 跟著 market_regime 走：多頭 v1、震盪 v4。"""
+    explanation = [_watch_item("2330", "台積電", "LEADER", "半導體業")]
+
+    bull = llm_caller.assemble_final_output(
+        {"market_state": "STRONG_BULL", "market_regime": "BULL_TREND"},
+        explanation,
+        candidate_pool_size=5,
+    )
+    assert bull["prompt_version"] == "v1"
+    assert all(item["prompt_version"] == "v1" for item in bull["watchlist"])
+
+    volatile = llm_caller.assemble_final_output(
+        {"market_state": "RANGE", "market_regime": "VOLATILE_RANGE"},
+        explanation,
+        candidate_pool_size=5,
+    )
+    assert volatile["prompt_version"] == "v4"
+
+
+def test_load_system_prompt_v1_file_exists_and_slices():
+    """v1 prompt 檔存在且可被 stage 切片（多頭盤 research stage 用得到）。"""
+    fragment = llm_caller._load_system_prompt(stage="research", version="v1")
+    assert "STEP 2" in fragment
+    assert isinstance(fragment, str) and len(fragment) > 0
 
 
 def test_assemble_final_output_unknown_decision_is_dropped():

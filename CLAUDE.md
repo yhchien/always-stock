@@ -2456,3 +2456,28 @@ function update(next) {
 - per-hit `signal_watch_hits.prompt_version` 與 per-snapshot `signal_snapshots.prompt_version` **不變**（仍各存單一版本）；只有追蹤聚合改集合語意。完成封存的 `signal_watch_completed_archives.prompt_version` 在封存當下就寫入聚合字串（hits 之後會被刪，無法回算）。
 - 前端 archive `VersionChip` 把 `"v1,v2"` 拆成多顆小 chip 顯示；魚尾首頁卡片版本 chip 維持單一（today snapshot）。
 - Gotcha：欄位仍 VARCHAR(16)，`"v1,v2,v3"` 等短字串夠用（30 交易日內不可能 bump 到溢位）；單一版本時 `_distinct_versions` 回 `"v1"`，既有測試不破。
+
+## 魚尾依大盤 regime 選 prompt 版本 + UI 移除燈號說明（2026-07-02）
+
+三個改動，直接進 main（含先前未提交的 v4 WIP 一起）。
+
+### 1. 依 regime 路由 prompt 版本（[llm_caller.py](backend/app/signals/llm_caller.py)）
+- `_resolve_prompt_version(market_regime)`：**BULL_TREND → v1（追強）、VOLATILE_RANGE / RISK_OFF / 未知 → v4（收斂）**
+- 常數：`PROMPT_VERSION_BULL="v1"` / `PROMPT_VERSION_VOLATILE="v4"`；`PROMPT_VERSION` 保留＝預設收斂版 v4（向後相容、market stage 用）
+- `_PROMPT_PATHS` 一版一檔：v1→`watch-list-stock-v1.md`、v4→`watch-list-stock.md`
+- `_load_system_prompt(stage, version)`：cache key 改 `version:stage`；找不到 version fallback 到 v4
+- research / decision / watch_reason 三 stage 都從 `market_context["market_regime"]` resolve 版本；`assemble_final_output` 的 `prompt_version` label 也跟著 regime 走 → 30 日追蹤能區分 v1/v4
+
+### 2. v1 prompt 另存檔
+- 從 commit `73b1588` 抽出 → [watch-list-stock-v1.md](backend/app/prompts/watch-list-stock-v1.md)（675 行；已含 5 段 bullet reason + margin_analysis + tracking_status，與 A4 stage 切片相容）
+- 同時是「保存檔」＋「多頭盤實跑 prompt」
+
+### 3. UI 移除大盤燈號說明
+- [MarketContextStrip.tsx](frontend/src/components/MarketContextStrip.tsx) + [StockSignalSummaryPanel.tsx](frontend/src/components/StockSignalSummaryPanel.tsx)：刪「燈號說明：」圖例列 + 各自 local `MARKET_STATE_LEGEND` const；`market_state_reason` 與狀態 chip 保留
+
+### Gotcha
+- v4＝先前 working tree 未提交 WIP（`entry_quality` / `sector_rotation_status` / `institution_flow_momentum` / `theme_maturity` 等 deterministic_signals），本次一起 commit，成為震盪/退潮盤收斂版
+- `market_regime` 由 pipeline 用 TAIEX deterministic 算好塞 `market_context`，LLM stage 只讀不改；market stage（STEP 0）regime 未知 → 用預設 v4（regime-agnostic 無妨）
+- decision stage user_msg 的 JSON 模板**共用**（含 v4 新欄位）；跑 v1 時 LLM 仍被要求輸出那幾欄，缺了走 `_default_signals()`——不影響。要 v1 完全乾淨需另把 user_msg 模板做成版本感知
+- 重跑：`gh workflow run daily_signals.yml --ref main -f target_date=YYYY-MM-DD`（Actions runner checkout main 直接跑，不必等 Render deploy）
+- 測試：新增 3 個 routing case（llm_caller 54 pass）；`test_signals_router.py` 4 個 site-passwordless 登入測試仍 fail 為既有 baseline，與本改動無關
