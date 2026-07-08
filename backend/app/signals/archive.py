@@ -127,6 +127,20 @@ def persist_signal_watch_hits(
     job_id: str,
 ) -> None:
     """Replace a snapshot day's archive hits with the latest watchlist, then prune retention."""
+    # 先封存並清掉「已達 retention」的舊 cycle，再載入 carry 狀態。
+    # 順序很重要：若一檔股票完成 30 個交易日 → 進歷史區 → 今天又被抓到，
+    # 這裡要先把它的舊 cycle active hits 刪掉，carry 才不會讀到上一輪的
+    # baseline / max 正負報酬並帶進新 cycle（把兩個獨立事件錯接成一段）。
+    # 反之，仍在 30 日窗內（未完成）的 cycle 不會被封存刪除，carry 照常延續同一段追蹤。
+    #
+    # 這也順帶避開 autoflush=False 下的 pending-insert race：舊版把 refresh 放在
+    # 新 hit 建立「之後」，完成日的新 hit 是尚未 flush 的 pending insert，
+    # refresh 的 bulk delete（synchronize_session=False）刪不到它 → commit 後殘留，
+    # 變成帶著上一輪極值的孤兒 hit。先 refresh 就沒有 pending row 可被漏刪。
+    refresh_completed_signal_cycles(
+        db,
+        as_of_trade_date=target_date,
+    )
     carried_state = _load_latest_return_state_by_stock(db, before_date=target_date)
     db.query(SignalWatchHit).filter(SignalWatchHit.snapshot_date == target_date).delete(
         synchronize_session=False
@@ -172,10 +186,6 @@ def persist_signal_watch_hits(
             )
         )
 
-    refresh_completed_signal_cycles(
-        db,
-        as_of_trade_date=target_date,
-    )
     _prune_signal_watch_hits(db)
     db.commit()
 
@@ -518,9 +528,12 @@ def refresh_completed_signal_cycles(
         # 算「全新 cycle」而非繼續用舊基準。
         # （不清的話 _prune_signal_watch_hits 雖會自然汰換，但邊界 case 下舊 hits
         #  仍可能殘留導致 first_seen_date 指向舊 cycle。）
+        # synchronize_session="evaluate"：在 update_signal_watch_returns 路徑，這些 row 於
+        # 上游已被改寫成 dirty；session 為 autoflush=False，用 False 不會把它們移出 session，
+        # commit flush 時會對已刪除的 row 發 UPDATE → StaleDataError（見 M23 2026-06-15 早退修正）。
         db.query(SignalWatchHit).filter(
             SignalWatchHit.stock_id == stock_id
-        ).delete(synchronize_session=False)
+        ).delete(synchronize_session="evaluate")
         upserted += 1
 
     return upserted

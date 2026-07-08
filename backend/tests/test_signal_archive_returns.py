@@ -145,6 +145,105 @@ def test_persist_signal_watch_hits_stores_prompt_version():
         assert by_id["2454"].prompt_version == "v1"
 
 
+def test_persist_recatch_after_cycle_completion_starts_fresh_cycle():
+    """完成 30 日 → 進歷史區 → 同一天又被抓到，要視為全新獨立事件。
+
+    Regression：production session 為 autoflush=False。舊版 persist 先建立帶著
+    上一輪 carried state 的新 hit（pending insert），才在後面用
+    synchronize_session=False 的 bulk delete 封存刪除舊 cycle —— 刪不到 pending
+    insert，導致新 cycle 的第一筆 hit 殘留上一輪的 baseline / max 正負報酬。
+    修法：把 refresh_completed_signal_cycles 移到載入 carry 之前。
+
+    這裡刻意用 autoflush=False（對齊 app/database.py），autoflush=True 會意外
+    先 flush 掉 pending insert 而遮住這個 bug。
+    """
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine, autoflush=False)
+
+    first_seen = date(2026, 5, 1)
+    completion_day = first_seen + timedelta(days=archive.ARCHIVE_RETENTION_TRADE_DAYS - 1)
+
+    with Session() as db:
+        # 30 個交易日價格；baseline（第 2 個交易日）= 100，第 3 天 +50%、第 5 天 -40%
+        for i in range(archive.ARCHIVE_RETENTION_TRADE_DAYS):
+            d = first_seen + timedelta(days=i)
+            price = 100.0
+            if d == first_seen + timedelta(days=2):
+                price = 150.0
+            elif d == first_seen + timedelta(days=4):
+                price = 60.0
+            db.add(
+                DailyPrice(
+                    stock_id="9999",
+                    trade_date=d,
+                    open_price=price,
+                    close_price=price,
+                )
+            )
+        # cycle 1 的 active hits（day1..day29），已帶上一輪 baseline / 極值
+        for i in range(archive.ARCHIVE_RETENTION_TRADE_DAYS - 1):
+            db.add(
+                SignalWatchHit(
+                    snapshot_date=first_seen + timedelta(days=i),
+                    stock_id="9999",
+                    stock_name="測試",
+                    signal_type="LEADER",
+                    industry_name="半導體業",
+                    sub_industry="晶圓代工",
+                    business_summary="c1",
+                    reason="c1",
+                    theme={},
+                    group_info={},
+                    leader_check={},
+                    signals={},
+                    baseline_trade_date=first_seen + timedelta(days=1),
+                    baseline_price=100.0,
+                    latest_eval_trade_date=first_seen + timedelta(days=28),
+                    latest_eval_price=100.0,
+                    return_pct=0.0,
+                    max_positive_return_pct=50.0,
+                    max_positive_return_trade_date=first_seen + timedelta(days=2),
+                    max_negative_return_pct=-40.0,
+                    max_negative_return_trade_date=first_seen + timedelta(days=4),
+                )
+            )
+        db.commit()
+
+        job_id = _seed_job_and_snapshot(db, completion_day)
+        archive.persist_signal_watch_hits(
+            db,
+            completion_day,
+            {"watchlist": [{"stock": "9999", "name": "測試", "type": "LEADER"}]},
+            job_id,
+        )
+
+        # 舊 cycle 已封存到歷史區（first_seen = day1，帶自己這輪的極值）
+        completed = (
+            db.query(SignalWatchCompletedArchive)
+            .filter(SignalWatchCompletedArchive.stock_id == "9999")
+            .one()
+        )
+        assert completed.first_seen_date == first_seen
+        assert completed.max_positive_return_pct == 50.0
+        assert completed.max_negative_return_pct == -40.0
+
+        # 新 cycle：完成日的 re-catch 應是全新獨立事件，first_seen = 完成日，
+        # 且不帶上一輪的 baseline / max 正負報酬
+        active = (
+            db.query(SignalWatchHit)
+            .filter(SignalWatchHit.stock_id == "9999")
+            .all()
+        )
+        assert len(active) == 1
+        new_hit = active[0]
+        assert new_hit.snapshot_date == completion_day
+        assert new_hit.baseline_trade_date is None
+        assert new_hit.baseline_price is None
+        assert new_hit.max_positive_return_pct is None
+        assert new_hit.max_negative_return_pct is None
+
+
 def test_update_signal_watch_returns_applies_requested_rules():
     engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
     Base.metadata.create_all(bind=engine)

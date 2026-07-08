@@ -1,5 +1,30 @@
 # always-stock 專案記憶
 
+## 魚尾 30 日追蹤跨 cycle carry bug 修復（2026-07-08）
+
+### 症狀
+- 股票完成 30 個交易日 → 封存進歷史區 → 之後又被抓到時，新一輪 cycle 的最大正報酬 / 最大負報酬 / baseline 會**帶入上一輪的值**，兩個獨立事件被錯接成一段。
+
+### Root cause（`autoflush=False` 專屬）
+- `persist_signal_watch_hits`（[backend/app/signals/archive.py](backend/app/signals/archive.py)）舊順序：先 `_load_latest_return_state_by_stock` 載入 carry → 建立帶 carry 的新 hit（**pending insert，未 flush**）→ 才 `refresh_completed_signal_cycles` 封存刪除舊 cycle。
+- production session 是 `autoflush=False`（[backend/app/database.py](backend/app/database.py)）；`refresh` 內 bulk `delete(synchronize_session=False)` **不會先 flush pending insert** → 刪不到完成日那筆新 hit → commit 後殘留成孤兒，帶著上一輪 baseline / 極值，變成新 cycle 種子。
+- 既有測試用預設 `autoflush=True`（會意外先 flush 再刪）→ 遮住 bug。Regression test 必須顯式 `autoflush=False`。
+- `synchronize_session="evaluate"` **對 pending insert 無效**（只處理 identity map 內 persistent 物件），光改 delete 參數救不了。
+
+### 修法（兩處）
+1. **`persist_signal_watch_hits` 把 `refresh_completed_signal_cycles` 移到載入 carry 之前**：完成 30 日的舊 cycle 先被封存刪除，carry 讀不到 → 完成日再被抓到視為全新獨立事件（first_seen=完成日、無 carry）。仍在 30 日窗內未完成的 cycle 不被刪，carry 照常延續同一段追蹤。順帶消除 pending-insert race（refresh 時尚無新 hit）。
+2. **`refresh_completed_signal_cycles` 的 active-hits delete 從 `synchronize_session=False` → `"evaluate"`**：在 `update_signal_watch_returns` 路徑那些 row 上游已被改 dirty，autoflush=False 下 False 不移出 session → commit 對已刪 row 發 UPDATE → StaleDataError（同 M23 2026-06-15 早退修正類別）。
+
+### 行為改變（更好）
+- 完成日的 re-catch 現在同一天就以全新 cycle 出現（first_seen=完成日），不再遺失那天或延到隔天才 fresh。
+
+### Regression test
+- `test_persist_recatch_after_cycle_completion_starts_fresh_cycle`（[backend/tests/test_signal_archive_returns.py](backend/tests/test_signal_archive_returns.py)）：顯式 `autoflush=False`，seed 完成 cycle → 完成日 persist re-catch → 斷言新 hit baseline/max 皆 None + 舊 cycle 正確封存（帶自己這輪極值）。原 code 會 fail（新 hit 帶 baseline 2026-05-02）。
+
+### Gotcha — production 既有髒資料不會自癒
+- 本修法只擋未來。prod DB 內已被污染的 active cycle（tell-tale：`baseline_trade_date < 自己的 first_seen_date`）不會自我修正，`update_signal_watch_returns` 每日重算仍吃被污染的 baseline → 極值橫跨兩 cycle。
+- 但 retention 只有 30 交易日，污染 cycle 會在 ~6 週內自然完成 / 汰換掉；若要立即修正需另寫一次性 cleanup（尚未做）。
+
 ## 工作流程規範
 
 - 每次完成一輪修改後，**自動更新 README、CLAUDE.md、memory 並直接 commit & push**，不需要使用者每次重新提醒
