@@ -19,7 +19,15 @@
 - **搜尋空結果從 colSpan row 改成置頂 `<p>`**：卡片網格沒有 colSpan 概念
 - **展開卡 `col-span-full` 會讓後面卡片 reflow**：grid auto-flow 正常行為，一次只展開一檔所以視覺可接受
 - 排序（sort_by）仍由後端決定順序，卡片依「左→右、上→下」閱讀順序呈現
-- 其餘大表現況：首頁 `DailySignalsPanel` 已是卡片 / `HotMoneyList` 已用 `hidden md:table-cell` 收斂欄位，暫不需改
+
+### 第二輪：全站其餘表格手機收斂（同日 2026-07-09）
+使用者確認「全改」後，把剩下會在手機遺失資料或橫向捲動的表格一次處理：
+- **HotMoneyList**：產業 / 子產業 / 外資 / 投信 / 自營欄統一改 `hidden lg:table-cell`；< lg 時在「個股」格下方顯示 `產業 · 子產業` 小字 + `InstMiniLine`（外/投/自 三個帶色數值）；`#` 欄手機隱藏（`hidden sm:table-cell`）、清單欄 `w-16 lg:w-28` 省寬度。**原本 mobile 是直接看不到法人明細，現在資料不遺失**
+- **IndustryDashboard**：外資/投信/自營欄維持 `hidden sm:table-cell`，新增共用 `InstMiniLine`（`sm:hidden`）塞在產業名稱與子產業名稱下方；手機仍可用 Tabs（合計/外資/投信/自營）換排序
+- **StockList `SummaryTable`**（L1 子產業彙總）：原本 6 欄完全沒手機處理會橫向捲；外資/投信/自營欄加 `hidden sm:table-cell` + 名稱格下方小字列。手機犧牲那三欄的點頭排序（合計/趨勢排序仍在）
+- **FinancialsPanel 財報矩陣**：`hidden sm:block` 保留桌機「項目 × 季度」矩陣；`sm:hidden` 改渲染「每季一張小卡」`grid grid-cols-2`（最新季在前，「基本每股盈餘」在卡內縮寫 EPS）
+- **不動**：`KeyFactorsTimeline`（小圓點矩陣寬度小 + 已有 StickyHorizontalScroll）、`BacktestPanel`（無表格）、StockList 個股卡片 / DailySignalsPanel / watchlist 卡片（本來就響應式）
+- Gotcha：HotMoneyList 的手機資訊列要先算 label 字串再決定 render（L1 情境 `industryName` 已知，industry 被 filter 掉後 sub 為 null 時不要渲染出多餘的「—」）
 
 ## 魚尾 30 日追蹤跨 cycle carry bug 修復（2026-07-08）
 

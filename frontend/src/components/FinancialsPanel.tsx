@@ -346,35 +346,59 @@ function FinancialsTable({ stockId, chartDays }: { stockId: string; chartDays?: 
   if (itemNames.length === 0) return <p className="text-xs text-slate-500">無財報資料。</p>
 
   return (
-    <StickyHorizontalScroll>
-      <table className="w-full text-xs">
-        <thead>
-          <tr className="border-b border-slate-600">
-            <th className="py-2 pr-4 text-left text-slate-400 font-medium sticky left-0 bg-slate-800">項目</th>
-            {reportDates.map((d) => (
-              <th key={d} className="py-2 px-3 text-right text-slate-400 font-medium whitespace-nowrap">
-                {fmtDate(d)}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {itemNames.map((name) => (
-            <tr key={name} className="border-b border-slate-700/50">
-              <td className="py-2 pr-4 text-slate-200 whitespace-nowrap sticky left-0 bg-slate-800">{name}</td>
-              {reportDates.map((d) => {
+    <>
+      {/* 桌機（≥ sm）：項目 × 季度矩陣，維持橫向對照 */}
+      <div className="hidden sm:block">
+        <StickyHorizontalScroll>
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b border-slate-600">
+                <th className="py-2 pr-4 text-left text-slate-400 font-medium sticky left-0 bg-slate-800">項目</th>
+                {reportDates.map((d) => (
+                  <th key={d} className="py-2 px-3 text-right text-slate-400 font-medium whitespace-nowrap">
+                    {fmtDate(d)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {itemNames.map((name) => (
+                <tr key={name} className="border-b border-slate-700/50">
+                  <td className="py-2 pr-4 text-slate-200 whitespace-nowrap sticky left-0 bg-slate-800">{name}</td>
+                  {reportDates.map((d) => {
+                    const val = pivot.get(name)?.get(d) ?? null
+                    return (
+                      <td key={d} className="py-2 px-3 text-right text-slate-300 whitespace-nowrap">
+                        {fmtVal(name, val)}
+                      </td>
+                    )
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </StickyHorizontalScroll>
+      </div>
+      {/* 手機（< sm）：每季一張小卡（最新在前），免水平捲動 */}
+      <div className="grid grid-cols-2 gap-2 sm:hidden">
+        {[...reportDates].reverse().map((d) => (
+          <div key={d} className="rounded-lg border border-slate-700 bg-slate-800/50 p-2.5">
+            <p className="mb-1.5 text-xs font-medium text-slate-300">{fmtDate(d)}</p>
+            <div className="flex flex-col gap-1">
+              {itemNames.map((name) => {
                 const val = pivot.get(name)?.get(d) ?? null
                 return (
-                  <td key={d} className="py-2 px-3 text-right text-slate-300 whitespace-nowrap">
-                    {fmtVal(name, val)}
-                  </td>
+                  <div key={name} className="flex items-baseline justify-between gap-2 text-[11px]">
+                    <span className="text-slate-500">{name === "基本每股盈餘" ? "EPS" : name}</span>
+                    <span className="font-mono text-slate-300">{fmtVal(name, val)}</span>
+                  </div>
                 )
               })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </StickyHorizontalScroll>
+            </div>
+          </div>
+        ))}
+      </div>
+    </>
   )
 }
 

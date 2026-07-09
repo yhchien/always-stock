@@ -66,6 +66,38 @@ function StreakCell({ value }: { value: number }) {
   return <span className={`text-xs font-medium ${color}`}>{text}</span>
 }
 
+// 手機（< sm）時外資 / 投信 / 自營欄位隱藏，改在產業名稱下方以小字列呈現，
+// 資料不遺失、也不需要水平捲動；桌機（≥ sm）維持原本欄位不變
+function InstMiniLine({
+  foreignValue,
+  trustValue,
+  dealerValue,
+  className = "",
+}: {
+  foreignValue: number
+  trustValue: number
+  dealerValue: number
+  className?: string
+}) {
+  return (
+    <div className={`mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5 sm:hidden ${className}`}>
+      {([
+        ["外", foreignValue],
+        ["投", trustValue],
+        ["自", dealerValue],
+      ] as const).map(([label, value]) => {
+        const color = value > 0 ? "text-red-400" : value < 0 ? "text-green-400" : "text-slate-400"
+        return (
+          <span key={label} className="inline-flex items-center gap-0.5 whitespace-nowrap">
+            <span className="text-[11px] text-slate-500">{label}</span>
+            <span className={`font-mono text-[11px] ${color}`}>{fmtAmount(value)}</span>
+          </span>
+        )
+      })}
+    </div>
+  )
+}
+
 interface Props {
   defaultDate: string
   onDateChange?: (date: string) => void
@@ -354,6 +386,12 @@ export default function IndustryDashboard({
                             進入 &rarr;
                           </button>
                         </div>
+                        <InstMiniLine
+                          className="pl-5"
+                          foreignValue={row.foreign_net_amount}
+                          trustValue={row.trust_net_amount}
+                          dealerValue={row.dealer_net_amount}
+                        />
                       </TableCell>
                       <TableCell className="text-right hidden sm:table-cell"><AmountCell value={row.foreign_net_amount} /></TableCell>
                       <TableCell className="text-right hidden sm:table-cell"><AmountCell value={row.trust_net_amount} /></TableCell>
@@ -391,8 +429,16 @@ export default function IndustryDashboard({
                       >
                         <TableCell />
                         <TableCell className="pl-8 text-sm text-slate-300">
-                          <span className="mr-1 text-slate-600" aria-hidden="true">&#x2514;</span>
-                          {sub.sub_industry}
+                          <div>
+                            <span className="mr-1 text-slate-600" aria-hidden="true">&#x2514;</span>
+                            {sub.sub_industry}
+                          </div>
+                          <InstMiniLine
+                            className="pl-4"
+                            foreignValue={sub.foreign_net_amount}
+                            trustValue={sub.trust_net_amount}
+                            dealerValue={sub.dealer_net_amount}
+                          />
                         </TableCell>
                         <TableCell className="text-right hidden sm:table-cell"><AmountCell value={sub.foreign_net_amount} /></TableCell>
                         <TableCell className="text-right hidden sm:table-cell"><AmountCell value={sub.trust_net_amount} /></TableCell>

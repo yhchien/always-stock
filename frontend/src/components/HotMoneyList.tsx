@@ -51,6 +51,32 @@ function PctCell({ value }: { value: number | null }) {
   )
 }
 
+// 手機（< lg）時法人明細欄位隱藏，改在「個股」格下方以小字列呈現，資料不遺失也不需水平捲動
+function InstMiniLine({
+  foreignValue,
+  trustValue,
+  dealerValue,
+}: {
+  foreignValue: number
+  trustValue: number
+  dealerValue: number
+}) {
+  return (
+    <div className="mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5 lg:hidden">
+      {([
+        ["外", foreignValue],
+        ["投", trustValue],
+        ["自", dealerValue],
+      ] as const).map(([label, value]) => (
+        <span key={label} className="inline-flex items-center gap-0.5 whitespace-nowrap">
+          <span className="text-[11px] text-slate-500">{label}</span>
+          <AmountCell value={value} />
+        </span>
+      ))}
+    </div>
+  )
+}
+
 export default function HotMoneyList({
   industryName,
   subIndustry,
@@ -141,18 +167,18 @@ export default function HotMoneyList({
           <Table>
             <TableHeader>
               <TableRow className="border-slate-700 hover:bg-transparent">
-                <TableHead className="text-slate-300 w-10 text-center">#</TableHead>
+                <TableHead className="text-slate-300 w-10 text-center hidden sm:table-cell">#</TableHead>
                 <TableHead className="text-slate-300">個股</TableHead>
                 {!industryName && (
-                  <TableHead className="text-slate-300 hidden md:table-cell">產業</TableHead>
+                  <TableHead className="text-slate-300 hidden lg:table-cell">產業</TableHead>
                 )}
-                <TableHead className="text-slate-300 hidden sm:table-cell">子產業</TableHead>
+                <TableHead className="text-slate-300 hidden lg:table-cell">子產業</TableHead>
                 <TableHead className="text-slate-300 text-right">期間漲跌</TableHead>
-                <TableHead className="text-slate-300 text-right hidden md:table-cell">外資</TableHead>
-                <TableHead className="text-slate-300 text-right hidden md:table-cell">投信</TableHead>
+                <TableHead className="text-slate-300 text-right hidden lg:table-cell">外資</TableHead>
+                <TableHead className="text-slate-300 text-right hidden lg:table-cell">投信</TableHead>
                 <TableHead className="text-slate-300 text-right hidden lg:table-cell">自營</TableHead>
                 <TableHead className="text-slate-300 text-right">合計</TableHead>
-                <TableHead className="text-slate-300 w-28 text-right">清單</TableHead>
+                <TableHead className="text-slate-300 w-16 text-right lg:w-28">清單</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -162,24 +188,37 @@ export default function HotMoneyList({
                   className="border-slate-700 cursor-pointer hover:bg-slate-800/40"
                   onClick={() => router.push(`/stocks/${item.stock_id}?date=${date}`)}
                 >
-                  <TableCell className="text-center font-mono text-xs text-slate-500">{item.rank}</TableCell>
+                  <TableCell className="text-center font-mono text-xs text-slate-500 hidden sm:table-cell">{item.rank}</TableCell>
                   <TableCell>
                     <div className="flex flex-col">
                       <span className="text-sm font-medium text-slate-100">{item.stock_name}</span>
                       <span className="font-mono text-xs text-slate-500">{item.stock_id}</span>
+                      {(() => {
+                        const label = [!industryName ? item.industry_name : null, item.sub_industry]
+                          .filter(Boolean)
+                          .join(" · ")
+                        return label ? (
+                          <span className="text-[11px] text-slate-500 lg:hidden">{label}</span>
+                        ) : null
+                      })()}
+                      <InstMiniLine
+                        foreignValue={item.foreign_net_amount}
+                        trustValue={item.trust_net_amount}
+                        dealerValue={item.dealer_net_amount}
+                      />
                     </div>
                   </TableCell>
                   {!industryName && (
-                    <TableCell className="hidden md:table-cell text-xs text-slate-400">
+                    <TableCell className="hidden lg:table-cell text-xs text-slate-400">
                       {item.industry_name || "—"}
                     </TableCell>
                   )}
-                  <TableCell className="hidden sm:table-cell text-xs text-slate-400">
+                  <TableCell className="hidden lg:table-cell text-xs text-slate-400">
                     {item.sub_industry ?? "—"}
                   </TableCell>
                   <TableCell className="text-right"><PctCell value={item.price_change_pct} /></TableCell>
-                  <TableCell className="text-right hidden md:table-cell"><AmountCell value={item.foreign_net_amount} /></TableCell>
-                  <TableCell className="text-right hidden md:table-cell"><AmountCell value={item.trust_net_amount} /></TableCell>
+                  <TableCell className="text-right hidden lg:table-cell"><AmountCell value={item.foreign_net_amount} /></TableCell>
+                  <TableCell className="text-right hidden lg:table-cell"><AmountCell value={item.trust_net_amount} /></TableCell>
                   <TableCell className="text-right hidden lg:table-cell"><AmountCell value={item.dealer_net_amount} /></TableCell>
                   <TableCell className="text-right"><AmountCell value={item.total_net_amount} /></TableCell>
                   <TableCell

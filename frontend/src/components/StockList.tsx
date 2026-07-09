@@ -109,13 +109,13 @@ function SummaryTable({
         <TableHeader>
           <TableRow className="border-slate-700 hover:bg-transparent">
             <TableHead className="text-slate-300">子產業</TableHead>
-            <TableHead className="text-slate-300 text-right cursor-pointer select-none hover:text-slate-100" onClick={() => handleSort("foreign")}>
+            <TableHead className="text-slate-300 text-right cursor-pointer select-none hover:text-slate-100 hidden sm:table-cell" onClick={() => handleSort("foreign")}>
               外資{indicator("foreign")}
             </TableHead>
-            <TableHead className="text-slate-300 text-right cursor-pointer select-none hover:text-slate-100" onClick={() => handleSort("trust")}>
+            <TableHead className="text-slate-300 text-right cursor-pointer select-none hover:text-slate-100 hidden sm:table-cell" onClick={() => handleSort("trust")}>
               投信{indicator("trust")}
             </TableHead>
-            <TableHead className="text-slate-300 text-right cursor-pointer select-none hover:text-slate-100" onClick={() => handleSort("dealer")}>
+            <TableHead className="text-slate-300 text-right cursor-pointer select-none hover:text-slate-100 hidden sm:table-cell" onClick={() => handleSort("dealer")}>
               自營商{indicator("dealer")}
             </TableHead>
             <TableHead className="text-slate-300 text-right cursor-pointer select-none hover:text-slate-100" onClick={() => handleSort("total")}>
@@ -135,10 +135,28 @@ function SummaryTable({
                 className={`border-slate-700 cursor-pointer ${isActive ? "bg-slate-700/60" : "hover:bg-slate-800/40"}`}
                 onClick={() => onFilter(isActive ? null : row.sub_industry)}
               >
-                <TableCell className="font-medium text-sm">{row.sub_industry}</TableCell>
-                <TableCell className="text-right"><AmountCell value={row.foreign_net_amount} /></TableCell>
-                <TableCell className="text-right"><AmountCell value={row.trust_net_amount} /></TableCell>
-                <TableCell className="text-right"><AmountCell value={row.dealer_net_amount} /></TableCell>
+                <TableCell className="font-medium text-sm">
+                  <div>{row.sub_industry}</div>
+                  {/* 手機（< sm）時外資 / 投信 / 自營欄位隱藏，改在子產業名稱下方小字列呈現 */}
+                  <div className="mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5 sm:hidden">
+                    {([
+                      ["外", row.foreign_net_amount],
+                      ["投", row.trust_net_amount],
+                      ["自", row.dealer_net_amount],
+                    ] as const).map(([label, value]) => {
+                      const color = value > 0 ? "text-red-400" : value < 0 ? "text-green-400" : "text-slate-400"
+                      return (
+                        <span key={label} className="inline-flex items-center gap-0.5 whitespace-nowrap">
+                          <span className="text-[11px] text-slate-500">{label}</span>
+                          <span className={`font-mono text-[11px] ${color}`}>{fmtAmount(value)}</span>
+                        </span>
+                      )
+                    })}
+                  </div>
+                </TableCell>
+                <TableCell className="text-right hidden sm:table-cell"><AmountCell value={row.foreign_net_amount} /></TableCell>
+                <TableCell className="text-right hidden sm:table-cell"><AmountCell value={row.trust_net_amount} /></TableCell>
+                <TableCell className="text-right hidden sm:table-cell"><AmountCell value={row.dealer_net_amount} /></TableCell>
                 <TableCell className="text-right"><BarAmountCell value={row.total_net_amount} maxAbs={maxTotalAbs} /></TableCell>
                 <TableCell className="text-center">
                   <span className={`text-xs font-medium ${row.streak > 0 ? "text-red-400" : row.streak < 0 ? "text-green-400" : "text-slate-500"}`}>
