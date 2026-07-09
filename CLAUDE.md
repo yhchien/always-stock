@@ -1,5 +1,26 @@
 # always-stock 專案記憶
 
+## 30 日追蹤頁響應式卡片改版（2026-07-09）
+
+### 背景
+- 使用者手機上看 `/signals/archive` 要一直左右滑（active 12 欄 / completed 10 欄大表，手機寬度必然橫向捲動）
+- 需求：「手機看跟電腦看的感覺一樣」，兩端都不必滑來滑去
+
+### 修法（純前端，[frontend/src/app/signals/archive/page.tsx](frontend/src/app/signals/archive/page.tsx)）
+- 兩張 `<Table>` 全部改成**響應式卡片網格**：`grid grid-cols-1 gap-3 md:grid-cols-2`（手機單欄堆疊 / 桌機兩欄），沿用自選清單 `WatchlistTradeQualityTable` 2026-05-03 的卡片前例
+- 用 **CSS breakpoint 而非 UA 偵測**：同一份 markup 兩端共用，資訊結構完全一致，無判斷錯誤風險
+- 卡片結構：header（股票名 + SignalTypeChip + VersionChip）→ 警示 chips → `Metric` 標籤/值小網格（手機 2 欄 / ≥sm 3 欄）→ footer 動作列（K線圖 + 展開報告）
+- inline expand 保留：展開報告的卡片加 `col-span-full` 撐滿整列，報告時間軸 markup 原封不動搬進卡片內
+- 新增小元件 `Metric({ label, children })`；active 卡的「首次/最近抓到」合併成一格 `formatShortDate(a) → formatShortDate(b)`
+- 移除 `STICKY_FIRST_COL_*` 凍結欄 hack 與 `Table` import（卡片化後不再需要）
+
+### Gotcha
+- **active 清單「最新類型」從純文字改用 `SignalTypeChip`**：與 completed 表一致（chip 對未知值 fallback 顯示原文字，不會壞）
+- **搜尋空結果從 colSpan row 改成置頂 `<p>`**：卡片網格沒有 colSpan 概念
+- **展開卡 `col-span-full` 會讓後面卡片 reflow**：grid auto-flow 正常行為，一次只展開一檔所以視覺可接受
+- 排序（sort_by）仍由後端決定順序，卡片依「左→右、上→下」閱讀順序呈現
+- 其餘大表現況：首頁 `DailySignalsPanel` 已是卡片 / `HotMoneyList` 已用 `hidden md:table-cell` 收斂欄位，暫不需改
+
 ## 魚尾 30 日追蹤跨 cycle carry bug 修復（2026-07-08）
 
 ### 症狀
