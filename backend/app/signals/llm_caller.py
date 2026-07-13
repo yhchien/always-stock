@@ -92,7 +92,12 @@ def _resolve_prompt_version(market_regime: Optional[str]) -> str:
     """依大盤 regime 決定要跑哪一版 prompt。
 
     多頭 → v1（追強）；震盪 / 退潮 / 未知 → v4（收斂）。
+    env `SIGNALS_FORCE_PROMPT_VERSION`（值須為已知版本，如 v1 / v4）可強制覆寫
+    regime routing，給人工重跑做版本對照實驗用；未知值一律忽略走原邏輯。
     """
+    forced = os.getenv("SIGNALS_FORCE_PROMPT_VERSION", "").strip()
+    if forced in _PROMPT_PATHS:
+        return forced
     if str(market_regime or "").upper() == "BULL_TREND":
         return PROMPT_VERSION_BULL
     return PROMPT_VERSION_VOLATILE

@@ -727,6 +727,22 @@ def test_resolve_prompt_version_routes_by_regime():
     assert llm_caller._resolve_prompt_version(None) == llm_caller.PROMPT_VERSION_VOLATILE
 
 
+def test_resolve_prompt_version_env_override(monkeypatch):
+    """SIGNALS_FORCE_PROMPT_VERSION 強制覆寫 regime routing；未知值忽略。"""
+    monkeypatch.setenv("SIGNALS_FORCE_PROMPT_VERSION", "v1")
+    assert llm_caller._resolve_prompt_version("VOLATILE_RANGE") == "v1"
+    assert llm_caller._resolve_prompt_version(None) == "v1"
+
+    monkeypatch.setenv("SIGNALS_FORCE_PROMPT_VERSION", "v4")
+    assert llm_caller._resolve_prompt_version("BULL_TREND") == "v4"
+
+    monkeypatch.setenv("SIGNALS_FORCE_PROMPT_VERSION", "v99")
+    assert llm_caller._resolve_prompt_version("BULL_TREND") == llm_caller.PROMPT_VERSION_BULL
+
+    monkeypatch.setenv("SIGNALS_FORCE_PROMPT_VERSION", "")
+    assert llm_caller._resolve_prompt_version("VOLATILE_RANGE") == llm_caller.PROMPT_VERSION_VOLATILE
+
+
 def test_assemble_final_output_prompt_version_follows_regime():
     """prompt_version label 跟著 market_regime 走：多頭 v1、震盪 v4。"""
     explanation = [_watch_item("2330", "台積電", "LEADER", "半導體業")]

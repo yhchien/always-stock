@@ -2529,6 +2529,11 @@ function update(next) {
 ### 3. UI 移除大盤燈號說明
 - [MarketContextStrip.tsx](frontend/src/components/MarketContextStrip.tsx) + [StockSignalSummaryPanel.tsx](frontend/src/components/StockSignalSummaryPanel.tsx)：刪「燈號說明：」圖例列 + 各自 local `MARKET_STATE_LEGEND` const；`market_state_reason` 與狀態 chip 保留
 
+### 強制指定 prompt 版本（2026-07-13 新增）
+- env `SIGNALS_FORCE_PROMPT_VERSION`（值 = v1 / v4）可覆寫 regime routing（[llm_caller.py](backend/app/signals/llm_caller.py) `_resolve_prompt_version`）；未知值忽略走原邏輯。同時影響 prompt 選擇與寫進 DB 的 `prompt_version` label（30 日追蹤歸因一致）
+- workflow_dispatch 對應 input：`gh workflow run daily_signals.yml --ref main -f target_date=YYYY-MM-DD -f force_prompt_version=v1`
+- 用途：人工重跑做 v1 / v4 版本對照實驗
+
 ### Gotcha
 - v4＝先前 working tree 未提交 WIP（`entry_quality` / `sector_rotation_status` / `institution_flow_momentum` / `theme_maturity` 等 deterministic_signals），本次一起 commit，成為震盪/退潮盤收斂版
 - `market_regime` 由 pipeline 用 TAIEX deterministic 算好塞 `market_context`，LLM stage 只讀不改；market stage（STEP 0）regime 未知 → 用預設 v4（regime-agnostic 無妨）

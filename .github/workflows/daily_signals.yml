@@ -10,6 +10,9 @@ on:
       target_date:
         description: '目標分析日期 (YYYY-MM-DD)，預設依台北 19:00 分界自動解析'
         required: false
+      force_prompt_version:
+        description: '強制 prompt 版本（v1 / v4）；留空則依大盤 regime 自動路由'
+        required: false
 
 jobs:
   run_signals:
@@ -64,6 +67,7 @@ jobs:
           OPENAI_SIGNALS_RESEARCH_MODEL: ${{ secrets.OPENAI_SIGNALS_RESEARCH_MODEL || 'gpt-5.4-mini' }}
           OPENAI_SIGNALS_DECISION_MODEL: ${{ secrets.OPENAI_SIGNALS_DECISION_MODEL || 'gpt-5.4' }}
           OPENAI_SIGNALS_REASON_MODEL: ${{ secrets.OPENAI_SIGNALS_REASON_MODEL || 'gpt-5.4-mini' }}
+          SIGNALS_FORCE_PROMPT_VERSION: ${{ github.event.inputs.force_prompt_version }}
         run: |
           set +e
           python3 run_daily_signals.py ${{ steps.resolve.outputs.target_date }}
