@@ -255,9 +255,10 @@ export default function StockChartDialog({ stockId, stockName, onClose }: Props)
         itemHeight: isMobile ? 8 : 10,
         itemGap: isMobile ? 6 : 10,
       },
+      // 手機：左側股價刻度整排拿掉（數值靠 tooltip），寬度全讓給線圖看趨勢
       grid: {
-        left: isMobile ? 38 : 60,
-        right: isMobile ? 42 : 70,
+        left: isMobile ? 8 : 60,
+        right: isMobile ? 38 : 70,
         top: isMobile ? 56 : 40,
         bottom: isMobile ? 28 : 32,
       },
@@ -277,7 +278,10 @@ export default function StockChartDialog({ stockId, stockName, onClose }: Props)
           type: "value" as const,
           name: isMobile ? undefined : priceName,
           nameTextStyle: { color: "#94a3b8", fontSize: 11 },
-          axisLabel: { color: "#94a3b8", fontSize: isMobile ? 10 : 11 },
+          // 手機不顯示股價刻度（左側留白全給繪圖區），數值看 tooltip
+          axisLabel: isMobile
+            ? { show: false }
+            : { color: "#94a3b8", fontSize: 11 },
           axisLine: { lineStyle: { color: "#334155" } },
           splitLine: { lineStyle: { color: "#27272a" } },
           scale: true,
@@ -355,7 +359,8 @@ export default function StockChartDialog({ stockId, stockName, onClose }: Props)
     >
       <Dialog.Portal>
         <Dialog.Backdrop className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm" />
-        <Dialog.Popup className="fixed left-1/2 top-1/2 z-50 max-h-[92vh] w-[min(96vw,64rem)] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-4 shadow-2xl sm:p-5">
+        {/* 手機全螢幕（K 線需要最大可用寬度）；≥sm 才是置中卡片 */}
+        <Dialog.Popup className="fixed inset-0 z-50 w-full overflow-y-auto bg-slate-900 p-2.5 shadow-2xl sm:inset-auto sm:left-1/2 sm:top-1/2 sm:max-h-[92vh] sm:w-[min(96vw,64rem)] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-2xl sm:border sm:border-slate-700 sm:p-5">
           {stockId && (
             <div className="flex flex-col gap-3">
               <header className="flex flex-wrap items-start justify-between gap-3">
@@ -456,13 +461,14 @@ export default function StockChartDialog({ stockId, stockName, onClose }: Props)
               )}
               {error && !loading && <p className="text-sm text-red-400">{error}</p>}
               {!loading && !error && chartOption && (
-                <div className="rounded-lg border border-slate-600 p-2 sm:p-3">
+                // 手機全螢幕時拔掉外框與內距，把寬度全讓給繪圖區
+                <div className="sm:rounded-lg sm:border sm:border-slate-600 sm:p-3">
                   <ReactECharts
                     option={chartOption}
                     notMerge
                     style={{
-                      height: isMobile ? "52vh" : "56vh",
-                      minHeight: 360,
+                      height: isMobile ? "62vh" : "56vh",
+                      minHeight: 380,
                       width: "100%",
                     }}
                     opts={{ renderer: "svg" }}
