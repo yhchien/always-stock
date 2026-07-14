@@ -20,6 +20,11 @@
 - **回測頁**：上方常駐 StockChart 移除，header 右側加 K線圖按鈕；`backtestRange` state / `onDateRangeChange` 連動 / handleBack 帶 start&end 全拔（BacktestPanel 的 `onDateRangeChange` prop 是 optional，元件本身沒動）
 - **30 日追蹤頁**：詳情 popup 內與紀錄卡片的「K線圖」Link 改為開 StockChartDialog（詳情 popup 內另補「個股頁 →」link 保留 L2 導航）；chart popup 疊在詳情 popup 之上（兩個都 z-50，後 mount 的 portal 在 DOM 後面 → 蓋上面）
 
+### 手機版調整（同日第二輪，使用者反映「有點窄」）
+- popup 手機（< sm）改 `inset-0` 全螢幕、內距縮小；桌機維持置中卡片
+- 手機拔掉圖表外框/內距 + **左側股價 y 軸刻度整排隱藏**（`grid.left` 38 → 8，數值靠 tooltip，使用者要「有線看趨勢就好」）；右側累積張數刻度保留
+- 手機圖高 52vh → 62vh
+
 ### Gotcha
 - **`StockChart.tsx` 保留未刪**（依 BrokerPanel 慣例：程式碼保留、只拔入口）；現在全站無人 import，未來要復活完整互動圖直接掛回
 - **StockSignalSummaryPanel 的 `onOpenChart` 是 optional**：沒傳時 fallback 回原本 `#stock-chart` 錨點連結（但 L2 已無該錨點，實際上 L2 一定會傳）
