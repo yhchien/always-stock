@@ -25,6 +25,16 @@
 - 手機拔掉圖表外框/內距 + **左側股價 y 軸刻度整排隱藏**（`grid.left` 38 → 8，數值靠 tooltip，使用者要「有線看趨勢就好」）；右側累積張數刻度保留
 - 手機圖高 52vh → 62vh
 
+### 手機橫向捲動（第三輪）
+- 繪圖內容手機做寬到 `w-[150vw]`，外層 `overflow-x-auto` 讓使用者左右滑；載入完成後 `scrollLeft = scrollWidth` 預設捲到最右（最新 K 棒）；≥sm 恢復 `w-full` 無捲動
+
+### prod daily_price 2026-02-18 髒資料刪除（2026-07-14）
+- **症狀**：K 線 popup 上 2/18 有一根價格暴跌的 K 棒把 y 軸拉爆（2330 那天寫 227 元，前後日都 ~1900）
+- **根因**：2026-02-18 是春節休市日（資料 2/12~2/20 全空、TWSE MI_INDEX 當天回「沒有符合條件的資料」），但 `daily_price` 有 1020 筆 `source='twse'` 的**代號錯位**垃圾（2330 的 227 元實為 0057 的價格；63% 檔偏離前後日 >30%）— 舊 TWSE parser 寫入
+- **修法**：直接 `DELETE FROM daily_price WHERE trade_date='2026-02-18'`（使用者確認後執行，1020 筆）；其他表（inst_flow / valuation / margin / broker）那天本來就 0 筆不需處理
+- **順帶影響（皆為修正）**：追蹤天數計算（`_count_tracking_days` 數 daily_price distinct trade_date）、`_resolve_nth_trade_date`、回測都不再把 2/18 當交易日
+- **教訓**：發現 K 線莫名深 V／天量偏離時，先懷疑「休市日被寫入錯位資料」；驗證法 = 對照前後交易日收盤偏離比例 + 檢查該日是否落在連續空窗（假期）內
+
 ### Gotcha
 - **`StockChart.tsx` 保留未刪**（依 BrokerPanel 慣例：程式碼保留、只拔入口）；現在全站無人 import，未來要復活完整互動圖直接掛回
 - **StockSignalSummaryPanel 的 `onOpenChart` 是 optional**：沒傳時 fallback 回原本 `#stock-chart` 錨點連結（但 L2 已無該錨點，實際上 L2 一定會傳）

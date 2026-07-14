@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import dynamic from "next/dynamic"
 import { Dialog } from "@base-ui/react/dialog"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -72,6 +72,9 @@ export default function StockChartDialog({ stockId, stockName, onClose }: Props)
   // 關閉時不打即時報價 API
   const realtimeQuotes = useRealtimeQuotes(stockId ? [stockId] : [])
 
+  // 手機橫向捲動容器：圖表 render 後預設捲到最右（最新 K 棒）
+  const scrollRef = useRef<HTMLDivElement>(null)
+
   useEffect(() => {
     if (typeof window === "undefined") return
     const mq = window.matchMedia("(max-width: 640px)")
@@ -112,6 +115,13 @@ export default function StockChartDialog({ stockId, stockName, onClose }: Props)
       controller.abort()
     }
   }, [stockId])
+
+  // 資料載入完成後把橫向捲動位置推到最右（最新交易日）；桌機無 overflow 此操作為 no-op
+  useEffect(() => {
+    if (loading || !data) return
+    const el = scrollRef.current
+    if (el) el.scrollLeft = el.scrollWidth
+  }, [loading, data])
 
   const toggleMA = (period: number) => {
     setActiveMAs((prev) => {
@@ -461,18 +471,24 @@ export default function StockChartDialog({ stockId, stockName, onClose }: Props)
               )}
               {error && !loading && <p className="text-sm text-red-400">{error}</p>}
               {!loading && !error && chartOption && (
-                // 手機全螢幕時拔掉外框與內距，把寬度全讓給繪圖區
-                <div className="sm:rounded-lg sm:border sm:border-slate-600 sm:p-3">
-                  <ReactECharts
-                    option={chartOption}
-                    notMerge
-                    style={{
-                      height: isMobile ? "62vh" : "56vh",
-                      minHeight: 380,
-                      width: "100%",
-                    }}
-                    opts={{ renderer: "svg" }}
-                  />
+                // 手機全螢幕時拔掉外框與內距，把寬度全讓給繪圖區；
+                // 繪圖內容做寬到 150vw，容器 overflow-x-auto 讓使用者左右滑（預設捲到最右＝最新）
+                <div
+                  ref={scrollRef}
+                  className="overflow-x-auto sm:overflow-x-visible sm:rounded-lg sm:border sm:border-slate-600 sm:p-3"
+                >
+                  <div className="w-[150vw] sm:w-full">
+                    <ReactECharts
+                      option={chartOption}
+                      notMerge
+                      style={{
+                        height: isMobile ? "62vh" : "56vh",
+                        minHeight: 380,
+                        width: "100%",
+                      }}
+                      opts={{ renderer: "svg" }}
+                    />
+                  </div>
                 </div>
               )}
               {!loading && !error && data && data.history.length === 0 && (
