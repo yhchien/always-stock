@@ -3,6 +3,7 @@
 import Link from "next/link"
 import { Suspense, useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
+import { Dialog } from "@base-ui/react/dialog"
 
 import {
   fetchCompletedSignalArchive,
@@ -11,33 +12,30 @@ import {
   type SignalArchiveCompletedPeriod,
   type SignalArchiveCompletedResponse,
   type SignalArchiveDetailResponse,
-  type SignalArchiveSortBy,
+  type SignalArchiveSummaryItem,
   type SignalArchiveSummaryResponse,
   type SignalClosureReason,
 } from "@/lib/api"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 
-const SORT_OPTIONS: { value: SignalArchiveSortBy; label: string }[] = [
-  { value: "tracking_days_desc", label: "追蹤天數" },
-  { value: "return_desc", label: "報酬率高到低" },
-  { value: "return_asc", label: "報酬率低到高" },
-  { value: "hit_count_desc", label: "命中次數" },
-  { value: "latest_hit_desc", label: "最近抓到日期" },
-  { value: "stock_id_asc", label: "股票代號" },
-]
+// 4 個互斥分類（radio 式 chip）：排序純前端計算，一次抓全部後 client-side sort
+const VIEW_OPTIONS = [
+  { value: "first_seen", label: "追蹤日期" },
+  { value: "return_desc", label: "最多報酬率" },
+  { value: "return_asc", label: "最低報酬率" },
+  { value: "hit_count", label: "抓到次數" },
+] as const
 
-const DEFAULT_SORT_BY: SignalArchiveSortBy = "tracking_days_desc"
-const SORT_VALUES: ReadonlySet<SignalArchiveSortBy> = new Set(SORT_OPTIONS.map((o) => o.value))
+type ArchiveView = (typeof VIEW_OPTIONS)[number]["value"]
 
-function isSortBy(value: string | null): value is SignalArchiveSortBy {
-  return value !== null && SORT_VALUES.has(value as SignalArchiveSortBy)
+const DEFAULT_VIEW: ArchiveView = "first_seen"
+const VIEW_VALUES: ReadonlySet<string> = new Set(VIEW_OPTIONS.map((o) => o.value))
+
+function isArchiveView(value: string | null): value is ArchiveView {
+  return value !== null && VIEW_VALUES.has(value)
 }
+
+// 每個分類預設只顯示前 15 名；「查看更多」展開全部
+const TOP_N = 15
 
 const PERIOD_PATTERN = /^\d{4}-\d{2}-\d{2}$/
 
@@ -184,6 +182,22 @@ function ReturnCell({ value }: { value: number | null }) {
   )
 }
 
+// 當日漲跌幅（相對前一交易日收盤）：紅漲綠跌台股慣例，與 ReturnCell 同色系但字級較小
+function DailyChangeCell({ value }: { value: number | null }) {
+  if (value == null) {
+    return <span className="font-mono text-xs text-slate-500">--</span>
+  }
+  const color =
+    value > 0 ? "text-red-400" : value < 0 ? "text-green-400" : "text-slate-300"
+  const arrow = value > 0 ? "▲" : value < 0 ? "▼" : ""
+  return (
+    <span className={`font-mono text-xs font-semibold ${color}`}>
+      {arrow ? `${arrow} ` : ""}
+      {formatPct(value)}
+    </span>
+  )
+}
+
 function ExtremeReturnCell({
   value,
   tradeDate,
@@ -226,8 +240,7 @@ function PredictionCell({
   )
 }
 
-// 卡片內的「標籤 + 值」小區塊：桌機與手機共用同一份 markup，
-// 靠外層 grid 欄數（手機 2 欄 / 桌機 3 欄）自動排版，全程不需要水平捲動。
+// popup 內的「標籤 + 值」小區塊
 function Metric({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="flex min-w-0 flex-col gap-0.5">
@@ -237,26 +250,190 @@ function Metric({ label, children }: { label: string; children: ReactNode }) {
   )
 }
 
+// 每檔股票的「查看更多」popup：卡片極簡化後，所有數據 + 報告時間軸都收進這裡
+function StockDetailDialog({
+  item,
+  detail,
+  detailLoading,
+  detailError,
+  onClose,
+}: {
+  item: SignalArchiveSummaryItem | null
+  detail: SignalArchiveDetailResponse | null
+  detailLoading: boolean
+  detailError: string | null
+  onClose: () => void
+}) {
+  const hitPeak =
+    item != null && (item.max_positive_return_pct ?? -Infinity) >= PEAK_MILESTONE_PCT
+  const hitStopLoss =
+    item != null &&
+    ((item.return_pct ?? Infinity) <= EARLY_EXIT_THRESHOLD_PCT ||
+      (item.max_negative_return_pct ?? Infinity) <= EARLY_EXIT_THRESHOLD_PCT)
+  return (
+    <Dialog.Root
+      open={item !== null}
+      onOpenChange={(open) => {
+        if (!open) onClose()
+      }}
+    >
+      <Dialog.Portal>
+        <Dialog.Backdrop className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm" />
+        <Dialog.Popup className="fixed left-1/2 top-1/2 z-50 max-h-[88vh] w-[min(96vw,56rem)] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl sm:p-6">
+          {item && (
+            <div className="flex flex-col gap-4">
+              <header className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-800 pb-3">
+                <div className="min-w-0">
+                  <Dialog.Title className="flex flex-wrap items-baseline gap-2 text-lg font-semibold text-slate-100">
+                    {item.stock_id} {item.stock_name}
+                  </Dialog.Title>
+                  <Dialog.Description className="mt-1 text-xs text-slate-400">
+                    {item.industry_name ?? "—"}
+                    {item.sub_industry ? ` · ${item.sub_industry}` : ""}
+                  </Dialog.Description>
+                  <div className="mt-2 flex flex-wrap items-center gap-1">
+                    <SignalTypeChip type={item.latest_signal_type} />
+                    <VersionChip version={item.prompt_version} />
+                    {hitPeak && <PeakMilestoneChip />}
+                    {hitStopLoss && <StopLossWarnChip />}
+                  </div>
+                </div>
+                <Dialog.Close className="rounded border border-slate-600 bg-slate-800/50 px-2 py-1 text-xs text-slate-300 hover:bg-slate-700">
+                  關閉 ✕
+                </Dialog.Close>
+              </header>
+
+              <div className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-3">
+                <Metric label="收盤價 / 當日漲跌">
+                  <span className="flex items-baseline gap-2">
+                    <span className="font-mono text-sm text-slate-100">
+                      {formatPrice(item.latest_close_price ?? null)}
+                    </span>
+                    <DailyChangeCell value={item.daily_change_pct ?? null} />
+                  </span>
+                </Metric>
+                <Metric label="報酬率">
+                  <ReturnCell value={item.return_pct} />
+                </Metric>
+                <Metric label="追蹤進度">
+                  <span className="text-sm text-slate-200">
+                    第 {item.tracking_day_index} 天 · {item.hit_count} 次
+                  </span>
+                </Metric>
+                <Metric label="預測價（保 / 夢）">
+                  <PredictionCell
+                    conservative={item.conservative_price}
+                    dream={item.dream_price}
+                  />
+                </Metric>
+                <Metric label="最大正報酬">
+                  <ExtremeReturnCell
+                    value={item.max_positive_return_pct}
+                    tradeDate={item.max_positive_return_trade_date}
+                  />
+                </Metric>
+                <Metric label="最大負報酬">
+                  <ExtremeReturnCell
+                    value={item.max_negative_return_pct}
+                    tradeDate={item.max_negative_return_trade_date}
+                  />
+                </Metric>
+                <Metric label="首次 / 最近抓到">
+                  <span className="font-mono text-xs text-slate-300">
+                    {formatShortDate(item.first_seen_date)} → {formatShortDate(item.latest_hit_date)}
+                  </span>
+                </Metric>
+                <Metric label="基準價">
+                  <span className="font-mono text-sm text-slate-200">
+                    {formatPrice(item.baseline_price)}
+                    {item.baseline_trade_date ? ` (${formatShortDate(item.baseline_trade_date)})` : ""}
+                  </span>
+                </Metric>
+                <Metric label="最新評價">
+                  <span className="font-mono text-sm text-slate-200">
+                    {formatPrice(item.latest_eval_price)}
+                    {item.latest_eval_trade_date
+                      ? ` (${formatShortDate(item.latest_eval_trade_date)})`
+                      : ""}
+                  </span>
+                </Metric>
+              </div>
+
+              <div className="flex flex-wrap gap-2 border-t border-slate-800 pt-3">
+                <Link
+                  href={`/stocks/${encodeURIComponent(item.stock_id)}`}
+                  className="rounded border border-sky-500/50 bg-sky-500/10 px-2 py-1 text-xs text-sky-200 hover:bg-sky-500/20"
+                >
+                  K線圖
+                </Link>
+              </div>
+
+              <div className="flex flex-col gap-3 border-t border-slate-800 pt-3">
+                <h4 className="text-sm font-medium text-slate-200">報告時間軸</h4>
+                {detailLoading && <p className="text-sm text-slate-400">載入報告中…</p>}
+                {detailError && !detailLoading && (
+                  <p className="text-sm text-rose-300">{detailError}</p>
+                )}
+                {!detailLoading &&
+                  !detailError &&
+                  detail &&
+                  detail.stock_id === item.stock_id &&
+                  detail.reports.map((report) => (
+                    <article
+                      key={`${report.snapshot_date}-${report.signal_type}`}
+                      className="rounded-lg border border-slate-800 bg-slate-800/30 p-4"
+                    >
+                      <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
+                        <span className="font-mono text-slate-200">{report.snapshot_date}</span>
+                        <span className="rounded border border-slate-600 px-1.5 py-0.5 text-[11px] text-slate-300">
+                          {report.signal_type}
+                        </span>
+                        {report.snapshot_generated_at && (
+                          <span>{report.snapshot_generated_at}</span>
+                        )}
+                      </div>
+                      {report.business_summary && (
+                        <p className="mt-2 text-xs text-slate-400">{report.business_summary}</p>
+                      )}
+                      <p className="mt-3 whitespace-pre-line text-sm leading-relaxed text-slate-200">
+                        {report.reason}
+                      </p>
+                    </article>
+                  ))}
+                {!detailLoading &&
+                  !detailError &&
+                  (!detail || detail.stock_id !== item.stock_id) && (
+                    <p className="text-sm text-slate-400">找不到 {item.stock_id} 的報告內容。</p>
+                  )}
+              </div>
+            </div>
+          )}
+        </Dialog.Popup>
+      </Dialog.Portal>
+    </Dialog.Root>
+  )
+}
+
 function SignalArchiveContent() {
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
 
-  // sortBy + selectedPeriodStart 由 URL 驅動，瀏覽器 back 自動還原
-  const sortByParam = searchParams.get("sort_by")
-  const sortBy: SignalArchiveSortBy = isSortBy(sortByParam) ? sortByParam : DEFAULT_SORT_BY
+  // view（分類）+ selectedPeriodStart 由 URL 驅動，瀏覽器 back 自動還原
+  const viewParam = searchParams.get("view")
+  const view: ArchiveView = isArchiveView(viewParam) ? viewParam : DEFAULT_VIEW
   const periodParam = searchParams.get("period")
   // null = 尚未選擇（等載入完自動跳最新一段）；string = 指定半年起始日
   const selectedPeriodStart: string | null =
     periodParam && PERIOD_PATTERN.test(periodParam) ? periodParam : null
 
-  const setSortBy = useCallback(
-    (next: SignalArchiveSortBy) => {
+  const setView = useCallback(
+    (next: ArchiveView) => {
       const params = new URLSearchParams(searchParams.toString())
-      if (next === DEFAULT_SORT_BY) {
-        params.delete("sort_by")
+      if (next === DEFAULT_VIEW) {
+        params.delete("view")
       } else {
-        params.set("sort_by", next)
+        params.set("view", next)
       }
       const queryString = params.toString()
       router.replace(queryString ? `${pathname}?${queryString}` : pathname, { scroll: false })
@@ -280,7 +457,8 @@ function SignalArchiveContent() {
 
   const [summary, setSummary] = useState<SignalArchiveSummaryResponse | null>(null)
   const [completedSummary, setCompletedSummary] = useState<SignalArchiveCompletedResponse | null>(null)
-  const [selectedStockId, setSelectedStockId] = useState<string | null>(null)
+  // popup 展開的股票（null = 關閉）；detail 內容依此 fetch
+  const [popupStockId, setPopupStockId] = useState<string | null>(null)
   const [detail, setDetail] = useState<SignalArchiveDetailResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [completedLoading, setCompletedLoading] = useState(true)
@@ -289,18 +467,22 @@ function SignalArchiveContent() {
   const [completedError, setCompletedError] = useState<string | null>(null)
   const [detailError, setDetailError] = useState<string | null>(null)
 
-  // 兩張表各自的搜尋框：純前端 filter（不打 backend），by stock_id / stock_name 子字串
+  // 每類預設只顯示前 15 名；「查看更多」展開全部（切換分類時收回）
+  const [showAllActive, setShowAllActive] = useState(false)
+
+  // 兩區各自的搜尋框：純前端 filter（不打 backend），by stock_id / stock_name 子字串
   const [activeSearch, setActiveSearch] = useState("")
   const [completedSearch, setCompletedSearch] = useState("")
 
-  // 兩張表各自可折疊；偏好存 localStorage（預設展開）
+  // 兩區各自可折疊；偏好存 localStorage（追蹤中預設展開、紀錄區預設收合）
   const [activeCollapsed, setActiveCollapsed] = useState(false)
-  const [completedCollapsed, setCompletedCollapsed] = useState(false)
+  const [completedCollapsed, setCompletedCollapsed] = useState(true)
 
   useEffect(() => {
     try {
       if (window.localStorage.getItem(ACTIVE_COLLAPSED_KEY) === "true") setActiveCollapsed(true)
-      if (window.localStorage.getItem(COMPLETED_COLLAPSED_KEY) === "true") setCompletedCollapsed(true)
+      // 紀錄區預設收合；只有使用者明確展開過（存 "false"）才自動展開
+      if (window.localStorage.getItem(COMPLETED_COLLAPSED_KEY) === "false") setCompletedCollapsed(false)
     } catch {
       // ignore
     }
@@ -330,16 +512,63 @@ function SignalArchiveContent() {
     })
   }, [])
 
+  // 切換分類時收回「查看更多」展開狀態
+  useEffect(() => {
+    setShowAllActive(false)
+  }, [view])
+
+  // 分類排序：純前端。null 報酬率（第一天抓到還沒 baseline）在兩種報酬排序都排最後
+  const sortedActiveItems = useMemo(() => {
+    const items = summary?.items ?? []
+    const copy = [...items]
+    switch (view) {
+      case "return_desc":
+        copy.sort(
+          (a, b) =>
+            (b.return_pct ?? -Infinity) - (a.return_pct ?? -Infinity) ||
+            a.stock_id.localeCompare(b.stock_id),
+        )
+        break
+      case "return_asc":
+        copy.sort(
+          (a, b) =>
+            (a.return_pct ?? Infinity) - (b.return_pct ?? Infinity) ||
+            a.stock_id.localeCompare(b.stock_id),
+        )
+        break
+      case "hit_count":
+        copy.sort(
+          (a, b) =>
+            b.hit_count - a.hit_count || a.first_seen_date.localeCompare(b.first_seen_date),
+        )
+        break
+      default:
+        // 追蹤日期：最早抓到的在前
+        copy.sort(
+          (a, b) =>
+            a.first_seen_date.localeCompare(b.first_seen_date) ||
+            a.stock_id.localeCompare(b.stock_id),
+        )
+    }
+    return copy
+  }, [summary?.items, view])
+
   const filteredActiveItems = useMemo(() => {
-    if (!summary?.items) return []
     const q = activeSearch.trim().toLowerCase()
-    if (!q) return summary.items
-    return summary.items.filter(
+    if (!q) return sortedActiveItems
+    return sortedActiveItems.filter(
       (item) =>
         item.stock_id.toLowerCase().includes(q) ||
         (item.stock_name ?? "").toLowerCase().includes(q),
     )
-  }, [summary?.items, activeSearch])
+  }, [sortedActiveItems, activeSearch])
+
+  // 搜尋中直接搜全部（忽略前 15 限制）；未搜尋時依「查看更多」狀態截斷
+  const isSearchingActive = activeSearch.trim() !== ""
+  const visibleActiveItems =
+    isSearchingActive || showAllActive
+      ? filteredActiveItems
+      : filteredActiveItems.slice(0, TOP_N)
 
   const filteredCompletedItems = useMemo(() => {
     if (!completedSummary?.items) return []
@@ -356,20 +585,14 @@ function SignalArchiveContent() {
     setLoading(true)
     setError(null)
     try {
-      // limit: 0 = 不限筆數，魚尾追蹤期內有多少就顯示多少
-      const data = await fetchSignalArchive({ sort_by: sortBy, limit: 0 })
+      // limit: 0 = 不限筆數；分類排序由前端計算，一次抓全部即可
+      const data = await fetchSignalArchive({ limit: 0 })
       setSummary(data)
-      // 預設不展開任何一檔（inline expand UX：使用者主動點才展開）
     } catch (err) {
       setError(err instanceof Error ? err.message : "訊號追蹤清單載入失敗")
     } finally {
       setLoading(false)
     }
-  }, [sortBy])
-
-  // Toggle：再點同一檔 → 收合；點別檔 → 切換
-  const toggleExpand = useCallback((stockId: string) => {
-    setSelectedStockId((prev) => (prev === stockId ? null : stockId))
   }, [])
 
   useEffect(() => {
@@ -405,14 +628,17 @@ function SignalArchiveContent() {
     return () => {
       cancelled = true
     }
+    // setSelectedPeriodStart 的 identity 隨任何 URL 變動改變（含 view chip），
+    // 放進 deps 會讓切換分類時 completed 區重新 fetch；刻意只依賴 selectedPeriodStart
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedPeriodStart])
 
   useEffect(() => {
-    if (!selectedStockId) {
+    if (!popupStockId) {
       setDetail(null)
       return
     }
-    const stockId = selectedStockId
+    const stockId = popupStockId
 
     let cancelled = false
     async function run() {
@@ -434,7 +660,12 @@ function SignalArchiveContent() {
     return () => {
       cancelled = true
     }
-  }, [selectedStockId])
+  }, [popupStockId])
+
+  const popupItem = useMemo(() => {
+    if (!popupStockId) return null
+    return summary?.items.find((item) => item.stock_id === popupStockId) ?? null
+  }, [summary?.items, popupStockId])
 
   return (
     <main className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-8">
@@ -508,24 +739,6 @@ function SignalArchiveContent() {
             <p className="mt-1 text-xs text-slate-500">最新評估交易日：{summary.as_of_trade_date}</p>
           )}
         </div>
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-slate-400">排序</span>
-          <Select
-            value={sortBy}
-            onValueChange={(value) => setSortBy(value as SignalArchiveSortBy)}
-          >
-            <SelectTrigger className="border-slate-600 bg-slate-800/40 text-slate-200">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {SORT_OPTIONS.map((option) => (
-                <SelectItem key={option.value} value={option.value}>
-                  {option.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
       </header>
 
       <section className="rounded-xl border border-slate-700 bg-slate-900/40 p-4">
@@ -546,27 +759,54 @@ function SignalArchiveContent() {
         {!activeCollapsed && (
         <>
         {!loading && !error && summary && summary.items.length > 0 && (
-          <div className="mb-3 flex items-center gap-2">
-            <input
-              type="text"
-              value={activeSearch}
-              onChange={(e) => setActiveSearch(e.target.value)}
-              placeholder="搜尋股票代號或名稱…"
-              className="w-56 rounded border border-slate-600 bg-slate-800/40 px-2 py-1 text-sm text-slate-100 placeholder:text-slate-500 focus:border-sky-400 focus:outline-none"
-            />
-            {activeSearch && (
-              <button
-                type="button"
-                onClick={() => setActiveSearch("")}
-                className="text-xs text-slate-400 hover:text-slate-200"
-              >
-                清除
-              </button>
-            )}
-            <span className="ml-auto text-xs text-slate-500">
-              {filteredActiveItems.length} / {summary.items.length} 檔
-            </span>
-          </div>
+          <>
+            {/* 4 個互斥分類：一次只能選一種排序方式，各顯示前 15 名 */}
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              <span className="text-xs text-slate-400">分類：</span>
+              {VIEW_OPTIONS.map((option) => {
+                const isActive = view === option.value
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => setView(option.value)}
+                    aria-pressed={isActive}
+                    className={
+                      "rounded border px-2.5 py-1 text-xs font-medium transition " +
+                      (isActive
+                        ? "border-sky-400 bg-sky-500/20 text-sky-100"
+                        : "border-slate-700 bg-slate-800/40 text-slate-300 hover:border-slate-500")
+                    }
+                  >
+                    {option.label}
+                  </button>
+                )
+              })}
+            </div>
+            <div className="mb-3 flex items-center gap-2">
+              <input
+                type="text"
+                value={activeSearch}
+                onChange={(e) => setActiveSearch(e.target.value)}
+                placeholder="搜尋股票代號或名稱…"
+                className="w-56 rounded border border-slate-600 bg-slate-800/40 px-2 py-1 text-sm text-slate-100 placeholder:text-slate-500 focus:border-sky-400 focus:outline-none"
+              />
+              {activeSearch && (
+                <button
+                  type="button"
+                  onClick={() => setActiveSearch("")}
+                  className="text-xs text-slate-400 hover:text-slate-200"
+                >
+                  清除
+                </button>
+              )}
+              <span className="ml-auto text-xs text-slate-500">
+                {isSearchingActive
+                  ? `${filteredActiveItems.length} / ${summary.items.length} 檔`
+                  : `顯示 ${visibleActiveItems.length} / ${summary.items.length} 檔`}
+              </span>
+            </div>
+          </>
         )}
         {loading && <p className="text-sm text-slate-400">載入中…</p>}
         {error && !loading && <p className="text-sm text-rose-300">{error}</p>}
@@ -575,198 +815,48 @@ function SignalArchiveContent() {
         )}
         {!loading && !error && summary && summary.items.length > 0 && (
           <>
-            {filteredActiveItems.length === 0 && activeSearch.trim() !== "" && (
+            {filteredActiveItems.length === 0 && isSearchingActive && (
               <p className="py-4 text-center text-sm text-slate-400">
                 找不到符合「{activeSearch}」的股票
               </p>
             )}
-            {/* 響應式卡片網格：手機單欄堆疊 / 桌機兩欄，兩端資訊結構一致，全程不需水平捲動 */}
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              {filteredActiveItems.map((item) => {
-                const active = item.stock_id === selectedStockId
-                const hitPeak =
-                  (item.max_positive_return_pct ?? -Infinity) >= PEAK_MILESTONE_PCT
-                const hitStopLoss =
-                  (item.return_pct ?? Infinity) <= EARLY_EXIT_THRESHOLD_PCT ||
-                  (item.max_negative_return_pct ?? Infinity) <= EARLY_EXIT_THRESHOLD_PCT
-                return (
-                  <article
-                    key={item.stock_id}
-                    className={`flex flex-col gap-3 rounded-lg border p-3 ${
-                      active
-                        ? "col-span-full border-sky-500/40 bg-slate-800/50"
-                        : "border-slate-800 bg-slate-900/50"
-                    }`}
-                  >
-                    <header className="flex flex-wrap items-start justify-between gap-2">
-                      <div className="flex min-w-0 flex-col">
-                        <button
-                          type="button"
-                          onClick={() => toggleExpand(item.stock_id)}
-                          className="w-fit text-left text-sm font-semibold text-slate-100 hover:text-sky-300"
-                        >
-                          {item.stock_id} {item.stock_name}
-                        </button>
-                        <span className="text-xs text-slate-500">
-                          {item.industry_name ?? "—"}
-                          {item.sub_industry ? ` · ${item.sub_industry}` : ""}
-                        </span>
-                      </div>
-                      <div className="flex flex-wrap items-center justify-end gap-1">
-                        <SignalTypeChip type={item.latest_signal_type} />
-                        <VersionChip version={item.prompt_version} />
-                      </div>
-                    </header>
-                    {(hitPeak || hitStopLoss) && (
-                      <div className="flex flex-wrap gap-1">
-                        {hitPeak && <PeakMilestoneChip />}
-                        {hitStopLoss && <StopLossWarnChip />}
-                      </div>
-                    )}
-                    <div className="grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3">
-                      <Metric label="報酬率">
-                        <ReturnCell value={item.return_pct} />
-                      </Metric>
-                      <Metric label="追蹤進度">
-                        <span className="text-sm text-slate-200">
-                          第 {item.tracking_day_index} 天 · {item.hit_count} 次
-                        </span>
-                      </Metric>
-                      <Metric label="預測價（保 / 夢）">
-                        <PredictionCell
-                          conservative={item.conservative_price}
-                          dream={item.dream_price}
-                        />
-                      </Metric>
-                      <Metric label="最大正報酬">
-                        <ExtremeReturnCell
-                          value={item.max_positive_return_pct}
-                          tradeDate={item.max_positive_return_trade_date}
-                        />
-                      </Metric>
-                      <Metric label="最大負報酬">
-                        <ExtremeReturnCell
-                          value={item.max_negative_return_pct}
-                          tradeDate={item.max_negative_return_trade_date}
-                        />
-                      </Metric>
-                      <Metric label="首次 / 最近抓到">
-                        <span className="font-mono text-xs text-slate-300">
-                          {formatShortDate(item.first_seen_date)} → {formatShortDate(item.latest_hit_date)}
-                        </span>
-                      </Metric>
-                    </div>
-                    <div className="mt-auto flex flex-wrap gap-2 border-t border-slate-800 pt-2">
-                      <Link
-                        href={`/stocks/${encodeURIComponent(item.stock_id)}`}
-                        className="rounded border border-sky-500/50 bg-sky-500/10 px-2 py-1 text-xs text-sky-200 hover:bg-sky-500/20"
-                      >
-                        K線圖
-                      </Link>
-                      <button
-                        type="button"
-                        onClick={() => toggleExpand(item.stock_id)}
-                        className="rounded border border-slate-600 bg-slate-800/50 px-2 py-1 text-xs text-slate-200 hover:bg-slate-700"
-                      >
-                        {active ? "收合報告" : "點我看更多分析結果"}
-                      </button>
-                    </div>
-                    {active && (
-                      <div className="border-t border-slate-700 pt-3">
-                        {detailLoading && (
-                          <p className="text-sm text-slate-400">載入報告中…</p>
-                        )}
-                        {detailError && !detailLoading && (
-                          <p className="text-sm text-rose-300">{detailError}</p>
-                        )}
-                        {!detailLoading && !detailError && detail && detail.stock_id === item.stock_id && (
-                          <div className="flex flex-col gap-4">
-                            <header className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-800 pb-3">
-                              <div>
-                                <h3 className="text-base font-semibold text-slate-100">
-                                  {detail.stock_id} {detail.stock_name}
-                                </h3>
-                                <p className="mt-1 text-xs text-slate-400">
-                                  {detail.industry_name ?? "—"}
-                                  {detail.sub_industry ? ` · ${detail.sub_industry}` : ""}
-                                </p>
-                              </div>
-                              <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-slate-400">
-                                <span>首次抓到</span>
-                                <span className="font-mono text-slate-200">{detail.first_seen_date}</span>
-                                <span>最近抓到</span>
-                                <span className="font-mono text-slate-200">{detail.latest_hit_date}</span>
-                                <span>目前追蹤</span>
-                                <span className="text-slate-200">第 {detail.tracking_day_index} 天</span>
-                                <span>命中次數</span>
-                                <span className="text-slate-200">{detail.hit_count} 次</span>
-                                <span>基準價</span>
-                                <span className="font-mono text-slate-200">
-                                  {formatPrice(detail.baseline_price)}
-                                  {detail.baseline_trade_date ? ` (${detail.baseline_trade_date})` : ""}
-                                </span>
-                                <span>最新評價</span>
-                                <span className="font-mono text-slate-200">
-                                  {formatPrice(detail.latest_eval_price)}
-                                  {detail.latest_eval_trade_date ? ` (${detail.latest_eval_trade_date})` : ""}
-                                </span>
-                                <span>報酬率</span>
-                                <ReturnCell value={detail.return_pct} />
-                                <span>最大正報酬</span>
-                                <span className="text-slate-200">
-                                  <ExtremeReturnCell
-                                    value={detail.max_positive_return_pct}
-                                    tradeDate={detail.max_positive_return_trade_date}
-                                  />
-                                </span>
-                                <span>最大負報酬</span>
-                                <span className="text-slate-200">
-                                  <ExtremeReturnCell
-                                    value={detail.max_negative_return_pct}
-                                    tradeDate={detail.max_negative_return_trade_date}
-                                  />
-                                </span>
-                              </div>
-                            </header>
-
-                            <div className="flex flex-col gap-3">
-                              <h4 className="text-sm font-medium text-slate-200">報告時間軸</h4>
-                              {detail.reports.map((report) => (
-                                <article
-                                  key={`${report.snapshot_date}-${report.signal_type}`}
-                                  className="rounded-lg border border-slate-800 bg-slate-800/30 p-4"
-                                >
-                                  <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
-                                    <span className="font-mono text-slate-200">{report.snapshot_date}</span>
-                                    <span className="rounded border border-slate-600 px-1.5 py-0.5 text-[11px] text-slate-300">
-                                      {report.signal_type}
-                                    </span>
-                                    {report.snapshot_generated_at && (
-                                      <span>{report.snapshot_generated_at}</span>
-                                    )}
-                                  </div>
-                                  {report.business_summary && (
-                                    <p className="mt-2 text-xs text-slate-400">{report.business_summary}</p>
-                                  )}
-                                  <p className="mt-3 whitespace-pre-line text-sm leading-relaxed text-slate-200">
-                                    {report.reason}
-                                  </p>
-                                </article>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                        {!detailLoading && !detailError && (!detail || detail.stock_id !== item.stock_id) && (
-                          <p className="text-sm text-slate-400">
-                            找不到 {item.stock_id} 的報告內容。
-                          </p>
-                        )}
-                      </div>
-                    )}
-                  </article>
-                )
-              })}
+            {/* 極簡卡片：只留代號+名稱 / 收盤價 / 當日漲跌幅；其餘資訊在點開的 popup */}
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {visibleActiveItems.map((item) => (
+                <button
+                  key={item.stock_id}
+                  type="button"
+                  onClick={() => setPopupStockId(item.stock_id)}
+                  className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-900/50 px-3 py-2.5 text-left transition hover:border-sky-500/50 hover:bg-slate-800/60"
+                >
+                  <div className="flex min-w-0 flex-col">
+                    <span className="truncate text-sm font-semibold text-slate-100">
+                      {item.stock_id} {item.stock_name}
+                    </span>
+                    <span className="text-[11px] text-slate-500">查看更多 →</span>
+                  </div>
+                  <div className="flex shrink-0 flex-col items-end">
+                    <span className="font-mono text-sm text-slate-100">
+                      {formatPrice(item.latest_close_price ?? null)}
+                    </span>
+                    <DailyChangeCell value={item.daily_change_pct ?? null} />
+                  </div>
+                </button>
+              ))}
             </div>
+            {!isSearchingActive && filteredActiveItems.length > TOP_N && (
+              <div className="mt-3 flex justify-center">
+                <button
+                  type="button"
+                  onClick={() => setShowAllActive((prev) => !prev)}
+                  className="rounded border border-slate-600 bg-slate-800/50 px-4 py-1.5 text-xs text-slate-200 hover:bg-slate-700"
+                >
+                  {showAllActive
+                    ? `收合（只顯示前 ${TOP_N} 名）`
+                    : `查看更多（共 ${filteredActiveItems.length} 檔）`}
+                </button>
+              </div>
+            )}
           </>
         )}
         </>
@@ -855,7 +945,7 @@ function SignalArchiveContent() {
                 找不到符合「{completedSearch}」的股票
               </p>
             )}
-            {/* 響應式卡片網格：與上方追蹤中清單同一套版型，手機單欄 / 桌機兩欄 */}
+            {/* 響應式卡片網格：手機單欄 / 桌機兩欄 */}
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               {filteredCompletedItems.map((item) => {
                 const hitPeak =
@@ -937,6 +1027,13 @@ function SignalArchiveContent() {
         )}
       </section>
 
+      <StockDetailDialog
+        item={popupItem}
+        detail={detail}
+        detailLoading={detailLoading}
+        detailError={detailError}
+        onClose={() => setPopupStockId(null)}
+      />
     </main>
   )
 }

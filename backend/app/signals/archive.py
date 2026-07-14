@@ -80,6 +80,11 @@ class ArchiveSummaryItem:
     # M26：對應 (stock_id, first_seen_date) 的 SignalExpectationPrice 預測；舊資料無 → None
     conservative_price: Optional[float] = None
     dream_price: Optional[float] = None
+    # 2026-07-13：卡片極簡化 UI 需要的「as_of 交易日收盤價」與「當日漲跌幅」。
+    # 與 latest_eval_price 不同：latest_eval_price 在 baseline 未建立（第一天抓到）時為 None，
+    # 這兩欄直接查 daily_price，任何追蹤日都有值（除非個股當日停牌無資料）。
+    latest_close_price: Optional[float] = None
+    daily_change_pct: Optional[float] = None
 
 
 @dataclass
@@ -283,10 +288,19 @@ def list_archive_summary(
     expectation_map = _load_expectation_prices_map(
         db, [(item.stock_id, item.first_seen_date) for item in ordered]
     )
+    # 卡片極簡化 UI：批次補上 as_of 收盤價 + 當日漲跌幅
+    close_map = _load_latest_close_and_change(
+        db,
+        stock_ids=[item.stock_id for item in ordered],
+        as_of_trade_date=as_of_trade_date,
+    )
     for item in ordered:
         prediction = expectation_map.get((item.stock_id, item.first_seen_date))
         if prediction is not None:
             item.conservative_price, item.dream_price = prediction
+        item.latest_close_price, item.daily_change_pct = close_map.get(
+            item.stock_id, (None, None)
+        )
 
     return {
         "as_of_trade_date": as_of_trade_date,
@@ -321,6 +335,12 @@ def get_archive_detail(
     prediction = expectation_map.get((summary.stock_id, summary.first_seen_date))
     if prediction is not None:
         summary.conservative_price, summary.dream_price = prediction
+    close_map = _load_latest_close_and_change(
+        db, stock_ids=[summary.stock_id], as_of_trade_date=as_of_trade_date
+    )
+    summary.latest_close_price, summary.daily_change_pct = close_map.get(
+        summary.stock_id, (None, None)
+    )
     reports = [
         {
             "snapshot_date": row.snapshot_date,
@@ -710,6 +730,53 @@ def _build_archive_summary_item(
         max_negative_return_trade_date=latest_row.max_negative_return_trade_date,
         prompt_version=_distinct_versions(rows),
     )
+
+
+def _load_latest_close_and_change(
+    db: Session,
+    *,
+    stock_ids: List[str],
+    as_of_trade_date: Optional[date],
+) -> dict[str, tuple[Optional[float], Optional[float]]]:
+    """批次載入每檔股票 as_of 交易日的收盤價 + 當日漲跌幅（相對前一交易日收盤）。
+
+    兩個輕量查詢：先找 as_of 的前一個全市場交易日，再一次撈兩天的 close_price。
+    個股當日停牌（as_of 無 row）→ (None, None)；前一日缺值或為 0 → 漲跌幅 None。
+    """
+    if not stock_ids or as_of_trade_date is None:
+        return {}
+    prev_trade_date = (
+        db.query(func.max(DailyPrice.trade_date))
+        .filter(DailyPrice.trade_date < as_of_trade_date)
+        .scalar()
+    )
+    dates = [as_of_trade_date]
+    if prev_trade_date is not None:
+        dates.append(prev_trade_date)
+    rows = (
+        db.query(DailyPrice.stock_id, DailyPrice.trade_date, DailyPrice.close_price)
+        .filter(
+            DailyPrice.stock_id.in_(stock_ids),
+            DailyPrice.trade_date.in_(dates),
+        )
+        .all()
+    )
+    latest_by_stock: dict[str, Optional[float]] = {}
+    prev_by_stock: dict[str, Optional[float]] = {}
+    for stock_id, trade_date, close_price in rows:
+        if trade_date == as_of_trade_date:
+            latest_by_stock[stock_id] = close_price
+        else:
+            prev_by_stock[stock_id] = close_price
+    result: dict[str, tuple[Optional[float], Optional[float]]] = {}
+    for stock_id in stock_ids:
+        close = latest_by_stock.get(stock_id)
+        prior = prev_by_stock.get(stock_id)
+        change: Optional[float] = None
+        if close is not None and prior:
+            change = round((close / prior - 1) * 100, 2)
+        result[stock_id] = (close, change)
+    return result
 
 
 def _count_tracking_days(
@@ -1323,6 +1390,8 @@ def _serialize_summary_item(item: ArchiveSummaryItem) -> dict[str, Any]:
         "prompt_version": item.prompt_version or "v1",
         "conservative_price": item.conservative_price,
         "dream_price": item.dream_price,
+        "latest_close_price": item.latest_close_price,
+        "daily_change_pct": item.daily_change_pct,
     }
 
 

@@ -1,5 +1,31 @@
 # always-stock 專案記憶
 
+## 30 日追蹤頁分類顯示大改版（2026-07-13）
+
+### 需求
+- 追蹤中清單一次 show 全部太多；改成 **4 個互斥分類 chip**，一次只顯示一種排序、各只顯示**前 15 名**：
+  - 追蹤日期（first_seen_date 最早在前）/ 最多報酬率（return_pct desc）/ 最低報酬率（return_pct asc）/ 抓到次數（hit_count desc）
+- 卡片極簡化：只留**代號+名稱 / 收盤價 / 當日漲跌幅**；其餘所有資訊（類型/版本 chip、預測價、最大正負報酬、報告時間軸…）移進每檔的「查看更多」**popup**（base-ui Dialog，比照 DailySignalsPanel 的 SignalDetailDialog 樣式）
+- 每類清單底部「查看更多（共 N 檔）」展開全部；「追蹤期滿移出紀錄」維持卡片網格但**預設收合**
+
+### 後端（[backend/app/signals/archive.py](backend/app/signals/archive.py)）
+- `ArchiveSummaryItem` 新增 `latest_close_price` / `daily_change_pct`（**當日漲跌幅**，相對前一交易日收盤）
+- 新 helper `_load_latest_close_and_change(db, stock_ids, as_of_trade_date)`：兩個輕量查詢（先找 as_of 的前一個全市場交易日，再一次撈兩天 close_price batch）；個股 as_of 停牌 → (None, None)、前一日缺值或 0 → 漲跌幅 None
+- `list_archive_summary` + `get_archive_detail` 都會填；router `SignalArchiveSummaryItemResponse` 加同名 Optional 欄位（detail response 繼承自動帶入）
+- **為何不用 `latest_eval_price`**：它在 baseline 未建立（第一天抓到）時是 None，卡片收盤價必須任何追蹤日都有值
+
+### 前端（[frontend/src/app/signals/archive/page.tsx](frontend/src/app/signals/archive/page.tsx) 大重寫）
+- 分類排序**純前端**（一次 `fetchSignalArchive({ limit: 0 })`，client-side sort）；原本打後端的 6 選項排序下拉（`sort_by` URL param）**移除**，改 URL param `?view=`（`first_seen`(default 不寫 URL) / `return_desc` / `return_asc` / `hit_count`）
+- null return_pct（第一天抓到）在兩種報酬排序都用 `?? ±Infinity` 排最後
+- 搜尋框保留：輸入時**忽略前 15 限制直接搜全部**；「查看更多」展開狀態在切分類時 reset（`useEffect([view])`）
+- popup：`StockDetailDialog`（`@base-ui/react/dialog`），資料 header/metrics 直接吃 summary item（開窗即顯示），報告時間軸等 `fetchSignalArchiveDetail` 載入；`popupStockId` state 取代原 inline expand 的 `selectedStockId`
+- 紀錄區 `completedCollapsed` 預設 `useState(true)`；localStorage 只在存過 `"false"`（使用者展開過）才自動展開
+
+### Gotcha
+- **completed fetch effect 的 deps 刻意只有 `[selectedPeriodStart]`**：`setSelectedPeriodStart` 的 identity 隨任何 URL 變動（含點分類 chip）改變，放進 deps 會讓切分類時 completed 區白白重新 fetch；加 eslint-disable 註記
+- 極簡卡片整張是 `<button>` 開 popup；popup 內 K線圖入口保留
+- 舊 `?sort_by=` URL 不再被讀取（向後不相容，直接落回預設分類）；`SignalArchiveSortBy` 型別與 API 端 `sort_by` param 仍在（後端契約沒動）
+
 ## 30 日追蹤頁響應式卡片改版（2026-07-09）
 
 ### 背景

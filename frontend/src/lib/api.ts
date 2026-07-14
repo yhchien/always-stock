@@ -1378,6 +1378,9 @@ export interface SignalArchiveSummaryItem {
   // M26：對應 (stock_id, first_seen_date) 的 expectation price 預測；舊資料 = null
   conservative_price?: number | null
   dream_price?: number | null
+  /** 2026-07-13：卡片極簡化 UI 用的 as_of 收盤價 + 當日漲跌幅（個股當日停牌 = null）。 */
+  latest_close_price?: number | null
+  daily_change_pct?: number | null
 }
 
 export interface SignalArchiveSummaryResponse {

@@ -125,6 +125,9 @@ class SignalArchiveSummaryItemResponse(BaseModel):
     # M26：對應 (stock_id, first_seen_date) 的 SignalExpectationPrice 預測；舊資料 = None
     conservative_price: Optional[float] = None
     dream_price: Optional[float] = None
+    # 2026-07-13：卡片極簡化 UI 用的 as_of 收盤價 + 當日漲跌幅（個股當日停牌 = None）
+    latest_close_price: Optional[float] = None
+    daily_change_pct: Optional[float] = None
 
 
 class SignalArchiveSummaryResponse(BaseModel):

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -406,6 +406,82 @@ def test_archive_summary_uses_persisted_return_fields():
         assert item["max_positive_return_trade_date"] == date(2026, 4, 30)
         assert item["max_negative_return_pct"] is None
         assert item["max_negative_return_trade_date"] is None
+
+
+def test_archive_summary_includes_latest_close_and_daily_change():
+    """卡片極簡化 UI：summary / detail 每檔要帶 as_of 收盤價 + 當日漲跌幅（相對前一交易日收盤）。"""
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+
+    with Session() as db:
+        db.add(
+            SignalWatchHit(
+                snapshot_date=date(2026, 4, 29),
+                stock_id="2330",
+                stock_name="台積電",
+                signal_type="LEADER",
+                industry_name="半導體業",
+                sub_industry="晶圓代工",
+                business_summary="a",
+                reason="a",
+                theme={},
+                group_info={},
+                leader_check={},
+                signals={},
+            )
+        )
+        db.commit()
+        _seed_price(db, "2330", date(2026, 4, 29), 99.0, 100.0)
+        _seed_price(db, "2330", date(2026, 4, 30), 101.0, 105.0)
+
+        payload = archive.list_archive_summary(db, now=datetime(2026, 4, 30, 23, 0))
+        item = payload["items"][0]
+        assert item["latest_close_price"] == 105.0
+        assert item["daily_change_pct"] == 5.0
+
+        detail = archive.get_archive_detail(db, "2330", now=datetime(2026, 4, 30, 23, 0))
+        assert detail is not None
+        assert detail["latest_close_price"] == 105.0
+        assert detail["daily_change_pct"] == 5.0
+
+
+def test_archive_summary_close_and_change_handle_missing_price_rows():
+    """個股 as_of 當日停牌（無 daily_price row）→ 收盤價與漲跌幅皆 None；
+    只有一天資料（無前一交易日收盤）→ 收盤價有值、漲跌幅 None。"""
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+
+    def _hit(stock_id: str) -> SignalWatchHit:
+        return SignalWatchHit(
+            snapshot_date=date(2026, 4, 29),
+            stock_id=stock_id,
+            stock_name=f"股票{stock_id}",
+            signal_type="LEADER",
+            industry_name="半導體業",
+            sub_industry=None,
+            business_summary="a",
+            reason="a",
+            theme={},
+            group_info={},
+            leader_check={},
+            signals={},
+        )
+
+    with Session() as db:
+        db.add_all([_hit("2330"), _hit("2317")])
+        db.commit()
+        # 2330 只有 4/29 有價（4/30 停牌）；2317 只有 4/30 有價（前一日無收盤可比）
+        _seed_price(db, "2330", date(2026, 4, 29), 99.0, 100.0)
+        _seed_price(db, "2317", date(2026, 4, 30), 200.0, 210.0)
+
+        payload = archive.list_archive_summary(db, now=datetime(2026, 4, 30, 23, 0))
+        by_id = {item["stock_id"]: item for item in payload["items"]}
+        assert by_id["2330"]["latest_close_price"] is None
+        assert by_id["2330"]["daily_change_pct"] is None
+        assert by_id["2317"]["latest_close_price"] == 210.0
+        assert by_id["2317"]["daily_change_pct"] is None
 
 
 def test_archive_summary_aggregates_distinct_prompt_versions():
