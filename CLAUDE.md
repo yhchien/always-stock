@@ -1,5 +1,30 @@
 # always-stock 專案記憶
 
+## K 線圖全站改 popup（2026-07-14）
+
+### 需求
+- K 線圖固定只顯示**近 6 個月**，因此拿掉日期選擇（1M/3M/6M/1Y/All + 自訂區間）與自訂 MA 輸入
+- K 線圖**全站改 popup**（含 L2 個股頁、回測頁），圖上不再有 dataZoom 拖拉
+- 保留 10/20/60 MA 與外資/投信/自營累積買超線的 toggle
+
+### 新元件 [frontend/src/components/StockChartDialog.tsx](frontend/src/components/StockChartDialog.tsx)
+- base-ui Dialog（樣式比照 DailySignalsPanel 的 SignalDetailDialog）；props `{ stockId: string | null, stockName?, onClose }`，`stockId=null` = 關閉
+- **抓 365 天、顯示切近 6 個月**：MA 在完整序列上計算再 slice，讓 MA60 在窗口第一天就有值（只抓 180 天會讓 MA60 前 3 個月全 null）
+- **法人累積線 re-baseline**：切窗後扣掉「窗口前一天」的累積值，讓線代表「顯示窗內累積」從 0 附近起算
+- ECharts 用 `dynamic(() => import("echarts-for-react"), { ssr: false })` 只在 popup 開啟時載入
+- 即時報價保留在 popup header；`useRealtimeQuotes(stockId ? [stockId] : [])` 關閉時不打 API
+- 無 dataZoom、無 broker 副圖、無自訂 MA / 日期選擇
+
+### 各入口改動
+- **L2 個股頁**：常駐 `<StockChart>` 移除；header 加「K線圖（近 6 個月）」按鈕 + `StockSignalSummaryPanel` 的「看 K 線圖」改吃 `onOpenChart` callback 觸發同一 popup。`?chart_days=` URL param 與回測 `?start=&end=` dateRange 連動一併移除；**FinancialsPanel 的 `chartDays` 固定 180**（原本跟 K 線天數連動）
+- **回測頁**：上方常駐 StockChart 移除，header 右側加 K線圖按鈕；`backtestRange` state / `onDateRangeChange` 連動 / handleBack 帶 start&end 全拔（BacktestPanel 的 `onDateRangeChange` prop 是 optional，元件本身沒動）
+- **30 日追蹤頁**：詳情 popup 內與紀錄卡片的「K線圖」Link 改為開 StockChartDialog（詳情 popup 內另補「個股頁 →」link 保留 L2 導航）；chart popup 疊在詳情 popup 之上（兩個都 z-50，後 mount 的 portal 在 DOM 後面 → 蓋上面）
+
+### Gotcha
+- **`StockChart.tsx` 保留未刪**（依 BrokerPanel 慣例：程式碼保留、只拔入口）；現在全站無人 import，未來要復活完整互動圖直接掛回
+- **StockSignalSummaryPanel 的 `onOpenChart` 是 optional**：沒傳時 fallback 回原本 `#stock-chart` 錨點連結（但 L2 已無該錨點，實際上 L2 一定會傳）
+- L2 舊書籤帶 `?chart_days=` / `?start=&end=` 不會壞，params 被忽略
+
 ## 30 日追蹤頁分類顯示大改版（2026-07-13）
 
 ### 需求

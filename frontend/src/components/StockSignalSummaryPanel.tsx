@@ -47,7 +47,14 @@ function SignalMetric({
   )
 }
 
-export default function StockSignalSummaryPanel({ stockId }: { stockId: string }) {
+export default function StockSignalSummaryPanel({
+  stockId,
+  onOpenChart,
+}: {
+  stockId: string
+  /** 提供時「看 K 線圖」改為觸發 K 線 popup（StockChartDialog）；未提供時 fallback 錨點連結 */
+  onOpenChart?: () => void
+}) {
   const [snapshot, setSnapshot] = useState<SignalSnapshotResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -86,12 +93,22 @@ export default function StockSignalSummaryPanel({ stockId }: { stockId: string }
           <h2 className="mt-1 text-lg font-semibold text-slate-100">今日捕獲的大魚尾摘要</h2>
           <p className="mt-1 text-xs text-slate-500">快照日期 {snapshot.snapshot_date}</p>
         </div>
-        <Link
-          href="#stock-chart"
-          className="inline-flex items-center rounded border border-sky-500/50 bg-sky-500/10 px-3 py-1 text-xs font-medium text-sky-200 hover:bg-sky-500/20"
-        >
-          看 K 線圖
-        </Link>
+        {onOpenChart ? (
+          <button
+            type="button"
+            onClick={onOpenChart}
+            className="inline-flex items-center rounded border border-sky-500/50 bg-sky-500/10 px-3 py-1 text-xs font-medium text-sky-200 hover:bg-sky-500/20"
+          >
+            看 K 線圖
+          </button>
+        ) : (
+          <Link
+            href="#stock-chart"
+            className="inline-flex items-center rounded border border-sky-500/50 bg-sky-500/10 px-3 py-1 text-xs font-medium text-sky-200 hover:bg-sky-500/20"
+          >
+            看 K 線圖
+          </Link>
+        )}
       </div>
 
       <div className="mt-4 rounded-xl border border-slate-700/70 bg-slate-900/40 p-4">

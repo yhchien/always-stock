@@ -1,27 +1,22 @@
 "use client"
 
-import { Suspense, use, useCallback, useEffect, useMemo, useState } from "react"
+import { Suspense, use, useEffect, useState } from "react"
 import dynamic from "next/dynamic"
 import Link from "next/link"
-import { usePathname, useRouter, useSearchParams } from "next/navigation"
+import { useSearchParams } from "next/navigation"
 import RequireAuth from "@/components/RequireAuth"
 import StockSignalSummaryPanel from "@/components/StockSignalSummaryPanel"
 import StockWatchlistTradeQualityPanel from "@/components/StockWatchlistTradeQualityPanel"
 import WatchlistAddButton from "@/components/WatchlistAddButton"
+import StockChartDialog from "@/components/StockChartDialog"
 import { Skeleton } from "@/components/ui/skeleton"
 
 const FINANCIALS_TOGGLE_STORAGE_KEY = "always-stock:show-financials-panel"
 
-// Lazy load ECharts-heavy components — excluded from initial bundle
-const StockChart = dynamic(() => import("@/components/StockChart"), {
-  ssr: false,
-  loading: () => (
-    <div className="flex flex-col gap-4">
-      <Skeleton className="h-8 w-64" />
-      <Skeleton className="h-[70vh] min-h-[500px] w-full rounded-lg" />
-    </div>
-  ),
-})
+// 2026-07-14：K 線圖全站改 popup（StockChartDialog，固定近 6 個月）；
+// 常駐 StockChart 與 chart_days URL param / 回測 dateRange 連動一併移除。
+// FinancialsPanel 原本跟著 K 線天數連動，現固定以 180 天（≈ 6 個月）為基準。
+const FINANCIALS_CHART_DAYS = 180
 
 const FinancialsPanel = dynamic(() => import("@/components/FinancialsPanel"), {
   ssr: false,
@@ -115,42 +110,12 @@ function Sidebar({
 
 // ── Main content ───────────────────────────────────────────────────────────
 
-const DEFAULT_CHART_DAYS = 90
-
 function StockContent({ stockId }: { stockId: string }) {
-  const router = useRouter()
-  const pathname = usePathname()
   const searchParams = useSearchParams()
   const date = searchParams.get("date") ?? undefined
 
-  // Read date range passed back from L3
-  const backtestStart = searchParams.get("start") ?? undefined
-  const backtestEnd = searchParams.get("end") ?? undefined
-  const externalDateRange = useMemo(
-    () => (backtestStart && backtestEnd ? { start: backtestStart, end: backtestEnd } : null),
-    [backtestStart, backtestEnd],
-  )
-
-  // K 線天數由 URL 驅動（?chart_days=N），預設 90 不寫進 URL
-  const chartDaysParam = searchParams.get("chart_days")
-  const chartDays = useMemo(() => {
-    const parsed = chartDaysParam ? Number(chartDaysParam) : NaN
-    return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : DEFAULT_CHART_DAYS
-  }, [chartDaysParam])
-
-  const handleChartDaysChange = useCallback(
-    (next: number) => {
-      const params = new URLSearchParams(searchParams.toString())
-      if (next === DEFAULT_CHART_DAYS) {
-        params.delete("chart_days")
-      } else {
-        params.set("chart_days", String(next))
-      }
-      const queryString = params.toString()
-      router.replace(queryString ? `${pathname}?${queryString}` : pathname, { scroll: false })
-    },
-    [pathname, router, searchParams],
-  )
+  // K 線圖 popup 開關（全站 K 線一律走 StockChartDialog）
+  const [chartOpen, setChartOpen] = useState(false)
 
   const [showFinancialsPanel, setShowFinancialsPanel] = useState(() =>
     readStoredToggle(FINANCIALS_TOGGLE_STORAGE_KEY, true),
@@ -187,29 +152,32 @@ function StockContent({ stockId }: { stockId: string }) {
             <h1 className="text-xl font-semibold tracking-tight text-slate-100">
               <span className="font-mono text-slate-400 mr-2">{stockId}</span>
             </h1>
-            <WatchlistAddButton stockId={stockId} />
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setChartOpen(true)}
+                className="rounded border border-sky-500/50 bg-sky-500/10 px-3 py-1.5 text-sm font-medium text-sky-200 hover:bg-sky-500/20"
+              >
+                K線圖（近 6 個月）
+              </button>
+              <WatchlistAddButton stockId={stockId} />
+            </div>
           </div>
 
-          <StockSignalSummaryPanel stockId={stockId} />
+          <StockSignalSummaryPanel stockId={stockId} onOpenChart={() => setChartOpen(true)} />
 
           <StockWatchlistTradeQualityPanel stockId={stockId} />
 
-          <div id="stock-chart">
-            <StockChart
-              stockId={stockId}
-              defaultDate={date}
-              days={chartDays}
-              onDaysChange={handleChartDaysChange}
-              selectedBroker={null}
-              dateRange={externalDateRange}
-            />
-          </div>
-
           {showFinancialsPanel && (
-            <FinancialsPanel stockId={stockId} chartDays={chartDays} />
+            <FinancialsPanel stockId={stockId} chartDays={FINANCIALS_CHART_DAYS} />
           )}
         </div>
       </main>
+
+      <StockChartDialog
+        stockId={chartOpen ? stockId : null}
+        onClose={() => setChartOpen(false)}
+      />
     </div>
   )
 }

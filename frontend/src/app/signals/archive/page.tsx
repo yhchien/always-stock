@@ -5,6 +5,8 @@ import { Suspense, useCallback, useEffect, useMemo, useState, type ReactNode } f
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { Dialog } from "@base-ui/react/dialog"
 
+import StockChartDialog from "@/components/StockChartDialog"
+
 import {
   fetchCompletedSignalArchive,
   fetchSignalArchive,
@@ -257,12 +259,15 @@ function StockDetailDialog({
   detailLoading,
   detailError,
   onClose,
+  onOpenChart,
 }: {
   item: SignalArchiveSummaryItem | null
   detail: SignalArchiveDetailResponse | null
   detailLoading: boolean
   detailError: string | null
   onClose: () => void
+  /** K 線圖改 popup（StockChartDialog）：點擊時疊在本 popup 之上開啟 */
+  onOpenChart: (stockId: string, stockName?: string | null) => void
 }) {
   const hitPeak =
     item != null && (item.max_positive_return_pct ?? -Infinity) >= PEAK_MILESTONE_PCT
@@ -360,11 +365,18 @@ function StockDetailDialog({
               </div>
 
               <div className="flex flex-wrap gap-2 border-t border-slate-800 pt-3">
-                <Link
-                  href={`/stocks/${encodeURIComponent(item.stock_id)}`}
+                <button
+                  type="button"
+                  onClick={() => onOpenChart(item.stock_id, item.stock_name)}
                   className="rounded border border-sky-500/50 bg-sky-500/10 px-2 py-1 text-xs text-sky-200 hover:bg-sky-500/20"
                 >
                   K線圖
+                </button>
+                <Link
+                  href={`/stocks/${encodeURIComponent(item.stock_id)}`}
+                  className="rounded border border-slate-600 bg-slate-800/50 px-2 py-1 text-xs text-slate-300 hover:bg-slate-700"
+                >
+                  個股頁 →
                 </Link>
               </div>
 
@@ -459,6 +471,8 @@ function SignalArchiveContent() {
   const [completedSummary, setCompletedSummary] = useState<SignalArchiveCompletedResponse | null>(null)
   // popup 展開的股票（null = 關閉）；detail 內容依此 fetch
   const [popupStockId, setPopupStockId] = useState<string | null>(null)
+  // K 線圖 popup（StockChartDialog）；可從詳情 popup 或紀錄卡片開啟
+  const [chartStock, setChartStock] = useState<{ stockId: string; stockName?: string | null } | null>(null)
   const [detail, setDetail] = useState<SignalArchiveDetailResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [completedLoading, setCompletedLoading] = useState(true)
@@ -1010,12 +1024,13 @@ function SignalArchiveContent() {
                           {item.completed_trade_date}
                         </span>
                       </div>
-                      <Link
-                        href={`/stocks/${encodeURIComponent(item.stock_id)}`}
+                      <button
+                        type="button"
+                        onClick={() => setChartStock({ stockId: item.stock_id, stockName: item.stock_name })}
                         className="rounded border border-sky-500/50 bg-sky-500/10 px-2 py-1 text-xs text-sky-200 hover:bg-sky-500/20"
                       >
                         K線圖
-                      </Link>
+                      </button>
                     </div>
                   </article>
                 )
@@ -1033,6 +1048,13 @@ function SignalArchiveContent() {
         detailLoading={detailLoading}
         detailError={detailError}
         onClose={() => setPopupStockId(null)}
+        onOpenChart={(stockId, stockName) => setChartStock({ stockId, stockName })}
+      />
+
+      <StockChartDialog
+        stockId={chartStock?.stockId ?? null}
+        stockName={chartStock?.stockName}
+        onClose={() => setChartStock(null)}
       />
     </main>
   )

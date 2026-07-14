@@ -1,40 +1,23 @@
 "use client"
 
-import { Suspense, use, useCallback, useState } from "react"
+import { Suspense, use, useState } from "react"
 import { useSearchParams, useRouter } from "next/navigation"
-import dynamic from "next/dynamic"
 import RequireAuth from "@/components/RequireAuth"
-import { Skeleton } from "@/components/ui/skeleton"
 import BacktestPanel from "@/components/BacktestPanel"
+import StockChartDialog from "@/components/StockChartDialog"
 
-const StockChart = dynamic(() => import("@/components/StockChart"), {
-  ssr: false,
-  loading: () => (
-    <div className="flex flex-col gap-4 p-4">
-      <Skeleton className="h-8 w-48" />
-      <Skeleton className="h-[70vh] min-h-[500px] w-full rounded-lg" />
-    </div>
-  ),
-})
+// 2026-07-14：K 線圖全站改 popup（StockChartDialog，固定近 6 個月）；
+// 回測頁不再常駐 StockChart，也不再把回測區間帶回 L2（?start=&end= 已無圖可套用）。
 
 function BacktestContent({ stockId }: { stockId: string }) {
   const searchParams = useSearchParams()
   const router = useRouter()
   const date = searchParams.get("date") ?? undefined
-  const [backtestRange, setBacktestRange] = useState<{ start: string; end: string } | null>(null)
-
-  const handleDateRangeChange = useCallback((start: string, end: string) => {
-    setBacktestRange({ start, end })
-  }, [])
+  const [chartOpen, setChartOpen] = useState(false)
 
   const handleBack = () => {
-    // Navigate back to L2 with backtest date range in URL
     const params = new URLSearchParams()
     if (date) params.set("date", date)
-    if (backtestRange) {
-      params.set("start", backtestRange.start)
-      params.set("end", backtestRange.end)
-    }
     const qs = params.toString()
     router.push(`/stocks/${stockId}${qs ? `?${qs}` : ""}`)
   }
@@ -52,21 +35,23 @@ function BacktestContent({ stockId }: { stockId: string }) {
         </button>
         <span className="text-slate-700 select-none">|</span>
         <h1 className="text-sm font-semibold text-slate-200">回測程式</h1>
+        <button
+          type="button"
+          onClick={() => setChartOpen(true)}
+          className="ml-auto rounded border border-sky-500/50 bg-sky-500/10 px-2.5 py-1 text-xs font-medium text-sky-200 hover:bg-sky-500/20"
+        >
+          K線圖（近 6 個月）
+        </button>
       </div>
 
-      {/* Single-column content: chart on top, backtest panel below */}
-      <div className="flex flex-1 flex-col bg-slate-950">
-        <div className="border-b border-slate-800">
-          <StockChart
-            stockId={stockId}
-            defaultDate={date}
-            dateRange={backtestRange}
-          />
-        </div>
-        <div className="flex-1">
-          <BacktestPanel stockId={stockId} onDateRangeChange={handleDateRangeChange} />
-        </div>
+      <div className="flex-1">
+        <BacktestPanel stockId={stockId} />
       </div>
+
+      <StockChartDialog
+        stockId={chartOpen ? stockId : null}
+        onClose={() => setChartOpen(false)}
+      />
     </div>
   )
 }
