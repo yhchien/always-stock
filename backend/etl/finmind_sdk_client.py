@@ -241,6 +241,16 @@ class FinMindSDKClient:
             "TaiwanStockMarginPurchaseShortSale", start_date, end_date
         )
 
+    def fetch_shareholding_dataset(
+        self,
+        start_date: str,
+        end_date: str,
+    ) -> Any:
+        """全市場外資持股 / 發行股數（1 quota；**只回 start_date 當日**，同 margin）"""
+        return self._fetch_dataset_for_range(
+            "TaiwanStockShareholding", start_date, end_date
+        )
+
     def fetch_taiwan_stock_price(
         self,
         stock_id_list: List[str],

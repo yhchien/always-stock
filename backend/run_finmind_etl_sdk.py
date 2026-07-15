@@ -192,6 +192,7 @@ class FinMindETLOrchestratorSDK:
         from etl.finmind_financial_statement_sdk import fetch_and_upsert_financial_statement_sdk
         from etl.finmind_broker_trade_sdk import fetch_and_upsert_broker_trade_agg_sdk
         from etl.finmind_margin_trade_sdk import fetch_and_upsert_margin_trade_finmind_sdk
+        from etl.finmind_shareholding_sdk import fetch_and_upsert_shareholding_sdk
         from etl.aggregate_industry_flow import aggregate_industry_flow
 
         if db is None:
@@ -207,7 +208,7 @@ class FinMindETLOrchestratorSDK:
         # per-stock 計費，未來有配額壓力時可考慮比照 broker_trade_agg 拔出。
         DEFAULT_STEPS = ["stocks_master", "daily_price", "inst_flow", "industry_flow",
                          "daily_valuation", "monthly_revenue", "financial_statement",
-                         "margin_trade"]
+                         "margin_trade", "shareholding"]
         ALL_STEPS = DEFAULT_STEPS + ["broker_trade_agg"]
         active_steps = set(steps) if steps else set(DEFAULT_STEPS)
 
@@ -423,6 +424,26 @@ class FinMindETLOrchestratorSDK:
                 logger.info("\n[7/8] Margin trade: skipped")
                 result["results"]["margin_trade"] = {"status": "skipped"}
 
+            # 8. 發行股數 / 外資持股比（fishtail momentum：市值分母，non-CRITICAL）
+            #    dataset-level 只回 start_date 當日（同 margin），單日 1 quota
+            if "shareholding" in active_steps and not holiday_detected:
+                logger.info("\n[8/8] Fetching shareholding (FinMind)...")
+                try:
+                    sh_result = fetch_and_upsert_shareholding_sdk(
+                        db, stock_ids, start_date, end_date, self.client
+                    )
+                    result["results"]["shareholding"] = sh_result
+                    logger.info(f"✓ Shareholding: {sh_result['status']}")
+                except Exception as e:
+                    logger.error(f"✗ Shareholding ETL failed: {e}")
+                    result["results"]["shareholding"] = {"status": "error", "error": str(e)}
+            elif "shareholding" in active_steps:
+                logger.info("\n[8/8] Shareholding: skipped (non-trading day)")
+                result["results"]["shareholding"] = {"status": "skipped_holiday"}
+            else:
+                logger.info("\n[8/8] Shareholding: skipped")
+                result["results"]["shareholding"] = {"status": "skipped"}
+
             # 判定整體狀態
             # 核心步驟失敗（price / inst_flow）→ error (exit 3)
             # 次要步驟失敗（valuation / revenue / financial / broker）→ partial (exit 1)
@@ -496,7 +517,7 @@ def main():
             "只執行指定步驟，逗號分隔（預設全部）。"
             "可選：stocks_master,daily_price,inst_flow,industry_flow,"
             "daily_valuation,monthly_revenue,financial_statement,broker_trade_agg,"
-            "margin_trade"
+            "margin_trade,shareholding"
         )
     )
     parser.add_argument(

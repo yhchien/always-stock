@@ -5,10 +5,11 @@
 1. `compute_market_momentum_frame`：全市場（active、非 ETF / 金融 / 黑名單）
    近 66 個交易日的價格動能 / 相對強度 / 排名改善 / 法人買超佔成交比特徵。
    percentile 一律 0~100、越高越強；樣本不足時回 None（不硬給 50）。
-2. `select_momentum_candidates`：候選池 B（價格動能）/ C（動能加速）兩通道。
+2. `select_momentum_candidates`：候選池 B（價格動能）/ C（動能加速）/
+   D（基本面動能，2026-07-15 第二輪上線）三通道。
 3. `compute_momentum_score`：deterministic 0~100 分數（percentile-based），
    權重 = 價格動能 30 / 相對強度 25 / 法人資金 20 / 量價品質 15 / 基本面動能 10
-   （v2.1 基本面尚未接 announcement_date，固定 0 分）+ 風險扣分。
+   + 風險扣分。基本面用 `revenue_available_date`（次月 10 日）當可用日 gate。
 
 設計原則（spec §2）：
 - deterministic、可測試、可落 snapshot；嚴禁未來函數（只用 target_date 及以前資料）
@@ -19,13 +20,19 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 from typing import Any, Dict, List, Optional, Sequence, Set
 
 from sqlalchemy.orm import Session
 
 from app.hot_money_service import get_recent_trade_dates
-from app.models import DailyPrice, InstStockFlow, StockMaster
+from app.models import (
+    DailyPrice,
+    InstStockFlow,
+    MonthlyRevenue,
+    StockMaster,
+    StockSharesOutstanding,
+)
 from app.signals.exclusions import should_exclude
 
 logger = logging.getLogger(__name__)
@@ -49,9 +56,17 @@ CHANNEL_B_RETURN_60D_PERCENTILE_MIN = 85.0
 CHANNEL_C_RANK_IMPROVEMENT_MIN = 200
 CHANNEL_C_RS_MARKET_MIN = 70.0
 
+# spec §6.1 D 基本面動能候選門檻（2026-07-15 第二輪接上；available_date 規則見下）
+CHANNEL_D_YOY_MIN = 15.0                  # revenue_yoy > 15 且連兩月加速
+CHANNEL_D_INDUSTRY_YOY_PERCENTILE_MIN = 80.0
+
 # 通道上限（spec 未定；工程決策避免 percentile>=85 一次灌 200+ 檔爆掉 POOL_HARD_LIMIT）
 CHANNEL_B_LIMIT = 40
 CHANNEL_C_LIMIT = 20
+CHANNEL_D_LIMIT = 20
+
+# 月營收回看：算 yoy 加速需 3 個「可用」月份，保守抓 6 個月的 revenue_month
+_REVENUE_LOOKBACK_DAYS = 200
 
 # spec §6.2 momentum_score 權重
 _W_PRICE = 30.0
@@ -100,7 +115,38 @@ def empty_momentum_features() -> Dict[str, Any]:
         "institution_net_buy_amount_2d": None,
         "institution_buy_to_turnover_2d": None,
         "inst_buy_to_turnover_percentile_2d": None,
+        # 市值（2026-07-15 第二輪：stock_shares_outstanding 上線後可算；
+        # 目前只出欄位不進 momentum_score，spec §6.1 A 的延後項）
+        "shares_issued": None,
+        "market_cap": None,
+        "institution_buy_to_market_cap_2d": None,
+        # 基本面動能（spec §6.1 D；只用 available_date <= target_date 的月份，無資料穿越）
+        "revenue_yoy": None,
+        "revenue_mom": None,
+        "revenue_yoy_acceleration": None,
+        "revenue_yoy_accel_2m": False,
+        "revenue_yoy_turned_positive": False,
+        "revenue_yoy_percentile": None,
+        "revenue_yoy_industry_percentile": None,
+        "revenue_month_used": None,  # ISO string，audit 用
     }
+
+
+def revenue_available_date(revenue_month: date) -> date:
+    """月營收的保守「可用日」：**次月 10 日**。
+
+    台灣上市櫃規定每月 10 日前公告上月營收；DB `monthly_revenue` 沒有真實公告日，
+    用法規截止日當 deterministic 下界 → 任何 target_date 只能看到
+    `available_date <= target_date` 的月份，保證無資料穿越（spec §9.4）。
+    注意：`ingested_at` 不可當 proxy（歷史 backfill 的 ingested_at 是回補時間）。
+
+    `revenue_month` 依 DB 慣例為「該月最後一天」（如 2026-06-30）→ 回 2026-07-10。
+    """
+    y, m = revenue_month.year, revenue_month.month
+    m += 1
+    if m > 12:
+        y, m = y + 1, 1
+    return date(y, m, 10)
 
 
 # ---------- Frame：全市場動能特徵 ----------
@@ -180,6 +226,12 @@ def compute_market_momentum_frame(
     # 法人 2 日買超佔成交比
     _attach_institution_turnover(db, frame, trade_dates[-2:], turnover_2d_by_stock)
 
+    # 市值 + 法人買超佔市值比（stock_shares_outstanding 有資料才算，缺則 None）
+    _attach_market_cap(db, frame, target_date)
+
+    # 基本面動能（月營收；available_date gate 防資料穿越）
+    _attach_fundamental_features(db, frame, target_date, masters)
+
     return frame
 
 
@@ -194,6 +246,8 @@ def _price_features(closes: List[float], volumes: List[float]) -> Dict[str, Any]
         if n < days + 1 or not closes[-(days + 1)]:
             return None
         return (close / closes[-(days + 1)] - 1.0) * 100.0
+
+    out["_close"] = close  # 內部用（市值計算）；merge 進候選池時被過濾
 
     out["return_5d"] = _ret(5)
     out["return_20d"] = _ret(20)
@@ -402,6 +456,139 @@ def _attach_institution_turnover(
         frame[sid]["inst_buy_to_turnover_percentile_2d"] = p
 
 
+# 發行股數快照回看窗：資料為每日快照，停牌 / 缺日時往回找最近一筆
+_SHARES_LOOKBACK_DAYS = 10
+
+
+def _attach_market_cap(
+    db: Session,
+    frame: Dict[str, Dict[str, Any]],
+    target_date: date,
+) -> None:
+    """市值 = 最近一筆（<= target_date）shares_issued × 當日收盤；
+    institution_buy_to_market_cap_2d = 2 日法人買超金額 / 市值。
+
+    stock_shares_outstanding 無資料（表剛上線 / 新股）→ 三欄維持 None；
+    momentum_score **不吃**這些欄位（spec §6.1 A 延後項，先出欄位供觀察與回測）。
+    """
+    start = target_date - timedelta(days=_SHARES_LOOKBACK_DAYS)
+    rows = (
+        db.query(
+            StockSharesOutstanding.stock_id,
+            StockSharesOutstanding.trade_date,
+            StockSharesOutstanding.shares_issued,
+        )
+        .filter(
+            StockSharesOutstanding.trade_date <= target_date,
+            StockSharesOutstanding.trade_date >= start,
+            StockSharesOutstanding.shares_issued.isnot(None),
+        )
+        .all()
+    )
+    latest_by_stock: Dict[str, Any] = {}
+    for sid, td, shares in rows:
+        if sid not in frame:
+            continue
+        prev = latest_by_stock.get(sid)
+        if prev is None or td > prev[0]:
+            latest_by_stock[sid] = (td, shares)
+
+    for sid, (td, shares) in latest_by_stock.items():
+        feats = frame[sid]
+        close = feats.get("_close")
+        feats["shares_issued"] = int(shares)
+        if close is None or close <= 0:
+            continue
+        market_cap = float(shares) * float(close)
+        feats["market_cap"] = market_cap
+        flow_2d = feats.get("institution_net_buy_amount_2d")
+        if flow_2d is not None and market_cap > 0:
+            feats["institution_buy_to_market_cap_2d"] = float(flow_2d) / market_cap
+
+
+def _attach_fundamental_features(
+    db: Session,
+    frame: Dict[str, Dict[str, Any]],
+    target_date: date,
+    masters: Dict[str, StockMaster],
+) -> None:
+    """月營收動能特徵（spec §6.1 D）。
+
+    只用 `revenue_available_date(revenue_month) <= target_date` 的月份
+    （= 次月 10 日後才可見），取每檔「最新可用月 M」：
+      - revenue_yoy / revenue_mom：M 的年增 / 月增率（DB 已算好）
+      - revenue_yoy_acceleration：yoy(M) - yoy(M-1)
+      - revenue_yoy_accel_2m：連兩月加速（yoy(M)>yoy(M-1)>yoy(M-2)）
+      - revenue_yoy_turned_positive：yoy(M) > 0 且 yoy(M-1) <= 0
+      - revenue_yoy_percentile / revenue_yoy_industry_percentile：
+        yoy(M) 的全市場 / 產業內 percentile（樣本 guard 同價格特徵）
+    """
+    start = target_date - timedelta(days=_REVENUE_LOOKBACK_DAYS)
+    rows = (
+        db.query(
+            MonthlyRevenue.stock_id,
+            MonthlyRevenue.revenue_month,
+            MonthlyRevenue.yoy_pct,
+            MonthlyRevenue.mom_pct,
+        )
+        .filter(MonthlyRevenue.revenue_month >= start)
+        .all()
+    )
+
+    by_stock: Dict[str, List[Any]] = {}
+    for row in rows:
+        if row.stock_id not in frame:
+            continue
+        if revenue_available_date(row.revenue_month) > target_date:
+            continue  # 尚未公告（法規截止日前）→ 對 target_date 不可見
+        by_stock.setdefault(row.stock_id, []).append(row)
+
+    yoy_by_id: Dict[str, float] = {}
+    for sid, stock_rows in by_stock.items():
+        stock_rows.sort(key=lambda r: r.revenue_month)
+        latest = stock_rows[-1]
+        feats = frame[sid]
+        feats["revenue_month_used"] = latest.revenue_month.isoformat()
+        feats["revenue_yoy"] = latest.yoy_pct
+        feats["revenue_mom"] = latest.mom_pct
+
+        yoys = [r.yoy_pct for r in stock_rows]
+        if len(yoys) >= 2 and yoys[-1] is not None and yoys[-2] is not None:
+            feats["revenue_yoy_acceleration"] = yoys[-1] - yoys[-2]
+            feats["revenue_yoy_turned_positive"] = yoys[-1] > 0 and yoys[-2] <= 0
+        if (
+            len(yoys) >= 3
+            and yoys[-1] is not None
+            and yoys[-2] is not None
+            and yoys[-3] is not None
+        ):
+            feats["revenue_yoy_accel_2m"] = (
+                yoys[-1] > yoys[-2] and yoys[-2] > yoys[-3]
+            )
+        if latest.yoy_pct is not None:
+            yoy_by_id[sid] = float(latest.yoy_pct)
+
+    # 全市場 percentile
+    if len(yoy_by_id) >= MIN_SAMPLES_FOR_PERCENTILE:
+        pct = _percentile_map(yoy_by_id)
+        for sid, p in pct.items():
+            frame[sid]["revenue_yoy_percentile"] = p
+
+    # 產業內 percentile
+    by_industry: Dict[str, Dict[str, float]] = {}
+    for sid, yoy in yoy_by_id.items():
+        master = masters.get(sid)
+        if master is None or not master.industry_name:
+            continue
+        by_industry.setdefault(master.industry_name, {})[sid] = yoy
+    for members in by_industry.values():
+        if len(members) < MIN_INDUSTRY_MEMBERS_FOR_PERCENTILE:
+            continue
+        pct = _percentile_map(members)
+        for sid, p in pct.items():
+            frame[sid]["revenue_yoy_industry_percentile"] = p
+
+
 def _median(values: List[float]) -> float:
     ordered = sorted(values)
     n = len(ordered)
@@ -419,16 +606,19 @@ def select_momentum_candidates(
 ) -> Dict[str, List[str]]:
     """spec §6.1 B（價格動能）/ C（動能加速）兩通道候選。
 
-    回傳 {"price_momentum": [...], "acceleration": [...]}；
+    回傳 {"price_momentum": [...], "acceleration": [...], "fundamental": [...]}；
     各通道有上限（依強度排序取前 N），避免 percentile 門檻在大 universe 一次灌爆候選池。
     """
     b_matches: List[str] = []
     c_matches: List[str] = []
+    d_matches: List[str] = []
     for sid, feats in frame.items():
         if _is_price_momentum_candidate(feats):
             b_matches.append(sid)
         if _is_acceleration_candidate(feats):
             c_matches.append(sid)
+        if _is_fundamental_candidate(feats):
+            d_matches.append(sid)
 
     b_matches.sort(
         key=lambda sid: (
@@ -440,9 +630,13 @@ def select_momentum_candidates(
     c_matches.sort(
         key=lambda sid: (-(frame[sid].get("rs_rank_improvement_5d") or 0), sid)
     )
+    d_matches.sort(
+        key=lambda sid: (-(frame[sid].get("revenue_yoy") or 0.0), sid)
+    )
     return {
         "price_momentum": b_matches[:CHANNEL_B_LIMIT],
         "acceleration": c_matches[:CHANNEL_C_LIMIT],
+        "fundamental": d_matches[:CHANNEL_D_LIMIT],
     }
 
 
@@ -485,6 +679,22 @@ def _is_acceleration_candidate(feats: Dict[str, Any]) -> bool:
     )
 
 
+def _is_fundamental_candidate(feats: Dict[str, Any]) -> bool:
+    """spec §6.1 D：三條件任一成立即候選（資料已過 available_date gate）。"""
+    yoy = feats.get("revenue_yoy")
+    # 1) yoy > 15% 且連兩月加速
+    if yoy is not None and yoy > CHANNEL_D_YOY_MIN and feats.get("revenue_yoy_accel_2m"):
+        return True
+    # 2) yoy 由負轉正
+    if feats.get("revenue_yoy_turned_positive"):
+        return True
+    # 3) 產業內 yoy percentile >= 80
+    ind_pct = feats.get("revenue_yoy_industry_percentile")
+    if ind_pct is not None and ind_pct >= CHANNEL_D_INDUSTRY_YOY_PERCENTILE_MIN:
+        return True
+    return False
+
+
 # ---------- momentum_score ----------
 
 
@@ -518,7 +728,19 @@ def compute_momentum_score(candidate: Dict[str, Any]) -> Dict[str, Any]:
     vol_pct = candidate.get("volume_ratio_percentile_5d_60d")
     volume_score = _W_VOLUME * ((vol_pct / 100.0) if vol_pct is not None else 0.0)
 
-    fundamental_score = 0.0  # v2.1：monthly_revenue 無 announcement_date，不接主流程（spec §9.4）
+    # 基本面動能 10 分（2026-07-15 第二輪啟用；available_date gate 已在 frame 層擋掉未公告月份）
+    # 無月營收 percentile（金控子公司未申報 / 新上市 / 樣本不足）→ 子分數缺席（None，貢獻 0）
+    fund_pct = candidate.get("revenue_yoy_percentile")
+    fundamental_component: Optional[float] = None
+    if fund_pct is not None:
+        fundamental_component = 0.6 * (float(fund_pct) / 100.0)
+        accel = candidate.get("revenue_yoy_acceleration")
+        if accel is not None and accel > 0:
+            fundamental_component += 0.2
+        rev_mom = candidate.get("revenue_mom")
+        if rev_mom is not None and rev_mom > 0:
+            fundamental_component += 0.2
+    fundamental_score = _W_FUNDAMENTAL * (fundamental_component if fundamental_component is not None else 0.0)
 
     penalty = 0.0
     penalty_reasons: List[str] = []
@@ -544,7 +766,7 @@ def compute_momentum_score(candidate: Dict[str, Any]) -> Dict[str, Any]:
             "relative_strength": round(rs_score, 1),
             "institution": round(inst_score, 1),
             "volume_quality": round(volume_score, 1),
-            "fundamental": None,  # v2.1 未接（announcement_date 缺）
+            "fundamental": round(fundamental_score, 1) if fundamental_component is not None else None,
             "risk_penalty": round(penalty, 1),
             "penalty_reasons": penalty_reasons,
         },
@@ -616,4 +838,8 @@ def build_signal_metrics(
         "momentum_score_detail": candidate.get("momentum_score_detail"),
         "market_regime_detail": regime_detail,
         "breadth_score": None,  # v2.2
+        # 基本面動能（2026-07-15 第二輪；available_date gate 後的可見值）
+        "revenue_yoy": candidate.get("revenue_yoy"),
+        "revenue_yoy_acceleration": candidate.get("revenue_yoy_acceleration"),
+        "revenue_month_used": candidate.get("revenue_month_used"),
     }

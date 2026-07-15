@@ -172,6 +172,7 @@ def _ensure_m23_tables() -> None:
         SignalSnapshot,
         SignalWatchCompletedArchive,
         SignalWatchHit,
+        StockSharesOutstanding,
     )
 
     try:
@@ -184,6 +185,7 @@ def _ensure_m23_tables() -> None:
                 SignalSnapshot.__table__,
                 SignalWatchCompletedArchive.__table__,
                 SignalWatchHit.__table__,
+                StockSharesOutstanding.__table__,
             ],
         )
     except Exception:

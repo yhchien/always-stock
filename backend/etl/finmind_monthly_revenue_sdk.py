@@ -6,7 +6,7 @@ FinMind ETL：月營收抓取 (SDK 版本)
 """
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 from typing import Dict, Any
 
 from sqlalchemy.orm import Session
@@ -16,6 +16,39 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 BULK_BATCH_SIZE = 1000
+
+# 2026-07-15 根因修正（兩層）：
+# 1) FinMind TaiwanStockMonthRevenue 把「N 月營收」全部掛在「N+1 月 1 號」這一個
+#    date key 上（例：6 月營收 2316 檔全是 date=2026-07-01），且公司是次月上旬陸續
+#    公告、FinMind 陸續補進同一個 date key。
+# 2) 該 dataset 的 v4 dataset-level fetch **只回 start_date 當日資料**（實測
+#    2026-01-01~2026-04-01 只回 date=2026-01-01 的 2282 筆；與 margin_trade 同款）。
+# 舊版 daily ETL 用 start=end=target_date 單日抓 → 只有「每月 1 號恰為交易日且
+# ETL 成功」才抓得到，而且只抓到當天已公告的少數公司，之後永遠不回補
+# （症狀：2026-04~06 全空、02/03 只有 ~837 檔）。
+# 修法：從 start_date 回看 45 天起算，對範圍內**每個「月 1 號」date key 各打一次**
+# （start=end=該 key），每日重抓 + upsert 冪等 → 公告陸續進來每天自動補齊。
+# daily 模式 = 2 個 key = 2 quota/日，成本可忽略。
+FETCH_LOOKBACK_DAYS = 45
+
+
+def _month_first_days_between(start: date, end: date) -> list:
+    """回傳 [start, end] 區間內所有「月 1 號」（升序）。"""
+    keys = []
+    y, m = start.year, start.month
+    # 從 start 所在月的次月 1 號開始（若 start 本身是 1 號則含當月）
+    if start.day != 1:
+        m += 1
+        if m > 12:
+            y, m = y + 1, 1
+    cur = date(y, m, 1)
+    while cur <= end:
+        keys.append(cur)
+        m += 1
+        if m > 12:
+            y, m = y + 1, 1
+        cur = date(y, m, 1)
+    return keys
 
 
 def _to_month_end(value: Any) -> date:
@@ -88,7 +121,7 @@ def fetch_and_upsert_monthly_revenue_sdk(
     從 FinMind SDK 批量抓取月營收並以 bulk upsert 寫入 DB。
 
     FinMind 月營收欄位：
-      date        - 公告日期
+      date        - 營收次月 1 號（整月所有公司掛同一天；**不是**公告日）
       stock_id
       country
       revenue     - 月營收（千元）
@@ -110,10 +143,20 @@ def fetch_and_upsert_monthly_revenue_sdk(
     )
 
     try:
-        df = client.fetch_month_revenue_dataset(
-            start_date=start_date.strftime("%Y-%m-%d"),
-            end_date=end_date.strftime("%Y-%m-%d"),
-        )
+        # 逐「月 1 號」date key 呼叫：見檔頭 FETCH_LOOKBACK_DAYS 註解
+        # （dataset-level 只回 start_date 當日 + 公告陸續補進同一 key）
+        fetch_start = start_date - timedelta(days=FETCH_LOOKBACK_DAYS)
+        month_keys = _month_first_days_between(fetch_start, end_date)
+        frames = []
+        for key in month_keys:
+            key_str = key.strftime("%Y-%m-%d")
+            df_key = client.fetch_month_revenue_dataset(
+                start_date=key_str,
+                end_date=key_str,
+            )
+            if df_key is not None and not df_key.empty:
+                frames.append(df_key)
+        df = pd.concat(frames, ignore_index=True) if frames else None
 
         # dataset-level 回的是全市場，先過濾到 stocks_master
         if df is not None and not df.empty and stock_ids:

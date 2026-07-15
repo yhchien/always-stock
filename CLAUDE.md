@@ -1,5 +1,35 @@
 # always-stock 專案記憶
 
+## 魚尾 v2.2 資料前置：營收 ETL 修復 + 基本面動能 D 通道 + 市值 ETL（2026-07-15 第二輪）
+
+### monthly_revenue ETL 缺口修復（根因兩層）
+- **症狀**：monthly_revenue 最新只到 2026-03、04~06 全空、02/03 只有 ~837 檔（正常 ~1075）
+- **根因 1**：FinMind `TaiwanStockMonthRevenue` 把「N 月營收」**全部掛在「N+1 月 1 號」單一 date key**（6 月營收 2316 檔全是 date=2026-07-01；date **不是**公告日），且公司次月上旬陸續公告、FinMind 陸續補進同一個 key
+- **根因 2**：該 dataset 的 v4 **dataset-level fetch 只回 start_date 當日資料**（實測 2026-01-01~04-01 只回 date=1/1 的 2282 筆；與 margin_trade 同款陷阱）
+- 舊 daily ETL 用 start=end=target_date 單日抓 → 只有「每月 1 號恰為交易日且 ETL 成功」抓得到、且只抓到當天已公告的少數公司，之後永遠不回補
+- **修法**（[backend/etl/finmind_monthly_revenue_sdk.py](backend/etl/finmind_monthly_revenue_sdk.py)）：從 start_date 回看 45 天，對範圍內**每個「月 1 號」key 各打一次**（start=end=key）；daily 模式 = 2 key = 2 quota/日；每日重抓 + upsert 冪等 → 公告陸續自動補齊。helper `_month_first_days_between` + regression test 鎖行為
+- **回補已執行**：remote 2026-01~06 每月 1072~1083 檔、yoy/mom 100% 有值
+
+### 基本面動能 D 通道上線（spec §6.1 D）
+- **available_date 規則**（[momentum.py](backend/app/signals/momentum.py) `revenue_available_date`）：**revenue_month 次月 10 日**（台灣法規公告截止日）；不加 DB 欄位、不改 ETL。frame 只吃 `available_date <= target_date` 的月份 → 無資料穿越。**`ingested_at` 不可當 proxy**（backfill 的 ingested_at 是回補時間）
+- frame 新欄位：revenue_yoy / revenue_mom / revenue_yoy_acceleration / revenue_yoy_accel_2m / revenue_yoy_turned_positive / revenue_yoy_percentile / revenue_yoy_industry_percentile / revenue_month_used（audit）
+- D 通道條件（任一）：yoy > 15 且連兩月加速 / yoy 由負轉正 / 產業內 yoy percentile >= 80；**上限 CHANNEL_D_LIMIT=20**；候選 flag `in_fundamental_pool`
+- momentum_score 基本面 10 分啟用：`10 × (0.6 × yoy_percentile/100 + 0.2 × 加速為正 + 0.2 × mom 為正)`；無營收資料 → detail.fundamental=None（貢獻 0）
+- signal_metrics 增存 revenue_yoy / revenue_yoy_acceleration / revenue_month_used
+
+### 發行股數 / 市值 ETL（spec §4.2 institution_buy_to_market_cap 前置）
+- **資料源**：FinMind `TaiwanStockShareholding` 的 `NumberOfSharesIssued`（dataset-level 單日全市場 2357 檔、1 quota/日；**只回 start_date 當日**，同 margin_trade）
+- 新表 `stock_shares_outstanding (trade_date, stock_id, shares_issued, foreign_shares_ratio)`（[models.py](backend/app/models.py)；`_ensure_m23_tables` lifespan 自動建）
+- 新 ETL：[backend/etl/finmind_shareholding_sdk.py](backend/etl/finmind_shareholding_sdk.py)（鏡像 margin 模組；多日 backfill 逐 daily_price 交易日呼叫）+ client `fetch_shareholding_dataset` + `run_finmind_etl_sdk.py` **step 8（non-CRITICAL，已進 DEFAULT_STEPS）**
+- **回補已執行**：remote 2026-07-01~14 共 9 交易日 × 1350 檔 = 12,150 筆
+- momentum frame 新欄位：`shares_issued / market_cap（shares × close）/ institution_buy_to_market_cap_2d`——**只出欄位，不進 momentum_score、不進分類門檻**（spec §6.1 A 延後項；等資料累積後再決定啟用）；快照缺日往回找 10 天內最近一筆
+
+### Gotcha
+- **FinMind dataset-level「只回 start_date」名單擴大**：margin_trade、TaiwanStockMonthRevenue、TaiwanStockShareholding 都是。新接 dataset 前先實測（拉一段區間看 distinct date）
+- **月營收 date ≠ 公告日**：date 是「營收次月 1 號」佔位鍵；要時間對齊一律用 `revenue_available_date`（次月 10 日）
+- ETL raw SQL 的 trade_date 在 PostgreSQL 回 date、SQLite（測試）回 str：`d.strftime(...) if hasattr(d, "strftime") else str(d)`
+- 全 suite 20 個 pre-existing fail baseline 不變；本輪新增 shareholding 4 + momentum 9 + monthly_revenue 2 測試全綠
+
 ## 魚尾 v2.1 動能選股升級（2026-07-15）
 
 > **Canonical spec + 實作進度**：[docs/plans/fishtail_momentum_upgrade_spec.md](docs/plans/fishtail_momentum_upgrade_spec.md)（v2.1 完成 / v2.2 v2.3 待開始）

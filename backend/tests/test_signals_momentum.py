@@ -320,3 +320,130 @@ def test_build_signal_metrics_is_json_serializable():
     assert out["momentum_score"] == 76.5
     assert out["distance_to_high_20d"] == -1.2
     assert out["breadth_score"] is None
+
+
+# ---------- 基本面動能（spec §6.1 D + available_date gate） ----------
+
+
+def test_revenue_available_date_is_10th_of_next_month():
+    assert momentum.revenue_available_date(date(2026, 6, 30)) == date(2026, 7, 10)
+    assert momentum.revenue_available_date(date(2026, 2, 28)) == date(2026, 3, 10)
+    assert momentum.revenue_available_date(date(2025, 12, 31)) == date(2026, 1, 10)
+
+
+def test_channel_d_yoy_acceleration():
+    yes = _feats(revenue_yoy=20.0, revenue_yoy_accel_2m=True)
+    no_accel = _feats(revenue_yoy=20.0, revenue_yoy_accel_2m=False)
+    low_yoy = _feats(revenue_yoy=10.0, revenue_yoy_accel_2m=True)
+    out = momentum.select_momentum_candidates({"Y": yes, "A": no_accel, "L": low_yoy})
+    assert out["fundamental"] == ["Y"]
+
+
+def test_channel_d_yoy_turned_positive():
+    frame = {"A": _feats(revenue_yoy_turned_positive=True)}
+    assert momentum.select_momentum_candidates(frame)["fundamental"] == ["A"]
+
+
+def test_channel_d_industry_percentile():
+    frame = {"A": _feats(revenue_yoy_industry_percentile=85.0)}
+    assert momentum.select_momentum_candidates(frame)["fundamental"] == ["A"]
+
+
+def test_momentum_score_fundamental_full_strength_adds_10():
+    """基本面滿分：yoy percentile 100（6 分）+ 加速（2 分）+ mom 正（2 分）→ 總分 100。"""
+    candidate = _full_strength_candidate(
+        revenue_yoy_percentile=100.0,
+        revenue_yoy_acceleration=5.0,
+        revenue_mom=3.0,
+    )
+    out = momentum.compute_momentum_score(candidate)
+    assert out["momentum_score"] == 100.0
+    assert out["momentum_score_detail"]["fundamental"] == 10.0
+
+
+def test_momentum_score_fundamental_missing_stays_none():
+    out = momentum.compute_momentum_score(_full_strength_candidate())
+    assert out["momentum_score_detail"]["fundamental"] is None
+
+
+def test_frame_fundamental_features_respect_available_date(db):
+    """target_date=7/9（6 月營收可用日 7/10 之前）→ 只能看到 5 月營收；7/10 起看得到 6 月。"""
+    from app.models import MonthlyRevenue
+
+    dates, stock_ids = _seed_market(db)
+    # 種 3 個月營收給 S22：4 月 yoy=10、5 月 yoy=20、6 月 yoy=30（連兩月加速）
+    for month_end, yoy in [
+        (date(2026, 4, 30), 10.0),
+        (date(2026, 5, 31), 20.0),
+        (date(2026, 6, 30), 30.0),
+    ]:
+        db.add(
+            MonthlyRevenue(
+                revenue_month=month_end, stock_id="S22", revenue=1000.0,
+                yoy_pct=yoy, mom_pct=1.0,
+            )
+        )
+    db.commit()
+
+    masters = _masters_map(db)
+    # 6/30 收盤當天：6 月營收尚未公告（可用日 7/10）→ 最新可用 = 5 月
+    frame = momentum.compute_market_momentum_frame(db, dates[-1], masters)  # dates[-1] = 6/30
+    assert frame["S22"]["revenue_month_used"] == "2026-05-31"
+    assert frame["S22"]["revenue_yoy"] == 20.0
+    assert frame["S22"]["revenue_yoy_acceleration"] == 10.0  # 20 - 10
+    assert frame["S22"]["revenue_yoy_accel_2m"] is False  # 只有 2 個可用月
+
+    # 沒營收資料的股票維持 None
+    assert frame["S01"]["revenue_yoy"] is None
+
+
+# ---------- 市值 / institution_buy_to_market_cap（2026-07-15 第二輪） ----------
+
+
+def test_frame_market_cap_from_shares_outstanding(db):
+    from app.models import StockSharesOutstanding
+
+    dates, stock_ids = _seed_market(db)
+    # S22 最新收盤 = 100 + 22*0.5*29 = 419.0；發行股數 1e9
+    db.add(
+        StockSharesOutstanding(
+            trade_date=dates[-1], stock_id="S22", shares_issued=1_000_000_000,
+            foreign_shares_ratio=50.0,
+        )
+    )
+    # S22 給 2 日法人 flow（用 trust 避開 S01 foreign 的 unique key）
+    for d in dates[-2:]:
+        db.add(
+            InstStockFlow(
+                trade_date=d, stock_id="S22", inst_type="trust",
+                buy_shares=0, sell_shares=0, net_shares=0,
+                buy_amount_est=0, sell_amount_est=0, net_amount_est=2.0e8,
+            )
+        )
+    db.commit()
+
+    frame = momentum.compute_market_momentum_frame(db, dates[-1], _masters_map(db))
+    feats = frame["S22"]
+    assert feats["shares_issued"] == 1_000_000_000
+    expected_cap = 1_000_000_000 * 419.0
+    assert abs(feats["market_cap"] - expected_cap) < 1e-3
+    # 2 日買超 4e8 / 市值
+    assert abs(feats["institution_buy_to_market_cap_2d"] - (4.0e8 / expected_cap)) < 1e-12
+    # 沒 shares 資料的股票維持 None
+    assert frame["S01"]["market_cap"] is None
+
+
+def test_frame_market_cap_uses_latest_snapshot_within_lookback(db):
+    from datetime import timedelta as td
+    from app.models import StockSharesOutstanding
+
+    dates, stock_ids = _seed_market(db)
+    # 只有 3 天前的快照（模擬停牌 / ETL 缺日）→ 應往回找到它
+    db.add(
+        StockSharesOutstanding(
+            trade_date=dates[-1] - td(days=3), stock_id="S22", shares_issued=500_000_000,
+        )
+    )
+    db.commit()
+    frame = momentum.compute_market_momentum_frame(db, dates[-1], _masters_map(db))
+    assert frame["S22"]["shares_issued"] == 500_000_000

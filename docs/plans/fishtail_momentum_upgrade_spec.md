@@ -15,6 +15,23 @@
 - 測試：`tests/test_signals_momentum.py` 新增 20 案例；classification 重寫 30 案例；filters +8；candidate_pool +2；archive +1。全 backend suite 無新增失敗（baseline 20 fail 不變）
 - **工程決策（spec 未定部分）**：B 通道上限 40 / C 通道上限 20（避免 percentile 門檻灌爆 POOL_HARD_LIMIT）；percentile 樣本 guard（全市場 >=20、產業內 >=3、產業數 >=5，不足回 None）；market benchmark 用 universe 中位數（非 TAIEX，percentile 等價）；rolling high 用收盤價；LLM prompt / evidence card 未動（依 §10 Step 7 最後才改）
 
+### v2.2 資料前置 ✅ 完成（2026-07-15 第二輪）
+§4.2「要先補資料或 schema」的前兩項已解：
+
+1. **monthly_revenue ETL 缺口修復 + 回補**：根因 = FinMind 把「N 月營收」全掛在
+   「N+1 月 1 號」單一 date key + dataset-level fetch 只回 start_date 當日 →
+   舊單日抓法永遠漏。已改逐「月 1 號」key 呼叫（daily 2 quota）；remote 已回補
+   2026-01~06（每月 1072~1083 檔，yoy/mom 100%）
+2. **`available_date` 規則（不加欄位、不改 schema）**：`momentum.revenue_available_date
+   (revenue_month) = 次月 10 日`（法規公告截止日），frame 只吃 available <= target_date
+   的月份 → **§6.1 D 基本面動能通道已上線**（yoy>15 且連兩月加速 / 轉正 / 產業內
+   percentile>=80；上限 20 檔）+ momentum_score 基本面 10 分啟用
+3. **發行股數 / 市值**：新表 `stock_shares_outstanding`（FinMind `TaiwanStockShareholding`
+   的 NumberOfSharesIssued + 外資持股比；dataset-level 只回 start_date 當日，同 margin）；
+   daily ETL step 8；remote 已回補 2026-07-01 起。momentum frame 新增 `shares_issued /
+   market_cap / institution_buy_to_market_cap_2d`（**只出欄位，未進 score / 分類門檻**，
+   等累積資料後再依 §6.1 A 決定啟用方式）
+
 ### v2.2 ⬜ 待開始
 - market_breadth.py / breadth_score / NARROW_BULL / episode-aware hit_count / LLM facts-only
 - `build_signal_metrics` 已預留 `breadth_score: None` 佔位

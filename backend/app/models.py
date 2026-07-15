@@ -301,6 +301,23 @@ class MarginTrade(Base):
     ingested_at = Column(DateTime, default=datetime.utcnow)
 
 
+class StockSharesOutstanding(Base):
+    """
+    發行股數每日快照（fishtail momentum upgrade 2026-07-15）
+    資料來源：FinMind TaiwanStockShareholding 的 NumberOfSharesIssued
+    更新頻率：每日
+    用途：市值 = shares_issued × close_price；institution_buy_to_market_cap 分母
+    """
+    __tablename__ = "stock_shares_outstanding"
+
+    trade_date = Column(Date, primary_key=True)
+    stock_id = Column(String(16), primary_key=True)
+    shares_issued = Column(BigInteger, nullable=True)      # 已發行普通股股數（股）
+    foreign_shares_ratio = Column(Float, nullable=True)    # 外資持股比（%），順手保留供未來特徵
+    source = Column(String(16), default="finmind")
+    ingested_at = Column(DateTime, default=datetime.utcnow)
+
+
 class SignalGenerationJob(Base):
     """
     M23 訊號管線 job 追蹤

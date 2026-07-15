@@ -222,7 +222,8 @@ def build_candidate_pool(
       A. 法人資金（既有：熱錢前 30 + 前 10 非金融產業成分股 + 集團擴散）
       B. 價格動能（rs_market_percentile_20d / 產業內 RS / 創 20 日新高帶量 / 60d 報酬前段）
       C. 動能加速（rs_rank_improvement_5d >= 200 且 rs_market >= 70）
-      D. 基本面動能：**未上線**（monthly_revenue 缺 announcement_date，避免資料穿越；spec §9.4）
+      D. 基本面動能（2026-07-15 第二輪上線：月營收 yoy 加速 / 轉正 / 產業內前 20%；
+         用 `momentum.revenue_available_date`（次月 10 日）當可用日 gate，無資料穿越）
     每檔候選 merge momentum frame 特徵並算出 deterministic `momentum_score`。
     """
     masters: Dict[str, StockMaster] = ingestion.get("stocks_master") or {}
@@ -237,6 +238,7 @@ def build_candidate_pool(
     channels = momentum.select_momentum_candidates(momentum_frame)
     price_momentum_ids = set(channels.get("price_momentum") or [])
     acceleration_ids = set(channels.get("acceleration") or [])
+    fundamental_ids = set(channels.get("fundamental") or [])
 
     # 1. 收集候選 stock_id（聯集）
     candidate_ids: Set[str] = set()
@@ -259,9 +261,10 @@ def build_candidate_pool(
         for member_id in get_group_members(group_name):
             candidate_ids.add(member_id)
 
-    # 1d. v2.1 B/C 通道（frame universe 已排除 ETF / 金融，這裡直接聯集）
+    # 1d. v2.1 B/C/D 通道（frame universe 已排除 ETF / 金融，這裡直接聯集）
     candidate_ids |= price_momentum_ids
     candidate_ids |= acceleration_ids
+    candidate_ids |= fundamental_ids
 
     # 2. 排除 ETF / 金融股 / 不在 stocks_master 的（無業務面資料）
     filtered_ids: List[str] = []
@@ -306,6 +309,7 @@ def build_candidate_pool(
             "in_top_stocks_3d": sid in top_stock_id_set,
             "in_price_momentum_pool": sid in price_momentum_ids,
             "in_acceleration_pool": sid in acceleration_ids,
+            "in_fundamental_pool": sid in fundamental_ids,
             **m,
             **{k: v for k, v in mf.items() if not k.startswith("_")},
             **ts,
