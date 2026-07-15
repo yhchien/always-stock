@@ -370,6 +370,10 @@ class SignalWatchHit(Base):
     group_info = Column(JSON, nullable=False)
     leader_check = Column(JSON, nullable=False)
     signals = Column(JSON, nullable=False)
+    # v2.1 fishtail momentum upgrade（2026-07-15）：spec §9.2 第一批動能特徵
+    # （return_5d/20d/60d、RS percentiles、rs_rank_improvement_5d、momentum_score、
+    #   market_regime_detail…）；audit / 回測歸因用，nullable（舊 row 無資料）
+    signal_metrics = Column(JSON, nullable=True)
     prompt_version = Column(                                   # 命中當天所用 prompt 版本（v1 / v2 …）
         String(16), nullable=False, default="v1", server_default="v1"
     )

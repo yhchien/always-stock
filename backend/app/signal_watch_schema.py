@@ -25,6 +25,8 @@ def ensure_signal_watch_hit_return_columns(engine: Engine) -> None:
             "max_negative_return_pct": "ALTER TABLE signal_watch_hits ADD COLUMN max_negative_return_pct FLOAT",
             "max_negative_return_trade_date": "ALTER TABLE signal_watch_hits ADD COLUMN max_negative_return_trade_date DATE",
             "prompt_version": "ALTER TABLE signal_watch_hits ADD COLUMN prompt_version VARCHAR(16) NOT NULL DEFAULT 'v1'",
+            # v2.1 fishtail momentum upgrade（2026-07-15）：spec §9.2 第一批動能特徵 JSON
+            "signal_metrics": "ALTER TABLE signal_watch_hits ADD COLUMN signal_metrics JSON",
         },
         "signal_watch_completed_archives": {
             "max_positive_return_pct": "ALTER TABLE signal_watch_completed_archives ADD COLUMN max_positive_return_pct FLOAT",

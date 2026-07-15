@@ -551,3 +551,69 @@ def test_regime_watch_intensity_mapping():
     assert regime_watch_intensity(REGIME_VOLATILE_RANGE, "medium") == "cautious"
     assert regime_watch_intensity(REGIME_RISK_OFF, "high") == "cautious"
     assert regime_watch_intensity(REGIME_RISK_OFF, None) == "cautious"
+
+
+# ---------- v2.1 fishtail momentum upgrade（spec §6.4） ----------
+
+
+def test_hard_exclusions_drops_weak_rs_without_improvement(db):
+    """rs_market_percentile_20d < 40 且 rs_rank_improvement_5d <= 0 → 剔除。"""
+    weak = _candidate(rs_market_percentile_20d=35.0, rs_rank_improvement_5d=0)
+    out = apply_hard_exclusions(db, date(2026, 7, 15), [weak])
+    assert out == []
+
+
+def test_hard_exclusions_keeps_weak_rs_when_improving(db):
+    improving = _candidate(rs_market_percentile_20d=35.0, rs_rank_improvement_5d=50)
+    out = apply_hard_exclusions(db, date(2026, 7, 15), [improving])
+    assert len(out) == 1
+
+
+def test_hard_exclusions_keeps_when_rs_fields_missing(db):
+    """RS 欄位缺值（新上市 / universe 樣本不足）→ 不剔除。"""
+    missing = _candidate(rs_market_percentile_20d=None, rs_rank_improvement_5d=None)
+    out = apply_hard_exclusions(db, date(2026, 7, 15), [missing])
+    assert len(out) == 1
+
+
+def test_regime_gate_volatile_drops_low_momentum_score():
+    """震盪盤 momentum_score < 60 → 即使 hit_count 高（conviction=high）也剔除。"""
+    weak_score = _regime_candidate(hit_count=3, momentum_score=59.9)
+    out = apply_regime_gate([weak_score], REGIME_VOLATILE_RANGE)
+    assert out == []
+
+
+def test_regime_gate_volatile_keeps_score_60_and_above():
+    ok_score = _regime_candidate(hit_count=3, momentum_score=60.0)
+    out = apply_regime_gate([ok_score], REGIME_VOLATILE_RANGE)
+    assert len(out) == 1
+
+
+def test_regime_gate_volatile_missing_score_backward_compatible():
+    """momentum_score 缺值（舊資料）→ 不觸發 score gate（其他規則照舊）。"""
+    no_score = _regime_candidate(hit_count=3)
+    out = apply_regime_gate([no_score], REGIME_VOLATILE_RANGE)
+    assert len(out) == 1
+
+
+def test_regime_gate_risk_off_drops_rs_below_90():
+    """退潮盤：即使是強 LEADER，RS 不在全市場前 10% 也剔除。"""
+    strong_but_rs_low = _regime_candidate(
+        prelim_type=PRELIM_TYPE_LEADER,
+        hit_count=3,
+        total_institution_flow_5d=1.0e8,
+        rs_market_percentile_20d=85.0,
+    )
+    out = apply_regime_gate([strong_but_rs_low], REGIME_RISK_OFF)
+    assert out == []
+
+
+def test_regime_gate_risk_off_keeps_rs_90_and_above():
+    survivor = _regime_candidate(
+        prelim_type=PRELIM_TYPE_LEADER,
+        hit_count=3,
+        total_institution_flow_5d=1.0e8,
+        rs_market_percentile_20d=92.0,
+    )
+    out = apply_regime_gate([survivor], REGIME_RISK_OFF)
+    assert len(out) == 1

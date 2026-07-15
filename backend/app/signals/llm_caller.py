@@ -1021,6 +1021,7 @@ def _watch_rank_key(item: Dict[str, Any]) -> tuple:
         "FOLLOWER": 1,
         "LAGGARD": 2,
         "LAGGARD_CANDIDATE": 2,
+        "ROTATION_LAGGARD": 2,  # v2.1 改名（對外仍顯示 LAGGARD）
     }.get(str(item.get("type") or "").upper(), 3)
     signal_score = _signal_strength_score(item.get("signals"))
     theme_score = _theme_score(item.get("theme"))
@@ -1193,10 +1194,11 @@ def _serialize_dates(value: Any) -> Any:
 def _normalize_prelim_type(raw: Any) -> str:
     """把 candidate_pool 的 prelim_type 映射到 watchlist[].type 接受的 3 個值。
 
-    `LAGGARD_CANDIDATE` → `LAGGARD`；未知 / 缺值 → 保守 `LEADER`（沿用舊 fallback 行為）。
+    `LAGGARD_CANDIDATE` / `ROTATION_LAGGARD`（v2.1 改名） → `LAGGARD`；
+    未知 / 缺值 → 保守 `LEADER`（沿用舊 fallback 行為）。
     """
     value = str(raw or "").upper().strip()
-    if value == "LAGGARD_CANDIDATE":
+    if value in {"LAGGARD_CANDIDATE", "ROTATION_LAGGARD"}:
         return "LAGGARD"
     if value in {"LEADER", "FOLLOWER", "LAGGARD"}:
         return value

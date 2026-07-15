@@ -31,7 +31,7 @@ from app.database import SessionLocal
 from app.models import SignalGenerationJob, SignalSnapshot
 from app.signals import archive as signal_archive
 from app.signals import candidate_pool, classification, filters, llm_caller
-from app.signals import market_margin, market_regime, market_snapshot
+from app.signals import market_margin, market_regime, market_snapshot, momentum
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +137,12 @@ def run_signal_pipeline_sync(
             after_regime = filters.apply_regime_gate(after_soft, regime_info["regime"])
             conviction_by_stock = {
                 str(c.get("stock_id") or ""): c.get("regime_conviction")
+                for c in after_regime
+            }
+            # v2.1（fishtail momentum upgrade spec §9.2）：每檔候選的動能特徵
+            # deterministic 快照，最後蓋回 watchlist item 落進 snapshot + watch hit
+            signal_metrics_by_stock = {
+                str(c.get("stock_id") or ""): momentum.build_signal_metrics(c, regime_info)
                 for c in after_regime
             }
 
@@ -280,6 +286,8 @@ def run_signal_pipeline_sync(
                 item["watch_intensity"] = filters.regime_watch_intensity(
                     regime_info["regime"], conv
                 )
+                # v2.1：動能特徵 deterministic 蓋回（不依賴 LLM 回傳）
+                item["signal_metrics"] = signal_metrics_by_stock.get(sid)
             _persist_snapshot(db, target_date, final_payload, job_id)
             signal_archive.persist_signal_watch_hits(db, target_date, final_payload, job_id)
 
@@ -438,7 +446,8 @@ def _llm_input_sort_key(candidate: Dict[str, Any]) -> tuple:
     priority = {
         "LEADER": 0,
         "FOLLOWER": 1,
-        "LAGGARD_CANDIDATE": 2,
+        "ROTATION_LAGGARD": 2,
+        "LAGGARD_CANDIDATE": 2,  # 舊命名相容（v2.1 改名 ROTATION_LAGGARD）
     }.get(prelim_type, 3)
     flow_3d = float(candidate.get("total_institution_flow_3d") or 0.0)
     flow_1d = float(candidate.get("total_institution_flow_1d") or 0.0)

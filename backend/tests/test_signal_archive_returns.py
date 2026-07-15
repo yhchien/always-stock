@@ -1211,3 +1211,40 @@ def test_update_signal_watch_returns_early_exit_commits_with_autoflush_false():
             .first()
             is None
         )
+
+
+def test_persist_signal_watch_hits_stores_signal_metrics():
+    """v2.1：watchlist item 的 signal_metrics（動能特徵 JSON）要寫進 SignalWatchHit；缺值為 None。"""
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+
+    metrics = {
+        "momentum_score": 76.5,
+        "rs_market_percentile_20d": 91.0,
+        "rs_industry_percentile_20d": 88.0,
+        "return_20d": 12.5,
+        "breadth_score": None,
+    }
+    with Session() as db:
+        job_id = _seed_job_and_snapshot(db, date(2026, 7, 15))
+        archive.persist_signal_watch_hits(
+            db,
+            date(2026, 7, 15),
+            {
+                "watchlist": [
+                    {"stock": "2330", "name": "台積電", "type": "LEADER", "signal_metrics": metrics},
+                    {"stock": "2454", "name": "聯發科", "type": "FOLLOWER"},  # 缺 → None
+                ]
+            },
+            job_id,
+        )
+        by_id = {
+            row.stock_id: row
+            for row in db.query(SignalWatchHit)
+            .filter(SignalWatchHit.snapshot_date == date(2026, 7, 15))
+            .all()
+        }
+        assert by_id["2330"].signal_metrics["momentum_score"] == 76.5
+        assert by_id["2330"].signal_metrics["rs_market_percentile_20d"] == 91.0
+        assert by_id["2454"].signal_metrics is None

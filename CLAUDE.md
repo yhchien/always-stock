@@ -1,5 +1,43 @@
 # always-stock 專案記憶
 
+## 魚尾 v2.1 動能選股升級（2026-07-15）
+
+> **Canonical spec + 實作進度**：[docs/plans/fishtail_momentum_upgrade_spec.md](docs/plans/fishtail_momentum_upgrade_spec.md)（v2.1 完成 / v2.2 v2.3 待開始）
+
+### 需求
+- 把魚尾從「法人異常訊號主導」升級成「動能選股系統」；解「法人有買但股票本身不強」的問題
+- 三階段：v2.1 動能特徵 + momentum_score（本輪）→ v2.2 breadth/regime 四態 + episode → v2.3 回測持有管理
+
+### v2.1 落地內容
+- **新模組 [backend/app/signals/momentum.py](backend/app/signals/momentum.py)**：
+  - `compute_market_momentum_frame(db, target_date, masters)`：全市場（active、非 ETF/金融/黑名單，與候選池排除規則一致）近 66 交易日特徵：return_5d/20d/60d、rs_market_percentile_20d、rs_industry_percentile_20d、rs_rank_improvement_5d（1=最強的名次制，正值=進步）、distance_to_20d/60d_high（收盤 rolling high，0=創新高）、distance_to_ma20、trend_efficiency_20d、institution_buy_to_turnover_2d + 市場 percentile、industry_rs_percentile_20d（產業層級）
+  - `select_momentum_candidates(frame)`：候選池 B（價格動能）/ C（動能加速）通道；**上限 B=40 / C=20**（spec 未定，工程決策：rs>=85 在 ~1800 檔 universe 會命中 200+ 檔，不 cap 會灌爆 POOL_HARD_LIMIT=120）
+  - `compute_momentum_score(candidate)`：0~100，percentile-based；權重 價格 30 / RS 25 / 法人 20 / 量價 15 / 基本面 10（**v2.1 恆 0**，monthly_revenue 缺 announcement_date 不接主流程避免資料穿越）；風險扣分（爆量長上影 -10 / RS 排名 5 日掉 200+ -10 / 3 日漲幅 >12% -5）
+  - `build_signal_metrics(candidate, regime_info)`：spec §9.2 第一批欄位 → JSON（全 float/str/None，無 date 物件）
+- **candidate_pool.py**：四通道聯集（A 法人既有 + B + C；D 未上線）；每檔 merge frame 特徵（`_` 開頭中間欄位過濾掉）+ `in_price_momentum_pool` / `in_acceleration_pool` flag + momentum_score；截斷排序從 flow_3d proxy 改 momentum_score
+- **classification.py**：v2.1 規則重寫；`LAGGARD_CANDIDATE` 改名 `ROTATION_LAGGARD`（`PRELIM_TYPE_LAGGARD_CANDIDATE` 保留為 alias，值同 `"ROTATION_LAGGARD"`）
+  - LEADER：industry_rs_percentile>=70 + 產業內 RS>=80 + score>=70 + （連買 2 日 OR inst_buy_to_turnover percentile>=80）+ 量比>=1.3 + 距 20 日高點 <=3%
+  - FOLLOWER：同產業有 LEADER + score 55~69（`< 70` 上界）+ 5 日漲幅低於 LEADER + rs_rank_improvement>0 + 3d 法人正 + 無爆量長上影
+  - ROTATION_LAGGARD：同產業有 LEADER + 產業強勢（industry_rs>=70 或 in_top_industries_3d）+ 20 日落後產業平均>=5pct + RS 改善 + （法人 1d 轉正且 5d<=0 或 vol_1d/5d>1.2）+ （站回 10MA 或收盤創 20 日新高）+ score>=50
+- **filters.py**（spec §6.4）：hard exclusion #8 `rs_market_percentile_20d<40 且 rs_rank_improvement_5d<=0`；regime gate 震盪盤 `momentum_score<60` 剔除、退潮盤 `rs_market_percentile_20d<90` 剔除（三者缺值都不觸發，向後相容）
+- **persistence**：`SignalWatchHit.signal_metrics` JSON column（nullable；`signal_watch_schema.py` idempotent ALTER）；pipeline 在 regime gate 後建 `signal_metrics_by_stock`，assemble 後 deterministic 蓋回每筆 watchlist item → snapshot JSON + watch hit 都存
+- **llm_caller / pipeline**：`_normalize_prelim_type` 接受 `ROTATION_LAGGARD` → 對外仍映射 `LAGGARD`（前端 領漲/跟漲/補漲 標籤零改動）；LLM prompt / evidence card **刻意未動**（spec §10 Step 7 最後才改）
+
+### Gotcha
+- **percentile 樣本 guard**：全市場 >=20 檔、產業內 >=3 檔、產業數 >=5 才算 percentile，不足回 None → B/C 通道與新分類條件自動不觸發。既有小樣本測試因此不受影響；新整合測試要 seed >=20 檔（見 `_seed_momentum_market`）
+- **market benchmark 用 universe 中位數**（非 TAIEX）：percentile 對常數 benchmark 平移不變，rs_market_percentile_20d 數學上 = return_20d 全市場 percentile；TAIEX 不在 stocks_master 也不用特別撈
+- **rolling high 用收盤價**（非盤中 high）：`distance_to_20d_high >= 0` = 收盤創 20 日新高；LEADER 的 `<=3%` 與 LAGGARD 的突破條件都以此為準
+- **缺資料股 score 偏低是刻意的**：momentum_score 缺 percentile 子項給 0 分（不硬給中性 50）→ 新上市/資料缺漏股在震盪盤 score gate（>=60）自然被擋；但 hard/regime gate 對「單一欄位缺值」不觸發剔除（沿用資料缺漏不清池慣例）
+- **prompt_version 未 bump**：本輪只動 deterministic 選股層、prompt 檔案零改動；30 日追蹤要歸因 v2.1 前後差異，用 `signal_watch_hits.signal_metrics` 是否為 NULL 區分（v2.1 上線後的 hit 都有 momentum_score）
+- **`momentum_score` 對 frame 的 `_return_20d_prev5` / `_volume_5d_to_60d` 等 `_` 開頭欄位**：僅 frame 內部使用，merge 進 candidate 時被過濾，不會進 snapshot
+- **測試 baseline**：全 backend suite 20 個 pre-existing fail（site-passwordless 未同步的 auth/watchlist/rate-limit/test_database）與本輪無關；v2.1 改動 0 新增失敗
+
+### v2.2 / v2.3 待辦（給接手的人）
+- v2.2：新模組 `market_breadth.py`（pct_above_ma20/60、advance_decline、new high/low count；universe 與 candidate pool 一致）→ regime 升四態（BROAD_BULL / NARROW_BULL）→ §7.3 score-based 收斂 → `hit_count` 拆 episode（`consecutive_hit_count` / `independent_hit_count`，命中間隔 <=3 交易日同 episode、>=5 日未命中才算新 episode；**會動到 archive.py carry 邏輯，小心 autoflush=False 的舊坑**）→ LLM facts-only + 程式 final_score 決策
+- v2.2 前置：`build_signal_metrics` 已留 `breadth_score: None` 佔位；市場 regime 詳情已存 `signal_metrics.market_regime_detail`
+- 基本面動能（§6.1 D）上線前必須先給 `monthly_revenue` 補 `announcement_date` 或 `available_date`（spec §9.4），否則有公告前偷看風險
+- `institution_buy_to_market_cap` 延後：缺流通市值欄位；已用 `institution_buy_to_turnover_2d` 替代
+
 ## K 線圖全站改 popup（2026-07-14）
 
 ### 需求

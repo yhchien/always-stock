@@ -176,6 +176,7 @@ def persist_signal_watch_hits(
                 group_info=item.get("group_info") or {},
                 leader_check=item.get("leader_check") or {},
                 signals=item.get("signals") or {},
+                signal_metrics=item.get("signal_metrics"),  # v2.1 動能特徵（spec §9.2）
                 prompt_version=str(item.get("prompt_version") or "v1"),
                 baseline_trade_date=prior.get("baseline_trade_date"),
                 baseline_price=prior.get("baseline_price"),

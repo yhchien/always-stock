@@ -26,6 +26,7 @@ from app.models import (
     SignalWatchHit,
     StockMaster,
 )
+from app.signals import momentum
 from app.signals.exclusions import (
     find_group_for_stock,
     get_group_members,
@@ -215,13 +216,27 @@ def build_candidate_pool(
     ingestion: Dict[str, Any],
     rankings: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
-    """spec §5 Step 4 + §6：候選池組合 + 擴散 + 截斷。"""
+    """spec §5 Step 4 + §6：候選池組合 + 擴散 + 截斷。
+
+    v2.1（fishtail momentum upgrade）：候選池從單一「法人資金」通道升級為多通道聯集：
+      A. 法人資金（既有：熱錢前 30 + 前 10 非金融產業成分股 + 集團擴散）
+      B. 價格動能（rs_market_percentile_20d / 產業內 RS / 創 20 日新高帶量 / 60d 報酬前段）
+      C. 動能加速（rs_rank_improvement_5d >= 200 且 rs_market >= 70）
+      D. 基本面動能：**未上線**（monthly_revenue 缺 announcement_date，避免資料穿越；spec §9.4）
+    每檔候選 merge momentum frame 特徵並算出 deterministic `momentum_score`。
+    """
     masters: Dict[str, StockMaster] = ingestion.get("stocks_master") or {}
     top_industries = rankings.get("top_industries_3d") or []
     top_stocks = rankings.get("top_stocks_3d") or []
 
     if not masters or (not top_industries and not top_stocks):
         return []
+
+    # v2.1：全市場動能特徵 frame（B/C 通道選股 + 每檔 enrich 都要用）
+    momentum_frame = momentum.compute_market_momentum_frame(db, target_date, masters)
+    channels = momentum.select_momentum_candidates(momentum_frame)
+    price_momentum_ids = set(channels.get("price_momentum") or [])
+    acceleration_ids = set(channels.get("acceleration") or [])
 
     # 1. 收集候選 stock_id（聯集）
     candidate_ids: Set[str] = set()
@@ -243,6 +258,10 @@ def build_candidate_pool(
             continue
         for member_id in get_group_members(group_name):
             candidate_ids.add(member_id)
+
+    # 1d. v2.1 B/C 通道（frame universe 已排除 ETF / 金融，這裡直接聯集）
+    candidate_ids |= price_momentum_ids
+    candidate_ids |= acceleration_ids
 
     # 2. 排除 ETF / 金融股 / 不在 stocks_master 的（無業務面資料）
     filtered_ids: List[str] = []
@@ -273,41 +292,42 @@ def build_candidate_pool(
             continue
         m = metrics.get(sid) or _empty_metrics()
         ts = tracking_by_stock.get(sid) or _empty_tracking_status()
+        mf = momentum_frame.get(sid) or momentum.empty_momentum_features()
         in_top = master.industry_name in industry_set
-        candidates.append(
-            {
-                "stock_id": sid,
-                "name": master.stock_name,
-                "industry": master.industry_name,
-                "sub_industry": master.sub_industry,
-                "is_etf": False,
-                "is_financial": False,
-                "group_name": find_group_for_stock(sid),
-                "in_top_industries_3d": in_top,
-                "in_top_stocks_3d": sid in top_stock_id_set,
-                **m,
-                **ts,
-            }
-        )
+        candidate = {
+            "stock_id": sid,
+            "name": master.stock_name,
+            "industry": master.industry_name,
+            "sub_industry": master.sub_industry,
+            "is_etf": False,
+            "is_financial": False,
+            "group_name": find_group_for_stock(sid),
+            "in_top_industries_3d": in_top,
+            "in_top_stocks_3d": sid in top_stock_id_set,
+            "in_price_momentum_pool": sid in price_momentum_ids,
+            "in_acceleration_pool": sid in acceleration_ids,
+            **m,
+            **{k: v for k, v in mf.items() if not k.startswith("_")},
+            **ts,
+        }
+        # v2.1 momentum_score：需要 frame 特徵 + pool metrics（OHLC / 連買日 / 量比）都到齊後才算
+        candidate.update(momentum.compute_momentum_score(candidate))
+        candidates.append(candidate)
 
     # 5. 算「該產業內」price_change_5d / net_3d 排名
     _attach_industry_rankings(candidates)
 
     # 6. 截斷（spec §6.1）
-    # spec 描述「LEADER candidate (rank 高) > FOLLOWER candidate > 其他」應優先保留，
-    # 但截斷發生在 classification.classify_stocks() 之前，這時候還沒有 prelim_type 可用，
-    # 所以用 total_institution_flow_3d（三大法人 3 日累計淨買超）做近似 proxy：
-    #   - LEADER 通常法人連買金額最大 → 排序前段
-    #   - FOLLOWER 法人金額中等
-    #   - LAGGARD / 弱勢 / 雜訊 → 法人金額 ~0 或負 → 截斷時優先丟
-    # 實務上候選池 60~120 檔幾乎觸發不到 SOFT_TRIGGER=150 hard limit，這段是安全網，
-    # 真的觸發時用 deterministic proxy 排序而不是隨機切，避免 LEADER 被丟掉的最壞情況。
-    # 若日後發現 proxy 不夠精準，可加一層 lite 預分類（看 net_3d > 0 + price_change_5d > 0
-    # 提早標 prelim_type）再截斷；目前 proxy 已足夠。
+    # v2.1：截斷排序改用 momentum_score（每檔都有，deterministic），分數同時綜合了
+    # 價格動能 / RS / 法人 / 量價品質，比舊的 total_institution_flow_3d proxy 更貼近
+    # 「該保留誰」；tie-break 仍用法人 3 日金額，最後 stock_id 保證 deterministic。
     if len(candidates) > POOL_SOFT_TRIGGER:
         candidates.sort(
-            key=lambda c: c.get("total_institution_flow_3d") or 0.0,
-            reverse=True,
+            key=lambda c: (
+                -(c.get("momentum_score") or 0.0),
+                -(c.get("total_institution_flow_3d") or 0.0),
+                str(c.get("stock_id") or ""),
+            )
         )
         candidates = candidates[:POOL_HARD_LIMIT]
 

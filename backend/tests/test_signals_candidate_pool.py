@@ -613,3 +613,67 @@ def test_tracking_status_hit_count_counts_distinct_snapshot_dates(db):
     assert cand["hit_count"] == 3
     # first_seen 為最早的 snapshot
     assert cand["first_seen_date"] == date(2026, 4, 14)
+
+
+# ---------- v2.1 fishtail momentum upgrade：B/C 通道 + momentum_score ----------
+
+
+def _seed_momentum_market(db):
+    """22 檔兩產業、30 日、斜率遞增；只有半導體（S01~S11）有法人 flow 與產業 flow。
+
+    S22（電子零組件、全市場動能最強）完全沒有法人買超 → 唯一進池路徑是
+    v2.1 價格動能通道（rs_market_percentile_20d >= 85）。
+    """
+    from datetime import timedelta
+
+    start = date(2026, 6, 1)
+    dates = [start + timedelta(days=i) for i in range(30)]
+    stock_ids = ["S%02d" % i for i in range(1, 23)]
+
+    for idx, sid in enumerate(stock_ids, start=1):
+        industry = "半導體" if idx <= 11 else "電子零組件"
+        _seed_master(db, sid, "股票" + sid, industry)
+
+    for d_idx, d in enumerate(dates):
+        for s_idx, sid in enumerate(stock_ids, start=1):
+            close = 100.0 + s_idx * 0.5 * d_idx
+            _seed_price(db, d, sid, close=close, volume=2_000_000.0, turnover=2.0e8)
+        for s_idx, sid in enumerate(stock_ids[:11], start=1):
+            _seed_flow(db, d, sid, "foreign", 1.0e7 * s_idx)
+        _seed_industry_flow(db, d, "半導體", 5.0e8)
+    db.commit()
+    return dates
+
+
+def test_v21_price_momentum_channel_adds_stock_without_institution_flow(db):
+    dates = _seed_momentum_market(db)
+    target = dates[-1]
+
+    ingestion = ingest_data(db, target)
+    rankings = compute_rankings(db, target, ingestion)
+    pool = build_candidate_pool(db, target, ingestion, rankings)
+
+    by_id = {c["stock_id"]: c for c in pool}
+    # S22 無任何法人 flow、產業也不在 top industries → 只能靠價格動能通道進池
+    assert "S22" in by_id
+    assert by_id["S22"]["in_price_momentum_pool"] is True
+    assert by_id["S22"]["in_top_stocks_3d"] is False
+    assert by_id["S22"]["in_top_industries_3d"] is False
+
+
+def test_v21_every_candidate_has_momentum_score_and_rs_fields(db):
+    dates = _seed_momentum_market(db)
+    target = dates[-1]
+
+    ingestion = ingest_data(db, target)
+    rankings = compute_rankings(db, target, ingestion)
+    pool = build_candidate_pool(db, target, ingestion, rankings)
+
+    assert pool  # 池不為空
+    for c in pool:
+        assert "momentum_score" in c
+        assert c["momentum_score"] is not None
+        assert "momentum_score_detail" in c
+        assert "rs_market_percentile_20d" in c
+        assert "rs_industry_percentile_20d" in c
+        assert "rs_rank_improvement_5d" in c

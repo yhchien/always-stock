@@ -36,8 +36,8 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from app.signals.classification import (
-    PRELIM_TYPE_LAGGARD_CANDIDATE,
     PRELIM_TYPE_LEADER,
+    PRELIM_TYPE_ROTATION_LAGGARD,
 )
 from app.signals.exclusions import should_exclude
 from app.signals.market_regime import (
@@ -59,6 +59,14 @@ _HARD_LIQUIDITY_MIN_TWD = 5e7  # 5,000 萬
 # 2026-05-26 新增（spec §再偵測閘門）
 _HARD_PRICE_EXTENDED_10D_PCT = 25.0  # 短期已大漲門檻
 _HARD_DIVERGENCE_PRICE_1D_DROP_PCT = -1.5  # 1d 大跌門檻（負值）
+
+# v2.1（2026-07-15，fishtail momentum upgrade spec §6.4）：弱相對強度淘汰
+# RS 全市場 percentile < 40 且近 5 日排名沒有改善 → 動能死水，直接剔除
+_HARD_RS_MARKET_PERCENTILE_MIN = 40.0
+
+# v2.1 regime-specific score gate（spec §6.4）
+_REGIME_VOLATILE_MOMENTUM_SCORE_MIN = 60.0   # 震盪盤 momentum_score < 60 剔除
+_REGIME_RISK_OFF_RS_PERCENTILE_MIN = 90.0    # 退潮盤 rs_market_percentile_20d < 90 剔除
 
 # 2026-06-26 新增：當日成交量死線（依股價級距要求最低張數，不足直接剔除）
 # 1 張 = 1000 股；DB volume 為股數，故門檻乘以 _SHARES_PER_LOT 比對。
@@ -214,6 +222,12 @@ def _regime_should_remove(candidate: Dict[str, Any], market_regime: str) -> bool
             return True
         if _is_spike_breakout(candidate):
             return True
+        # v2.1（spec §6.4）：震盪盤 momentum_score < 60 直接剔除。
+        # momentum_score 缺值（舊 snapshot / 測試造資料）→ 不觸發此條（向後相容）；
+        # 正常 pipeline 每檔都有 score（資料缺漏股 score 會偏低 → 自然被擋）。
+        score = candidate.get("momentum_score")
+        if score is not None and score < _REGIME_VOLATILE_MOMENTUM_SCORE_MIN:
+            return True
         # conviction=low（單次命中且非 LEADER）→ 剔除，除非已追蹤且表現中
         if _regime_conviction(candidate, market_regime) == "low" and not _is_tracked_and_holding(
             candidate
@@ -222,6 +236,10 @@ def _regime_should_remove(candidate: Dict[str, Any], market_regime: str) -> bool
         return False
 
     if market_regime == REGIME_RISK_OFF:
+        # v2.1（spec §6.4）：退潮盤相對強度不在全市場前 10% 直接剔除（缺值不觸發）
+        rs_mkt = candidate.get("rs_market_percentile_20d")
+        if rs_mkt is not None and rs_mkt < _REGIME_RISK_OFF_RS_PERCENTILE_MIN:
+            return True
         # 退潮盤只留最強的：LEADER + 重複命中 + 法人續買 + 非派發
         flow_5d = candidate.get("total_institution_flow_5d")
         keep = (
@@ -301,13 +319,13 @@ def _is_hard_excluded(candidate: Dict[str, Any]) -> bool:
     if should_exclude(sid, name, industry):
         return True
 
-    # 2. 三大法人合計近 5 日 net < 0 且非 LAGGARD
+    # 2. 三大法人合計近 5 日 net < 0 且非 ROTATION_LAGGARD
     flow_5d = candidate.get("total_institution_flow_5d")
     prelim = candidate.get("prelim_type")
     if (
         flow_5d is not None
         and flow_5d < 0
-        and prelim != PRELIM_TYPE_LAGGARD_CANDIDATE
+        and prelim != PRELIM_TYPE_ROTATION_LAGGARD
     ):
         return True
 
@@ -350,6 +368,20 @@ def _is_hard_excluded(candidate: Dict[str, Any]) -> bool:
         and flow_1d < 0
         and pct_1d is not None
         and pct_1d < _HARD_DIVERGENCE_PRICE_1D_DROP_PCT
+    ):
+        return True
+
+    # 8. v2.1：弱相對強度且未改善（spec §6.4）
+    #    rs_market_percentile_20d < 40 且 rs_rank_improvement_5d <= 0 → 剔除。
+    #    任一缺值（新上市 / universe 樣本不足）→ 不剔除（沿用資料缺漏不清池慣例；
+    #    這類股在震盪盤仍會被 momentum_score gate 擋掉）。
+    rs_mkt = candidate.get("rs_market_percentile_20d")
+    rs_improvement = candidate.get("rs_rank_improvement_5d")
+    if (
+        rs_mkt is not None
+        and rs_mkt < _HARD_RS_MARKET_PERCENTILE_MIN
+        and rs_improvement is not None
+        and rs_improvement <= 0
     ):
         return True
 
