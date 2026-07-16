@@ -4,6 +4,7 @@
 
 > **Canonical spec + 進度**：[docs/plans/fishtail_momentum_upgrade_spec.md](docs/plans/fishtail_momentum_upgrade_spec.md)（v2.1 / 資料前置 / v2.2 全完成；v2.3 待開始）
 > **v5 prompt**：[backend/app/prompts/watch-list-stock-v5.md](backend/app/prompts/watch-list-stock-v5.md)（PROMPT_VERSION=v5，所有 regime 預設走 v5；v1/v4 保留給對照實驗）
+> **改版前後完整差異**：[docs/plans/fishtail_v5_before_after_diff.md](docs/plans/fishtail_v5_before_after_diff.md)（候選池 / 特徵 / 分類 / gate / LLM 決策權 / 資料層逐項對照 + 7/15 實測）
 
 ### v5 設計（與 backend 的分工契約）
 - **價格動能 / 相對強度是第一優先**；題材與法人只是確認訊號（核心原則 16~22）
