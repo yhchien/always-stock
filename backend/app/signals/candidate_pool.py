@@ -41,6 +41,11 @@ TRACKING_FAILED_DAYS_THRESHOLD = 3
 TRACKING_FAILED_MAX_POSITIVE_PCT = 3.0
 TRACKING_FAILED_MAX_NEGATIVE_PCT = -6.0
 
+# v2.2 episode 統計（fishtail momentum upgrade spec §7.4）：
+# 兩次命中之間「未命中的交易日數」>= 5 → 視為新的獨立 episode；<= 3 同一 episode；
+# 4 天為模糊帶，依 spec「至少 5 個交易日未命中才算新」歸為同一 episode。
+EPISODE_NEW_GAP_TRADE_DAYS = 5
+
 logger = logging.getLogger(__name__)
 
 _INST_TYPES = ("foreign", "trust", "dealer")
@@ -215,6 +220,7 @@ def build_candidate_pool(
     target_date: date,
     ingestion: Dict[str, Any],
     rankings: Dict[str, Any],
+    momentum_frame: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     """spec §5 Step 4 + §6：候選池組合 + 擴散 + 截斷。
 
@@ -233,8 +239,11 @@ def build_candidate_pool(
     if not masters or (not top_industries and not top_stocks):
         return []
 
-    # v2.1：全市場動能特徵 frame（B/C 通道選股 + 每檔 enrich 都要用）
-    momentum_frame = momentum.compute_market_momentum_frame(db, target_date, masters)
+    # v2.1：全市場動能特徵 frame（B/C 通道選股 + 每檔 enrich 都要用）。
+    # v2.2：pipeline 會預先算好傳入（與 market_breadth 共用同一次全市場 query）；
+    # 未傳入（測試 / 舊 caller）→ 內部自算，行為不變。
+    if momentum_frame is None:
+        momentum_frame = momentum.compute_market_momentum_frame(db, target_date, masters)
     channels = momentum.select_momentum_candidates(momentum_frame)
     price_momentum_ids = set(channels.get("price_momentum") or [])
     acceleration_ids = set(channels.get("acceleration") or [])
@@ -285,6 +294,9 @@ def build_candidate_pool(
     # 3b. 追蹤狀態：join signal_watch_hits 抓「首次抓到後的驗證表現」
     tracking_by_stock = _load_tracking_status(db, filtered_ids, target_date)
 
+    # 3c. 產業層級 1d / 3d 資金流（v5 deterministic_signals 的 sector_rotation_status 用）
+    industry_flow_totals = _load_industry_flow_totals(db, ingestion)
+
     # 4. 為每檔 enrich 集團 / industry / top flag
     top_stock_id_set = {s["stock_id"] for s in top_stocks}
 
@@ -313,9 +325,15 @@ def build_candidate_pool(
             **m,
             **{k: v for k, v in mf.items() if not k.startswith("_")},
             **ts,
+            **(industry_flow_totals.get(_normalized_industry(master.industry_name)) or
+               {"industry_flow_1d": None, "industry_flow_3d": None}),
         }
         # v2.1 momentum_score：需要 frame 特徵 + pool metrics（OHLC / 連買日 / 量比）都到齊後才算
         candidate.update(momentum.compute_momentum_score(candidate))
+        # v5：組 momentum_signals nested dict（LLM evidence view 直接採用）+ flat grade/phase
+        candidate["momentum_signals"] = momentum.build_momentum_signals(candidate)
+        candidate["momentum_grade"] = candidate["momentum_signals"]["momentum_grade"]
+        candidate["momentum_phase"] = candidate["momentum_signals"]["momentum_phase"]
         candidates.append(candidate)
 
     # 5. 算「該產業內」price_change_5d / net_3d 排名
@@ -338,6 +356,41 @@ def build_candidate_pool(
     return candidates
 
 
+# ---------- helpers：產業資金流（sector rotation 用） ----------
+
+
+def _normalized_industry(industry_name: Optional[str]) -> Optional[str]:
+    """industry_daily_flow 的產業名經 canonicalize（「半導體業」→「半導體」），
+    stocks_master 是原始名；比對前先 normalize。"""
+    try:
+        from app.industry_names import normalize_industry_name
+
+        return normalize_industry_name(industry_name)
+    except Exception:
+        return industry_name
+
+
+def _load_industry_flow_totals(
+    db: Session,
+    ingestion: Dict[str, Any],
+) -> Dict[str, Dict[str, Optional[float]]]:
+    """{canonical 產業名: {industry_flow_1d, industry_flow_3d}}（三大法人合計淨額）。"""
+    trade_dates_3d: List[date] = ingestion.get("trade_dates_3d") or []
+    if not trade_dates_3d:
+        return {}
+    last_day = trade_dates_3d[-1]
+    totals: Dict[str, Dict[str, Optional[float]]] = {}
+    for row in load_industry_flow_rows_for_dates(db, trade_dates_3d):
+        bucket = totals.setdefault(
+            row.industry_name, {"industry_flow_1d": 0.0, "industry_flow_3d": 0.0}
+        )
+        amt = float(row.total_net_amount or 0.0)
+        bucket["industry_flow_3d"] = (bucket["industry_flow_3d"] or 0.0) + amt
+        if row.trade_date == last_day:
+            bucket["industry_flow_1d"] = (bucket["industry_flow_1d"] or 0.0) + amt
+    return totals
+
+
 # ---------- helpers：tracking_status（再偵測閘門用） ----------
 
 
@@ -348,6 +401,8 @@ def _empty_tracking_status() -> Dict[str, Any]:
         "first_seen_date": None,
         "days_since_first_seen": None,
         "hit_count": None,
+        "consecutive_hit_count": None,
+        "independent_hit_count": None,
         "max_positive_return_pct": None,
         "max_negative_return_pct": None,
         "failed_follow_through": False,
@@ -407,6 +462,7 @@ def _load_tracking_status(
         .all()
     )
     trade_dates_sorted = sorted({d[0] for d in trade_date_rows})
+    trade_index = {d: i for i, d in enumerate(trade_dates_sorted)}
 
     out: Dict[str, Dict[str, Any]] = {}
     for sid, rows in by_stock.items():
@@ -428,16 +484,47 @@ def _load_tracking_status(
             and max_neg is not None and max_neg < TRACKING_FAILED_MAX_NEGATIVE_PCT
         )
 
+        consecutive_hits, independent_episodes = _episode_counts(
+            sorted({r.snapshot_date for r in rows}), trade_index
+        )
+
         out[sid] = {
             "is_tracked": True,
             "first_seen_date": first_seen,
             "days_since_first_seen": days_since,
             "hit_count": hit_count,
+            "consecutive_hit_count": consecutive_hits,
+            "independent_hit_count": independent_episodes,
             "max_positive_return_pct": max_pos,
             "max_negative_return_pct": max_neg,
             "failed_follow_through": failed,
         }
     return out
+
+
+def _episode_counts(
+    hit_dates_sorted: List[date],
+    trade_index: Dict[date, int],
+) -> Tuple[int, int]:
+    """(當前 episode 命中次數, 獨立 episode 總數)。
+
+    v2.2 spec §7.4：兩次命中間「未命中交易日數」>= EPISODE_NEW_GAP_TRADE_DAYS →
+    新 episode。命中日不在 trade_index（資料異常）時保守視為間隔 0（同 episode）。
+    """
+    if not hit_dates_sorted:
+        return 0, 0
+    episodes = 1
+    current_len = 1
+    for prev, cur in zip(hit_dates_sorted, hit_dates_sorted[1:]):
+        pi = trade_index.get(prev)
+        ci = trade_index.get(cur)
+        gap = (ci - pi - 1) if (pi is not None and ci is not None) else 0
+        if gap >= EPISODE_NEW_GAP_TRADE_DAYS:
+            episodes += 1
+            current_len = 1
+        else:
+            current_len += 1
+    return current_len, episodes
 
 
 # ---------- helpers：metrics 計算 ----------

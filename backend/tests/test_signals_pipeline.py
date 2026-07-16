@@ -64,7 +64,7 @@ def _stub_all_stages_noop(monkeypatch):
     monkeypatch.setattr(
         candidate_pool,
         "build_candidate_pool",
-        lambda db, td, ing, rank: [{"stock_id": "_dummy"}],
+        lambda db, td, ing, rank, **kw: [{"stock_id": "_dummy"}],
     )
     monkeypatch.setattr(classification, "classify_stocks", lambda db, td, pool: [])
     monkeypatch.setattr(filters, "apply_hard_exclusions", lambda db, td, c: [])
@@ -142,7 +142,7 @@ def test_pipeline_marks_failed_when_filter_stage_raises(session_factory, monkeyp
     monkeypatch.setattr(
         candidate_pool,
         "build_candidate_pool",
-        lambda db, td, ing, rank: [{"stock_id": "_dummy"}],
+        lambda db, td, ing, rank, **kw: [{"stock_id": "_dummy"}],
     )
 
     def _boom(*args, **kwargs):
@@ -181,7 +181,7 @@ def test_pipeline_raises_value_error_when_candidate_pool_empty(session_factory, 
         candidate_pool, "compute_rankings", lambda db, td, ing: {"top_industries": [], "top_stocks": []}
     )
     monkeypatch.setattr(
-        candidate_pool, "build_candidate_pool", lambda db, td, ing, rank: []
+        candidate_pool, "build_candidate_pool", lambda db, td, ing, rank, **kw: []
     )
 
     job_id = str(uuid.uuid4())
@@ -235,7 +235,7 @@ def test_pipeline_passes_db_market_snapshot_into_step_zero(session_factory, monk
     monkeypatch.setattr(
         candidate_pool,
         "build_candidate_pool",
-        lambda db, td, ing, rank: [{"stock_id": "_dummy"}],
+        lambda db, td, ing, rank, **kw: [{"stock_id": "_dummy"}],
     )
     monkeypatch.setattr(classification, "classify_stocks", lambda db, td, pool: [])
     monkeypatch.setattr(filters, "apply_hard_exclusions", lambda db, td, c: [])
@@ -340,7 +340,7 @@ def test_pipeline_persists_signal_watch_hits_and_replaces_same_day(session_facto
     monkeypatch.setattr(
         candidate_pool,
         "build_candidate_pool",
-        lambda db, td, ing, rank: [{"stock_id": "_dummy"}],
+        lambda db, td, ing, rank, **kw: [{"stock_id": "_dummy"}],
     )
     monkeypatch.setattr(classification, "classify_stocks", lambda db, td, pool: [])
     monkeypatch.setattr(filters, "apply_hard_exclusions", lambda db, td, c: [])

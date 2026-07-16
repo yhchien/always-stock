@@ -617,3 +617,92 @@ def test_regime_gate_risk_off_keeps_rs_90_and_above():
     )
     out = apply_regime_gate([survivor], REGIME_RISK_OFF)
     assert len(out) == 1
+
+
+# ---------- v2.2 breadth-aware regime gate（spec §7.3） ----------
+
+
+def test_regime_gate_broad_bull_drops_score_below_50():
+    weak = _regime_candidate(hit_count=3, momentum_score=49.0)
+    ok = _regime_candidate(stock_id="OK", hit_count=3, momentum_score=50.0)
+    out = apply_regime_gate([weak, ok], REGIME_BULL_TREND, regime_detail="BROAD_BULL")
+    assert [c["stock_id"] for c in out] == ["OK"]
+
+
+def test_regime_gate_bull_without_detail_behaves_as_broad():
+    """detail 缺值（breadth 樣本不足）→ 保守走 BROAD_BULL 規則。"""
+    weak = _regime_candidate(momentum_score=49.0)
+    out = apply_regime_gate([weak], REGIME_BULL_TREND)
+    assert out == []
+
+
+def test_regime_gate_bull_missing_score_kept():
+    """momentum_score 缺值（舊資料）→ BULL 不觸發 score gate（向後相容）。"""
+    no_score = _regime_candidate(hit_count=1)
+    out = apply_regime_gate([no_score], REGIME_BULL_TREND, regime_detail="BROAD_BULL")
+    assert len(out) == 1
+
+
+def test_regime_gate_narrow_bull_keeps_strong_leader():
+    leader = _regime_candidate(
+        prelim_type=PRELIM_TYPE_LEADER, momentum_score=66.0
+    )
+    out = apply_regime_gate([leader], REGIME_BULL_TREND, regime_detail="NARROW_BULL")
+    assert len(out) == 1
+    assert out[0]["market_regime_detail"] == "NARROW_BULL"
+
+
+def test_regime_gate_narrow_bull_drops_weak_leader():
+    leader = _regime_candidate(prelim_type=PRELIM_TYPE_LEADER, momentum_score=64.0)
+    out = apply_regime_gate([leader], REGIME_BULL_TREND, regime_detail="NARROW_BULL")
+    assert out == []
+
+
+def test_regime_gate_narrow_bull_keeps_high_score_non_leader():
+    follower = _regime_candidate(
+        prelim_type=PRELIM_TYPE_FOLLOWER, momentum_score=71.0
+    )
+    out = apply_regime_gate([follower], REGIME_BULL_TREND, regime_detail="NARROW_BULL")
+    assert len(out) == 1
+
+
+def test_regime_gate_narrow_bull_drops_high_score_with_distribution():
+    follower = _regime_candidate(
+        prelim_type=PRELIM_TYPE_FOLLOWER,
+        momentum_score=71.0,
+        soft_hints=[HINT_DISTRIBUTION],
+    )
+    out = apply_regime_gate([follower], REGIME_BULL_TREND, regime_detail="NARROW_BULL")
+    assert out == []
+
+
+def test_regime_gate_volatile_drops_rs_deterioration():
+    """震盪盤：RS 排名 5 日掉超過 50 名 → 剔除（即使 score 夠高）。"""
+    deteriorating = _regime_candidate(
+        hit_count=3, momentum_score=70.0, rs_rank_improvement_5d=-60
+    )
+    out = apply_regime_gate([deteriorating], REGIME_VOLATILE_RANGE)
+    assert out == []
+
+
+def test_regime_gate_bull_high_conviction_via_independent_episodes():
+    """v2.2：score >= 75 且 independent_hit_count >= 2 → BROAD_BULL 高信心。"""
+    c = _regime_candidate(
+        prelim_type=PRELIM_TYPE_FOLLOWER,
+        hit_count=1,
+        momentum_score=80.0,
+        independent_hit_count=2,
+    )
+    out = apply_regime_gate([c], REGIME_BULL_TREND, regime_detail="BROAD_BULL")
+    assert out[0]["regime_conviction"] == "high"
+
+
+def test_regime_gate_bull_medium_conviction_via_score():
+    c = _regime_candidate(
+        prelim_type=PRELIM_TYPE_FOLLOWER,
+        hit_count=1,
+        momentum_score=62.0,
+        independent_hit_count=1,
+    )
+    out = apply_regime_gate([c], REGIME_BULL_TREND, regime_detail="BROAD_BULL")
+    assert out[0]["regime_conviction"] == "medium"

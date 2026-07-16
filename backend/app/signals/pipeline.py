@@ -31,7 +31,8 @@ from app.database import SessionLocal
 from app.models import SignalGenerationJob, SignalSnapshot
 from app.signals import archive as signal_archive
 from app.signals import candidate_pool, classification, filters, llm_caller
-from app.signals import market_margin, market_regime, market_snapshot, momentum
+from app.signals import deterministic_signals as det_signals
+from app.signals import market_breadth, market_margin, market_regime, market_snapshot, momentum
 
 logger = logging.getLogger(__name__)
 
@@ -104,8 +105,13 @@ def run_signal_pipeline_sync(
                 pct=15,
                 label="建立候選池",
             )
+            # v2.2：momentum frame 先算一次，candidate pool 與 market breadth 共用
+            # 同一份全市場資料（避免 daily_price 全市場 query 跑兩次）
+            momentum_frame = momentum.compute_market_momentum_frame(
+                db, target_date, ingestion.get("stocks_master") or {}
+            )
             pool = candidate_pool.build_candidate_pool(
-                db, target_date, ingestion, rankings
+                db, target_date, ingestion, rankings, momentum_frame=momentum_frame
             )
 
             # 短路：候選池空 → raise ValueError 讓 cron 分類為 exit 1 (no_data)
@@ -130,11 +136,32 @@ def run_signal_pipeline_sync(
             llm_input = _cap_llm_input(after_hard, limit=LLM_INPUT_HARD_LIMIT)
             after_soft = filters.apply_soft_filters(db, target_date, llm_input)
 
+            # v2.2：deterministic_signals（v5 STEP 7.5 Risk Cap 的後端 deterministic 化）
+            # chip_trend / technical_status / entry_quality / sector_rotation_status /
+            # institution_flow_momentum / risk_gate_action / max_decision / risk_flags
+            after_soft = det_signals.attach_deterministic_signals(after_soft)
+
             # M27 Market Regime Gate（deterministic）：依大盤狀態收斂候選範圍。
             # 震盪 / 退潮盤剔除單次命中 Follower-Laggard、distribution、急拉突破；
             # 存活者標 regime_conviction。regime 從 TAIEX 指數 deterministic 算，LLM 不可改寫。
+            # v2.2：疊市場廣度（spec §7.2）→ BULL_TREND 拆 BROAD/NARROW，只作用於
+            # deterministic gate；對 LLM 的 market_regime 契約維持 3 態（v5 prompt enum 固定）。
             regime_info = market_regime.compute_market_regime(db, target_date)
-            after_regime = filters.apply_regime_gate(after_soft, regime_info["regime"])
+            breadth = market_breadth.compute_breadth_from_frame(
+                momentum_frame, ingestion.get("stocks_master") or {}
+            )
+            regime_detail = market_breadth.resolve_regime_detail(
+                regime_info["regime"], breadth.get("breadth_score")
+            )
+            regime_info = {
+                **regime_info,
+                "regime_detail": regime_detail,
+                "breadth_score": breadth.get("breadth_score"),
+                "breadth": breadth,
+            }
+            after_regime = filters.apply_regime_gate(
+                after_soft, regime_info["regime"], regime_detail=regime_detail
+            )
             conviction_by_stock = {
                 str(c.get("stock_id") or ""): c.get("regime_conviction")
                 for c in after_regime
@@ -162,6 +189,9 @@ def run_signal_pipeline_sync(
             market_context["market_regime"] = regime_info["regime"]
             market_context["market_regime_label"] = regime_info["regime_label"]
             market_context["market_regime_reason"] = regime_info["reason"]
+            # v2.2 市場廣度（觀察欄位；LLM 契約的 market_regime 仍是 3 態）
+            market_context["breadth_score"] = regime_info.get("breadth_score")
+            market_context["market_regime_detail"] = regime_info.get("regime_detail")
             # 2026-05-25：把大盤融資融券盤勢塞進 market_context，供 explanation /
             # watch_reason 兩 stage 共用（cache 4h，多檔 batch 不重算）
             try:

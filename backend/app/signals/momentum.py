@@ -68,6 +68,19 @@ CHANNEL_D_LIMIT = 20
 # 月營收回看：算 yoy 加速需 3 個「可用」月份，保守抓 6 個月的 revenue_month
 _REVENUE_LOOKBACK_DAYS = 200
 
+# v5 momentum_grade 分級（deterministic；LLM 原樣採用）
+_GRADE_A_MIN = 75.0
+_GRADE_B_MIN = 60.0
+_GRADE_C_MIN = 45.0
+
+# v5 momentum_phase 分類門檻（deterministic；優先序 weakening > extended > accelerating > trending > emerging）
+_PHASE_WEAKENING_RANK_DROP = -100   # 5 日 RS 排名掉超過 100 名 → weakening
+_PHASE_EXTENDED_RET_5D = 12.0       # 5 日漲幅過熱 → extended
+_PHASE_EXTENDED_RET_3D = 12.0       # 3 日漲幅逼近 15% hard gate → extended
+_PHASE_ACCEL_RANK_IMPROVEMENT = 100  # 5 日 RS 排名前進超過 100 名 → accelerating
+_PHASE_ACCEL_RS_MIN = 60.0
+_PHASE_TRENDING_RS_MIN = 70.0
+
 # spec §6.2 momentum_score 權重
 _W_PRICE = 30.0
 _W_RS = 25.0
@@ -108,6 +121,8 @@ def empty_momentum_features() -> Dict[str, Any]:
         "distance_to_60d_high": None,
         "distance_to_ma20": None,
         "trend_efficiency_20d": None,
+        "atr_pct_14d": None,
+        "up_down_volume_ratio_20d": None,
         "volume_1d_to_20d_avg": None,
         "volume_ratio_percentile_5d_60d": None,
         "industry_rs_percentile_20d": None,
@@ -184,6 +199,8 @@ def compute_market_momentum_frame(
             DailyPrice.stock_id,
             DailyPrice.trade_date,
             DailyPrice.close_price,
+            DailyPrice.high_price,
+            DailyPrice.low_price,
             DailyPrice.volume,
             DailyPrice.turnover,
         )
@@ -192,10 +209,10 @@ def compute_market_momentum_frame(
     )
 
     closes_by_stock: Dict[str, List[Any]] = {}
-    for sid, td, close, volume, turnover in rows:
+    for sid, td, close, high, low, volume, turnover in rows:
         if sid not in universe_ids:
             continue
-        closes_by_stock.setdefault(sid, []).append((td, close, volume, turnover))
+        closes_by_stock.setdefault(sid, []).append((td, close, high, low, volume, turnover))
 
     frame: Dict[str, Dict[str, Any]] = {}
     last_2_dates = set(trade_dates[-2:])
@@ -203,15 +220,18 @@ def compute_market_momentum_frame(
 
     for sid, series in closes_by_stock.items():
         series.sort(key=lambda item: item[0])
-        closes = [float(c) for (_, c, _, _) in series if c is not None]
-        volumes = [float(v) for (_, _, v, _) in series if v is not None and v > 0]
+        closes = [float(c) for (_, c, _, _, _, _) in series if c is not None]
+        volumes = [float(v) for (_, _, _, _, v, _) in series if v is not None and v > 0]
         turnover_2d = sum(
-            float(t) for (td, _, _, t) in series if td in last_2_dates and t is not None
+            float(t)
+            for (td, _, _, _, _, t) in series
+            if td in last_2_dates and t is not None
         )
         turnover_2d_by_stock[sid] = turnover_2d
 
         feats = empty_momentum_features()
         feats.update(_price_features(closes, volumes))
+        feats.update(_volatility_features(series))
         frame[sid] = feats
 
     if not frame:
@@ -288,6 +308,67 @@ def _price_features(closes: List[float], volumes: List[float]) -> Dict[str, Any]
         avg_5 = sum(volumes[-5:]) / min(5, len(volumes))
         if avg_60 > 0:
             out["_volume_5d_to_60d"] = avg_5 / avg_60
+
+    # 廣度統計用內部欄位（market_breadth 聚合；merge 進候選池時被過濾）
+    if n >= 20:
+        ma20 = sum(closes[-20:]) / 20.0
+        out["_above_ma20"] = close >= ma20
+        low20 = min(closes[-20:])
+        out["_new_low_20d"] = close <= low20
+        high20 = max(closes[-20:])
+        out["_new_high_20d"] = close >= high20
+    if n >= 60:
+        ma60 = sum(closes[-60:]) / 60.0
+        out["_above_ma60"] = close >= ma60
+    if n >= 2 and closes[-2]:
+        out["_ret_1d"] = (close / closes[-2] - 1.0) * 100.0
+
+    return out
+
+
+def _volatility_features(series: List[Any]) -> Dict[str, Any]:
+    """ATR%（14 日）+ 上漲日/下跌日量能比（20 日）。
+
+    series = [(trade_date, close, high, low, volume, turnover), ...]（升序）。
+    OHLC 任一缺值的日子跳過（對齊 True Range 定義需要前一日收盤）。
+    """
+    out: Dict[str, Any] = {}
+
+    # ATR%：TR = max(H-L, |H-prevC|, |L-prevC|)；ATR14 = 近 14 根 TR 平均 / 收盤 ×100
+    ohlc = [
+        (float(h), float(low), float(c))
+        for (_, c, h, low, _, _) in series
+        if c is not None and h is not None and low is not None
+    ]
+    if len(ohlc) >= 15:
+        trs = []
+        for i in range(1, len(ohlc)):
+            high, low, close = ohlc[i]
+            prev_close = ohlc[i - 1][2]
+            trs.append(max(high - low, abs(high - prev_close), abs(low - prev_close)))
+        last_close = ohlc[-1][2]
+        if last_close > 0:
+            atr = sum(trs[-14:]) / min(14, len(trs))
+            out["atr_pct_14d"] = atr / last_close * 100.0
+
+    # 上漲日量 / 下跌日量（近 20 個交易日；平盤日不計）
+    cv = [
+        (float(c), float(v))
+        for (_, c, _, _, v, _) in series
+        if c is not None and v is not None and v > 0
+    ]
+    if len(cv) >= 21:
+        up_vol = 0.0
+        down_vol = 0.0
+        for i in range(len(cv) - 20, len(cv)):
+            close, vol = cv[i]
+            prev_close = cv[i - 1][0]
+            if close > prev_close:
+                up_vol += vol
+            elif close < prev_close:
+                down_vol += vol
+        if down_vol > 0:
+            out["up_down_volume_ratio_20d"] = up_vol / down_vol
 
     return out
 
@@ -805,6 +886,100 @@ def _has_blowoff_upper_shadow(candidate: Dict[str, Any]) -> bool:
     )
 
 
+# ---------- v5 momentum_grade / momentum_phase / momentum_signals ----------
+
+
+def momentum_grade(score: Optional[float]) -> Optional[str]:
+    """momentum_score → A/B/C/D（v5 prompt momentum_grade；deterministic）。"""
+    if score is None:
+        return None
+    if score >= _GRADE_A_MIN:
+        return "A"
+    if score >= _GRADE_B_MIN:
+        return "B"
+    if score >= _GRADE_C_MIN:
+        return "C"
+    return "D"
+
+
+def classify_momentum_phase(candidate: Dict[str, Any]) -> Optional[str]:
+    """v5 momentum_phase：emerging / accelerating / trending / extended / weakening。
+
+    deterministic 優先序（先危險再強弱）：
+      1. weakening：RS 排名 5 日掉 >100 名，或排名下滑且 5 日轉跌
+      2. extended：5 日漲幅 >= 12% 或 3 日漲幅 > 12%（逼近 15% 過熱 hard gate）
+      3. accelerating：RS 排名 5 日前進 >= 100 名且 rs_market_percentile >= 60
+      4. trending：rs_market_percentile >= 70（穩定強勢）
+      5. emerging：其餘（含改善中的中後段股；靠 score gate 把關品質）
+
+    rs_market_percentile 缺值（universe 樣本不足 / 新上市）→ None（資料不足，
+    v5 prompt 規定 LLM 不可幻想，會走保守 fallback）。
+    """
+    rs_pct = candidate.get("rs_market_percentile_20d")
+    if rs_pct is None:
+        return None
+
+    improvement = candidate.get("rs_rank_improvement_5d")
+    ret_5d = candidate.get("return_5d")
+    pct_3d = candidate.get("price_change_3d")
+
+    if improvement is not None:
+        if improvement <= _PHASE_WEAKENING_RANK_DROP:
+            return "weakening"
+        if improvement < 0 and ret_5d is not None and ret_5d < 0:
+            return "weakening"
+
+    if (ret_5d is not None and ret_5d >= _PHASE_EXTENDED_RET_5D) or (
+        pct_3d is not None and pct_3d > _PHASE_EXTENDED_RET_3D
+    ):
+        return "extended"
+
+    if (
+        improvement is not None
+        and improvement >= _PHASE_ACCEL_RANK_IMPROVEMENT
+        and rs_pct >= _PHASE_ACCEL_RS_MIN
+    ):
+        return "accelerating"
+
+    if rs_pct >= _PHASE_TRENDING_RS_MIN:
+        return "trending"
+
+    return "emerging"
+
+
+def build_momentum_signals(candidate: Dict[str, Any]) -> Dict[str, Any]:
+    """組 v5 prompt 的 `momentum_signals` nested dict（v5 欄位命名）。
+
+    candidate 需已 merge frame 特徵 + pool metrics + momentum_score。
+    llm_caller 的 `_momentum_signals_view` 看到現成 dict 會直接採用（優先權
+    高於它自己的 fallback 對照），所以命名以 v5 INPUT schema 為準。
+    """
+    score = candidate.get("momentum_score")
+    return {
+        "return_5d": candidate.get("return_5d"),
+        "return_20d": candidate.get("return_20d"),
+        "return_60d": candidate.get("return_60d"),
+        # return_percentile_20d 數學上 = rs_market_percentile_20d（對常數 benchmark 平移不變）
+        "return_percentile_20d": candidate.get("rs_market_percentile_20d"),
+        "return_percentile_60d": candidate.get("return_percentile_60d"),
+        "rs_market_20d": candidate.get("relative_strength_market_20d"),
+        "rs_market_percentile_20d": candidate.get("rs_market_percentile_20d"),
+        "rs_industry_20d": candidate.get("relative_strength_industry_20d"),
+        "rs_industry_percentile_20d": candidate.get("rs_industry_percentile_20d"),
+        "rs_rank_change_5d": candidate.get("rs_rank_improvement_5d"),
+        "distance_to_high_20d_pct": candidate.get("distance_to_20d_high"),
+        "distance_to_high_60d_pct": candidate.get("distance_to_60d_high"),
+        "distance_to_ma20_pct": candidate.get("distance_to_ma20"),
+        "trend_efficiency_20d": candidate.get("trend_efficiency_20d"),
+        "atr_pct_14d": candidate.get("atr_pct_14d"),
+        "up_down_volume_ratio_20d": candidate.get("up_down_volume_ratio_20d"),
+        "volume_ratio_5d_60d": candidate.get("volume_5d_to_60d_ratio"),
+        "momentum_score": score,
+        "momentum_grade": momentum_grade(score),
+        "momentum_phase": classify_momentum_phase(candidate),
+    }
+
+
 # ---------- persistence view（spec §9.2 第一批落地欄位） ----------
 
 
@@ -821,7 +996,9 @@ def build_signal_metrics(
     if regime_info:
         regime_detail = {
             "regime": regime_info.get("regime"),
+            "regime_detail": regime_info.get("regime_detail"),  # v2.2：BROAD/NARROW_BULL
             "reason": regime_info.get("reason"),
+            "breadth_score": regime_info.get("breadth_score"),
         }
     return {
         "return_5d": candidate.get("return_5d"),
@@ -836,8 +1013,13 @@ def build_signal_metrics(
         "distance_to_ma20": candidate.get("distance_to_ma20"),
         "momentum_score": candidate.get("momentum_score"),
         "momentum_score_detail": candidate.get("momentum_score_detail"),
+        "momentum_grade": candidate.get("momentum_grade"),   # v2.2（v5 A/B/C/D）
+        "momentum_phase": candidate.get("momentum_phase"),   # v2.2（v5 五階段）
         "market_regime_detail": regime_detail,
-        "breadth_score": None,  # v2.2
+        "breadth_score": (regime_info or {}).get("breadth_score"),  # v2.2 市場廣度
+        # v2.2 episode 統計（spec §7.4）
+        "consecutive_hit_count": candidate.get("consecutive_hit_count"),
+        "independent_hit_count": candidate.get("independent_hit_count"),
         # 基本面動能（2026-07-15 第二輪；available_date gate 後的可見值）
         "revenue_yoy": candidate.get("revenue_yoy"),
         "revenue_yoy_acceleration": candidate.get("revenue_yoy_acceleration"),

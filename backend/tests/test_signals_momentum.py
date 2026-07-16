@@ -447,3 +447,146 @@ def test_frame_market_cap_uses_latest_snapshot_within_lookback(db):
     db.commit()
     frame = momentum.compute_market_momentum_frame(db, dates[-1], _masters_map(db))
     assert frame["S22"]["shares_issued"] == 500_000_000
+
+
+# ---------- v2.2 × v5：ATR / up-down volume / grade / phase / momentum_signals ----------
+
+
+def test_momentum_grade_bands():
+    assert momentum.momentum_grade(80.0) == "A"
+    assert momentum.momentum_grade(75.0) == "A"
+    assert momentum.momentum_grade(74.9) == "B"
+    assert momentum.momentum_grade(60.0) == "B"
+    assert momentum.momentum_grade(59.9) == "C"
+    assert momentum.momentum_grade(45.0) == "C"
+    assert momentum.momentum_grade(44.9) == "D"
+    assert momentum.momentum_grade(None) is None
+
+
+def test_momentum_phase_weakening_on_rank_collapse():
+    c = {"rs_market_percentile_20d": 80.0, "rs_rank_improvement_5d": -150}
+    assert momentum.classify_momentum_phase(c) == "weakening"
+
+
+def test_momentum_phase_weakening_on_decline_with_negative_return():
+    c = {"rs_market_percentile_20d": 80.0, "rs_rank_improvement_5d": -10, "return_5d": -2.0}
+    assert momentum.classify_momentum_phase(c) == "weakening"
+
+
+def test_momentum_phase_extended_on_hot_5d():
+    c = {"rs_market_percentile_20d": 90.0, "rs_rank_improvement_5d": 50, "return_5d": 13.0}
+    assert momentum.classify_momentum_phase(c) == "extended"
+
+
+def test_momentum_phase_accelerating():
+    c = {"rs_market_percentile_20d": 65.0, "rs_rank_improvement_5d": 150, "return_5d": 5.0}
+    assert momentum.classify_momentum_phase(c) == "accelerating"
+
+
+def test_momentum_phase_trending():
+    c = {"rs_market_percentile_20d": 85.0, "rs_rank_improvement_5d": 10, "return_5d": 2.0}
+    assert momentum.classify_momentum_phase(c) == "trending"
+
+
+def test_momentum_phase_emerging():
+    c = {"rs_market_percentile_20d": 55.0, "rs_rank_improvement_5d": 30, "return_5d": 1.0}
+    assert momentum.classify_momentum_phase(c) == "emerging"
+
+
+def test_momentum_phase_none_when_rs_missing():
+    assert momentum.classify_momentum_phase({"rs_market_percentile_20d": None}) is None
+
+
+def test_build_momentum_signals_uses_v5_naming():
+    candidate = {
+        "return_20d": 12.0,
+        "rs_market_percentile_20d": 88.0,
+        "relative_strength_market_20d": 5.5,
+        "relative_strength_industry_20d": 2.2,
+        "rs_rank_improvement_5d": 120,
+        "distance_to_20d_high": -1.5,
+        "distance_to_60d_high": -4.0,
+        "distance_to_ma20": 3.0,
+        "volume_5d_to_60d_ratio": 1.4,
+        "atr_pct_14d": 2.8,
+        "up_down_volume_ratio_20d": 1.6,
+        "momentum_score": 76.0,
+        "return_5d": 3.0,
+    }
+    ms = momentum.build_momentum_signals(candidate)
+    # v5 命名對齊
+    assert ms["rs_rank_change_5d"] == 120
+    assert ms["distance_to_high_20d_pct"] == -1.5
+    assert ms["distance_to_high_60d_pct"] == -4.0
+    assert ms["distance_to_ma20_pct"] == 3.0
+    assert ms["rs_market_20d"] == 5.5
+    assert ms["rs_industry_20d"] == 2.2
+    assert ms["volume_ratio_5d_60d"] == 1.4
+    assert ms["return_percentile_20d"] == 88.0  # = rs_market_percentile_20d（等價）
+    assert ms["momentum_grade"] == "A"
+    assert ms["momentum_phase"] == "accelerating"
+    assert ms["atr_pct_14d"] == 2.8
+    assert ms["up_down_volume_ratio_20d"] == 1.6
+
+
+def test_frame_computes_atr_and_up_down_volume(db):
+    dates, stock_ids = _seed_market(db)
+    frame = momentum.compute_market_momentum_frame(db, dates[-1], _masters_map(db))
+    feats = frame["S22"]
+    # _seed_market：high = close+1、low = close-1、日漲 = 11 → TR = max(2, |close+1-prev|)
+    # S22 slope = 11/日 → TR = 12（high - prev_close = close+1-(close-11) = 12）
+    # close 最後一日 = 100 + 22*0.5*29 = 419 → ATR% = 12/419*100
+    assert feats["atr_pct_14d"] is not None
+    assert abs(feats["atr_pct_14d"] - (12.0 / 419.0 * 100.0)) < 1e-6
+    # 一路上漲 → 沒有下跌日 → up/down ratio 分母 0 → None
+    assert feats["up_down_volume_ratio_20d"] is None
+
+
+def test_frame_up_down_volume_ratio_with_mixed_days(db):
+    dates, stock_ids = _seed_market(db)
+    # 把 S05 改成漲跌交錯：偶數日 100、奇數日 90（量固定 1000）
+    rows = (
+        db.query(DailyPrice)
+        .filter(DailyPrice.stock_id == "S05")
+        .order_by(DailyPrice.trade_date)
+        .all()
+    )
+    for i, row in enumerate(rows):
+        row.close_price = 100.0 if i % 2 == 0 else 90.0
+    db.commit()
+
+    frame = momentum.compute_market_momentum_frame(db, dates[-1], _masters_map(db))
+    ratio = frame["S05"]["up_down_volume_ratio_20d"]
+    # 近 20 個轉換裡漲跌各半、量相同 → ratio = 1.0
+    assert ratio is not None
+    assert abs(ratio - 1.0) < 1e-9
+
+
+def test_pool_candidates_carry_momentum_signals_and_grade(db):
+    """整合：候選池每檔都帶 v5 momentum_signals nested dict + flat grade/phase。"""
+    from app.signals.candidate_pool import build_candidate_pool, compute_rankings, ingest_data
+    from app.models import IndustryDailyFlow
+
+    dates, stock_ids = _seed_market(db)
+    # 半導體產業 flow 讓 rankings 成立
+    for d in dates:
+        db.add(
+            IndustryDailyFlow(
+                trade_date=d, industry_name="半導體",
+                total_buy_amount=5.0e8, total_sell_amount=0, total_net_amount=5.0e8,
+                foreign_net_amount=5.0e8, trust_net_amount=0, dealer_net_amount=0,
+            )
+        )
+    db.commit()
+
+    target = dates[-1]
+    ingestion = ingest_data(db, target)
+    rankings = compute_rankings(db, target, ingestion)
+    pool = build_candidate_pool(db, target, ingestion, rankings)
+
+    assert pool
+    for c in pool:
+        ms = c.get("momentum_signals")
+        assert isinstance(ms, dict)
+        assert "momentum_grade" in ms and "momentum_phase" in ms
+        assert c.get("momentum_grade") == ms["momentum_grade"]

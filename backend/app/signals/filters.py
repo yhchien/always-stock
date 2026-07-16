@@ -68,6 +68,14 @@ _HARD_RS_MARKET_PERCENTILE_MIN = 40.0
 _REGIME_VOLATILE_MOMENTUM_SCORE_MIN = 60.0   # 震盪盤 momentum_score < 60 剔除
 _REGIME_RISK_OFF_RS_PERCENTILE_MIN = 90.0    # 退潮盤 rs_market_percentile_20d < 90 剔除
 
+# v2.2 breadth-aware gate（spec §7.3；2026-07-15 第三輪）
+_REGIME_BROAD_BULL_SCORE_MIN = 50.0          # BROAD_BULL：momentum_score < 50 剔除
+_REGIME_NARROW_BULL_LEADER_SCORE_MIN = 65.0  # NARROW_BULL：LEADER 需 score >= 65
+_REGIME_NARROW_BULL_SCORE_MIN = 70.0         # NARROW_BULL：非 LEADER 需 score >= 70 且無 distribution
+_REGIME_BULL_HIGH_CONVICTION_SCORE = 75.0    # BROAD_BULL 高信心：score >= 75 且 independent_hit >= 2
+_REGIME_BULL_MEDIUM_CONVICTION_SCORE = 60.0
+_VOLATILE_RS_DETERIORATION = -50             # 震盪盤：RS 排名 5 日掉超過 50 名 → 剔除（spec「相對強度近 5 日惡化」）
+
 # 2026-06-26 新增：當日成交量死線（依股價級距要求最低張數，不足直接剔除）
 # 1 張 = 1000 股；DB volume 為股數，故門檻乘以 _SHARES_PER_LOT 比對。
 _SHARES_PER_LOT = 1000
@@ -139,6 +147,8 @@ _REGIME_SPIKE_PRICE_1D_PCT = 5.0    # 當日漲幅
 def apply_regime_gate(
     candidates: List[Dict[str, Any]],
     market_regime: str,
+    *,
+    regime_detail: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """M27：依大盤 regime 對候選池做 deterministic 降級 / 剔除（spec 外，2026-06-26）。
 
@@ -146,10 +156,14 @@ def apply_regime_gate(
     Follower / Laggard / 單次命中 / 急拉突破股送進 LLM。regime gate 在 LLM 之前
     先依大盤狀態收斂候選範圍，並對存活者標 `regime_conviction`（high/medium/low）。
 
-    - BULL_TREND：不額外剔除（維持原行為），只標 conviction
-    - VOLATILE_RANGE：剔除 distribution / 急拉突破 / conviction=low（單次命中非 LEADER），
+    - BULL_TREND（v2.2 疊 breadth，`regime_detail` 由 market_breadth.resolve_regime_detail 算）：
+      - BROAD_BULL（或 detail 缺值，保守不加嚴）：momentum_score < 50 剔除（spec §7.3）
+      - NARROW_BULL（指數強但廣度弱）：只留 (LEADER 且 score>=65) 或 (score>=70 且無 distribution)
+    - VOLATILE_RANGE：剔除 distribution / 急拉突破 / momentum_score<60 /
+      RS 排名 5 日惡化 / conviction=low（單次命中非 LEADER），
       但「已追蹤且表現中（max_pos>=3% 且 max_neg>-6%）」的 low 給留校 watch
-    - RISK_OFF：只保留「LEADER + hit_count>=3 + 近 5 日法人為正 + 非 distribution」，其餘剔除
+    - RISK_OFF：只保留「LEADER + hit_count>=3 + 近 5 日法人為正 + 非 distribution +
+      rs_market_percentile>=90」，其餘剔除
 
     conviction 採資料導向（2026-06 CSV：hit_count>=3 勝率 77%、單次命中僅 24%）：
     - VOLATILE_RANGE：hit>=3 → high；LEADER 或 hit==2 → medium；其餘 → low
@@ -161,13 +175,14 @@ def apply_regime_gate(
     """
     out: List[Dict[str, Any]] = []
     for c in candidates:
-        if _regime_should_remove(c, market_regime):
+        if _regime_should_remove(c, market_regime, regime_detail):
             continue
         conviction = _regime_conviction(c, market_regime)
         out.append(
             {
                 **c,
                 "market_regime": market_regime,
+                "market_regime_detail": regime_detail or market_regime,
                 "regime_conviction": conviction,
                 "regime_gate_note": _regime_gate_note(market_regime, conviction),
             }
@@ -213,8 +228,25 @@ def _is_tracked_and_holding(candidate: Dict[str, Any]) -> bool:
     )
 
 
-def _regime_should_remove(candidate: Dict[str, Any], market_regime: str) -> bool:
+def _regime_should_remove(
+    candidate: Dict[str, Any],
+    market_regime: str,
+    regime_detail: Optional[str] = None,
+) -> bool:
     if market_regime == REGIME_BULL_TREND:
+        score = candidate.get("momentum_score")
+        # v2.2（spec §7.3）NARROW_BULL：指數強但廣度弱 → 只留最強的
+        if regime_detail == "NARROW_BULL":
+            if score is None:
+                return False  # 缺值不觸發（向後相容）
+            if _is_leader(candidate) and score >= _REGIME_NARROW_BULL_LEADER_SCORE_MIN:
+                return False
+            if score >= _REGIME_NARROW_BULL_SCORE_MIN and not _has_distribution(candidate):
+                return False
+            return True
+        # BROAD_BULL（或 detail 缺值）：保留 score >= 50（spec §7.3）
+        if score is not None and score < _REGIME_BROAD_BULL_SCORE_MIN:
+            return True
         return False
 
     if market_regime == REGIME_VOLATILE_RANGE:
@@ -227,6 +259,10 @@ def _regime_should_remove(candidate: Dict[str, Any], market_regime: str) -> bool
         # 正常 pipeline 每檔都有 score（資料缺漏股 score 會偏低 → 自然被擋）。
         score = candidate.get("momentum_score")
         if score is not None and score < _REGIME_VOLATILE_MOMENTUM_SCORE_MIN:
+            return True
+        # v2.2（spec §7.3）：相對強度近 5 日惡化（排名掉超過 50 名）→ 剔除
+        improvement = candidate.get("rs_rank_improvement_5d")
+        if improvement is not None and improvement <= _VOLATILE_RS_DETERIORATION:
             return True
         # conviction=low（單次命中且非 LEADER）→ 剔除，除非已追蹤且表現中
         if _regime_conviction(candidate, market_regime) == "low" and not _is_tracked_and_holding(
@@ -259,9 +295,16 @@ def _regime_conviction(candidate: Dict[str, Any], market_regime: str) -> str:
     leader = _is_leader(candidate)
 
     if market_regime == REGIME_BULL_TREND:
-        if leader and hit >= 2:
+        score = candidate.get("momentum_score")
+        indep = int(candidate.get("independent_hit_count") or 0)
+        # v2.2（spec §7.3 BROAD_BULL 高信心）：score >= 75 且獨立 episode >= 2
+        if (leader and hit >= 2) or (
+            score is not None and score >= _REGIME_BULL_HIGH_CONVICTION_SCORE and indep >= 2
+        ):
             return "high"
-        if hit >= 2 or leader:
+        if hit >= 2 or leader or (
+            score is not None and score >= _REGIME_BULL_MEDIUM_CONVICTION_SCORE
+        ):
             return "medium"
         return "low"
 

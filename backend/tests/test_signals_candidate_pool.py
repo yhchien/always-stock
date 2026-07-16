@@ -677,3 +677,74 @@ def test_v21_every_candidate_has_momentum_score_and_rs_fields(db):
         assert "rs_market_percentile_20d" in c
         assert "rs_industry_percentile_20d" in c
         assert "rs_rank_improvement_5d" in c
+
+
+# ---------- v2.2 episode-aware hit_count（spec §7.4） ----------
+
+
+def test_episode_counts_single_episode():
+    """連續命中（間隔 <= 3 交易日）→ 同一 episode。"""
+    from datetime import timedelta
+    from app.signals.candidate_pool import _episode_counts
+
+    days = [date(2026, 6, 1) + timedelta(days=i) for i in range(30)]
+    trade_index = {d: i for i, d in enumerate(days)}
+    # 命中 day0, day2, day5（gap 1 與 2，都 < 5）
+    hits = [days[0], days[2], days[5]]
+    consecutive, independent = _episode_counts(hits, trade_index)
+    assert independent == 1
+    assert consecutive == 3
+
+
+def test_episode_counts_new_episode_after_5_day_gap():
+    """兩次命中間未命中 >= 5 個交易日 → 新獨立 episode。"""
+    from datetime import timedelta
+    from app.signals.candidate_pool import _episode_counts
+
+    days = [date(2026, 6, 1) + timedelta(days=i) for i in range(30)]
+    trade_index = {d: i for i, d in enumerate(days)}
+    # 命中 day0, day1（episode 1）→ 中斷 6 天 → day8, day9（episode 2）
+    hits = [days[0], days[1], days[8], days[9]]
+    consecutive, independent = _episode_counts(hits, trade_index)
+    assert independent == 2
+    assert consecutive == 2  # 當前（最新）episode 的命中次數
+
+
+def test_episode_counts_gap_4_days_stays_same_episode():
+    """4 天未命中是模糊帶 → 依 spec「至少 5 天才算新」歸同一 episode。"""
+    from datetime import timedelta
+    from app.signals.candidate_pool import _episode_counts
+
+    days = [date(2026, 6, 1) + timedelta(days=i) for i in range(30)]
+    trade_index = {d: i for i, d in enumerate(days)}
+    hits = [days[0], days[5]]  # gap = 4 個未命中交易日
+    consecutive, independent = _episode_counts(hits, trade_index)
+    assert independent == 1
+    assert consecutive == 2
+
+
+def test_tracking_status_includes_episode_counts(db):
+    """整合：_load_tracking_status 回傳 consecutive / independent hit counts。"""
+    from datetime import timedelta
+    from app.signals.candidate_pool import _load_tracking_status
+
+    days = [date(2026, 6, 1) + timedelta(days=i) for i in range(20)]
+    _seed_master(db, "2330", "台積電", "半導體")
+    for d in days:
+        _seed_price(db, d, "2330")
+    # 命中 day0、day1（episode 1）→ 中斷 >= 5 → day10（episode 2）
+    for d in [days[0], days[1], days[10]]:
+        db.add(
+            SignalWatchHit(
+                snapshot_date=d, stock_id="2330", stock_name="台積電",
+                signal_type="LEADER", reason="r", theme={}, group_info={},
+                leader_check={}, signals={},
+            )
+        )
+    db.commit()
+
+    out = _load_tracking_status(db, ["2330"], days[-1])
+    ts = out["2330"]
+    assert ts["hit_count"] == 3
+    assert ts["independent_hit_count"] == 2
+    assert ts["consecutive_hit_count"] == 1  # 最新 episode 只有 day10 一次

@@ -116,10 +116,13 @@ def test_extract_json_handles_none_like_input():
 
 def test_assemble_market_context_parses_json_happy_path(monkeypatch):
     payload = {
-        "market_state": "STRUCTURAL_BULL",
-        "vix_status": "risk_on",
-        "futures_bias": "LONG",
-        "market_state_reason": "VIX 低、台指期偏多",
+        "external_risk_context": {
+            "vix_status": "risk_on",
+            "us_market_bias": "positive",
+            "futures_bias": "LONG",
+            "fx_risk": "neutral",
+            "risk_summary": "VIX 低、台指期偏多",
+        },
     }
     fake_client = _patch_openai(monkeypatch, json.dumps(payload))
     out = llm_caller.assemble_market_context(
@@ -128,11 +131,12 @@ def test_assemble_market_context_parses_json_happy_path(monkeypatch):
             "otc": {"change_pct_1d": 1.8},
         }
     )
-    assert out["market_state"] == "STRUCTURAL_BULL"
+    assert out["market_state"] == "BACKEND_REGIME_AUTHORITATIVE"
     assert out["taiex_change_pct"] == 1.2
     assert out["otc_change_pct"] == 1.8
     assert out["vix_status"] == "risk_on"
     assert out["futures_bias"] == "LONG"
+    assert out["external_risk_context"]["us_market_bias"] == "positive"
     assert "VIX" in out["market_state_reason"]
     assert out["llm_diagnostic"]["status"] == llm_caller._DIAG_STATUS_OK
     assert out["llm_diagnostic"]["stage"] == "market"
@@ -144,12 +148,15 @@ def test_assemble_market_context_parses_json_happy_path(monkeypatch):
 
 def test_assemble_market_context_keeps_backend_index_values_even_if_llm_mentions_zeros(monkeypatch):
     payload = {
-        "market_state": "RANGE",
         "taiex_change_pct": 0,
         "otc_change_pct": 0,
-        "vix_status": "neutral",
-        "futures_bias": "NEUTRAL",
-        "market_state_reason": "外部資料不足，但 backend 數字仍可用。",
+        "external_risk_context": {
+            "vix_status": "neutral",
+            "us_market_bias": "neutral",
+            "futures_bias": "NEUTRAL",
+            "fx_risk": "neutral",
+            "risk_summary": "外部資料不足，但 backend 數字仍可用。",
+        },
     }
     _patch_openai(monkeypatch, json.dumps(payload))
     out = llm_caller.assemble_market_context(
@@ -163,27 +170,28 @@ def test_assemble_market_context_keeps_backend_index_values_even_if_llm_mentions
 
 
 def test_assemble_market_context_strips_code_fence(monkeypatch):
-    raw = '```json\n{"market_state": "RANGE", "vix_status": "neutral"}\n```'
+    raw = '```json\n{"external_risk_context": {"vix_status": "neutral", "risk_summary": "ok"}}\n```'
     _patch_openai(monkeypatch, raw)
     out = llm_caller.assemble_market_context({"taiex": {"change_pct_1d": 0.1}})
-    assert out["market_state"] == "RANGE"
+    assert out["market_state"] == "BACKEND_REGIME_AUTHORITATIVE"
+    assert out["vix_status"] == "neutral"
     assert out["taiex_change_pct"] == 0.1
 
 
 def test_assemble_market_context_fallback_when_api_key_missing(monkeypatch):
     _patch_openai(monkeypatch, '{"market_state": "STRONG_BULL"}', api_key=None)
     out = llm_caller.assemble_market_context({"taiex": {"change_pct_1d": 1.5}})
-    # 沒 key → fallback 為 RANGE
-    assert out["market_state"] == "RANGE"
+    assert out["market_state"] == "BACKEND_REGIME_AUTHORITATIVE"
     assert out["taiex_change_pct"] == 1.5
     assert "OPENAI_API_KEY" in out["market_state_reason"]
+    assert out["external_risk_context"]["vix_status"] == "unavailable"
     assert out["llm_diagnostic"]["status"] == llm_caller._DIAG_STATUS_API_KEY_MISSING
 
 
 def test_assemble_market_context_fallback_on_invalid_json(monkeypatch):
     _patch_openai(monkeypatch, "not valid json")
     out = llm_caller.assemble_market_context({})
-    assert out["market_state"] == "RANGE"
+    assert out["market_state"] == "BACKEND_REGIME_AUTHORITATIVE"
     assert out["llm_diagnostic"]["status"] == llm_caller._DIAG_STATUS_INVALID_JSON
     assert "合法 JSON" in out["market_state_reason"]
 
@@ -191,7 +199,7 @@ def test_assemble_market_context_fallback_on_invalid_json(monkeypatch):
 def test_assemble_market_context_fallback_on_openai_exception(monkeypatch):
     _patch_openai(monkeypatch, "", raise_exc=RuntimeError("boom"))
     out = llm_caller.assemble_market_context({})
-    assert out["market_state"] == "RANGE"
+    assert out["market_state"] == "BACKEND_REGIME_AUTHORITATIVE"
     assert out["llm_diagnostic"]["status"] == llm_caller._DIAG_STATUS_OPENAI_EXCEPTION
     assert "RuntimeError" in out["market_state_reason"]
 
@@ -720,11 +728,11 @@ def test_assemble_final_output_stamps_prompt_version():
 
 
 def test_resolve_prompt_version_routes_by_regime():
-    """多頭跑 v1、震盪 / 退潮 / 未知跑 v4（收斂版）。"""
-    assert llm_caller._resolve_prompt_version("BULL_TREND") == llm_caller.PROMPT_VERSION_BULL
-    assert llm_caller._resolve_prompt_version("VOLATILE_RANGE") == llm_caller.PROMPT_VERSION_VOLATILE
-    assert llm_caller._resolve_prompt_version("RISK_OFF") == llm_caller.PROMPT_VERSION_VOLATILE
-    assert llm_caller._resolve_prompt_version(None) == llm_caller.PROMPT_VERSION_VOLATILE
+    """所有 regime 預設跑 v5（相對強度動能版）。"""
+    assert llm_caller._resolve_prompt_version("BULL_TREND") == "v5"
+    assert llm_caller._resolve_prompt_version("VOLATILE_RANGE") == "v5"
+    assert llm_caller._resolve_prompt_version("RISK_OFF") == "v5"
+    assert llm_caller._resolve_prompt_version(None) == "v5"
 
 
 def test_resolve_prompt_version_env_override(monkeypatch):
@@ -744,7 +752,7 @@ def test_resolve_prompt_version_env_override(monkeypatch):
 
 
 def test_assemble_final_output_prompt_version_follows_regime():
-    """prompt_version label 跟著 market_regime 走：多頭 v1、震盪 v4。"""
+    """prompt_version label 預設走 v5，避免不同 regime 回到舊 prompt 方法論。"""
     explanation = [_watch_item("2330", "台積電", "LEADER", "半導體業")]
 
     bull = llm_caller.assemble_final_output(
@@ -752,15 +760,15 @@ def test_assemble_final_output_prompt_version_follows_regime():
         explanation,
         candidate_pool_size=5,
     )
-    assert bull["prompt_version"] == "v1"
-    assert all(item["prompt_version"] == "v1" for item in bull["watchlist"])
+    assert bull["prompt_version"] == "v5"
+    assert all(item["prompt_version"] == "v5" for item in bull["watchlist"])
 
     volatile = llm_caller.assemble_final_output(
         {"market_state": "RANGE", "market_regime": "VOLATILE_RANGE"},
         explanation,
         candidate_pool_size=5,
     )
-    assert volatile["prompt_version"] == "v4"
+    assert volatile["prompt_version"] == "v5"
 
 
 def test_load_system_prompt_v1_file_exists_and_slices():
@@ -768,6 +776,15 @@ def test_load_system_prompt_v1_file_exists_and_slices():
     fragment = llm_caller._load_system_prompt(stage="research", version="v1")
     assert "STEP 2" in fragment
     assert isinstance(fragment, str) and len(fragment) > 0
+
+
+def test_load_system_prompt_v5_file_exists_and_includes_momentum_gate():
+    """v5 prompt 檔存在，decision stage 需吃到 Momentum Gate。"""
+    llm_caller._PROMPT_FRAGMENT_CACHE.clear()
+    fragment = llm_caller._load_system_prompt(stage="decision", version="v5")
+    assert "STEP 7.8：Momentum Gate" in fragment
+    assert "rs_market_percentile_20d" in fragment
+    assert "STEP 0：讀取市場狀態與外部風險背景" not in fragment
 
 
 def test_assemble_final_output_unknown_decision_is_dropped():
@@ -910,7 +927,7 @@ def test_run_research_batch_loads_research_stage_prompt(monkeypatch):
     # research stage 應含 STEP 1~4，不含 STEP 5/6/7/8/9
     assert "STEP 1：建立候選池" in sent_instructions
     assert "STEP 4：龍頭股、同業、集團股檢查" in sent_instructions
-    assert "STEP 5：Leader / Follower / Laggard 分類" not in sent_instructions
+    assert "STEP 5：解讀 backend 角色分類" not in sent_instructions
     assert "STEP 9：最終輸出格式" not in sent_instructions
     # 共用 preamble + 重要限制必須在
     assert "核心原則" in sent_instructions
@@ -920,8 +937,13 @@ def test_run_research_batch_loads_research_stage_prompt(monkeypatch):
 def test_assemble_market_context_caches_for_subsequent_calls(monkeypatch):
     """A3：第一次 LLM call 命中後寫 cache，第二次直接命中（不再打 OpenAI）。"""
     response = {
-        "market_state": "STRONG_BULL", "vix_status": "risk_on",
-        "futures_bias": "LONG", "market_state_reason": "fresh",
+        "external_risk_context": {
+            "vix_status": "risk_on",
+            "us_market_bias": "positive",
+            "futures_bias": "LONG",
+            "fx_risk": "neutral",
+            "risk_summary": "fresh",
+        },
     }
     fake_client = _patch_openai(monkeypatch, json.dumps(response))
     snapshot = {
@@ -930,8 +952,9 @@ def test_assemble_market_context_caches_for_subsequent_calls(monkeypatch):
     }
     out1 = llm_caller.assemble_market_context(snapshot)
     out2 = llm_caller.assemble_market_context(snapshot)
-    assert out1["market_state"] == "STRONG_BULL"
-    assert out2["market_state"] == "STRONG_BULL"
+    assert out1["market_state"] == "BACKEND_REGIME_AUTHORITATIVE"
+    assert out2["market_state"] == "BACKEND_REGIME_AUTHORITATIVE"
+    assert out2["external_risk_context"]["risk_summary"] == "fresh"
     # 只打過一次 OpenAI
     assert len(fake_client._responses_api.calls) == 1
     # taiex/otc 仍以 backend 為準
@@ -952,8 +975,13 @@ def test_assemble_market_context_does_not_cache_fallback(monkeypatch):
 def test_assemble_market_context_use_cache_false_bypasses_cache(monkeypatch):
     """A3：use_cache=False 強制 fresh（cron 用）。"""
     response = {
-        "market_state": "RANGE", "vix_status": "neutral",
-        "futures_bias": "NEUTRAL", "market_state_reason": "r",
+        "external_risk_context": {
+            "vix_status": "neutral",
+            "us_market_bias": "neutral",
+            "futures_bias": "NEUTRAL",
+            "fx_risk": "neutral",
+            "risk_summary": "r",
+        },
     }
     fake_client = _patch_openai(monkeypatch, json.dumps(response))
     snapshot = {"taiex": {"change_pct_1d": 0.0}, "otc": {"change_pct_1d": 0.0}}
@@ -966,9 +994,9 @@ def test_load_system_prompt_market_stage_drops_other_steps():
     """A4：market stage fragment 只含 STEP 0 + preamble + 重要限制。"""
     llm_caller._PROMPT_FRAGMENT_CACHE.clear()
     fragment = llm_caller._load_system_prompt(stage="market")
-    assert "STEP 0：上網查詢市場狀態" in fragment
+    assert "STEP 0：讀取市場狀態與外部風險背景" in fragment
     assert "STEP 3：公司業務" not in fragment
-    assert "STEP 5：Leader" not in fragment
+    assert "STEP 5：解讀 backend 角色分類" not in fragment
     assert "重要限制" in fragment
     # input 描述（preamble）也保留
     assert "stock_pool" in fragment
@@ -1021,6 +1049,29 @@ def test_to_evidence_view_handles_untracked_stock():
     assert ts["hit_count"] is None
     assert ts["max_positive_return_pct"] is None
     assert ts["max_negative_return_pct"] is None
+
+
+def test_to_evidence_view_includes_momentum_signals():
+    candidate = {
+        "stock_id": "2330",
+        "name": "台積電",
+        "industry": "半導體",
+        "prelim_type": "LEADER",
+        "momentum_score": 82,
+        "momentum_phase": "trending",
+        "rs_market_percentile_20d": 91,
+        "rs_industry_percentile_20d": 78,
+        "rs_rank_change_5d": 120,
+        "trend_efficiency_20d": 0.62,
+    }
+    out = llm_caller._to_evidence_view([candidate])
+    momentum = out[0]["momentum_signals"]
+    assert momentum["momentum_score"] == 82
+    assert momentum["momentum_phase"] == "trending"
+    assert momentum["rs_market_percentile_20d"] == 91
+    assert momentum["rs_industry_percentile_20d"] == 78
+    assert momentum["rs_rank_change_5d"] == 120
+    assert momentum["trend_efficiency_20d"] == 0.62
 
 
 def test_to_evidence_view_handles_already_serialized_date_string():

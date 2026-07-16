@@ -13,7 +13,7 @@ Slice 6（2026-04-26）：實作完成。
   - research / explanation 分開調 batch，避免長 explanation 卡住整批
   - 第一版用可搭配 Responses API `web_search` 的模型（例如現有 signals model）
   - 沒 web search 或 OpenAI 不可用 → 每檔走 fallback dict（標記 `_unavailable`），pipeline 仍可完成 snapshot
-  - System prompt 直接讀 `backend/app/prompts/watch-list-stock.md`（spec §10 對齊）；
+  - System prompt 依 prompt version 讀 `backend/app/prompts/watch-list-stock*.md`（spec §10 對齊）；
     user_msg 內提示「只執行 STEP X」讓 LLM 聚焦於當前批次任務
 """
 from __future__ import annotations
@@ -66,41 +66,40 @@ DEFAULT_WATCH_REASON_MODEL = os.getenv(
 # 會蓋進每筆 watchlist item + signal_snapshots / signal_watch_hits / completed_archives，
 # 讓 30 日追蹤可以區分「這檔是哪一版 prompt 抓出來的」做績效歸因。
 #
-# 2026-07-02：改為「依大盤 regime 選 prompt 版本」——
-#   - 多頭（BULL_TREND）→ v1（watch-list-stock-v1.md，追強方法論）
-#   - 震盪（VOLATILE_RANGE）/ 退潮（RISK_OFF）/ 未知 → v4（watch-list-stock.md，收斂方法論，
-#     含 M27 Regime Gate + entry_quality / sector_rotation_status / institution_flow_momentum /
-#     theme_maturity 等 deterministic_signals 語意）
+# 2026-07-15：v5 以 v4 deterministic risk cap 為底，把價格動能 / 相對強度提升為最高優先。
+# 所有 regime 預設都走 v5；v1 / v4 保留給人工重跑與版本對照實驗。
 # regime 由 pipeline 以 TAIEX 指數 deterministic 算出後塞進 market_context["market_regime"]，
 # 各 LLM stage 讀該欄位 resolve 對應版本；label 也跟著 regime 走（見 _resolve_prompt_version）。
-PROMPT_VERSION_BULL = "v1"
-PROMPT_VERSION_VOLATILE = "v4"
+PROMPT_VERSION_LEGACY_BULL = "v1"
+PROMPT_VERSION_LEGACY_VOLATILE = "v4"
+PROMPT_VERSION_MOMENTUM = "v5"
+PROMPT_VERSION_BULL = PROMPT_VERSION_MOMENTUM
+PROMPT_VERSION_VOLATILE = PROMPT_VERSION_MOMENTUM
 # 向後相容：舊 caller / 未提供 market_regime 時的預設版本（收斂版）
-PROMPT_VERSION = PROMPT_VERSION_VOLATILE
+PROMPT_VERSION = PROMPT_VERSION_MOMENTUM
 
 # 系統 prompt 路徑（spec §10 LLM I/O contract 全文）：一版一檔。
 _PROMPTS_DIR = Path(__file__).resolve().parents[1] / "prompts"
 _PROMPT_PATHS: Dict[str, Path] = {
-    PROMPT_VERSION_BULL: _PROMPTS_DIR / "watch-list-stock-v1.md",
-    PROMPT_VERSION_VOLATILE: _PROMPTS_DIR / "watch-list-stock.md",
+    PROMPT_VERSION_LEGACY_BULL: _PROMPTS_DIR / "watch-list-stock-v1.md",
+    PROMPT_VERSION_LEGACY_VOLATILE: _PROMPTS_DIR / "watch-list-stock.md",
+    PROMPT_VERSION_MOMENTUM: _PROMPTS_DIR / "watch-list-stock-v5.md",
 }
 # 保留舊常數名（部分工具 / 訊息引用）指向預設版檔案
-_PROMPT_PATH = _PROMPT_PATHS[PROMPT_VERSION_VOLATILE]
+_PROMPT_PATH = _PROMPT_PATHS[PROMPT_VERSION]
 
 
 def _resolve_prompt_version(market_regime: Optional[str]) -> str:
     """依大盤 regime 決定要跑哪一版 prompt。
 
-    多頭 → v1（追強）；震盪 / 退潮 / 未知 → v4（收斂）。
-    env `SIGNALS_FORCE_PROMPT_VERSION`（值須為已知版本，如 v1 / v4）可強制覆寫
+    預設所有 regime → v5（相對強度動能版）。
+    env `SIGNALS_FORCE_PROMPT_VERSION`（值須為已知版本，如 v1 / v4 / v5）可強制覆寫
     regime routing，給人工重跑做版本對照實驗用；未知值一律忽略走原邏輯。
     """
     forced = os.getenv("SIGNALS_FORCE_PROMPT_VERSION", "").strip()
     if forced in _PROMPT_PATHS:
         return forced
-    if str(market_regime or "").upper() == "BULL_TREND":
-        return PROMPT_VERSION_BULL
-    return PROMPT_VERSION_VOLATILE
+    return PROMPT_VERSION_MOMENTUM
 
 # OpenAI 回應的 max tokens；reason 規則要求 500-1000 字 × batch 8 → 預留充足
 _MAX_OUTPUT_TOKENS = 8000
@@ -125,10 +124,11 @@ def assemble_market_context(
     model: str = DEFAULT_MARKET_MODEL,
     use_cache: bool = True,
 ) -> Dict[str, Any]:
-    """Step 0：判斷 market_state（STRONG_BULL / STRUCTURAL_BULL / RANGE / WEAK）。
+    """Step 0：查外部風險背景。
 
-    LLM 上網查 VIX / 美股 / 台指期 / USD-TWD，搭配 DB 已知數字判斷。
-    LLM 不可用 → 回 fallback dict（market_state="RANGE"，reason 標記不可用）。
+    v5 起，真正的大盤狀態由 pipeline 後續塞入 `market_regime`，LLM 不再判斷盤勢。
+    這裡只查 VIX / 美股 / 台指期 / USD-TWD，作為 external_risk_context。
+    LLM 不可用 → 回 fallback dict（外部風險為 neutral / unavailable）。
 
     A3：4 小時 in-process cache。同日多人按「重新產生」、cron 03:00 之後 web UI 觸發都命中。
     backend 的 taiex/otc 數字會 merge 進 cached payload（避免 cache 鎖死當日漲跌幅），
@@ -148,21 +148,25 @@ def assemble_market_context(
 
     system_prompt = _load_system_prompt(stage="market")
     user_msg = (
-        "[只執行 STEP 0：判斷今日市場狀態]\n"
-        "你必須使用 web search 查詢 VIX、美股、台指期、USD/TWD，搭配下方 backend 已知數字，"
-        "判斷 market_state。\n\n"
+        "[只執行 STEP 0：讀取外部風險背景]\n"
+        "你必須使用 web search 查詢 VIX、美股、台指期、USD/TWD。"
+        "注意：真正的大盤狀態 market_regime 由 backend deterministic 決定，"
+        "你不可判斷、覆寫或另建一套盤勢分類；此處只輸出 external_risk_context。\n\n"
         "[硬規則]\n"
         "1. backend 提供的加權/櫃買數字是 authoritative，不可改寫、不可補 0、不可自行重算。\n"
         "2. 若 backend 某欄位為 null，必須明確說該欄位缺資料；不能寫成『DB 全空』。\n"
-        "3. 你負責的是外部市場補充與整體 market_state 判讀，不是重寫 backend 數字。\n\n"
+        "3. 外部資訊只可作為風險背景，不能成為股票 WATCH 的主要理由。\n\n"
         f"[backend 已知市場數字]\n"
         f"{json.dumps(db_market_snapshot, ensure_ascii=False, indent=2)}\n\n"
         "輸出格式（JSON only，不要 markdown code fence）：\n"
         "{\n"
-        '  "market_state": "STRONG_BULL | STRUCTURAL_BULL | RANGE | WEAK",\n'
-        '  "vix_status": "risk_on | neutral | risk_off",\n'
-        '  "futures_bias": "LONG | SHORT | NEUTRAL",\n'
-        '  "market_state_reason": "繁體中文說明"\n'
+        '  "external_risk_context": {\n'
+        '    "vix_status": "risk_on | neutral | risk_off | unavailable",\n'
+        '    "us_market_bias": "positive | neutral | negative | unavailable",\n'
+        '    "futures_bias": "LONG | SHORT | NEUTRAL | unavailable",\n'
+        '    "fx_risk": "positive | neutral | negative | unavailable",\n'
+        '    "risk_summary": "外部環境對台股動能延續的影響"\n'
+        "  }\n"
         "}\n"
     )
 
@@ -178,13 +182,19 @@ def assemble_market_context(
         # fallback 不寫 cache，避免使用者連續 4 小時都看到 RANGE 不可用文案
         return _market_context_fallback(db_market_snapshot, diagnostic=diagnostic)
 
+    external = payload.get("external_risk_context")
+    if not isinstance(external, dict):
+        external = {}
+
     result = {
-        "market_state": payload.get("market_state", "RANGE"),
+        # legacy field kept for old UI/summary consumers; backend market_regime is authoritative.
+        "market_state": "BACKEND_REGIME_AUTHORITATIVE",
         "taiex_change_pct": taiex_change_pct,
         "otc_change_pct": otc_change_pct,
-        "vix_status": payload.get("vix_status"),
-        "futures_bias": payload.get("futures_bias"),
-        "market_state_reason": payload.get("market_state_reason", ""),
+        "vix_status": external.get("vix_status"),
+        "futures_bias": external.get("futures_bias"),
+        "external_risk_context": external,
+        "market_state_reason": external.get("risk_summary", ""),
         "llm_diagnostic": diagnostic,
     }
     if use_cache:
@@ -194,6 +204,7 @@ def assemble_market_context(
             "market_state": result["market_state"],
             "vix_status": result["vix_status"],
             "futures_bias": result["futures_bias"],
+            "external_risk_context": result["external_risk_context"],
             "market_state_reason": result["market_state_reason"],
             "llm_diagnostic": diagnostic,
         })
@@ -371,7 +382,7 @@ def assemble_final_output(
     # watchlist = _cap_final_watchlist(watchlist_candidates)
     watchlist = watchlist_candidates
 
-    # 依大盤 regime resolve 這次實際跑的 prompt 版本（多頭 v1 / 震盪 / 退潮 v4）。
+    # 依大盤 regime resolve 這次實際跑的 prompt 版本；v5 起所有 regime 預設同版。
     prompt_version = _resolve_prompt_version(market_context.get("market_regime"))
 
     # 每筆蓋上 prompt 版本，往下流到 signal_snapshots / signal_watch_hits。
@@ -498,9 +509,10 @@ def _build_stage_prompt(full: str, stage: str) -> str:
             if stripped in _WATCH_REASON_HEADERS or stripped == "重要限制":
                 section_headers.append((i, stripped))
             continue
-        # STEP N：xxx 樣式
+        # STEP N：xxx / STEP 7.8：xxx 樣式；小數 step 併入整數段給 stage splitter 使用。
         try:
-            step_num = int(stripped.split("STEP", 1)[1].strip().split("：")[0].split(":")[0])
+            step_token = stripped.split("STEP", 1)[1].strip().split("：")[0].split(":")[0]
+            step_num = int(float(step_token))
             section_headers.append((i, f"STEP {step_num}"))
         except (ValueError, IndexError):
             continue
@@ -683,13 +695,15 @@ def _run_decision_chunk(
     version = _resolve_prompt_version(market_context.get("market_regime"))
     system_prompt = _load_system_prompt(stage="decision", version=version)
     user_msg = (
-        "[執行 STEP 5 / STEP 6：先對全候選做短 decision]\n"
+        "[執行 STEP 5 / STEP 6 / STEP 7.8 / STEP 8：先對全候選做短 decision]\n"
         "你現在只需要判斷 WATCH / REMOVE，並給 1-2 句短理由。"
         "請對每一檔獨立判斷，不要因為名額限制、批次內相對排序或同批有更強股票，就把原本符合條件的股票判成 REMOVE。"
         "不要產生長文分析，長理由只留給最後的 WATCH 名單。\n\n"
         "[硬規則]\n"
         "1. `type` 由 research_results 帶入，**不可修改**（後端 deterministic 決定）。\n"
-        "2. short_reason 必須引用 evidence 內的至少 1 個具體數字（漲幅 / 法人金額 / 連買日數 / 量能比），\n"
+        "2. 必須先套用 Momentum Gate，再套用 Market Regime Gate；題材與法人不能補救弱相對強度。\n"
+        "3. 若 momentum_signals 有值，short_reason 必須優先引用 momentum_score / rs_market_percentile_20d / rs_industry_percentile_20d / momentum_phase。\n"
+        "4. short_reason 必須引用 evidence 或 momentum_signals 內的至少 1 個具體數字（相對強度 / 漲幅 / 法人金額 / 連買日數 / 量能比），\n"
         "   只寫「籌碼好」「題材熱」等空話會被視為品質不足。\n\n"
         f"[market_context]\n"
         f"{json.dumps(market_context, ensure_ascii=False, indent=2)}\n\n"
@@ -812,6 +826,20 @@ def _run_watch_reason_chunk(
         '      "chip_reason": ["bullet 1", "..."],\n'
         '      "margin_reason": ["bullet 1", "..."],\n'
         '      "technical_reason": ["bullet 1", "..."],\n'
+        '      "momentum": {\n'
+        '        "momentum_score": number,\n'
+        '        "momentum_grade": "A | B | C | D",\n'
+        '        "momentum_phase": "emerging | accelerating | trending | extended | weakening",\n'
+        '        "return_20d": number,\n'
+        '        "return_60d": number,\n'
+        '        "rs_market_percentile_20d": number,\n'
+        '        "rs_industry_percentile_20d": number,\n'
+        '        "rs_rank_change_5d": number,\n'
+        '        "trend_efficiency_20d": number,\n'
+        '        "distance_to_high_20d_pct": number,\n'
+        '        "atr_pct_14d": number,\n'
+        '        "momentum_reason": ["相對大盤說明", "相對產業說明", "動能階段說明", "趨勢品質與波動說明"]\n'
+        '      },\n'
         '      "margin_analysis": {\n'
         '        "stock_table": {\n'
         '          "close_price": number,\n'
@@ -867,6 +895,9 @@ def _run_watch_reason_chunk(
             sections = _coerce_reason_sections(by_id[sid])
             merged.update(sections)
             merged["reason"] = _join_reason_sections_to_markdown(sections)
+            momentum = by_id[sid].get("momentum")
+            if isinstance(momentum, dict):
+                merged["momentum"] = momentum
             # 2026-05-25：margin_analysis 結構化欄位（前端表格 + 解讀）
             merged["margin_analysis"] = _coerce_margin_analysis(
                 by_id[sid].get("margin_analysis"),
@@ -993,6 +1024,8 @@ def _format_watch_entry(item: Dict[str, Any]) -> Dict[str, Any]:
         "decision": "WATCH",
         "reason": item.get("reason") or item.get("short_reason", ""),
     }
+    momentum = item.get("momentum")
+    entry["momentum"] = momentum if isinstance(momentum, dict) else None
     # 5 段 bullet array；不存在時填空 list（前端 truthy 檢查 length > 0 即可隱藏 panel）
     for key in WATCH_REASON_SECTIONS:
         value = item.get(key)
@@ -1092,13 +1125,21 @@ def _market_context_fallback(
 ) -> Dict[str, Any]:
     taiex_change_pct = _get_index_change_pct(db_market_snapshot, "taiex")
     otc_change_pct = _get_index_change_pct(db_market_snapshot, "otc")
+    external_risk_context = {
+        "vix_status": "unavailable",
+        "us_market_bias": "unavailable",
+        "futures_bias": "unavailable",
+        "fx_risk": "unavailable",
+        "risk_summary": _market_context_fallback_reason(diagnostic),
+    }
     return {
-        "market_state": "RANGE",
+        "market_state": "BACKEND_REGIME_AUTHORITATIVE",
         "taiex_change_pct": taiex_change_pct,
         "otc_change_pct": otc_change_pct,
-        "vix_status": "neutral",
-        "futures_bias": "NEUTRAL",
-        "market_state_reason": _market_context_fallback_reason(diagnostic),
+        "vix_status": external_risk_context["vix_status"],
+        "futures_bias": external_risk_context["futures_bias"],
+        "external_risk_context": external_risk_context,
+        "market_state_reason": external_risk_context["risk_summary"],
         "llm_diagnostic": diagnostic,
     }
 
@@ -1149,10 +1190,42 @@ def _to_evidence_view(stocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "tracking_status": _tracking_status_view(s),
             "soft_hints": s.get("soft_hints", []),
             "deterministic_signals": s.get("deterministic_signals", {}),
+            "momentum_signals": _momentum_signals_view(s),
             # M27：該檔 deterministic 信心度（大盤 regime 在 market_context，全市場一致，不重複帶）
             "regime_conviction": s.get("regime_conviction"),
         })
     return out
+
+
+def _momentum_signals_view(candidate: Dict[str, Any]) -> Dict[str, Any]:
+    """投影 v5 prompt 使用的動能欄位；backend 尚未提供時保留 None，不讓 LLM 幻想數字。"""
+    existing = candidate.get("momentum_signals")
+    if isinstance(existing, dict):
+        return existing
+    return {
+        "return_5d": candidate.get("return_5d") or candidate.get("price_change_5d"),
+        "return_20d": candidate.get("return_20d"),
+        "return_60d": candidate.get("return_60d"),
+        "return_percentile_20d": candidate.get("return_percentile_20d"),
+        "return_percentile_60d": candidate.get("return_percentile_60d"),
+        "rs_market_20d": candidate.get("rs_market_20d"),
+        "rs_market_percentile_20d": candidate.get("rs_market_percentile_20d"),
+        "rs_industry_20d": candidate.get("rs_industry_20d"),
+        "rs_industry_percentile_20d": candidate.get("rs_industry_percentile_20d"),
+        "rs_rank_change_5d": candidate.get("rs_rank_change_5d")
+            or candidate.get("rs_rank_improvement_5d"),
+        "distance_to_high_20d_pct": candidate.get("distance_to_high_20d_pct"),
+        "distance_to_high_60d_pct": candidate.get("distance_to_high_60d_pct"),
+        "distance_to_ma20_pct": candidate.get("distance_to_ma20_pct"),
+        "trend_efficiency_20d": candidate.get("trend_efficiency_20d"),
+        "atr_pct_14d": candidate.get("atr_pct_14d"),
+        "up_down_volume_ratio_20d": candidate.get("up_down_volume_ratio_20d"),
+        "volume_ratio_5d_60d": candidate.get("volume_ratio_5d_60d")
+            or candidate.get("volume_5d_to_60d_ratio"),
+        "momentum_score": candidate.get("momentum_score"),
+        "momentum_grade": candidate.get("momentum_grade"),
+        "momentum_phase": candidate.get("momentum_phase"),
+    }
 
 
 def _tracking_status_view(candidate: Dict[str, Any]) -> Dict[str, Any]:
@@ -1319,7 +1392,7 @@ def _with_status(
 
 def _market_context_fallback_reason(diagnostic: Dict[str, Any]) -> str:
     base = _stage_fallback_reason("market", diagnostic)
-    return f"{base} 預設保守判斷為 RANGE。"
+    return f"{base} 外部風險背景暫不可用，選股仍以 backend market_regime 為準。"
 
 
 def _stage_fallback_reason(stage: str, diagnostic: Dict[str, Any]) -> str:

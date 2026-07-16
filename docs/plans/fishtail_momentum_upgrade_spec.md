@@ -32,9 +32,35 @@
    market_cap / institution_buy_to_market_cap_2d`（**只出欄位，未進 score / 分類門檻**，
    等累積資料後再依 §6.1 A 決定啟用方式）
 
-### v2.2 ⬜ 待開始
-- market_breadth.py / breadth_score / NARROW_BULL / episode-aware hit_count / LLM facts-only
-- `build_signal_metrics` 已預留 `breadth_score: None` 佔位
+### v2.2 ✅ 完成（2026-07-16，與 watch-list-stock-v5.md 結合）
+v5 prompt（價格動能 / 相對強度最高優先；momentum_signals / deterministic_signals
+宣告 backend authoritative）為對接目標，本輪把 backend 缺口全部補齊：
+
+1. **momentum_signals 補齊**（[momentum.py](/Users/brian.yh.chien/.gstack/projects/always-stock/backend/app/signals/momentum.py)）：
+   新增 `atr_pct_14d`（TR 14 日均 / 收盤）、`up_down_volume_ratio_20d`、
+   `momentum_grade`（A>=75 / B>=60 / C>=45 / D）、`momentum_phase`
+   （weakening > extended > accelerating > trending > emerging，deterministic 優先序）；
+   `build_momentum_signals()` 以 v5 INPUT 命名組 nested dict 掛進每筆候選
+   （llm_caller `_momentum_signals_view` 看到現成 dict 直接採用）
+2. **market_breadth.py**（spec §7.1/§7.2）：pct_above_ma20/60、advance_decline、
+   new high/low 20d、median return 5d、strong_industry_ratio → `breadth_score` 0~100；
+   與 momentum frame 共用同一次全市場 query（pipeline 先算 frame 傳入）；
+   `resolve_regime_detail()`：BULL_TREND + breadth<50 → **NARROW_BULL**（4 態只作用
+   deterministic gate；對 LLM 的 market_regime 契約維持 3 態，v5 enum 固定）
+3. **deterministic_signals.py**（v5 STEP 6/7/7.5 後端化，補 M27 #6 延後債）：
+   chip_trend / technical_status / entry_quality / sector_rotation_status /
+   institution_flow_momentum / risk_gate_action（PASS/DOWNGRADE/MAX_B/EXCLUDE）/
+   max_decision / risk_flags；theme_maturity 不做（需外部資訊，LLM fallback）；
+   sector rotation 吃 candidate_pool 新增的 `industry_flow_1d/3d`（canonical 名稱
+   normalize 後比對）
+4. **episode-aware hit_count**（spec §7.4）：`consecutive_hit_count` /
+   `independent_hit_count`（未命中 >=5 交易日 → 新 episode；4 天模糊帶歸同 episode）；
+   computed on-the-fly 無 schema 改動，進 tracking_status + signal_metrics
+5. **regime gate v2.2**（spec §7.3）：BROAD_BULL score<50 剔除；NARROW_BULL 只留
+   （LEADER 且 score>=65）或（score>=70 且無 distribution）；震盪盤加 RS 排名 5 日
+   掉 >50 名剔除；BULL 高信心加 score>=75 且 independent_hit>=2 路徑
+6. **§7.5「LLM facts-only」不實作**：被 v5 設計取代（deterministic Risk Cap +
+   Momentum Gate 上界、LLM 在 cap 內做 WATCH/REMOVE）——決策上限已是程式決定
 
 ### v2.3 ⬜ 待開始
 - 回測與持有管理（trade_status / ATR 停損 / 換股競爭）

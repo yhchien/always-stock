@@ -1,5 +1,65 @@
 # always-stock 專案記憶
 
+## 魚尾 v2.2 × watch-list-stock-v5 結合（2026-07-16）
+
+> **Canonical spec + 進度**：[docs/plans/fishtail_momentum_upgrade_spec.md](docs/plans/fishtail_momentum_upgrade_spec.md)（v2.1 / 資料前置 / v2.2 全完成；v2.3 待開始）
+> **v5 prompt**：[backend/app/prompts/watch-list-stock-v5.md](backend/app/prompts/watch-list-stock-v5.md)（PROMPT_VERSION=v5，所有 regime 預設走 v5；v1/v4 保留給對照實驗）
+
+### v5 設計（與 backend 的分工契約）
+- **價格動能 / 相對強度是第一優先**；題材與法人只是確認訊號（核心原則 16~22）
+- LLM 判斷順序固定：Momentum Gate（STEP 7.8，score<50 / rs<40 等原則 REMOVE）→
+  Regime Gate（STEP 8，三態各自 WATCH 硬條件）→ Risk Cap（STEP 7.5）→ 題材驗證
+- `momentum_signals` / `deterministic_signals` / `market_regime` / `regime_conviction` /
+  `tracking_status` **全部 backend deterministic，LLM 只能原樣採用**；缺值 = 資料不足不可幻想
+- STEP 0 改「只查外部風險背景」（external_risk_context），盤勢判斷完全交 backend；
+  `market_state` 變 legacy 欄位固定 `BACKEND_REGIME_AUTHORITATIVE`
+
+### backend 補齊內容（本輪）
+1. **momentum_signals**（[momentum.py](backend/app/signals/momentum.py)）：新增
+   `atr_pct_14d`（TR14 均 / 收盤 ×100）、`up_down_volume_ratio_20d`（漲日量/跌日量，
+   無跌日 → None）、`momentum_grade`（A>=75/B>=60/C>=45/D）、`momentum_phase`
+   （優先序 weakening > extended > accelerating > trending > emerging；rs percentile
+   缺值 → None）；`build_momentum_signals()` 以 **v5 命名** 組 nested dict
+   （`rs_rank_change_5d` ← rs_rank_improvement_5d、`distance_to_high_20d_pct` ←
+   distance_to_20d_high…），candidate_pool 掛進每筆候選 → llm_caller
+   `_momentum_signals_view` 看到現成 dict 直接用（不落入它的 fallback 對照）
+2. **market_breadth.py**（新模組，spec §7.1/§7.2）：從 momentum frame 的 `_` 內部欄位
+   聚合（`_above_ma20/_above_ma60/_ret_1d/_new_high_20d/_new_low_20d`），**不重複查
+   全市場**；`breadth_score` 0~100（權重 MA20 30% / MA60 20% / AD 20% / 新高低 15% /
+   強產業比 15%，子項缺值以中性 50 計）；樣本 <100 → 全 None（breadth 不可信 → 不加嚴）
+3. **deterministic_signals.py**（新模組；v5 STEP 6/7/7.5 後端化，補 M27 refinement #6
+   「延後」債）：8 欄位全 deterministic；EXCLUDE=（distribution+法人反轉）或
+   （failed_rotation+weakening）；MAX_B=散戶過熱/急拉追高；任一旗標=DOWNGRADE；
+   `theme_maturity` 刻意不做（需外部資訊，v5 對缺欄位有 LLM fallback）
+4. **episode（spec §7.4）**：`_episode_counts`——未命中 >=5 交易日 → 新 episode、
+   4 天模糊帶歸同 episode；`consecutive_hit_count`（最新 episode 內命中數）/
+   `independent_hit_count`（episode 總數）進 tracking_status + signal_metrics；
+   無 schema 改動（on-the-fly 從 signal_watch_hits 算）
+5. **regime gate v2.2**（spec §7.3）：pipeline 算 breadth →
+   `resolve_regime_detail`（BULL + breadth<50 → NARROW_BULL）→
+   `apply_regime_gate(..., regime_detail=)`：BROAD_BULL 剔 score<50；NARROW_BULL 只留
+   （LEADER 且 score>=65）或（score>=70 且無 distribution）；VOLATILE 加剔
+   RS 排名 5 日掉 >50 名；BULL 高信心新增 score>=75 且 independent_hit>=2 路徑
+6. **candidate_pool**：新增 `industry_flow_1d/3d`（industry_daily_flow 聚合，
+   canonical 名稱 normalize 後比對）給 sector_rotation_status；
+   `build_candidate_pool` 加 optional `momentum_frame` param（pipeline 先算一次
+   與 breadth 共用；未傳自算，測試向後相容）
+
+### Gotcha
+- **4 態 regime 只存在 deterministic gate / snapshot 觀察欄位**：對 LLM 的
+  `market_context.market_regime` 契約維持 3 態（v5 enum 固定），
+  `market_regime_detail`（BROAD_BULL/NARROW_BULL）存 market_context 與
+  `signal_metrics.market_regime_detail`，30 日追蹤可歸因
+- **spec §7.5「LLM facts-only」不實作**：v5 的 deterministic Risk Cap + Momentum Gate
+  已把決策上限交給程式，LLM 只在 cap 內判斷——同 intent 不同機制，別再重做
+- **momentum_phase 的 residual 落在 emerging**：中後段停滯股會被標 emerging，
+  靠 score gate 把關品質（emerging 不代表可 WATCH）
+- **breadth 樣本 guard**：`MIN_SAMPLES_FOR_BREADTH=100`；in-memory 測試要 seed 100+ 檔
+  或直接測 pure function
+- **pipeline 測試 stub**：`build_candidate_pool` 的 monkeypatch lambda 要收 `**kw`
+  （momentum_frame kwarg）
+- 全 suite 930 pass / 20 fail = 既有 baseline（site-passwordless），零新增失敗
+
 ## 魚尾 v2.2 資料前置：營收 ETL 修復 + 基本面動能 D 通道 + 市值 ETL（2026-07-15 第二輪）
 
 ### monthly_revenue ETL 缺口修復（根因兩層）
