@@ -203,6 +203,12 @@ def fetch_and_upsert_monthly_revenue_sdk(
                 ordered["mom_pct_val"] = ((revenue / prev_month) - 1.0) * 100.0
             df = ordered
 
+        # NaN → None：新上市（無去年同期）回算出的 NaN 不可寫進 DB。
+        # Postgres float8 收得下 NaN，但下游把值放進 JSON 欄位（signal_metrics）時
+        # 會炸 invalid input syntax for type json（2026-07-16 daily_signals 踩到）。
+        for col in ["revenue_val", "yoy_pct_val", "mom_pct_val"]:
+            df[col] = df[col].astype("object").where(df[col].notna(), None)
+
         records = df[["rev_month_date", "stock_id", "revenue_val",
                        "yoy_pct_val", "mom_pct_val"]].to_dict("records")
 

@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional, Sequence, Set
 
@@ -616,24 +617,29 @@ def _attach_fundamental_features(
         .all()
     )
 
+    # DB float 欄位可能殘留 NaN（歷史 ETL 對新上市股回算 YoY 的副作用），
+    # NaN 流進 signal_metrics JSON 會炸 Postgres `invalid input syntax for type json`
+    # （2026-07-16 踩到）→ 讀取端一律 _finite_or_none 清洗。
     by_stock: Dict[str, List[Any]] = {}
     for row in rows:
         if row.stock_id not in frame:
             continue
         if revenue_available_date(row.revenue_month) > target_date:
             continue  # 尚未公告（法規截止日前）→ 對 target_date 不可見
-        by_stock.setdefault(row.stock_id, []).append(row)
+        by_stock.setdefault(row.stock_id, []).append(
+            (row.revenue_month, _finite_or_none(row.yoy_pct), _finite_or_none(row.mom_pct))
+        )
 
     yoy_by_id: Dict[str, float] = {}
     for sid, stock_rows in by_stock.items():
-        stock_rows.sort(key=lambda r: r.revenue_month)
-        latest = stock_rows[-1]
+        stock_rows.sort(key=lambda r: r[0])
+        latest_month, latest_yoy, latest_mom = stock_rows[-1]
         feats = frame[sid]
-        feats["revenue_month_used"] = latest.revenue_month.isoformat()
-        feats["revenue_yoy"] = latest.yoy_pct
-        feats["revenue_mom"] = latest.mom_pct
+        feats["revenue_month_used"] = latest_month.isoformat()
+        feats["revenue_yoy"] = latest_yoy
+        feats["revenue_mom"] = latest_mom
 
-        yoys = [r.yoy_pct for r in stock_rows]
+        yoys = [yoy for (_, yoy, _) in stock_rows]
         if len(yoys) >= 2 and yoys[-1] is not None and yoys[-2] is not None:
             feats["revenue_yoy_acceleration"] = yoys[-1] - yoys[-2]
             feats["revenue_yoy_turned_positive"] = yoys[-1] > 0 and yoys[-2] <= 0
@@ -646,8 +652,8 @@ def _attach_fundamental_features(
             feats["revenue_yoy_accel_2m"] = (
                 yoys[-1] > yoys[-2] and yoys[-2] > yoys[-3]
             )
-        if latest.yoy_pct is not None:
-            yoy_by_id[sid] = float(latest.yoy_pct)
+        if latest_yoy is not None:
+            yoy_by_id[sid] = float(latest_yoy)
 
     # 全市場 percentile
     if len(yoy_by_id) >= MIN_SAMPLES_FOR_PERCENTILE:
@@ -668,6 +674,30 @@ def _attach_fundamental_features(
         pct = _percentile_map(members)
         for sid, p in pct.items():
             frame[sid]["revenue_yoy_industry_percentile"] = p
+
+
+def _finite_or_none(value: Any) -> Optional[float]:
+    """DB / 計算來的 float 清洗：NaN / inf / 不可轉 float → None（JSON 安全）。"""
+    if value is None:
+        return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(f) or math.isinf(f):
+        return None
+    return f
+
+
+def _scrub_non_finite(value: Any) -> Any:
+    """遞迴把 dict / list 內的 NaN / inf float 換成 None（Postgres JSON 拒收 NaN token）。"""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {k: _scrub_non_finite(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_scrub_non_finite(v) for v in value]
+    return value
 
 
 def _median(values: List[float]) -> float:
@@ -989,8 +1019,10 @@ def build_signal_metrics(
 ) -> Dict[str, Any]:
     """spec §9.2：組出要寫進 SignalWatchHit.signal_metrics / snapshot 的 JSON。
 
-    全部是 float / str / None，保證 JSON 可序列化（無 date 物件）。
-    breadth_score 為 v2.2 佔位（目前 None）。
+    全部是 float / str / None，保證 JSON 可序列化（無 date 物件）；
+    出口過 `_scrub_non_finite` —— Postgres JSON 型別拒收 NaN token
+    （2026-07-16 daily_signals 因 monthly_revenue 殘留 NaN 炸過一次）。
+    breadth_score 由 pipeline 的 regime_info 帶入（v2.2）。
     """
     regime_detail = None
     if regime_info:
@@ -1000,7 +1032,7 @@ def build_signal_metrics(
             "reason": regime_info.get("reason"),
             "breadth_score": regime_info.get("breadth_score"),
         }
-    return {
+    return _scrub_non_finite({
         "return_5d": candidate.get("return_5d"),
         "return_20d": candidate.get("return_20d"),
         "return_60d": candidate.get("return_60d"),
@@ -1024,4 +1056,4 @@ def build_signal_metrics(
         "revenue_yoy": candidate.get("revenue_yoy"),
         "revenue_yoy_acceleration": candidate.get("revenue_yoy_acceleration"),
         "revenue_month_used": candidate.get("revenue_month_used"),
-    }
+    })

@@ -590,3 +590,40 @@ def test_pool_candidates_carry_momentum_signals_and_grade(db):
         assert isinstance(ms, dict)
         assert "momentum_grade" in ms and "momentum_phase" in ms
         assert c.get("momentum_grade") == ms["momentum_grade"]
+
+
+# ---------- NaN 防禦（2026-07-16 prod 事故 regression） ----------
+
+
+def test_frame_fundamental_sanitizes_nan_yoy(db):
+    """DB monthly_revenue 殘留 NaN（歷史 ETL 對新上市股回算的副作用）→
+    frame 必須清成 None，否則 signal_metrics JSON 寫 Postgres 會炸。"""
+    from app.models import MonthlyRevenue
+
+    dates, stock_ids = _seed_market(db)
+    db.add(
+        MonthlyRevenue(
+            revenue_month=date(2026, 5, 31), stock_id="S22", revenue=1000.0,
+            yoy_pct=float("nan"), mom_pct=float("nan"),
+        )
+    )
+    db.commit()
+
+    frame = momentum.compute_market_momentum_frame(db, dates[-1], _masters_map(db))
+    assert frame["S22"]["revenue_yoy"] is None
+    assert frame["S22"]["revenue_mom"] is None
+
+
+def test_build_signal_metrics_scrubs_nan():
+    candidate = {
+        "return_20d": float("nan"),
+        "momentum_score": 70.0,
+        "momentum_score_detail": {"price": float("inf")},
+        "revenue_yoy": float("nan"),
+    }
+    out = momentum.build_signal_metrics(candidate)
+    assert out["return_20d"] is None
+    assert out["revenue_yoy"] is None
+    assert out["momentum_score_detail"]["price"] is None
+    assert out["momentum_score"] == 70.0
+    json.dumps(out, allow_nan=False)  # 不可再含 NaN token
