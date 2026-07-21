@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional, Sequence, Set
 
@@ -88,6 +89,18 @@ _W_RS = 25.0
 _W_INSTITUTION = 20.0
 _W_VOLUME = 15.0
 _W_FUNDAMENTAL = 10.0  # v2.1 未接 announcement_date → 恆 0，保留權重位
+
+# Phase 2（2026-07-21）：momentum_score 公式版本；改動 available-weight 語意時必須
+# bump 版本並對歷史 signal_metrics 重新計算，避免不同版本的分數混在一起比較
+MOMENTUM_SCORE_VERSION = "v2"
+_CORE_WEIGHT_TOTAL = _W_PRICE + _W_RS + _W_INSTITUTION + _W_VOLUME  # 90（不含基本面）
+
+# 這一項會實際改變哪些股票能過 LEADER/FOLLOWER 分數門檻（選股結果，不是純顯示），
+# 在還沒跑過 shadow replay 驗證前預設關閉（= 沿用 v1 舊行為：缺基本面封頂 90 分）。
+# 使用者要正式啟用時設 SIGNALS_MOMENTUM_SCORE_AVAILABLE_WEIGHT=true。
+_AVAILABLE_WEIGHT_NORMALIZATION_ENABLED = (
+    os.getenv("SIGNALS_MOMENTUM_SCORE_AVAILABLE_WEIGHT", "false").strip().lower() == "true"
+)
 
 # 風險扣分
 _PENALTY_BLOWOFF_SHADOW = 10.0       # 爆量長上影（派發嫌疑）
@@ -867,11 +880,37 @@ def compute_momentum_score(candidate: Dict[str, Any]) -> Dict[str, Any]:
         penalty += _PENALTY_OVERHEAT_3D
         penalty_reasons.append("overheat_3d")
 
-    raw = price_score + rs_score + inst_score + volume_score + fundamental_score - penalty
+    # Phase 2（2026-07-21）：missing != bad。基本面資料常態性缺席（月營收公告時間差 /
+    # 產業內樣本不足 / 金控子公司未申報），不是股票體質差；缺席時不應讓它永遠只能拿
+    # 90 分封頂。改用 available-weight normalization：把基本面的 10 分權重按比例
+    # 讓渡給另外四個「幾乎必有資料」的核心分量，讓沒有基本面資料的股票仍可拿到 100 分
+    # 滿分（不是靠猜分數，是把「缺席」從一個扣分項變成「這題不計分、其餘題目權重
+    # 等比放大」）。核心四項本身缺值時維持舊行為（0 分，thin-data 股票應被自然濾掉，
+    # 見下方 _weighted_percentile 說明）——這裡只處理 fundamental 這一項的常態性缺席。
+    fundamental_available = fundamental_component is not None
+    core_raw = price_score + rs_score + inst_score + volume_score
+    if fundamental_available:
+        raw = core_raw + fundamental_score - penalty
+        feature_coverage = 1.0
+        score_confidence = "HIGH"
+    elif _AVAILABLE_WEIGHT_NORMALIZATION_ENABLED:
+        raw = core_raw * (100.0 / _CORE_WEIGHT_TOTAL) - penalty
+        feature_coverage = round(_CORE_WEIGHT_TOTAL / 100.0, 2)
+        score_confidence = "MEDIUM"
+    else:
+        # 舊行為（v1，預設）：缺基本面直接視為 0 分貢獻，最高只能拿到 90 分
+        raw = core_raw + fundamental_score - penalty
+        feature_coverage = round(_CORE_WEIGHT_TOTAL / 100.0, 2)
+        score_confidence = "MEDIUM"
     score = round(max(0.0, min(100.0, raw)), 1)
 
     return {
         "momentum_score": score,
+        "momentum_score_version": (
+            MOMENTUM_SCORE_VERSION if _AVAILABLE_WEIGHT_NORMALIZATION_ENABLED else "v1"
+        ),
+        "feature_coverage": feature_coverage,
+        "score_confidence": score_confidence,
         "momentum_score_detail": {
             "price": round(price_score, 1),
             "relative_strength": round(rs_score, 1),
@@ -1045,6 +1084,9 @@ def build_signal_metrics(
         "distance_to_ma20": candidate.get("distance_to_ma20"),
         "momentum_score": candidate.get("momentum_score"),
         "momentum_score_detail": candidate.get("momentum_score_detail"),
+        "momentum_score_version": candidate.get("momentum_score_version"),  # Phase 2：score 公式版本
+        "feature_coverage": candidate.get("feature_coverage"),  # Phase 2：available-weight 覆蓋率
+        "score_confidence": candidate.get("score_confidence"),  # Phase 2：HIGH（全特徵）/ MEDIUM（缺基本面）
         "momentum_grade": candidate.get("momentum_grade"),   # v2.2（v5 A/B/C/D）
         "momentum_phase": candidate.get("momentum_phase"),   # v2.2（v5 五階段）
         "market_regime_detail": regime_detail,

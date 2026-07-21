@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
+import os
 import traceback
 from datetime import date, datetime
 from typing import Any, Callable, Dict, Optional
@@ -47,6 +48,65 @@ STAGE_LLM_EXPLAIN = "llm_explain"
 STAGE_PERSIST = "persist"
 LLM_BATCH_CONCURRENCY = 2
 LLM_INPUT_HARD_LIMIT = 50
+
+# Phase 2（2026-07-21）：SIGNALS_PIPELINE_MODE 控制 shadow pipeline 是否跑。
+# 預設 "legacy" = 完全不執行本檔案以外的任何 Phase 2 邏輯，行為與 Phase 2 開工前
+# 逐 byte 相同。"phase2_shadow" 會在 legacy pipeline 正常跑完候選池 + regime 之後，
+# 額外跑一次 Phase 2 deterministic 決策層並存進 `signal_shadow_snapshots`——
+# **不影響**真正回傳給使用者的 watchlist / removed（那些仍完全來自 legacy
+# `after_regime`）。Phase 2 的任何例外都被吞掉（見 `_run_phase2_shadow`），
+# 因為 shadow 失敗絕對不能拖垮 legacy production pipeline。
+SIGNALS_PIPELINE_MODE = os.getenv("SIGNALS_PIPELINE_MODE", "legacy").strip().lower()
+
+
+def _run_phase2_shadow(
+    db: Session,
+    target_date: date,
+    raw_pool: list,
+    regime: str,
+) -> None:
+    """在 `SIGNALS_PIPELINE_MODE=phase2_shadow` 時執行；任何例外都只 log，
+    不 raise——shadow mode 對 legacy pipeline 必須是零風險的旁路。
+
+    `raw_pool` 必須是 legacy `classification.classify_stocks()` **之前**的候選池
+    （見呼叫端註解）；這裡用 `pipeline_v2.build_phase2_pool()` 套用 Phase 2 自己
+    的定義性 hard exclusion，不是拿 legacy 已經三選一硬刪除過的結果。
+    """
+    if SIGNALS_PIPELINE_MODE not in ("phase2_shadow", "phase2"):
+        return
+    try:
+        from app.models import SignalShadowSnapshot
+        from app.signals.phase2 import pipeline_v2
+
+        candidates = pipeline_v2.build_phase2_pool(raw_pool)
+        result = pipeline_v2.run_phase2_pipeline(db, candidates, regime)
+        row = (
+            db.query(SignalShadowSnapshot)
+            .filter(
+                SignalShadowSnapshot.snapshot_date == target_date,
+                SignalShadowSnapshot.pipeline_version == pipeline_v2.PIPELINE_VERSION,
+            )
+            .first()
+        )
+        if row is None:
+            row = SignalShadowSnapshot(
+                snapshot_date=target_date,
+                pipeline_version=pipeline_v2.PIPELINE_VERSION,
+            )
+            db.add(row)
+        row.funnel_metrics = result["funnel_metrics"]
+        row.explain_traces = result["explain_traces"]
+        row.candidate_pool_size = len(candidates)
+        row.role_survivor_count = sum(1 for c in candidates if c.get("role") or c.get("tracking_state"))
+        row.regime_survivor_count = len(result["survivors"])
+        db.commit()
+        logger.info(
+            "Phase 2 shadow pipeline recorded for %s: candidates=%d survivors=%d",
+            target_date, len(candidates), len(result["survivors"]),
+        )
+    except Exception:
+        logger.exception("Phase 2 shadow pipeline failed for %s (non-fatal, legacy unaffected)", target_date)
+        db.rollback()
 
 
 def run_signal_pipeline_sync(
@@ -172,6 +232,14 @@ def run_signal_pipeline_sync(
                 str(c.get("stock_id") or ""): momentum.build_signal_metrics(c, regime_info)
                 for c in after_regime
             }
+
+            # Phase 2 shadow mode（no-op 除非 SIGNALS_PIPELINE_MODE=phase2_shadow）：
+            # 用 **raw `pool`**（legacy `classification.classify_stocks()` 三選一
+            # 硬刪除**之前**的候選池）建 Phase 2 專屬候選池——若改用 `after_soft`
+            # 會繼承 legacy 分類已經刪掉漢翔/台虹/航運這類案例的問題，讓 shadow
+            # 完全驗證不到 Phase 2 真正要解決的東西。不影響下面任何 legacy 變數
+            # （after_regime / signal_metrics_by_stock 等）。
+            _run_phase2_shadow(db, target_date, pool, regime_info["regime"])
 
             # Step 5：LLM Research（batch）
             total_for_llm = max(len(after_regime), 1)

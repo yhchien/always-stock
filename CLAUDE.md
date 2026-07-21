@@ -1,5 +1,148 @@
 # always-stock 專案記憶
 
+## Phase 2：魚尾 Canonical Momentum Pipeline（shadow mode 基礎完成，2026-07-21）
+
+> **狀態**：deterministic 決策層（sector context → role taxonomy → sector cluster →
+> entry/tracking state → regime gate → explain trace → funnel metrics）已完整實作
+> 並用**真實 2026-07-20 生產資料**跑過 replay 驗證。**完全跑在 shadow mode**——
+> `SIGNALS_PIPELINE_MODE` 預設 `legacy`，production 選股行為零改動。LLM v6、
+> 前端/archive 全面遷移、正式 production cutover **皆未做**，需要更多天 replay
+> 觀察後才能決定。
+
+### 為什麼要做 Phase 2
+- Phase 1（canonical 分類）完成後，用漢翔/台虹/台化/長榮/星宇等真實案例回溯
+  發現：問題不是「分類不準」，是「產業被當成股票生死的硬條件」——單一樣本
+  sector（漢翔）、弱 sector 裡的強股（台虹）、沒有完美 formal LEADER 的整個
+  航運族群、追蹤中股票每天重新選秀（台化）、hit_count 當 RISK_OFF 硬門檻
+  （統一）都是同一個根因的不同症狀
+- 使用者要求：**不要**只把 `industry_name` 換成 `primary_sector`（會立刻撞上
+  `AEROSPACE_DEFENSE=1` 這種新的樣本數問題）；要把「產業」從硬條件改成
+  「描述股票所處環境的一組 context」
+
+### 2.0 資料正確性修復（已上 production，非 shadow）
+- **`monthly_revenue.yoy_pct` 全市場全月份 NULL 的根因修復**
+  （[backend/etl/finmind_monthly_revenue_sdk.py](backend/etl/finmind_monthly_revenue_sdk.py)）：
+  舊版在 45 天 fetch frame 內 `groupby.shift(12)` 回算 YoY，frame 內從無 12 個月前
+  資料，永遠算出 NaN。新增 `recompute_missing_yoy_mom()`：改查 **DB 既有歷史**
+  （回溯到 2019）算去年同期/上個月，COALESCE 保護不覆寫既有值、算不出來時誠實
+  留 NULL。9 個新 regression test。**D 基本面通道從上線起首次真正有資料可用**
+- **`momentum_score` missing≠bad 語意修正**（`app/signals/momentum.py`）：
+  基本面資料常態性缺席（月營收公告時間差）不應永遠把分數封頂在 90——改用
+  available-weight normalization 讓核心四項（30+25+20+15=90）滿分時仍可 rescale
+  到 100。**這條會實際改變 LEADER≥70 門檻的過關名單，behind flag**：
+  `SIGNALS_MOMENTUM_SCORE_AVAILABLE_WEIGHT`（預設 `false`=v1 舊行為）。
+  新增 `momentum_score_version` / `feature_coverage` / `score_confidence` 三個
+  診斷欄位（已寫進 `build_signal_metrics`，不論 flag 開關都會出現）
+  - **Gotcha（差點捅出的簍子）**：一開始把這條改動直接寫死進
+    `compute_momentum_score()`，沒有 flag——這會在下一次 cron 直接影響真實選股
+    結果，完全繞過使用者要求的 shadow 驗證流程。發現後補上 flag，default 完全
+    等同修改前的行為
+
+### 新模組 `backend/app/signals/phase2/`（純 shadow，legacy 零 import 依賴）
+- `sector_context.py`（§D/§E）：hierarchical peer_scope
+  `SUB_SECTOR → PRIMARY_SECTOR → MARKET_ONLY`（樣本 < `MIN_PEER_SAMPLE=5` 就
+  fallback，**不會**讓 1 檔的 sector 產生 100 percentile 假訊號）；
+  `sector_strength_percentile_20d`（整個 sector 強不強，vs 其他 sector 比）與
+  `peer_rs_percentile_20d`（個股在自己 peers 裡強不強）明確拆開，不再共用一個
+  `industry_rs_percentile`；`canonical_mapping_usable`（Phase 1 confidence
+  HIGH/MEDIUM=可用，LOW=不可用於硬分組）
+- `sector_cluster.py`（§K）：`sector_momentum_cluster`（ACTIVE/NEUTRAL/COOLING/
+  FAILED/UNAVAILABLE），讓 FOLLOWER 路徑可以在「沒有完美 formal LEADER」時，
+  靠整個 sector 的強度/法人流向/強勢股數量打開（解航運全滅）
+- `entry_state.py`（§J）：`pullback_atr_multiple`（距高點回落幅度 / 14 日 ATR）
+  取代 `distance_to_20d_high >= -3%` 固定 cliff；NEAR_HIGH/NORMAL_PULLBACK/
+  DEEP_PULLBACK/REACCELERATING/STRUCTURE_DAMAGED，**與 role 完全分離**（不是
+  LEADER 判定的一部分）
+- `roles.py`（§G/§H/§I/§L/§M）：base momentum eligibility 與 role annotation
+  分離（不合格不等於刪除，回 `role=None` 繼續往下走）；LEADER 改
+  evidence-count（6 項證據，非 6-way AND）：`SECTOR_LEADER`(>=5)/`CO_LEADER`(>=4)；
+  新增 `INDEPENDENT_LEADER`（sector context 不可用/不強時，個股 market RS>=90 +
+  score>=75 + 足夠獨立確認的替代路徑，解漢翔）；`EMERGING_MOMENTUM`（RS 排名
+  快速改善但尚未到頂）；`UNCLASSIFIED_MOMENTUM`（base 合格但無明確角色，
+  **不等於死亡**，繼續往 risk/regime 走）
+- `tracking_state.py`（§N）：`is_tracked=True` 的候選走 continuation state
+  （ACTIVE_TREND/HEALTHY_PULLBACK/REACCELERATING/DETERIORATING/INVALIDATED），
+  **不重新參加角色選秀**（解台化：問「原本的強勢邏輯還在嗎」而非「今天是不是
+  新 LEADER」）
+- `regime_gate.py`（§O/§P/§Q）：`hit_count` 從任何 regime 的 hard gate 改為純
+  `conviction`（high/medium/low）增強項，不再單獨造成 REMOVE（解統一：
+  hit_count=2 但 formal LEADER + RS 91.5，Phase 2 下存活）；`is_true_hard_exclusion`
+  只保留真正定義性排除（ETF/金融 universe、liquidity、volume deadline、
+  failed_follow_through、**distribution**、structure_damaged、
+  risk_gate_action=EXCLUDE、overheat/extended+法人反轉）——**刻意不搬** legacy
+  條件 #2（法人 5 日流出且非 ROTATION_LAGGARD），因為那正是依賴要拿掉的
+  `prelim_type` 硬分類
+- `explain_trace.py`（§R）+ `funnel_metrics.py`（§S）：每檔候選完整決策追蹤
+  （candidate_channels/sector_context/role/tracking_state/entry_state/
+  hard_exclusion/regime_gate/final_stage/first_exclusion_reason）+ 每日 funnel
+  統計（candidate→eligible→role→risk→regime→llm 各層留存數 + 異常偵測：
+  `classification_survival_low`/`sector_lockout_detected`/`sent_to_llm_zero`/
+  `no_output_day`）——`7/20 那種「120→14→1→0」的崩潰現在可以立刻定位在哪一關`
+- `pipeline_v2.py`：整合入口。**Candidate Discovery 完全沿用 legacy**
+  （`candidate_pool.build_candidate_pool` 等，Phase 2 不重新定義候選池怎麼來）；
+  `build_phase2_pool(raw_pool)` 是關鍵 helper——**必須吃 legacy
+  `classification.classify_stocks()` 之前的原始候選池**，不能吃 `after_soft`
+  （已被 legacy 三選一硬刪除過），否則 shadow 完全驗證不到 Phase 2 要解決的東西
+  （這是 replay 時抓到的第一版 bug，已修正）
+
+### Shadow Mode 接線（`app/signals/pipeline.py`）
+- `SIGNALS_PIPELINE_MODE` env（預設 `legacy`）：`legacy` 時 `_run_phase2_shadow`
+  直接 return，**對 legacy pipeline 零 import、零執行**；`phase2_shadow` 時額外
+  跑一次 Phase 2 決策層，寫進獨立表 `signal_shadow_snapshots`（`app/models.py`），
+  完全不影響 `signal_snapshots`/`signal_watch_hits`（真正驅動使用者看到的訊號）
+- Phase 2 pipeline 任何例外都被 `_run_phase2_shadow` 吞掉只 log，不
+  propagate——3 個 shadow wiring 測試明確驗證：預設模式零寫入 / shadow 模式
+  寫入且不動 legacy 輸出 / phase2 例外不拖垮 legacy
+
+### 用真實 2026-07-20 資料 Replay 驗證（`backend/run_phase2_replay.py`）
+```
+候選池（Candidate Discovery，兩邊共用）：120 檔
+[Legacy] classify_stocks（三選一）後：1 檔 → regime gate 後：0 檔
+[Phase 2] 定義性 hard exclusion 後：32 檔 → regime gate 後：7 檔
+   2527/5434/1515/2912(統一)/00715L/00665L/3532：全部 INDEPENDENT_LEADER
+```
+- **統一（2912）被正確救回**：INDEPENDENT_LEADER + conviction=medium，通過
+  RISK_OFF gate——證實 hit_count 移出硬門檻確實解決了incumbency bias
+- **漢翔（2634）/星宇（2646）正確得到 `tracking_state=HEALTHY_PULLBACK`**
+  （不再是legacy 的「今天沒有 role 就死」），但**目前仍在 regime_gate 的
+  RISK_OFF 分支被排除**——因為 `apply_regime_gate_v2` 判斷「formal leader」只看
+  `role` 欄位，tracked 候選的 role 是 None（分類權交給 tracking_state）。
+  **這是已知、需要下一輪修的落差**：RISK_OFF 存活條件要能接受
+  `tracking_state in (ACTIVE_TREND, REACCELERATING, HEALTHY_PULLBACK)` 視同
+  formal leader 的替代條件，不是只認 `role`
+- **台化(1326)/台虹(8039)/長榮(2603)/慧洋(2615)/台塑化(6505) 全部被
+  `distribution` soft hint 判定為 true hard exclusion 剔除**：spec §P 明確把
+  `distribution` 列為「真正定義性排除」之一，但這是與 legacy 行為的重大差異
+  （legacy 只把它當 LLM 的軟性提示，不曾當硬刪除條件）。5 檔命中同一個原因，
+  影響一半的目標驗證案例，**需要使用者決定**：(a) 維持 spec 原意，`distribution`
+  繼續當 hard exclusion，只是這幾檔那天真的有派發嫌疑；或 (b) 把 `distribution`
+  降級回 soft signal（只影響 conviction，不影響存活），改用其他方式表達
+  「真正的結構性崩壞」（如 entry_state=STRUCTURE_DAMAGED 已經有）
+- **台達電（2308）正確地連候選池都沒進**：負面對照組驗證通過——RS 太低，
+  Phase 2 沒有因為基本面强而把它硬救回來
+
+### 尚未做（下一輪接手指引）
+1. **RISK_OFF regime gate 認 tracking_state** 的落差（見上）——這是完成 Phase 2
+   §Q 前最急迫的一個修正，影響漢翔/星宇這類已追蹤股在退潮盤的存活判斷
+2. **`distribution` hard-exclusion vs soft-signal 的定調**——需要使用者決定，
+   目前照 spec 字面實作但實測命中率偏高
+3. 用 `run_phase2_replay.py --persist` 對更多歷史交易日（60~120 天）重跑，
+   累積 `signal_shadow_snapshots` 才能做 spec §Y.15/§Y.16 的「Historical replay
+   → tune only if supported by replay」
+4. LLM v6（§X：backend 唯一 deterministic authority，LLM 只做業務/題材/供應鏈
+   驗證 + 降級/REMOVE，不可重跑 threshold）**完全未動**——現有 v1/v4/v5 prompt
+   ×regime 路由邏輯不受本輪影響
+5. 前端/archive/30 日追蹤/Comparison Debug View 的 canonical 遷移（§W）**完全
+   未做**——目前 Phase 2 只有後端 deterministic 層 + 一個 CLI replay 工具，
+   沒有任何使用者可見介面
+6. Sector momentum cluster / role evidence 門檻都是**工程起始值**，明確標記
+   「待 replay 校準」，不得為了讓特定案例過關硬調
+7. **正式 production cutover（`SIGNALS_PIPELINE_MODE=phase2`）尚未定義行為**——
+   目前程式碼把 `phase2` 值視同 `phase2_shadow` 處理（只寫 shadow 表，不影響
+   真正輸出）；要讓 Phase 2 真正驅動使用者看到的 WATCH 清單，需要另外接一段
+   「shadow 驗證通過後，phase2 模式改為驅動 `signal_snapshots`」的邏輯，
+   **這段目前完全不存在**，避免不小心切過去
+
 ## Phase 1：魚尾 Canonical Market Classification System 完成（2026-07-21）
 
 > **交付檔案目錄**：[docs/plans/canonical_classification/](docs/plans/canonical_classification/)

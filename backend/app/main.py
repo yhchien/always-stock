@@ -216,6 +216,20 @@ def _ensure_classification_tables() -> None:
         logger.exception("Failed to create classification tables at startup")
 
 
+def _ensure_phase2_shadow_tables() -> None:
+    """啟動時確保 Phase 2 shadow mode 表存在（signal_shadow_snapshots）。
+    純建表、不 seed、失敗不擋啟動。這張表只給 shadow 驗證用，production
+    `signal_snapshots` / `signal_watch_hits` 完全不受影響。
+    """
+    from app.database import Base, engine
+    from app.models import SignalShadowSnapshot  # noqa: F401 — 觸發 metadata 註冊
+
+    try:
+        Base.metadata.create_all(bind=engine, tables=[SignalShadowSnapshot.__table__])
+    except Exception:
+        logger.exception("Failed to create Phase 2 shadow tables at startup")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
@@ -231,6 +245,7 @@ async def lifespan(app: FastAPI):
     _ensure_signal_watch_schema()
     _ensure_m3_snapshot_columns()
     _ensure_classification_tables()
+    _ensure_phase2_shadow_tables()
 
     app.state.bot_app = None
 

@@ -32,9 +32,14 @@ def _full_strength_candidate(**overrides):
 
 
 def test_momentum_score_full_strength_is_90():
-    """滿分 = 30 + 25 + 20 + 15 = 90（基本面 10 分 v2.1 未接，恆 0）。"""
+    """v1（預設，SIGNALS_MOMENTUM_SCORE_AVAILABLE_WEIGHT 未開）：滿分 = 30+25+20+15 = 90
+    （基本面 10 分缺席時直接貢獻 0，不 rescale——這是目前 production 的既有行為，
+    Phase 2 的 available-weight normalization 需要 shadow 驗證後才開關，見下方
+    test_momentum_score_available_weight_normalization_when_enabled）。"""
     out = momentum.compute_momentum_score(_full_strength_candidate())
     assert out["momentum_score"] == 90.0
+    assert out["momentum_score_version"] == "v1"
+    assert out["score_confidence"] == "MEDIUM"
     detail = out["momentum_score_detail"]
     assert detail["price"] == 30.0
     assert detail["relative_strength"] == 25.0
@@ -42,6 +47,18 @@ def test_momentum_score_full_strength_is_90():
     assert detail["volume_quality"] == 15.0
     assert detail["fundamental"] is None
     assert detail["risk_penalty"] == 0.0
+
+
+def test_momentum_score_available_weight_normalization_when_enabled(monkeypatch):
+    """Phase 2（2026-07-21，behind flag）：開啟 SIGNALS_MOMENTUM_SCORE_AVAILABLE_WEIGHT
+    後，核心四項滿分 + 缺基本面 → rescale 到 100 分滿分（missing != bad）。
+    這個 flag 預設關閉，要等 shadow replay 驗證過再由使用者決定是否正式開啟。"""
+    monkeypatch.setattr(momentum, "_AVAILABLE_WEIGHT_NORMALIZATION_ENABLED", True)
+    out = momentum.compute_momentum_score(_full_strength_candidate())
+    assert out["momentum_score"] == 100.0
+    assert out["momentum_score_version"] == "v2"
+    assert out["feature_coverage"] == 0.9
+    assert out["score_confidence"] == "MEDIUM"
 
 
 def test_momentum_score_all_missing_is_zero():
@@ -64,7 +81,7 @@ def test_momentum_score_blowoff_penalty():
         high_1d=108.0,   # upper shadow 7 > 2；101 < 108×0.97
     )
     out = momentum.compute_momentum_score(candidate)
-    assert out["momentum_score"] == 80.0  # 90 - 10
+    assert out["momentum_score"] == 80.0  # 90 - 10（v1 預設行為）
     assert "blowoff_upper_shadow" in out["momentum_score_detail"]["penalty_reasons"]
 
 

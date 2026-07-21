@@ -758,3 +758,39 @@ class EtfClassification(Base):
     mapping_version = Column(String(16), nullable=False, default="v1")
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     ingested_at = Column(DateTime, default=datetime.utcnow)
+
+
+class SignalShadowSnapshot(Base):
+    """
+    Phase 2（2026-07-21）Shadow Mode 快照。
+
+    **不是** production 資料——`app/routers/signals.py` 的公開 endpoint 與
+    `signal_watch_hits` 30 日追蹤都不讀這張表。這裡只給 `run_phase2_replay.py`
+    與未來的 shadow 比較報告使用，讓 Phase 2 pipeline 重構可以在完全不影響
+    `signal_snapshots`（真正驅動使用者看到的訊號）的前提下累積驗證資料。
+
+    一個 (snapshot_date, pipeline_version) 一筆；同一天可以同時有 legacy 對照組
+    （若未來要存）與多個 phase2 版本並存，方便 A/B 比較。
+    """
+    __tablename__ = "signal_shadow_snapshots"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    snapshot_date = Column(Date, nullable=False, index=True)
+    pipeline_version = Column(String(24), nullable=False, default="phase2")
+
+    # Funnel metrics（§S）+ 完整 explain trace 陣列（§R）
+    funnel_metrics = Column(JSON, nullable=False)
+    explain_traces = Column(JSON, nullable=False)   # List[explain_trace dict]，含每檔候選
+
+    # 與同一天 legacy snapshot 的比較摘要（差異 stock_id 清單等），可為 None（首次跑無對照）
+    comparison_summary = Column(JSON, nullable=True)
+
+    candidate_pool_size = Column(Integer, nullable=True)
+    role_survivor_count = Column(Integer, nullable=True)   # role != None 的數量
+    regime_survivor_count = Column(Integer, nullable=True)
+
+    generated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("snapshot_date", "pipeline_version", name="uq_shadow_snapshot_date_version"),
+    )
