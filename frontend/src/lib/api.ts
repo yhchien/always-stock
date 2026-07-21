@@ -1230,6 +1230,55 @@ export interface SignalWatchlistItem {
   regime?: SignalRegime | null
   /** 2026-06-26 M27：deterministic 觀察積極度（aggressive/normal/cautious）；舊快照無 → null。 */
   watch_intensity?: SignalWatchIntensity | null
+  /** 2026-07-16 v5：LLM 回填的動能區塊（含 4 條 momentum_reason bullet）；v5 之前的快照無 → null。 */
+  momentum?: SignalMomentumBlock | null
+  /** 2026-07-16 v2.2：backend deterministic 動能特徵快照（pipeline 蓋回，不依賴 LLM）。 */
+  signal_metrics?: SignalMetrics | null
+}
+
+export type SignalMomentumGrade = "A" | "B" | "C" | "D"
+export type SignalMomentumPhase =
+  | "emerging"
+  | "accelerating"
+  | "trending"
+  | "extended"
+  | "weakening"
+
+/** v5 prompt 輸出的 momentum 區塊（LLM 原樣回填 backend 數字 + 4 條解讀 bullet）。 */
+export interface SignalMomentumBlock {
+  momentum_score?: number | null
+  momentum_grade?: SignalMomentumGrade | string | null
+  momentum_phase?: SignalMomentumPhase | string | null
+  return_20d?: number | null
+  return_60d?: number | null
+  rs_market_percentile_20d?: number | null
+  rs_industry_percentile_20d?: number | null
+  rs_rank_change_5d?: number | null
+  trend_efficiency_20d?: number | null
+  distance_to_high_20d_pct?: number | null
+  atr_pct_14d?: number | null
+  momentum_reason?: string[] | null
+}
+
+/** v2.2 spec §9.2：pipeline deterministic 蓋回 watchlist item 的動能特徵（audit / 歸因用）。 */
+export interface SignalMetrics {
+  momentum_score?: number | null
+  momentum_grade?: SignalMomentumGrade | string | null
+  momentum_phase?: SignalMomentumPhase | string | null
+  return_5d?: number | null
+  return_20d?: number | null
+  return_60d?: number | null
+  rs_market_percentile_20d?: number | null
+  rs_industry_percentile_20d?: number | null
+  rs_rank_improvement_5d?: number | null
+  institution_buy_to_turnover_2d?: number | null
+  trend_efficiency_20d?: number | null
+  distance_to_high_20d?: number | null
+  distance_to_ma20?: number | null
+  breadth_score?: number | null
+  consecutive_hit_count?: number | null
+  independent_hit_count?: number | null
+  revenue_yoy?: number | null
 }
 
 export interface SignalMarginAnalysisTable {
@@ -1300,6 +1349,10 @@ export interface SignalMarketContext {
   market_state_reason?: string | null
   /** 2026-05-25：大盤融資融券盤勢，從 backend market_margin.py 注入。 */
   margin_climate?: SignalMarketMarginClimate | null
+  /** 2026-07-16 v2.2：市場廣度 0~100（全市場 MA20/60 上方比例、漲跌家數等聚合）。 */
+  breadth_score?: number | null
+  /** 2026-07-16 v2.2：4 態 regime detail（BROAD_BULL/NARROW_BULL/…，僅觀察用；gate 已在 backend 做）。 */
+  market_regime_detail?: string | null
 }
 
 export interface SignalSnapshotData {

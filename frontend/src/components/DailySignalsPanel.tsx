@@ -173,6 +173,188 @@ function ConvictionChip({
   )
 }
 
+// ============================================================================
+// v2.2（2026-07-16）：動能資料顯示（momentum_score / grade / phase / RS）
+// 資料來源優先序：item.signal_metrics（backend deterministic，pipeline 蓋回）
+// > item.momentum（v5 LLM 原樣回填）；v5 之前的舊快照兩者皆無 → 不顯示。
+// ============================================================================
+
+const MOMENTUM_PHASE_LABELS: Record<string, string> = {
+  emerging: "啟動",
+  accelerating: "加速",
+  trending: "趨勢延續",
+  extended: "過熱",
+  weakening: "轉弱",
+}
+
+const MOMENTUM_PHASE_CLS: Record<string, string> = {
+  emerging: "border-sky-500/60 bg-sky-500/15 text-sky-200",
+  accelerating: "border-emerald-500/60 bg-emerald-500/15 text-emerald-200",
+  trending: "border-emerald-500/50 bg-emerald-500/10 text-emerald-200",
+  extended: "border-amber-500/60 bg-amber-500/15 text-amber-200",
+  weakening: "border-rose-500/60 bg-rose-500/15 text-rose-200",
+}
+
+const MOMENTUM_GRADE_CLS: Record<string, string> = {
+  A: "border-emerald-500/60 bg-emerald-500/15 text-emerald-200",
+  B: "border-sky-500/60 bg-sky-500/15 text-sky-200",
+  C: "border-amber-500/60 bg-amber-500/15 text-amber-200",
+  D: "border-rose-500/60 bg-rose-500/15 text-rose-200",
+}
+
+type ResolvedMomentum = {
+  score: number | null
+  grade: string | null
+  phase: string | null
+  rsMarketPct: number | null
+  rsIndustryPct: number | null
+  rsRankChange5d: number | null
+  trendEfficiency: number | null
+  distanceToHigh20d: number | null
+  atrPct14d: number | null
+  return20d: number | null
+  return60d: number | null
+  reasons: string[]
+}
+
+function resolveMomentum(item: SignalWatchlistItem): ResolvedMomentum | null {
+  const det = item.signal_metrics
+  const llm = item.momentum
+  if (!det && !llm) return null
+  const pick = <T,>(a: T | null | undefined, b: T | null | undefined): T | null =>
+    a != null ? a : b != null ? b : null
+  const resolved: ResolvedMomentum = {
+    score: pick(det?.momentum_score, llm?.momentum_score),
+    grade: pick(det?.momentum_grade, llm?.momentum_grade),
+    phase: pick(det?.momentum_phase, llm?.momentum_phase),
+    rsMarketPct: pick(det?.rs_market_percentile_20d, llm?.rs_market_percentile_20d),
+    rsIndustryPct: pick(det?.rs_industry_percentile_20d, llm?.rs_industry_percentile_20d),
+    rsRankChange5d: pick(det?.rs_rank_improvement_5d, llm?.rs_rank_change_5d),
+    trendEfficiency: pick(det?.trend_efficiency_20d, llm?.trend_efficiency_20d),
+    distanceToHigh20d: pick(det?.distance_to_high_20d, llm?.distance_to_high_20d_pct),
+    atrPct14d: llm?.atr_pct_14d ?? null,
+    return20d: pick(det?.return_20d, llm?.return_20d),
+    return60d: pick(det?.return_60d, llm?.return_60d),
+    reasons: Array.isArray(llm?.momentum_reason) ? llm.momentum_reason : [],
+  }
+  if (resolved.score == null && resolved.rsMarketPct == null) return null
+  return resolved
+}
+
+/** 卡片用小 chip：「動能 A・82」，title 帶 phase 與 RS 摘要。 */
+function MomentumChip({ item }: { item: SignalWatchlistItem }) {
+  const m = resolveMomentum(item)
+  if (!m || m.score == null) return null
+  const grade = m.grade ?? ""
+  const cls = MOMENTUM_GRADE_CLS[grade] ?? "border-slate-600 bg-slate-700/40 text-slate-300"
+  const phaseLabel = m.phase ? MOMENTUM_PHASE_LABELS[m.phase] ?? m.phase : null
+  const title = [
+    phaseLabel ? `階段：${phaseLabel}` : null,
+    m.rsMarketPct != null ? `RS 全市場 ${m.rsMarketPct.toFixed(0)} 百分位` : null,
+  ]
+    .filter(Boolean)
+    .join("；")
+  return (
+    <span
+      className={`inline-flex whitespace-nowrap items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] font-medium ${cls}`}
+      title={title || "backend deterministic 動能分數"}
+    >
+      動能 {grade ? `${grade}・` : ""}
+      {m.score.toFixed(0)}
+    </span>
+  )
+}
+
+/** panel header 用：市場廣度 chip（v2.2；缺值不顯示）。 */
+function BreadthChip({ score }: { score?: number | null }) {
+  if (score == null) return null
+  const cls =
+    score >= 60
+      ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-200"
+      : score < 45
+        ? "border-rose-500/50 bg-rose-500/10 text-rose-200"
+        : "border-amber-500/50 bg-amber-500/10 text-amber-200"
+  return (
+    <span
+      className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[11px] font-medium ${cls}`}
+      title="市場廣度 0~100：全市場站上 MA20/60 比例、漲跌家數、20 日新高新低、強產業比的加權分數；低分代表少數股撐盤"
+    >
+      廣度 {score.toFixed(0)}
+    </span>
+  )
+}
+
+function MomentumMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-slate-700/60 bg-slate-800/40 px-2.5 py-1.5">
+      <div className="text-[10px] text-slate-500">{label}</div>
+      <div className="text-sm font-semibold text-slate-100">{value}</div>
+    </div>
+  )
+}
+
+/** popup 用完整動能分析區塊。 */
+function MomentumPanel({ item }: { item: SignalWatchlistItem }) {
+  const m = resolveMomentum(item)
+  if (!m) return null
+  const phaseLabel = m.phase ? MOMENTUM_PHASE_LABELS[m.phase] ?? m.phase : null
+  const phaseCls = m.phase
+    ? MOMENTUM_PHASE_CLS[m.phase] ?? "border-slate-600 bg-slate-700/40 text-slate-300"
+    : ""
+  const gradeCls = MOMENTUM_GRADE_CLS[m.grade ?? ""] ?? "border-slate-600 bg-slate-700/40 text-slate-300"
+  const fmt = (v: number | null, digits = 1, suffix = "") =>
+    v == null ? "—" : `${v.toFixed(digits)}${suffix}`
+  return (
+    <section className="rounded-xl border border-violet-500/30 bg-violet-500/5 p-4">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <h4 className="text-sm font-bold text-violet-200">動能分析</h4>
+        {m.score != null ? (
+          <span className={`inline-flex items-center rounded border px-2 py-0.5 text-sm font-bold ${gradeCls}`}>
+            {m.grade ? `${m.grade} 級・` : ""}
+            {m.score.toFixed(1)} 分
+          </span>
+        ) : null}
+        {phaseLabel ? (
+          <span className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[11px] font-medium ${phaseCls}`}>
+            {phaseLabel}
+          </span>
+        ) : null}
+        <span className="ml-auto text-[10px] text-slate-500">backend deterministic 計算</span>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+        <MomentumMetric label="RS 全市場百分位" value={fmt(m.rsMarketPct, 0)} />
+        <MomentumMetric label="RS 產業內百分位" value={fmt(m.rsIndustryPct, 0)} />
+        <MomentumMetric
+          label="排名 5 日變化"
+          value={
+            m.rsRankChange5d == null
+              ? "—"
+              : `${m.rsRankChange5d > 0 ? "+" : ""}${m.rsRankChange5d.toFixed(0)} 名`
+          }
+        />
+        <MomentumMetric label="20 日報酬" value={fmt(m.return20d, 1, "%")} />
+        <MomentumMetric label="距 20 日高點" value={fmt(m.distanceToHigh20d, 1, "%")} />
+        <MomentumMetric
+          label="趨勢效率 / ATR"
+          value={`${fmt(m.trendEfficiency, 2)} / ${fmt(m.atrPct14d, 1, "%")}`}
+        />
+      </div>
+
+      {m.reasons.length > 0 ? (
+        <ul className="mt-3 space-y-1.5">
+          {m.reasons.map((r, i) => (
+            <li key={i} className="flex gap-2 text-xs leading-relaxed text-slate-300">
+              <span aria-hidden className="mt-0.5 shrink-0 text-violet-400">▸</span>
+              <span>{r}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </section>
+  )
+}
+
 function decisionToTone(type: SignalDecisionType | null | undefined): EmotionTone {
   if (type === "FOLLOWER") return "follower"
   if (type === "LAGGARD") return "laggard"
@@ -530,6 +712,7 @@ function SignalCard({
           <div className="flex items-center justify-between gap-2">
             <InlinePrice quote={quote} />
             <div className="flex shrink-0 items-center gap-1.5">
+              <MomentumChip item={item} />
               <ConvictionChip conviction={item.conviction} intensity={item.watch_intensity} />
               {themeFit ? (
                 <span
@@ -723,6 +906,11 @@ function SignalDetailDialog({
                 </TradingPlanPanel>
               )
             })}
+          </div>
+
+          {/* v2.2（2026-07-16）：動能分析（deterministic 分數 / RS / 階段 + v5 LLM 解讀 bullet） */}
+          <div className="mt-4">
+            <MomentumPanel item={item} />
           </div>
 
           {/* 預測價區間（資金行情可期待價格） */}
@@ -1199,6 +1387,7 @@ export default function DailySignalsPanel({
             label={snapshot?.data.market_context?.market_regime_label}
             reason={snapshot?.data.market_context?.market_regime_reason}
           />
+          <BreadthChip score={snapshot?.data.market_context?.breadth_score} />
           <span className="text-[11px] text-slate-500">每日將於晚上 21:30 更新</span>
         </div>
         <div className="flex items-center gap-2">

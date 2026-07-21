@@ -46,6 +46,20 @@
    `build_candidate_pool` 加 optional `momentum_frame` param（pipeline 先算一次
    與 breadth 共用；未傳自算，測試向後相容）
 
+### 前端動能顯示（2026-07-17）
+- [api.ts](frontend/src/lib/api.ts)：`SignalMomentumBlock`（v5 LLM 回填含 momentum_reason）+
+  `SignalMetrics`（deterministic）型別；`SignalWatchlistItem.momentum / signal_metrics`、
+  `SignalMarketContext.breadth_score / market_regime_detail`
+- [DailySignalsPanel.tsx](frontend/src/components/DailySignalsPanel.tsx)：
+  - `MomentumChip`（卡片：「動能 A・82」，grade 配色 A 綠/B 藍/C 琥珀/D 紅）
+  - `MomentumPanel`（popup：分數+grade+phase chip、6 格 metric（RS 大盤/產業百分位、
+    排名 5 日變化、20 日報酬、距高點、趨勢效率/ATR）、v5 的 4 條 momentum_reason bullet）
+  - `BreadthChip`（header：「廣度 55」，>=60 綠 / <45 紅 / 中間琥珀）
+  - phase 中文：emerging 啟動 / accelerating 加速 / trending 趨勢延續 / extended 過熱 / weakening 轉弱
+- **資料優先序**：`resolveMomentum` 先吃 deterministic `signal_metrics`、缺值再吃 LLM
+  `momentum` 區塊；兩者皆無（v5 之前舊快照）→ chip / panel 整個不渲染（向後相容）
+- 30 日追蹤頁尚未顯示 momentum（archive API 未回 signal_metrics，屬後端 serializer 改動，留待下一輪）
+
 ### Gotcha
 - **4 態 regime 只存在 deterministic gate / snapshot 觀察欄位**：對 LLM 的
   `market_context.market_regime` 契約維持 3 態（v5 enum 固定），
