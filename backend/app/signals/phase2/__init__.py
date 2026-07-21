@@ -1,10 +1,15 @@
 """
-魚尾 Phase 2：Canonical Momentum Pipeline（2026-07-21 啟動）。
+魚尾 Phase 2：Canonical Momentum Pipeline（2026-07-21 shadow 上線 / 2026-07-22
+production cutover）。
 
-**這整個套件只在 shadow mode 下執行**（`SIGNALS_PIPELINE_MODE=phase2_shadow`），
-production 預設（`legacy`，未設定時的預設值）完全不會 import 或呼叫這裡的任何函式——
-`app/signals/pipeline.py` 的 legacy 路徑對這個套件零依賴，行為與 Phase 2 開工前
-逐 byte 相同。
+**由 `SIGNALS_PIPELINE_MODE` 控制執行方式**（`app/signals/pipeline.py`）：
+    - "legacy"：完全不 import 或呼叫這裡的任何函式，行為與 Phase 2 開工前逐 byte 相同
+    - "phase2_shadow"：跑這個套件但只寫進 `signal_shadow_snapshots` 供比對，不影響
+      真正回傳給使用者的 watchlist/removed（那些仍來自 legacy）
+    - "phase2"（2026-07-22 起為預設值）：這個套件的存活者**就是**真正送進 LLM、
+      寫進 `signal_snapshots` / `signal_watch_hits` 的候選來源；legacy chain 仍會
+      照跑，只當作 fail-safe fallback（Phase 2 丟例外時退回使用）與持續監控比較
+      基準（見 `signal_shadow_snapshots.comparison_summary`）。
 
 目標（見對話中 Phase 2 完整 spec）：把「產業」從「股票生死的硬條件」變成「描述股票
 所處環境的一組 context」。核心問題：

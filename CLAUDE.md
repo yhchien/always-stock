@@ -1,13 +1,16 @@
 # always-stock 專案記憶
 
-## Phase 2：魚尾 Canonical Momentum Pipeline（shadow mode 基礎完成，2026-07-21）
+## Phase 2：魚尾 Canonical Momentum Pipeline（**production cutover 完成，2026-07-22**）
 
 > **狀態**：deterministic 決策層（sector context → role taxonomy → sector cluster →
-> entry/tracking state → regime gate → explain trace → funnel metrics）已完整實作
-> 並用**真實 2026-07-20 生產資料**跑過 replay 驗證。**完全跑在 shadow mode**——
-> `SIGNALS_PIPELINE_MODE` 預設 `legacy`，production 選股行為零改動。LLM v6、
-> 前端/archive 全面遷移、正式 production cutover **皆未做**，需要更多天 replay
-> 觀察後才能決定。
+> entry/tracking state → regime gate → explain trace → funnel metrics）已完整實作，
+> 用真實 2026-07-20 資料 replay 驗證過落差，並累積 20 個交易日（06-22~07-17,
+> 07-20）historical replay 報酬率比對後，**2026-07-22 正式切換為 production**：
+> `SIGNALS_PIPELINE_MODE` 預設值從 `legacy` 改為 `phase2`，Phase 2 存活者現在就是
+> 真正送進 LLM、寫進 `signal_snapshots`/`signal_watch_hits` 的候選來源。legacy chain
+> 仍照跑，只當 fail-safe fallback（Phase 2 丟例外時退回）與持續監控比較基準。
+> LLM v6 完整重寫、`/signals/archive` 等其他前端 surface 的 canonical 遷移仍未做
+> （見下方「尚未做」）。
 
 ### 為什麼要做 Phase 2
 - Phase 1（canonical 分類）完成後，用漢翔/台虹/台化/長榮/星宇等真實案例回溯
@@ -157,23 +160,86 @@
   「展開/收合」`<button>` 三者是平行的兄弟元素，不互相巢狀
 - 全 backend test suite：999 pass / 20 fail（既有 baseline，zero 新增失敗）
 
+### 20 天 historical replay 報酬率驗證（2026-07-21，先於 cutover）
+- 用 `run_phase2_replay.py --persist` 對 2026-06-22 ~ 2026-07-20 共 20 個交易日
+  重跑（1 天因本機資料庫連線卡住失敗，19 天成功），每天輸出 legacy 存活數 /
+  Phase 2 存活數 / regime / 候選池大小到 `signal_shadow_snapshots`
+- `backend/analyze_phase2_replay_returns.py`：對每天 legacy/Phase 2 各自的存活
+  名單，用「命中當天收盤 → 2026-07-21 收盤」算簡單報酬率，並對照 production
+  真實 `signal_watch_hits` 當天是否也抓到、抓到的話報酬率是多少
+- **關鍵發現**：漢翔（2634）在 legacy 掛零存活的 4 天（07-13/07-16/07-17/07-20）
+  全部被 Phase 2 抓到，且 4 次相對 07-21 收盤報酬率全為正
+  （+12.07%/+10.85%/+16.83%/+10.00%）——直接證實 Phase 2 解決了本輪要解決的
+  核心問題（單一樣本 sector 不該讓強股被判死）
+- Phase 2 候選池是 legacy 的 ~15 倍大（20 天合計 677 筆 vs legacy 遠小得多），
+  整體平均報酬率與 legacy 相近略遜（本輪只有 20 天樣本、且未接 LLM 過濾，
+  這是預期中「候選池變寬但決策權還在下一段」的中繼結果，不是最終使用者會看到
+  的品質）
+- 逐筆明細（含全部 677 筆 + legacy/production 對照欄位）：
+  `/tmp/phase2_replay_returns_20days_0721.csv`（本機暫存檔，非版控）
+
+### Production Cutover（2026-07-22）
+- **`SIGNALS_PIPELINE_MODE` 預設值改為 `"phase2"`**（`app/signals/pipeline.py`）：
+  不需要在 Render / GitHub Actions 額外設定 env var——改程式碼預設值同時涵蓋
+  Render web service 的 BackgroundTasks 路徑（前端「重新產生」按鈕）與
+  `daily_signals.yml` workflow_dispatch 路徑。要臨時退回 legacy，設定 env var
+  `SIGNALS_PIPELINE_MODE=legacy` 即可，不需要改代碼或 revert commit
+- **LLM 相容層**（`pipeline_v2.role_to_prelim_type()`）：Phase 2 存活者沒有
+  legacy `prelim_type`（LEADER/FOLLOWER/ROTATION_LAGGARD），新增映射：
+  - 三種 formal leader（SECTOR_LEADER/CO_LEADER/INDEPENDENT_LEADER）→ LEADER
+  - SECTOR_FOLLOWER → FOLLOWER；ROTATION_LAGGARD → `"ROTATION_LAGGARD"`
+    字串（沿用既有 `_normalize_prelim_type` 再轉 LAGGARD 的邏輯）
+  - EMERGING_MOMENTUM → FOLLOWER 桶；UNCLASSIFIED_MOMENTUM → LAGGARD 桶
+    （最保守分類，避免灌水）
+  - 已追蹤股（role=None，改用 tracking_state）：ACTIVE_TREND/REACCELERATING
+    → LEADER；HEALTHY_PULLBACK → FOLLOWER；DETERIORATING/INVALIDATED → LAGGARD
+  - 這是工程判斷，非 spec 硬性規定；**§X v6 prompt 完整重寫仍未做**，這只是
+    讓既有 v1/v4 prompt 契約能吃 Phase 2 輸出的最小相容層
+- **`llm_caller._to_evidence_view` 新增 3 個 optional 欄位**：`phase2_role` /
+  `phase2_tracking_state` / `phase2_entry_state`（legacy 候選這三個永遠 None，
+  零影響）；prompt（v1 + v4）加一小段說明，要求 reason 優先引用這些具體狀態，
+  不要為了套用「產業有龍頭、這檔在跟」敘事而虛構不存在的龍頭股
+- **`pipeline.py` 真實分支**：`SIGNALS_PIPELINE_MODE=="phase2"` 時，Phase 2
+  存活者（映射過 prelim_type、套用同一個 `LLM_INPUT_HARD_LIMIT=50` 上限）
+  **取代** legacy 算出來的 `after_regime`/`conviction_by_stock`/
+  `signal_metrics_by_stock`；legacy chain 仍照跑（成本低，純 deterministic，
+  無 LLM），只當 fail-safe fallback 與 shadow snapshot 比較基準。Phase 2
+  pipeline 任何例外 → log + rollback + 退回 legacy 輸出，cron 不會因新程式碼
+  的 bug 整包失敗
+- **conviction 欄位別名**：phase2 的信心度欄位叫 `conviction`
+  （`regime_gate.py`），legacy 是 `regime_conviction`（`filters.py`）；
+  evidence view 讀的是後者的 key 名，phase2 分支裡多寫一行別名
+  （`c["regime_conviction"] = c.get("conviction")`），否則 LLM 看到的
+  regime_conviction 全部是 null
+- **shadow snapshot 持續監控**：切換後 `signal_shadow_snapshots` 仍每天寫入，
+  `comparison_summary.legacy_survivor_ids` 現在代表「若還在用 legacy 今天
+  會抓到誰」，`/signals/phase2` Debug View 頁面繼續有意義，不是只有 cutover
+  前才有用
+- **前端零改動**：LLM 輸出契約（`type`=LEADER/FOLLOWER/LAGGARD、`conviction`、
+  `watch_intensity`、`regime`）完全沒變，只是候選來源換了——`SignalTypeChip`
+  等既有元件不需要任何修改就能正確顯示 Phase 2 驅動的訊號卡片
+- **成本影響（需觀察）**：Phase 2 存活數明顯高於 legacy（19 天 replay 平均
+  ~37 檔 vs legacy 個位數），送進 LLM 的候選數量會顯著增加、逼近甚至常態性
+  觸頂 `LLM_INPUT_HARD_LIMIT=50`，OpenAI 呼叫成本（research + decision +
+  watch_reason 三段 batch）預期會有感上升，需要接下來幾天觀察實際花費
+- 15 個新單元測試（`role_to_prelim_type` 映射 7 個 + pipeline.py phase2 真實
+  分支 2 個：使用 phase2 候選送進 LLM / phase2 例外 fail-safe 退回 legacy）；
+  全 backend suite 1008 pass / 20 fail（既有 baseline），零新增失敗
+
 ### 尚未做（下一輪接手指引）
-1. 用 `run_phase2_replay.py --persist` 對更多歷史交易日（60~120 天）重跑，
-   累積 `signal_shadow_snapshots` 才能做 spec §Y.15/§Y.16 的「Historical replay
-   → tune only if supported by replay」——目前只有 2026-07-17 / 2026-07-20 兩天
-2. LLM v6（§X：backend 唯一 deterministic authority，LLM 只做業務/題材/供應鏈
+1. LLM v6（§X：backend 唯一 deterministic authority，LLM 只做業務/題材/供應鏈
    驗證 + 降級/REMOVE，不可重跑 threshold）**完全未動**——現有 v1/v4/v5 prompt
-   ×regime 路由邏輯不受本輪影響
-3. `/signals/archive`（30 日追蹤正式頁）與 watchlist/StockList 等其他前端 surface
+   ×regime 路由邏輯不受本輪影響，只是額外看得到 3 個 phase2_* 欄位
+2. `/signals/archive`（30 日追蹤正式頁）與 watchlist/StockList 等其他前端 surface
    的 canonical 遷移（§W）仍未做——目前只有 debug-only 的 Comparison Debug View
-4. Sector momentum cluster / role evidence 門檻都是**工程起始值**，明確標記
-   「待 replay 校準」，不得為了讓特定案例過關硬調
-5. **正式 production cutover（`SIGNALS_PIPELINE_MODE=phase2`）尚未定義行為**——
-   目前程式碼把 `phase2` 值視同 `phase2_shadow` 處理（只寫 shadow 表，不影響
-   真正輸出）；要讓 Phase 2 真正驅動使用者看到的 WATCH 清單，需要另外接一段
-   「shadow 驗證通過後，phase2 模式改為驅動 `signal_snapshots`」的邏輯，
-   **這段目前完全不存在**，避免不小心切過去
-6. 本地測試用的 `SITE_GATE_PASSWORD=localtest123` 只在手動驗證時透過環境變數
+3. Sector momentum cluster / role evidence 門檻都是**工程起始值**，只用 20 天
+   歷史 replay 觀察過（原 spec §Y.16 建議 60~120 天），明確標記「待更多 replay
+   校準」，不得為了讓特定案例過關硬調
+4. **cutover 後第一週應密切觀察**：(a) 前端每日訊號清單的品質是否符合預期
+   （candidate 變寬後 LLM 決策層要扛起更多篩選責任）、(b) OpenAI 每日花費、
+   (c) `/signals/phase2` Debug View 的 legacy vs phase2 存活數比較是否穩定、
+   (d) `signal_watch_hits`/30 日追蹤的實際命中報酬率走勢
+5. 本地測試用的 `SITE_GATE_PASSWORD=localtest123` 只在手動驗證時透過環境變數
    臨時帶入單次 uvicorn 進程，**沒有寫進任何 `.env` 或程式碼**，重啟後即失效，
    不影響任何持久化設定
 

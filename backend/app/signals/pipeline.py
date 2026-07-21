@@ -49,14 +49,78 @@ STAGE_PERSIST = "persist"
 LLM_BATCH_CONCURRENCY = 2
 LLM_INPUT_HARD_LIMIT = 50
 
-# Phase 2（2026-07-21）：SIGNALS_PIPELINE_MODE 控制 shadow pipeline 是否跑。
-# 預設 "legacy" = 完全不執行本檔案以外的任何 Phase 2 邏輯，行為與 Phase 2 開工前
-# 逐 byte 相同。"phase2_shadow" 會在 legacy pipeline 正常跑完候選池 + regime 之後，
-# 額外跑一次 Phase 2 deterministic 決策層並存進 `signal_shadow_snapshots`——
-# **不影響**真正回傳給使用者的 watchlist / removed（那些仍完全來自 legacy
-# `after_regime`）。Phase 2 的任何例外都被吞掉（見 `_run_phase2_shadow`），
-# 因為 shadow 失敗絕對不能拖垮 legacy production pipeline。
-SIGNALS_PIPELINE_MODE = os.getenv("SIGNALS_PIPELINE_MODE", "legacy").strip().lower()
+# Phase 2（2026-07-21 shadow 上線 / 2026-07-22 production cutover）：
+# SIGNALS_PIPELINE_MODE 控制候選池 + regime gate 要用 legacy 還是 Phase 2 邏輯。
+#   - "legacy"：完全不執行 Phase 2 模組，行為與 Phase 2 開工前逐 byte 相同
+#   - "phase2_shadow"：legacy 仍是真正回傳給使用者的 watchlist/removed 來源；
+#     額外跑一次 Phase 2 deterministic 決策層存進 `signal_shadow_snapshots` 供比對，
+#     不影響任何使用者看得到的輸出。Phase 2 任何例外都被吞掉（見 `_run_phase2_shadow`）。
+#   - "phase2"：Phase 2 存活者（含 role → prelim_type 映射）**取代** legacy 的
+#     after_regime，成為真正送進 LLM、寫進 signal_snapshots / signal_watch_hits 的
+#     候選來源。legacy 這條 chain 仍會照跑（成本很低，純 deterministic，無 LLM），
+#     只是算出來的 after_regime 不再是最終輸出，改成拿去跟 phase2 結果一起存進
+#     shadow snapshot 當作持續監控/回溯比對用。若 Phase 2 pipeline 本身丟例外，
+#     fail-safe 退回 legacy 的 after_regime，確保 cron 不會因為新程式碼的 bug 而整包失敗。
+# 2026-07-22：預設值由 "legacy" 改為 "phase2"，即為 production cutover 本身
+# （不需要另外在 Render / GitHub Actions 設定 env var；改這裡的預設值同時涵蓋
+# Render web service 的 BackgroundTasks 路徑與 daily_signals.yml workflow_dispatch
+# 路徑）。要臨時退回 legacy，設定 env var `SIGNALS_PIPELINE_MODE=legacy` 即可，
+# 不需要改代碼、不需要 revert commit。
+SIGNALS_PIPELINE_MODE = os.getenv("SIGNALS_PIPELINE_MODE", "phase2").strip().lower()
+
+
+def _persist_phase2_shadow_snapshot(
+    db: Session,
+    target_date: date,
+    candidates: list,
+    result: Dict[str, Any],
+    *,
+    legacy_survivor_ids: Optional[list] = None,
+) -> None:
+    """UPSERT `signal_shadow_snapshots`（不 commit 例外處理——呼叫端決定）。
+
+    `legacy_survivor_ids` 有值時（`SIGNALS_PIPELINE_MODE=="phase2"` 的即時比較）
+    寫進 `comparison_summary`，讓 Phase 2 Debug View 在正式切換後仍能持續當作
+    「若還在用 legacy 今天會抓到誰」的監控/回溯工具，不是只有 cutover 前才有用。
+    """
+    from app.models import SignalShadowSnapshot
+    from app.signals.phase2 import pipeline_v2
+
+    row = (
+        db.query(SignalShadowSnapshot)
+        .filter(
+            SignalShadowSnapshot.snapshot_date == target_date,
+            SignalShadowSnapshot.pipeline_version == pipeline_v2.PIPELINE_VERSION,
+        )
+        .first()
+    )
+    if row is None:
+        row = SignalShadowSnapshot(
+            snapshot_date=target_date,
+            pipeline_version=pipeline_v2.PIPELINE_VERSION,
+        )
+        db.add(row)
+    row.funnel_metrics = result["funnel_metrics"]
+    row.explain_traces = result["explain_traces"]
+    row.candidate_pool_size = len(candidates)
+    row.role_survivor_count = sum(
+        1 for c in candidates if c.get("role") or c.get("tracking_state")
+    )
+    row.regime_survivor_count = len(result["survivors"])
+    if legacy_survivor_ids is not None:
+        phase2_survivor_ids = [c.get("stock_id") for c in result["survivors"]]
+        row.comparison_summary = {
+            "legacy_survivor_count": len(legacy_survivor_ids),
+            "legacy_survivor_ids": legacy_survivor_ids,
+            "phase2_survivor_count": len(phase2_survivor_ids),
+            "phase2_survivor_ids": phase2_survivor_ids,
+            "mode": SIGNALS_PIPELINE_MODE,
+        }
+    db.commit()
+    logger.info(
+        "Phase 2 shadow snapshot recorded for %s: candidates=%d survivors=%d mode=%s",
+        target_date, len(candidates), len(result["survivors"]), SIGNALS_PIPELINE_MODE,
+    )
 
 
 def _run_phase2_shadow(
@@ -71,39 +135,20 @@ def _run_phase2_shadow(
     `raw_pool` 必須是 legacy `classification.classify_stocks()` **之前**的候選池
     （見呼叫端註解）；這裡用 `pipeline_v2.build_phase2_pool()` 套用 Phase 2 自己
     的定義性 hard exclusion，不是拿 legacy 已經三選一硬刪除過的結果。
+
+    只在 "phase2_shadow" 模式呼叫（見呼叫端 if/else 分支）；"phase2" 模式的
+    shadow 紀錄改由 `run_signal_pipeline_sync` 直接呼叫
+    `_persist_phase2_shadow_snapshot`，因為那裡已經算好 phase2_result 可以重用，
+    不需要在這裡重算一次。
     """
-    if SIGNALS_PIPELINE_MODE not in ("phase2_shadow", "phase2"):
+    if SIGNALS_PIPELINE_MODE != "phase2_shadow":
         return
     try:
-        from app.models import SignalShadowSnapshot
         from app.signals.phase2 import pipeline_v2
 
         candidates = pipeline_v2.build_phase2_pool(raw_pool)
         result = pipeline_v2.run_phase2_pipeline(db, candidates, regime)
-        row = (
-            db.query(SignalShadowSnapshot)
-            .filter(
-                SignalShadowSnapshot.snapshot_date == target_date,
-                SignalShadowSnapshot.pipeline_version == pipeline_v2.PIPELINE_VERSION,
-            )
-            .first()
-        )
-        if row is None:
-            row = SignalShadowSnapshot(
-                snapshot_date=target_date,
-                pipeline_version=pipeline_v2.PIPELINE_VERSION,
-            )
-            db.add(row)
-        row.funnel_metrics = result["funnel_metrics"]
-        row.explain_traces = result["explain_traces"]
-        row.candidate_pool_size = len(candidates)
-        row.role_survivor_count = sum(1 for c in candidates if c.get("role") or c.get("tracking_state"))
-        row.regime_survivor_count = len(result["survivors"])
-        db.commit()
-        logger.info(
-            "Phase 2 shadow pipeline recorded for %s: candidates=%d survivors=%d",
-            target_date, len(candidates), len(result["survivors"]),
-        )
+        _persist_phase2_shadow_snapshot(db, target_date, candidates, result)
     except Exception:
         logger.exception("Phase 2 shadow pipeline failed for %s (non-fatal, legacy unaffected)", target_date)
         db.rollback()
@@ -233,13 +278,83 @@ def run_signal_pipeline_sync(
                 for c in after_regime
             }
 
-            # Phase 2 shadow mode（no-op 除非 SIGNALS_PIPELINE_MODE=phase2_shadow）：
+            # Phase 2 production cutover（2026-07-22）：
             # 用 **raw `pool`**（legacy `classification.classify_stocks()` 三選一
             # 硬刪除**之前**的候選池）建 Phase 2 專屬候選池——若改用 `after_soft`
-            # 會繼承 legacy 分類已經刪掉漢翔/台虹/航運這類案例的問題，讓 shadow
-            # 完全驗證不到 Phase 2 真正要解決的東西。不影響下面任何 legacy 變數
-            # （after_regime / signal_metrics_by_stock 等）。
-            _run_phase2_shadow(db, target_date, pool, regime_info["regime"])
+            # 會繼承 legacy 分類已經刪掉漢翔/台虹/航運這類案例的問題。
+            #
+            # `SIGNALS_PIPELINE_MODE=="phase2"` 時，Phase 2 存活者（映射過
+            # prelim_type，套用同一個 LLM_INPUT_HARD_LIMIT 上限）**取代**上面 legacy
+            # 算出來的 after_regime/conviction_by_stock/signal_metrics_by_stock，
+            # 成為真正送進 LLM 與寫進 signal_snapshots 的來源；legacy 這幾個變數在
+            # 這個模式下只保留給 fail-safe fallback（Phase 2 丟例外時退回使用）與
+            # shadow snapshot 的比較基準（`legacy_survivor_ids`），並不會消失。
+            #
+            # 其他模式（legacy / phase2_shadow）：本段落只寫入
+            # `signal_shadow_snapshots` 供比對，不動 after_regime 等變數
+            # （`_run_phase2_shadow` 內部依 mode 自我判斷是否執行）。
+            if SIGNALS_PIPELINE_MODE == "phase2":
+                try:
+                    from app.signals.phase2 import pipeline_v2
+
+                    phase2_candidates = pipeline_v2.build_phase2_pool(pool)
+                    phase2_result = pipeline_v2.run_phase2_pipeline(
+                        db, phase2_candidates, regime_info["regime"]
+                    )
+                    phase2_survivors = phase2_result["survivors"]
+                    for c in phase2_survivors:
+                        c["prelim_type"] = pipeline_v2.role_to_prelim_type(c)
+                        # phase2 的信心度欄位叫 `conviction`（regime_gate.py），legacy
+                        # 是 `regime_conviction`（filters.py）；llm_caller evidence view
+                        # 讀的是後者的 key 名，這裡別名一份避免 LLM 看到全 null。
+                        c["regime_conviction"] = c.get("conviction")
+                    phase2_after_regime = _cap_llm_input(
+                        phase2_survivors, limit=LLM_INPUT_HARD_LIMIT
+                    )
+
+                    _persist_phase2_shadow_snapshot(
+                        db,
+                        target_date,
+                        phase2_candidates,
+                        phase2_result,
+                        legacy_survivor_ids=[
+                            str(c.get("stock_id") or "") for c in after_regime
+                        ],
+                    )
+
+                    after_regime = phase2_after_regime
+                    conviction_by_stock = {
+                        str(c.get("stock_id") or ""): c.get("conviction")
+                        for c in after_regime
+                    }
+                    signal_metrics_by_stock = {
+                        str(c.get("stock_id") or ""): momentum.build_signal_metrics(
+                            c, regime_info
+                        )
+                        for c in after_regime
+                    }
+                    logger.info(
+                        "Phase 2 production mode active for %s: candidates=%d "
+                        "survivors=%d (capped to %d for LLM); legacy would have "
+                        "produced %d survivors",
+                        target_date,
+                        len(phase2_candidates),
+                        len(phase2_survivors),
+                        len(after_regime),
+                        len(conviction_by_stock),
+                    )
+                except Exception:
+                    logger.exception(
+                        "Phase 2 production pipeline failed for %s; "
+                        "falling back to legacy output for this run",
+                        target_date,
+                    )
+                    db.rollback()
+                    # after_regime / conviction_by_stock / signal_metrics_by_stock
+                    # 保留上面 legacy 算好的值，本次 run 以 legacy 輸出為準，
+                    # 不讓 Phase 2 的 bug 拖垮整個 cron。
+            else:
+                _run_phase2_shadow(db, target_date, pool, regime_info["regime"])
 
             # Step 5：LLM Research（batch）
             total_for_llm = max(len(after_regime), 1)

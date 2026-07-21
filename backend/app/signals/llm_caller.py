@@ -1193,6 +1193,15 @@ def _to_evidence_view(stocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "momentum_signals": _momentum_signals_view(s),
             # M27：該檔 deterministic 信心度（大盤 regime 在 market_context，全市場一致，不重複帶）
             "regime_conviction": s.get("regime_conviction"),
+            # Phase 2（2026-07-22）：只在 `SIGNALS_PIPELINE_MODE=phase2` 產生的候選才會有
+            # 這幾個欄位（legacy 候選沒有 role/tracking_state/entry_state，全部是 None，
+            # 對 legacy 輸出零影響）。`prelim_type` 已由 pipeline_v2.role_to_prelim_type()
+            # 映射過，LLM 仍照既有規則「不可改判 type」；這裡額外提供原始角色細節，
+            # 讓 reason 能引用比 LEADER/FOLLOWER/LAGGARD 三桶更精確的狀態描述
+            # （例如 EMERGING_MOMENTUM 或 HEALTHY_PULLBACK），不必硬套「產業跟漲」敘事。
+            "phase2_role": s.get("role"),
+            "phase2_tracking_state": s.get("tracking_state"),
+            "phase2_entry_state": s.get("entry_state"),
         })
     return out
 

@@ -88,3 +88,76 @@ def test_tracked_stock_uses_tracking_state_not_new_role_selection(db):
     trace = out["explain_traces"]["1326"]
     assert trace["tracking_state"] == "HEALTHY_PULLBACK"
     assert trace["role"]["type"] == "HEALTHY_PULLBACK"  # role 欄位 fallback 顯示 tracking_state
+
+
+class TestRoleToPrelimType:
+    """§U（2026-07-22 production cutover）：role/tracking_state → legacy
+    prelim_type 相容層，讓 Phase 2 候選能直接餵給既有 LLM pipeline。"""
+
+    def test_formal_leader_roles_map_to_leader(self):
+        from app.signals.phase2 import roles as roles_mod
+
+        for role in (
+            roles_mod.ROLE_SECTOR_LEADER,
+            roles_mod.ROLE_CO_LEADER,
+            roles_mod.ROLE_INDEPENDENT_LEADER,
+        ):
+            assert pipeline_v2.role_to_prelim_type({"role": role}) == "LEADER"
+
+    def test_follower_role_maps_to_follower(self):
+        from app.signals.phase2 import roles as roles_mod
+
+        assert pipeline_v2.role_to_prelim_type(
+            {"role": roles_mod.ROLE_SECTOR_FOLLOWER}
+        ) == "FOLLOWER"
+
+    def test_rotation_laggard_role_maps_to_rotation_laggard_string(self):
+        """刻意保留 "ROTATION_LAGGARD" 字串（不是直接映射成 "LAGGARD"），因為
+        `llm_caller._normalize_prelim_type()` 本來就會把這個值再轉成 LAGGARD——
+        與 legacy v2.1 命名完全一致，不重新發明映射規則。"""
+        from app.signals.phase2 import roles as roles_mod
+
+        assert (
+            pipeline_v2.role_to_prelim_type({"role": roles_mod.ROLE_ROTATION_LAGGARD})
+            == "ROTATION_LAGGARD"
+        )
+
+    def test_emerging_momentum_maps_to_follower(self):
+        from app.signals.phase2 import roles as roles_mod
+
+        assert pipeline_v2.role_to_prelim_type(
+            {"role": roles_mod.ROLE_EMERGING_MOMENTUM}
+        ) == "FOLLOWER"
+
+    def test_unclassified_momentum_maps_to_laggard(self):
+        from app.signals.phase2 import roles as roles_mod
+
+        assert pipeline_v2.role_to_prelim_type(
+            {"role": roles_mod.ROLE_UNCLASSIFIED_MOMENTUM}
+        ) == "LAGGARD"
+
+    def test_tracked_stock_uses_tracking_state_when_role_is_none(self):
+        from app.signals.phase2 import tracking_state as tracking_mod
+
+        assert pipeline_v2.role_to_prelim_type(
+            {"role": None, "tracking_state": tracking_mod.TRACKING_ACTIVE_TREND}
+        ) == "LEADER"
+        assert pipeline_v2.role_to_prelim_type(
+            {"role": None, "tracking_state": tracking_mod.TRACKING_REACCELERATING}
+        ) == "LEADER"
+        assert pipeline_v2.role_to_prelim_type(
+            {"role": None, "tracking_state": tracking_mod.TRACKING_HEALTHY_PULLBACK}
+        ) == "FOLLOWER"
+        assert pipeline_v2.role_to_prelim_type(
+            {"role": None, "tracking_state": tracking_mod.TRACKING_DETERIORATING}
+        ) == "LAGGARD"
+        assert pipeline_v2.role_to_prelim_type(
+            {"role": None, "tracking_state": tracking_mod.TRACKING_INVALIDATED}
+        ) == "LAGGARD"
+
+    def test_unknown_role_and_no_tracking_state_falls_back_to_laggard(self):
+        """既無 role 也無 tracking_state（理論上不該發生，防禦性 fallback）→
+        保守給 LAGGARD，不像 legacy `_normalize_prelim_type` 那樣 fallback 到
+        LEADER——Phase 2 候選缺乏分類線索時不應該被灌水成最高優先桶。"""
+        assert pipeline_v2.role_to_prelim_type({}) == "LAGGARD"
+        assert pipeline_v2.role_to_prelim_type({"role": "SOME_UNKNOWN_ROLE"}) == "LAGGARD"

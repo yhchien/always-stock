@@ -70,50 +70,61 @@ def _legacy_survivors(after_soft, regime_info):
     )
 
 
-def run_replay(target_date: date, watch_stock_ids: list[str], persist: bool) -> int:
+def run_replay(target_date: date, watch_stock_ids: list[str], persist: bool, quiet: bool = False) -> int:
+    def _p(*a, **kw):
+        if not quiet:
+            print(*a, **kw)
+
     db = SessionLocal()
     try:
-        print(f"=== Phase 2 Replay: {target_date} ===\n")
+        _p(f"=== Phase 2 Replay: {target_date} ===\n")
 
         ingestion, momentum_frame, pool, regime_info = _rebuild_shared_inputs(db, target_date)
-        print(f"候選池（Candidate Discovery 後，兩邊共用）：{len(pool)} 檔")
-        print(f"Market regime：{regime_info['regime']}（{regime_info.get('reason', '')}）")
-        print(f"Breadth score：{regime_info.get('breadth_score')}\n")
+        _p(f"候選池（Candidate Discovery 後，兩邊共用）：{len(pool)} 檔")
+        _p(f"Market regime：{regime_info['regime']}（{regime_info.get('reason', '')}）")
+        _p(f"Breadth score：{regime_info.get('breadth_score')}\n")
 
         legacy_after_soft = _rebuild_legacy_candidate_pool(db, target_date, pool, momentum_frame, ingestion)
-        print(f"[Legacy] classify_stocks（三選一）後：{len(legacy_after_soft)} 檔")
+        _p(f"[Legacy] classify_stocks（三選一）後：{len(legacy_after_soft)} 檔")
         legacy_survivors = _legacy_survivors(legacy_after_soft, regime_info)
-        print(f"[Legacy] regime gate 後存活：{len(legacy_survivors)} 檔")
+        _p(f"[Legacy] regime gate 後存活：{len(legacy_survivors)} 檔")
         if legacy_survivors:
-            print("  ", [c.get("stock_id") for c in legacy_survivors])
+            _p("  ", [c.get("stock_id") for c in legacy_survivors])
 
         phase2_pool = pipeline_v2.build_phase2_pool(pool)
-        print(f"\n[Phase 2] 定義性 hard exclusion 後（無 classify_stocks 硬刪除）：{len(phase2_pool)} 檔")
+        _p(f"\n[Phase 2] 定義性 hard exclusion 後（無 classify_stocks 硬刪除）：{len(phase2_pool)} 檔")
 
         result = pipeline_v2.run_phase2_pipeline(db, phase2_pool, regime_info["regime"])
         survivors = result["survivors"]
-        print(f"[Phase 2] regime gate 後存活：{len(survivors)} 檔")
+        _p(f"[Phase 2] regime gate 後存活：{len(survivors)} 檔")
         if survivors:
             for c in survivors:
-                print(f"   {c['stock_id']}: role={c.get('role')} conviction={c.get('conviction')}")
+                _p(f"   {c['stock_id']}: role={c.get('role')} conviction={c.get('conviction')}")
 
-        print("\n=== Funnel Metrics ===")
-        print(json.dumps(result["funnel_metrics"], ensure_ascii=False, indent=2))
+        _p("\n=== Funnel Metrics ===")
+        _p(json.dumps(result["funnel_metrics"], ensure_ascii=False, indent=2))
 
-        print("\n=== 指定股票 Explain Trace ===")
+        if quiet:
+            print(
+                f"{target_date} | regime={regime_info['regime']} | pool={len(pool)} "
+                f"| legacy_survivors={len(legacy_survivors)} | phase2_survivors={len(survivors)}"
+            )
+
         raw_pool_ids = {c["stock_id"] for c in pool}
         phase2_pool_ids = {c["stock_id"] for c in phase2_pool}
         legacy_survivor_ids = {c.get("stock_id") for c in legacy_survivors}
-        for sid in watch_stock_ids:
-            if sid not in raw_pool_ids:
-                print(f"\n--- {sid}：連 Candidate Discovery 都沒進來（build_candidate_pool 未收錄）---")
-                continue
-            if sid not in phase2_pool_ids:
-                print(f"\n--- {sid}：Candidate Discovery 有進來，但被 Phase 2 定義性 hard exclusion 剔除 ---")
-                continue
-            trace = result["explain_traces"].get(sid)
-            print(f"\n--- {sid} ---")
-            print(json.dumps(trace, ensure_ascii=False, indent=2, default=str))
+        if not quiet:
+            print("\n=== 指定股票 Explain Trace ===")
+            for sid in watch_stock_ids:
+                if sid not in raw_pool_ids:
+                    print(f"\n--- {sid}：連 Candidate Discovery 都沒進來（build_candidate_pool 未收錄）---")
+                    continue
+                if sid not in phase2_pool_ids:
+                    print(f"\n--- {sid}：Candidate Discovery 有進來，但被 Phase 2 定義性 hard exclusion 剔除 ---")
+                    continue
+                trace = result["explain_traces"].get(sid)
+                print(f"\n--- {sid} ---")
+                print(json.dumps(trace, ensure_ascii=False, indent=2, default=str))
 
         if persist:
             from app.models import SignalShadowSnapshot
@@ -141,11 +152,11 @@ def run_replay(target_date: date, watch_stock_ids: list[str], persist: bool) -> 
                 "phase2_survivor_ids": [c.get("stock_id") for c in survivors],
             }
             db.commit()
-            print(f"\n已寫入 signal_shadow_snapshots（snapshot_date={target_date}）")
+            _p(f"\n已寫入 signal_shadow_snapshots（snapshot_date={target_date}）")
 
         return 0
     except ValueError as e:
-        print(f"ERROR: {e}")
+        print(f"ERROR ({target_date}): {e}")
         return 1
     finally:
         db.close()
@@ -156,11 +167,12 @@ def main() -> int:
     parser.add_argument("target_date", type=str, help="YYYY-MM-DD")
     parser.add_argument("--stocks", type=str, default=",".join(DEFAULT_REGRESSION_STOCKS))
     parser.add_argument("--persist", action="store_true")
+    parser.add_argument("--quiet", action="store_true", help="批次跑多天時降低輸出量，只印一行摘要")
     args = parser.parse_args()
 
     target_date = datetime.strptime(args.target_date, "%Y-%m-%d").date()
     watch_stock_ids = [s.strip() for s in args.stocks.split(",") if s.strip()]
-    return run_replay(target_date, watch_stock_ids, args.persist)
+    return run_replay(target_date, watch_stock_ids, args.persist, quiet=args.quiet)
 
 
 if __name__ == "__main__":

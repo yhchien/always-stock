@@ -41,6 +41,62 @@ from app.signals.phase2 import tracking_state as tracking_mod
 
 PIPELINE_VERSION = "phase2-v1"
 
+# §U（2026-07-22）：production cutover 的 LLM 相容層。
+#
+# Phase 2 的候選（`run_phase2_pipeline` 存活者）沒有 legacy `classification.
+# classify_stocks()` 產生的 `prelim_type` 欄位——role 分類是 evidence-count-based
+# 七種角色（見 roles.py）+ tracking_state 五種延續狀態（見 tracking_state.py），
+# 兩者都不是舊版的 LEADER/FOLLOWER/ROTATION_LAGGARD 三選一。但既有 LLM prompt /
+# `llm_caller._normalize_prelim_type()` / 前端 `SignalTypeChip` 都只認
+# LEADER/FOLLOWER/LAGGARD 三種 `type`；要讓 Phase 2 候選能真的餵給既有 LLM 管線
+# 並產生前端相容的輸出，需要把新角色**映射**回舊三分類，而不是重寫整條契約
+# （那是刻意保留給 §X v6 prompt 的範圍，本次不做）。
+#
+# 映射原則（工程判斷，非 spec 硬性規定，需 replay/production 觀察後再校準）：
+#   - 三種 formal leader（SECTOR_LEADER/CO_LEADER/INDEPENDENT_LEADER）→ LEADER
+#   - SECTOR_FOLLOWER → FOLLOWER
+#   - ROTATION_LAGGARD → "ROTATION_LAGGARD"（`_normalize_prelim_type` 既有邏輯
+#     會把這個字串再映射成 LAGGARD，維持與 legacy 完全一致的行為）
+#   - EMERGING_MOMENTUM（RS 快速改善但尚未確立）→ FOLLOWER 桶：這類股票不是
+#     「產業已有龍頭、我在跟」，而是「自己正在被市場重新定價」，用 FOLLOWER
+#     桶只是借用同一組敘事層級（非龍頭），LLM reason 仍會依 evidence 具體描述
+#   - UNCLASSIFIED_MOMENTUM（符合基本動能資格但角色不明確）→ LAGGARD 桶：
+#     最保守分類，避免灌水成 LEADER/FOLLOWER
+#   - 已追蹤股（role=None，改用 tracking_state 代表分類）：
+#       ACTIVE_TREND / REACCELERATING → LEADER；HEALTHY_PULLBACK → FOLLOWER；
+#       DETERIORATING / INVALIDATED → LAGGARD（理論上這兩態多半已在 regime gate
+#       被排除，這裡只是防禦性 fallback）
+_ROLE_TO_PRELIM_TYPE = {
+    roles_mod.ROLE_SECTOR_LEADER: "LEADER",
+    roles_mod.ROLE_CO_LEADER: "LEADER",
+    roles_mod.ROLE_INDEPENDENT_LEADER: "LEADER",
+    roles_mod.ROLE_SECTOR_FOLLOWER: "FOLLOWER",
+    roles_mod.ROLE_ROTATION_LAGGARD: "ROTATION_LAGGARD",
+    roles_mod.ROLE_EMERGING_MOMENTUM: "FOLLOWER",
+    roles_mod.ROLE_UNCLASSIFIED_MOMENTUM: "LAGGARD",
+}
+_TRACKING_STATE_TO_PRELIM_TYPE = {
+    tracking_mod.TRACKING_ACTIVE_TREND: "LEADER",
+    tracking_mod.TRACKING_REACCELERATING: "LEADER",
+    tracking_mod.TRACKING_HEALTHY_PULLBACK: "FOLLOWER",
+    tracking_mod.TRACKING_DETERIORATING: "LAGGARD",
+    tracking_mod.TRACKING_INVALIDATED: "LAGGARD",
+}
+
+
+def role_to_prelim_type(candidate: Dict[str, Any]) -> str:
+    """把 Phase 2 的 `role` / `tracking_state` 映射回 legacy LLM 契約需要的
+    `prelim_type`（LEADER / FOLLOWER / ROTATION_LAGGARD）。
+
+    給 `pipeline.py` 在 `SIGNALS_PIPELINE_MODE=phase2` 時，把 Phase 2 存活者
+    餵進既有 `llm_caller` 之前呼叫一次，設定 `candidate["prelim_type"]`。
+    """
+    role = candidate.get("role")
+    if role in _ROLE_TO_PRELIM_TYPE:
+        return _ROLE_TO_PRELIM_TYPE[role]
+    tracking = candidate.get("tracking_state")
+    return _TRACKING_STATE_TO_PRELIM_TYPE.get(tracking, "LAGGARD")
+
 
 def build_phase2_pool(pool: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """從 **raw** `candidate_pool.build_candidate_pool()` 輸出（未經 legacy
