@@ -14,6 +14,7 @@ from app.routers import (
     auth as auth_router,
     backtest,
     brokers,
+    classification,
     financials,
     gate,
     industries,
@@ -192,6 +193,29 @@ def _ensure_m23_tables() -> None:
         logger.exception("Failed to create M23 signal tables at startup")
 
 
+def _ensure_classification_tables() -> None:
+    """啟動時確保 Phase 1 Canonical Market Classification 新表存在
+    （security_classification / etf_classification）。純建表、不 seed、失敗不擋啟動。
+    這兩張表是顯示層基礎建設，`app/signals/*` 選股 pipeline 不讀取。
+    """
+    from app.database import Base, engine
+    from app.models import (  # noqa: F401 — 觸發 metadata 註冊
+        EtfClassification,
+        SecurityClassification,
+    )
+
+    try:
+        Base.metadata.create_all(
+            bind=engine,
+            tables=[
+                SecurityClassification.__table__,
+                EtfClassification.__table__,
+            ],
+        )
+    except Exception:
+        logger.exception("Failed to create classification tables at startup")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
@@ -206,6 +230,7 @@ async def lifespan(app: FastAPI):
     _ensure_industry_flow_schema()
     _ensure_signal_watch_schema()
     _ensure_m3_snapshot_columns()
+    _ensure_classification_tables()
 
     app.state.bot_app = None
 
@@ -290,6 +315,7 @@ app.include_router(financials.router, prefix="/api")
 app.include_router(analysis.router, prefix="/api")
 app.include_router(watchlist.router, prefix="/api")
 app.include_router(signals.router, prefix="/api")
+app.include_router(classification.router, prefix="/api")
 
 logger.info("always-stock API initialized")
 

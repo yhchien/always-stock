@@ -1,5 +1,71 @@
 # always-stock 專案記憶
 
+## Phase 1：魚尾 Canonical Market Classification System 完成（2026-07-21）
+
+> **交付檔案目錄**：[docs/plans/canonical_classification/](docs/plans/canonical_classification/)
+> （current_industry_data_flow / canonical_sector_taxonomy.json / stock_sector_mapping.csv /
+> etf_classification.csv / sector_mapping_manual_review.csv / catch_all_remap_report.csv /
+> sector_mapping_validation_report.md / future_phase2_recommendations.md）
+
+### 背景與範圍
+- 起因：追查漢翔（2634）/台虹（8039）/台化（1326）/長榮 vs 星宇等案例時發現，
+  FinMind `industry_name` 對這些股票分組嚴重失真（漢翔掛「其他」、台虹沒有 PCB 細分、
+  台化混在「紡織」）——魚尾選股的產業層 RS 條件因此系統性冤枉部分強勢股（見對話中
+  漢翔/台虹/台化/長榮/星宇的逐關重放分析）
+- Phase 1 **只做顯示層**：建 canonical 分類（primary_sector/sub_sector + ETF taxonomy）+
+  DB + API + 前端顯示；**完全沒有**修改魚尾選股 pipeline（`app/signals/*` 零 diff，
+  `industry_daily_flow`/L0-L1 產業排行零改動）。Phase 2 才會決定是否讓選股邏輯吃
+  canonical 分類
+
+### 落地內容
+- **新模組 [backend/app/classification/](backend/app/classification/)**：
+  - `taxonomy.py`：49 個 `primary_sector`（不照抄 TWSE 33 類，consolidate FinMind 重複命名
+    如 `半導體`/`半導體業`；金融統一 `primary_sector=FINANCIAL` + 6 個固定 sub_sector）
+  - `asset_type.py`：`COMMON_STOCK/ETF/ETN/PREFERRED_STOCK/DR/REIT/INDEX_BENCHMARK/OTHER`
+  - `industry_mapping.py`：raw `industry_name`（含歷史重複命名批次）→ primary_sector 系統性
+    映射；混雜類別標 `NEEDS_OVERRIDE` 交個股層處理
+  - `stock_overrides.py`：~260 檔個股層 override（其他 117 + 電子工業 42 + TDR 36 + 金融
+    72 + 汽車工業/食品生技/化學生技醫療等混合類別 + 5 個 regression case）；沿用既有市場
+    知識分類，無把握者誠實標 `confidence=LOW` + `review_required`（非逐檔即時網路查證）
+  - `etf_mapping.py`：ETF/ETN 關鍵字規則引擎（region/asset_class/strategy/themes，槓桿反向
+    後綴 L/R、主動式前綴「主動」、平衡型「平衡」）+ 20 檔旗艦 ETF override
+  - `build.py`：`classify_security()` / `classify_all()` 整合入口
+- **新表**（`backend/app/models.py`）：`security_classification`（1321 筆）+
+  `etf_classification`（292 筆）；`main.py` lifespan `_ensure_classification_tables()`
+  自動 idempotent 建表
+- **Backfill**：`backend/run_classification_backfill.py`（`--dry-run` 可預覽不寫 DB）；
+  同時輸出 Phase 1 全部交付 CSV/JSON/MD 到 `docs/plans/canonical_classification/`
+- **Backend API**（additive，全部向後相容）：
+  - 新 router `GET /api/classification/{stock_id}` / `GET /api/classification?stock_ids=`
+  - `GET /api/stocks/{stock_id}/history` 加 `canonical` 欄位
+  - `GET /api/signals/latest` / `snapshot/{date}` 的 watchlist/removed 每筆 item 加
+    `canonical` 欄位（`_attach_canonical_classification` 用 item 的 `stock` key 查表，
+    注意魚尾 watchlist item 的股票代號欄位是 `stock` 不是 `stock_id`）
+- **前端**：新元件 `CanonicalSectorTag.tsx` + `classificationLabels.ts` 中文字典；掛在
+  `StockChartDialog.tsx`（K 線 popup header）與 `DailySignalsPanel.tsx`（魚尾卡片 subtitle
+  + 詳情 popup）；ETF/ETN 顯示 region/strategy/主題，不顯示公司產業
+
+### 驗證結果
+- 普通股分類覆蓋 1290 檔：HIGH 87.4% / MEDIUM 6.1% / LOW（review_required）6.5%
+- 5 個 regression case（2634/1326/8039/2603/2646）+ 金融三子類 + ETF 全部驗證正確
+- 全 backend test suite：932 pass / 20 fail（與既有 baseline 完全一致，zero 新增失敗）
+- `app/signals/` 目錄 `git diff` 為零（選股 pipeline 完全未受影響）
+
+### Gotcha
+- **ETF 判斷 regex 曾漏判 ~130 檔**：舊 pattern 只吃純數字（`^00\d{2,}$`），2023 年後新
+  掛牌的主動式/槓桿反向/平衡型 ETF 用字母後綴（`00400A`/`00631L`/`00981T`）不會命中；
+  已修正為 `^00\d{2,6}[A-Za-z]?$`。**未來若 FinMind 資料源新增其他 ETF 代號慣例，
+  先檢查這個 regex**
+  - **`智慧電網`（19 檔）與 `再生醫療`（4 檔）曾完全遺漏**在 `industry_mapping.py`
+  對照表外——這兩個 `industry_name` 在初版統計清單裡就存在，純粹是撰寫時漏看；dry-run
+  後才被 `catch_all_remap_report.csv` 的「generic fallback」訊號揪出。**新增
+  industry_name 對照時，務必對照 `stocks_master` 實際 distinct 值全表，不要只挑「看起來
+  眼熟」的**
+  - **魚尾 watchlist item 的股票代號欄位是 `stock` 不是 `stock_id`**：與其他多數 schema
+  不同，串接時容易寫錯 key 名稱導致查表永遠回 None（本次開發時就踩過一次）
+  - **`stocks_master.industry_name` 永遠不能覆寫**：`source_industry` 就是它的原樣快照；
+  canonical 分類存在獨立表，兩者平行不交會
+
 ## 魚尾 v2.2 × watch-list-stock-v5 結合（2026-07-16）
 
 > **Canonical spec + 進度**：[docs/plans/fishtail_momentum_upgrade_spec.md](docs/plans/fishtail_momentum_upgrade_spec.md)（v2.1 / 資料前置 / v2.2 全完成；v2.3 待開始）

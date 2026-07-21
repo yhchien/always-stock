@@ -698,4 +698,63 @@ class IndustryMapping(Base):
     last_check_date = Column(Date)
     source = Column(String, default="manual_review")
     notes = Column(String, nullable=True)                 # 備註
+
+
+class SecurityClassification(Base):
+    """
+    Phase 1 Canonical Market Classification（2026-07-21）。
+
+    涵蓋所有 `stocks_master` 證券（普通股/金融股/特別股/TDR/REIT/指數佔位列），
+    ETF/ETN 另存 `EtfClassification`（見下）。**顯示層專用**：不被
+    `app/signals/*` 選股 pipeline 引用，`stocks_master.industry_name/sub_industry`
+    （source_industry 的來源）也不受本表影響——兩者平行存在，見
+    docs/plans/canonical_classification/current_industry_data_flow.md。
+    """
+    __tablename__ = "security_classification"
+
+    stock_id = Column(String, ForeignKey("stocks_master.stock_id"), primary_key=True)
+    asset_type = Column(String(24), nullable=False)  # COMMON_STOCK/PREFERRED_STOCK/DR/REIT/INDEX_BENCHMARK/OTHER
+    source_industry = Column(String, nullable=True)   # 原樣保留 stocks_master.industry_name，不覆寫
+
+    primary_sector = Column(String(48), nullable=True)   # taxonomy.PRIMARY_SECTORS key；INDEX_BENCHMARK 為 NULL
+    sub_sector = Column(String(120), nullable=True)
+    secondary_sectors = Column(JSON, nullable=True)      # List[str]，Phase 1 預設空
+    theme_clusters = Column(JSON, nullable=True)         # List[str]
+
+    is_financial = Column(Boolean, default=False, nullable=False)
+    is_etf = Column(Boolean, default=False, nullable=False)  # 恆為 False（ETF/ETN 走 EtfClassification）
+
+    classification_confidence = Column(String(8), nullable=True)  # HIGH/MEDIUM/LOW；INDEX_BENCHMARK 為 NULL
+    classification_reason = Column(Text, nullable=True)
+    review_required = Column(Boolean, default=False, nullable=False)
+
+    mapping_version = Column(String(16), nullable=False, default="v1")
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class EtfClassification(Base):
+    """
+    Phase 1 ETF / ETN taxonomy（asset_class/region/strategy/theme/tracking_index）。
+
+    與 `SecurityClassification` 分表（§6/§7）：ETF 沒有「公司主要產業」，用獨立
+    schema 避免把大量 ETF-only 欄位塞進個股分類表。
+    """
+    __tablename__ = "etf_classification"
+
+    stock_id = Column(String, ForeignKey("stocks_master.stock_id"), primary_key=True)
+    asset_type = Column(String(24), nullable=False)  # ETF | ETN
+
+    asset_class = Column(String(24), nullable=False)   # taxonomy.ETF_ASSET_CLASSES
+    region = Column(String(24), nullable=False)        # taxonomy.ETF_REGIONS
+    strategy = Column(String(24), nullable=False)      # taxonomy.ETF_STRATEGIES
+    themes = Column(JSON, nullable=True)               # List[str]
+    tracking_index = Column(String(120), nullable=True)
+
+    is_leveraged = Column(Boolean, default=False, nullable=False)
+    is_inverse = Column(Boolean, default=False, nullable=False)
+    is_active = Column(Boolean, default=False, nullable=False)
+
+    classification_confidence = Column(String(8), nullable=False)
+    mapping_version = Column(String(16), nullable=False, default="v1")
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     ingested_at = Column(DateTime, default=datetime.utcnow)

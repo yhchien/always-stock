@@ -245,12 +245,35 @@ class SignalArchiveDetailResponse(SignalArchiveSummaryItemResponse):
 # ---------------------------------------------------------------------------
 
 
-def _serialize_snapshot(snap: SignalSnapshot) -> SnapshotResponse:
+def _attach_canonical_classification(db: Session, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Phase 1 Canonical Classification（additive，2026-07-21）：對 watchlist/removed 每筆
+    item 加一個 `canonical` key（display-only，選股決策已在 pipeline 完成，這裡純粹補顯示
+    資訊）。查無分類（理論上不該發生，backfill 已覆蓋全 universe）時該 item 的 `canonical`
+    為 None，不影響既有欄位。
+    """
+    from app.routers.classification import get_classification_for_stock
+
+    # watchlist/removed item 的股票代號欄位是 `stock`（LLM output schema 既有命名），
+    # 不是 `stock_id`——沿用既有契約，這裡只負責讀取後查表，不改動既有欄位語意
+    enriched = []
+    for it in items:
+        sid = it.get("stock")
+        canonical = get_classification_for_stock(db, sid) if sid else None
+        enriched.append({**it, "canonical": canonical.model_dump() if canonical else None})
+    return enriched
+
+
+def _serialize_snapshot(snap: SignalSnapshot, db: Optional[Session] = None) -> SnapshotResponse:
     """SignalSnapshot ORM → spec §10.3 schema（meta + data 包裹）。"""
+    watchlist = snap.watchlist or []
+    removed = snap.removed or []
+    if db is not None:
+        watchlist = _attach_canonical_classification(db, watchlist)
+        removed = _attach_canonical_classification(db, removed)
     data: Dict[str, Any] = {
         "market_context": snap.market_context or {},
-        "watchlist": snap.watchlist or [],
-        "removed": snap.removed or [],
+        "watchlist": watchlist,
+        "removed": removed,
         "summary": snap.summary or {},
         "candidate_pool_size": snap.candidate_pool_size,
         "final_watchlist_size": snap.final_watchlist_size,
@@ -382,7 +405,7 @@ def get_latest_signal(db: Session = Depends(get_db)) -> SnapshotResponse:
     )
     if snap is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No snapshot yet")
-    return _serialize_snapshot(snap)
+    return _serialize_snapshot(snap, db)
 
 
 @router.get("/snapshot/{snapshot_date}", response_model=SnapshotResponse)
@@ -401,7 +424,7 @@ def get_snapshot_by_date(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"No snapshot for {snapshot_date.isoformat()}",
         )
-    return _serialize_snapshot(snap)
+    return _serialize_snapshot(snap, db)
 
 
 @router.get("/jobs/latest", response_model=Optional[JobResponse])

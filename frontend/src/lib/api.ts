@@ -85,6 +85,49 @@ export interface StockHistoryItem {
   dealer_cumulative: number
 }
 
+/**
+ * Phase 1 Canonical Market Classification（2026-07-21，display-only）。
+ * 這是「顯示層」補充資訊，不代表魚尾選股 pipeline 已改用這套分類——選股仍依
+ * `industry_name` / `sub_industry`（source_industry 的來源）運作。
+ */
+export type CanonicalAssetType =
+  | "COMMON_STOCK"
+  | "ETF"
+  | "ETN"
+  | "PREFERRED_STOCK"
+  | "DR"
+  | "REIT"
+  | "INDEX_BENCHMARK"
+  | "OTHER"
+
+export interface CanonicalEtfClassification {
+  asset_class: string
+  region: string
+  strategy: string
+  themes: string[]
+  tracking_index: string | null
+  is_leveraged: boolean
+  is_inverse: boolean
+  is_active: boolean
+  confidence: string
+}
+
+export interface CanonicalClassification {
+  stock_id: string
+  asset_type: CanonicalAssetType
+  source_industry: string | null
+  primary_sector: string | null
+  primary_sector_label: string | null
+  sub_sector: string | null
+  secondary_sectors: string[]
+  theme_clusters: string[]
+  is_financial: boolean
+  confidence: string | null
+  review_required: boolean
+  mapping_version: string
+  etf: CanonicalEtfClassification | null
+}
+
 export interface StockHistoryResponse {
   stock_id: string
   stock_name: string
@@ -93,6 +136,8 @@ export interface StockHistoryResponse {
   history: StockHistoryItem[]
   earliest_date: string | null
   latest_date: string | null
+  /** Phase 1（2026-07-21）：canonical primary/sub sector，display-only、additive。 */
+  canonical?: CanonicalClassification | null
 }
 
 export interface FetchOptions {
@@ -1234,6 +1279,8 @@ export interface SignalWatchlistItem {
   momentum?: SignalMomentumBlock | null
   /** 2026-07-16 v2.2：backend deterministic 動能特徵快照（pipeline 蓋回，不依賴 LLM）。 */
   signal_metrics?: SignalMetrics | null
+  /** 2026-07-21 Phase 1：canonical primary/sub sector，display-only、additive。 */
+  canonical?: CanonicalClassification | null
 }
 
 export type SignalMomentumGrade = "A" | "B" | "C" | "D"

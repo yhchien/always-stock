@@ -28,6 +28,7 @@ import {
 } from "@/lib/signalPresentation"
 import { Dialog } from "@base-ui/react/dialog"
 
+import { CanonicalSectorTag } from "@/components/CanonicalSectorTag"
 import SignalEmotionCard, { type EmotionTone } from "@/components/SignalEmotionCard"
 import TradingPlanPanel, {
   PanelBulletList,
@@ -684,11 +685,16 @@ function SignalCard({
   const themeFit = item.theme_fit
   const promptVersion = item.prompt_version || "v1"
   const subtitle =
-    item.industry != null ? (
-      <>
-        {item.industry}
-        {item.sub_industry ? <span className="text-slate-500"> · {item.sub_industry}</span> : null}
-      </>
+    item.industry != null || item.canonical ? (
+      <span className="inline-flex flex-wrap items-center gap-1.5">
+        {item.industry != null && (
+          <span>
+            {item.industry}
+            {item.sub_industry ? <span className="text-slate-500"> · {item.sub_industry}</span> : null}
+          </span>
+        )}
+        <CanonicalSectorTag canonical={item.canonical} compact />
+      </span>
     ) : null
 
   // 偵測是否有任一段 bullet array 有內容（舊快照可能全 null/empty → 不顯示「看細節」按鈕）
@@ -864,6 +870,7 @@ function SignalDetailDialog({
                     {item.sub_industry ? <span className="text-slate-500"> · {item.sub_industry}</span> : null}
                   </span>
                 ) : null}
+                <CanonicalSectorTag canonical={item.canonical} />
                 <InlinePrice quote={quote} />
               </Dialog.Description>
             </div>

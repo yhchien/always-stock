@@ -12,6 +12,7 @@ from sqlalchemy import func, or_
 
 from app.database import get_db
 from app.models import DailyPrice, InstStockFlow, StockMaster
+from app.routers.classification import SecurityClassificationSchema, get_classification_for_stock
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,9 @@ class StockHistoryResponse(BaseModel):
     history: List[StockHistoryItem]
     earliest_date: Optional[str] = None  # 此股票在 DB 中最早的交易日
     latest_date: Optional[str] = None    # 此股票在 DB 中最新的交易日
+    # Phase 1 Canonical Classification（additive，2026-07-21）：display-only，
+    # 不影響任何選股邏輯；舊 client 忽略此欄位不受影響
+    canonical: Optional[SecurityClassificationSchema] = None
 
 
 class StockSearchItem(BaseModel):
@@ -257,6 +261,7 @@ def get_stock_history(
     latest = str(date_range[1]) if date_range[1] else None
 
     logger.debug("Returning %d days of history for %s", len(history), stock_id)
+    canonical = get_classification_for_stock(db, stock_id)
     return StockHistoryResponse(
         stock_id=stock_id,
         stock_name=stock.stock_name,
@@ -265,4 +270,5 @@ def get_stock_history(
         history=history,
         earliest_date=earliest,
         latest_date=latest,
+        canonical=canonical,
     )

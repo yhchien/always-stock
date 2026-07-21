@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import dynamic from "next/dynamic"
 import { Dialog } from "@base-ui/react/dialog"
+import { CanonicalSectorTag } from "@/components/CanonicalSectorTag"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
   fetchStockHistory,
@@ -383,6 +384,7 @@ export default function StockChartDialog({ stockId, stockName, onClose }: Props)
                       {data.sub_industry ?? data.industry_name}
                     </span>
                   )}
+                  {data?.canonical && <CanonicalSectorTag canonical={data.canonical} compact />}
                   <Dialog.Description className="text-xs text-slate-500">
                     近 {DISPLAY_MONTHS} 個月
                   </Dialog.Description>

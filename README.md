@@ -145,6 +145,7 @@ npm run dev
 | `stock_shares_outstanding` | 發行股數 + 外資持股比每日快照（市值 = shares_issued × close；魚尾 `institution_buy_to_market_cap` 分母） | 2026-07 ~ today | FinMind `TaiwanStockShareholding`（dataset-level 只回 start_date 當日，逐交易日抓） |
 | `signal_watch_completed_archives` | M23：完成 30 個交易日追蹤後的封存摘要（first_seen / hit_count / day10/20/30 return） | 2026-04 ~ today | 從 `signal_watch_hits` + `daily_price` 計算 |
 | `signal_expectation_prices` | M26：個股「未來 1 個月資金行情可期待價格區間」預測（保守 / 夢想價 + valuation_mode + 追高風險 + 信心 + scorecard + 達標旗標） | 2026-05 ~ today | OpenAI 依 prompt 推估，cron 跑「今日新進股」+ 使用者手動重產 |
+| `security_classification` / `etf_classification` | Phase 1（2026-07-21）：canonical primary_sector/sub_sector（含金融股）+ ETF taxonomy（asset_class/region/strategy/theme），**顯示層專用**，不影響選股 pipeline | 一次性 backfill 全 universe（1613 檔） | `backend/app/classification/*` 規則引擎 + 個股 override，`run_classification_backfill.py` 寫入 |
 
 ### M18 / M19 資料表（使用者系統）
 
@@ -208,6 +209,8 @@ npm run dev
 | GET | `/api/signals/archive` | M23：最近 30 個交易日訊號追蹤總表（2026-05-21 起 retention 從 40 改 30） |
 | GET | `/api/signals/archive/{stock_id}` | M23：單一股票 30 個交易日追蹤報告時間軸 |
 | GET | `/api/signals/archive/completed` | M23：追蹤期滿移出後的封存表（含 day10/20/30 報酬） |
+| GET | `/api/classification/{stock_id}` | Phase 1：單檔 canonical 分類（primary_sector/sub_sector 或 ETF taxonomy，公開） |
+| GET | `/api/classification?stock_ids=` | Phase 1：批次 canonical 分類查詢（公開） |
 | GET | `/api/signals/expectation-prices?snapshot_date=` | M26：當日 watchlist 對應的「保守 / 夢想價」批次預測（公開） |
 | GET | `/api/signals/expectation-prices/{stock_id}` | M26：單檔最新預測（公開） |
 | GET | `/api/signals/expectation-prices/quota` | M26：手動重新預測今日剩餘額度（需登入；30/day per user、100/day 全站） |
