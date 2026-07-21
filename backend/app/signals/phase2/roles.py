@@ -67,19 +67,23 @@ _EMERGING_MIN_SCORE = 45.0
 
 def is_base_momentum_eligible(candidate: Dict[str, Any]) -> bool:
     """§G Base Momentum Eligibility：足夠資格繼續往下走 role/risk/regime，
-    不代表任何角色資格。"""
+    不代表任何角色資格。
+
+    **不檢查 `distribution` soft hint**（2026-07-21 起，跟 `regime_gate.py` 的
+    決定保持一致）：那個訊號在大盤系統性下跌日雜訊很大，會誤殺長上影的強勢股
+    （見台化/台虹/長榮/萬海/台塑化 7/20 replay 案例）。降級為只影響
+    `regime_gate.compute_conviction()` 的信心度，不在這裡當資格門檻——否則
+    等於繞過 regime_gate 那邊已經做的降級決定，從另一個入口把它變回硬剔除。
+    """
     score = candidate.get("momentum_score")
     market_rs = candidate.get("rs_market_percentile_20d")
     phase = candidate.get("momentum_phase")
-    hints = candidate.get("soft_hints") or []
 
     if score is None or score < _BASE_SCORE_MIN:
         return False
     if market_rs is None or market_rs < _BASE_MARKET_RS_MIN:
         return False
     if phase == "weakening":
-        return False
-    if "distribution" in hints:
         return False
     return True
 

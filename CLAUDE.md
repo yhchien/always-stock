@@ -121,27 +121,61 @@
 - **台達電（2308）正確地連候選池都沒進**：負面對照組驗證通過——RS 太低，
   Phase 2 沒有因為基本面强而把它硬救回來
 
+### 第二輪：distribution 定調 + regime gate 落差修正 + Comparison Debug View（2026-07-21）
+
+第一輪 replay 找到兩個具體落差，這輪處理掉，並把 shadow 結果打通到前端：
+
+- **`distribution` 決定降級為 soft signal**（使用者確認）：不再是
+  `regime_gate.is_true_hard_exclusion()` 的條件，改成只影響
+  `compute_conviction()`（命中時信心度降一級：high→medium→medium→low）。
+  同時發現 `roles.is_base_momentum_eligible()` 原本**獨立**也擋 distribution
+  （跟 regime_gate 是兩條不同程式碼路徑），只修一邊等於沒修——兩處都已同步移除
+- **RISK_OFF regime gate 認 tracking_state**：`apply_regime_gate_v2()` 的
+  RISK_OFF 存活條件從「只認 `role` 是 formal leader」改成「`role` 是 formal
+  leader **或** `tracking_state` 是 ACTIVE_TREND/REACCELERATING/
+  HEALTHY_PULLBACK 之一」，market RS >= 90 門檻不變
+- **重跑 7/20 replay 驗證兩個修正的實際效果**（真實 DB 資料，非模擬）：
+  存活數從 7 檔增加到 16 檔——統一/漢翔（tracking_state 修正生效）/台塑化
+  （distribution 降級生效）都正確被納入；長榮/星宇/慧洋因 market RS 73~81
+  沒到 RISK_OFF 的 90 門檻正確維持排除（門檻本身沒被誤觸發，是合理結果）；
+  台化因 `momentum_phase="weakening"` 正確判定資格不符（真實轉弱，不是誤殺）；
+  台虹撞到另一條獨立的既有規則 `extended_with_institution_selling`（10 日漲
+  27.8% 且當日法人轉賣，跟 distribution 蠟燭圖案完全是不同訊號，暫不調整）
+- **新增 Backend API**：`GET /api/signals/phase2/shadow-dates`（列出已跑
+  replay 的日期）+ `GET /api/signals/phase2/shadow/{date}`（單日完整
+  funnel_metrics + explain_traces + legacy/phase2 比較摘要），新 router
+  `app/routers/phase2_debug.py`，純讀 `signal_shadow_snapshots`
+- **新增前端 Comparison Debug View**（`/signals/phase2`）：日期選單 + 統計卡片
+  （候選池/legacy 存活/phase2 存活/動能資格通過率）+ 角色分布 + 逐檔可展開的
+  explain trace（搜尋 + 「只看判斷不同的股票」篩選）；從 `/signals/archive`
+  header 加一個連結入口
+- **真實瀏覽器端到端驗證抓到一個真 bug**：`TraceRow` 元件原本把股票代號的
+  `<Link>` 包在整列的 `<button>` 裡面——`<a>` 巢狀在 `<button>` 裡是無效 HTML，
+  瀏覽器 parser 行為不可預期，用 Chrome + CDP（`ws` 套件手刻最小 client，因為
+  環境沒裝 playwright/puppeteer）實際點擊測試才發現點擊會被導去股票頁而不是
+  展開列。修法：整列改用 `<div>` 包裝，股票代號文字與「個股頁 →」`<Link>`、
+  「展開/收合」`<button>` 三者是平行的兄弟元素，不互相巢狀
+- 全 backend test suite：999 pass / 20 fail（既有 baseline，zero 新增失敗）
+
 ### 尚未做（下一輪接手指引）
-1. **RISK_OFF regime gate 認 tracking_state** 的落差（見上）——這是完成 Phase 2
-   §Q 前最急迫的一個修正，影響漢翔/星宇這類已追蹤股在退潮盤的存活判斷
-2. **`distribution` hard-exclusion vs soft-signal 的定調**——需要使用者決定，
-   目前照 spec 字面實作但實測命中率偏高
-3. 用 `run_phase2_replay.py --persist` 對更多歷史交易日（60~120 天）重跑，
+1. 用 `run_phase2_replay.py --persist` 對更多歷史交易日（60~120 天）重跑，
    累積 `signal_shadow_snapshots` 才能做 spec §Y.15/§Y.16 的「Historical replay
-   → tune only if supported by replay」
-4. LLM v6（§X：backend 唯一 deterministic authority，LLM 只做業務/題材/供應鏈
+   → tune only if supported by replay」——目前只有 2026-07-17 / 2026-07-20 兩天
+2. LLM v6（§X：backend 唯一 deterministic authority，LLM 只做業務/題材/供應鏈
    驗證 + 降級/REMOVE，不可重跑 threshold）**完全未動**——現有 v1/v4/v5 prompt
    ×regime 路由邏輯不受本輪影響
-5. 前端/archive/30 日追蹤/Comparison Debug View 的 canonical 遷移（§W）**完全
-   未做**——目前 Phase 2 只有後端 deterministic 層 + 一個 CLI replay 工具，
-   沒有任何使用者可見介面
-6. Sector momentum cluster / role evidence 門檻都是**工程起始值**，明確標記
+3. `/signals/archive`（30 日追蹤正式頁）與 watchlist/StockList 等其他前端 surface
+   的 canonical 遷移（§W）仍未做——目前只有 debug-only 的 Comparison Debug View
+4. Sector momentum cluster / role evidence 門檻都是**工程起始值**，明確標記
    「待 replay 校準」，不得為了讓特定案例過關硬調
-7. **正式 production cutover（`SIGNALS_PIPELINE_MODE=phase2`）尚未定義行為**——
+5. **正式 production cutover（`SIGNALS_PIPELINE_MODE=phase2`）尚未定義行為**——
    目前程式碼把 `phase2` 值視同 `phase2_shadow` 處理（只寫 shadow 表，不影響
    真正輸出）；要讓 Phase 2 真正驅動使用者看到的 WATCH 清單，需要另外接一段
    「shadow 驗證通過後，phase2 模式改為驅動 `signal_snapshots`」的邏輯，
    **這段目前完全不存在**，避免不小心切過去
+6. 本地測試用的 `SITE_GATE_PASSWORD=localtest123` 只在手動驗證時透過環境變數
+   臨時帶入單次 uvicorn 進程，**沒有寫進任何 `.env` 或程式碼**，重啟後即失效，
+   不影響任何持久化設定
 
 ## Phase 1：魚尾 Canonical Market Classification System 完成（2026-07-21）
 

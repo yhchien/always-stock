@@ -753,6 +753,9 @@ function SignalArchiveContent() {
             <p className="mt-1 text-xs text-slate-500">最新評估交易日：{summary.as_of_trade_date}</p>
           )}
         </div>
+        <Link href="/signals/phase2" className="text-xs text-slate-500 hover:text-sky-300 hover:underline">
+          Phase 2 Debug View →
+        </Link>
       </header>
 
       <section className="rounded-xl border border-slate-700 bg-slate-900/40 p-4">

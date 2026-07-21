@@ -1812,3 +1812,87 @@ export async function regenerateSignals(): Promise<SignalRegenerateResponse> {
   }
   return res.json()
 }
+
+// ── Phase 2 Comparison Debug View（2026-07-21，shadow mode 專用，不影響選股）──
+
+export interface Phase2ShadowDateItem {
+  snapshot_date: string
+  pipeline_version: string
+  candidate_pool_size: number | null
+  role_survivor_count: number | null
+  regime_survivor_count: number | null
+  generated_at: string
+}
+
+export interface Phase2FunnelMetrics {
+  candidate_count: number
+  momentum_eligible_count: number
+  role_counts: Record<string, number>
+  hard_risk_survivor_count: number
+  regime_survivor_count: number
+  sent_to_llm_count: number
+  watch_count: number
+  classification_survival_rate: number
+  sector_lockout_count: number
+  sector_lockout_sectors: string[]
+  no_output_day: boolean
+  anomaly_flags: string[]
+}
+
+export interface Phase2ExplainTrace {
+  stock_id: string
+  candidate_channels: string[]
+  sector_context: {
+    primary_sector: string | null
+    sub_sector: string | null
+    primary_sector_stock_count: number
+    sub_sector_stock_count: number
+    peer_scope_used: string
+    sector_context_quality: string
+    peer_rs_percentile_20d: number | null
+    sector_strength_percentile_20d: number | null
+    canonical_mapping_usable: boolean
+  } | null
+  momentum_eligibility: { pass: boolean | null }
+  role: { type: string | null; evidence: Record<string, boolean> | null }
+  tracking_state: string | null
+  entry_state: string | null
+  hard_exclusion_result: { pass: boolean; reason: string | null }
+  regime_gate_result: { pass: boolean | null; regime: string | null; conviction: string | null }
+  final_stage: string
+  first_exclusion_reason: string | null
+}
+
+export interface Phase2ComparisonSummary {
+  legacy_survivor_count: number
+  legacy_survivor_ids: string[]
+  phase2_survivor_count: number
+  phase2_survivor_ids: string[]
+}
+
+export interface Phase2ShadowSnapshotDetail {
+  snapshot_date: string
+  pipeline_version: string
+  candidate_pool_size: number | null
+  role_survivor_count: number | null
+  regime_survivor_count: number | null
+  funnel_metrics: Phase2FunnelMetrics
+  explain_traces: Record<string, Phase2ExplainTrace>
+  comparison_summary: Phase2ComparisonSummary | null
+  generated_at: string
+}
+
+export async function fetchPhase2ShadowDates(options?: FetchOptions): Promise<Phase2ShadowDateItem[]> {
+  const res = await apiFetch(`${API_BASE}/api/signals/phase2/shadow-dates`, { signal: options?.signal })
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "Phase 2 shadow 日期清單載入失敗"))
+  return res.json()
+}
+
+export async function fetchPhase2ShadowSnapshot(
+  snapshotDate: string,
+  options?: FetchOptions,
+): Promise<Phase2ShadowSnapshotDetail> {
+  const res = await apiFetch(`${API_BASE}/api/signals/phase2/shadow/${snapshotDate}`, { signal: options?.signal })
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "Phase 2 shadow 結果載入失敗"))
+  return res.json()
+}

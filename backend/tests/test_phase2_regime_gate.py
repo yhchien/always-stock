@@ -38,10 +38,43 @@ def test_risk_off_still_requires_high_market_rs():
     assert survivors == []
 
 
-def test_true_hard_exclusion_distribution_applies_regardless_of_regime():
-    c = _candidate("A", soft_hints=["distribution"])
-    assert rg.is_true_hard_exclusion(c) == "distribution"
-    assert rg.apply_regime_gate_v2([c], rg.REGIME_BULL_TREND) == []
+def test_distribution_is_soft_signal_not_hard_exclusion():
+    """2026-07-21 修正（7/20 真實資料 replay 後決定）：distribution 不再 hard
+    exclusion（會在大盤系統性下跌日誤殺長上影的強勢股，見台化/台虹/長榮/萬海/
+    台塑化案例），改成只降 conviction 一級。"""
+    c = _candidate("A", soft_hints=["distribution"], role=rg.roles_mod.ROLE_SECTOR_FOLLOWER,
+                    rs_market_percentile_20d=60.0)
+    assert rg.is_true_hard_exclusion(c) is None
+    survivors = rg.apply_regime_gate_v2([c], rg.REGIME_BULL_TREND)
+    assert len(survivors) == 1
+    without_distribution = _candidate("B", role=rg.roles_mod.ROLE_SECTOR_FOLLOWER,
+                                       rs_market_percentile_20d=60.0)
+    baseline = rg.apply_regime_gate_v2([without_distribution], rg.REGIME_BULL_TREND)[0]
+    assert survivors[0]["conviction"] == rg._CONVICTION_DOWNGRADE[baseline["conviction"]]
+
+
+def test_risk_off_survives_via_healthy_tracking_state_without_role():
+    """漢翔/星宇雛型：已追蹤股在 RISK_OFF 沒有 role（分類權讓給 tracking_state），
+    但 tracking_state=HEALTHY_PULLBACK 時應視為 formal leader 的替代存活條件。"""
+    c = _candidate("2634", role=None, hit_count=0, rs_market_percentile_20d=99.0,
+                    tracking_state=rg.tracking_mod.TRACKING_HEALTHY_PULLBACK)
+    survivors = rg.apply_regime_gate_v2([c], rg.REGIME_RISK_OFF)
+    assert len(survivors) == 1
+    assert survivors[0]["stock_id"] == "2634"
+
+
+def test_risk_off_still_requires_market_rs_even_with_healthy_tracking():
+    c = _candidate("A", role=None, rs_market_percentile_20d=50.0,
+                    tracking_state=rg.tracking_mod.TRACKING_HEALTHY_PULLBACK)
+    survivors = rg.apply_regime_gate_v2([c], rg.REGIME_RISK_OFF)
+    assert survivors == []
+
+
+def test_risk_off_rejects_deteriorating_tracking_state():
+    c = _candidate("A", role=None, rs_market_percentile_20d=99.0,
+                    tracking_state=rg.tracking_mod.TRACKING_DETERIORATING)
+    survivors = rg.apply_regime_gate_v2([c], rg.REGIME_RISK_OFF)
+    assert survivors == []
 
 
 def test_structure_damaged_entry_state_is_hard_excluded():

@@ -209,6 +209,8 @@ npm run dev
 | GET | `/api/signals/archive` | M23：最近 30 個交易日訊號追蹤總表（2026-05-21 起 retention 從 40 改 30） |
 | GET | `/api/signals/archive/{stock_id}` | M23：單一股票 30 個交易日追蹤報告時間軸 |
 | GET | `/api/signals/archive/completed` | M23：追蹤期滿移出後的封存表（含 day10/20/30 報酬） |
+| GET | `/api/signals/phase2/shadow-dates` | Phase 2：已跑過 shadow replay 的日期清單（debug only，不影響選股） |
+| GET | `/api/signals/phase2/shadow/{date}` | Phase 2：單日完整 funnel metrics + explain trace + legacy/phase2 比較（debug only） |
 | GET | `/api/classification/{stock_id}` | Phase 1：單檔 canonical 分類（primary_sector/sub_sector 或 ETF taxonomy，公開） |
 | GET | `/api/classification?stock_ids=` | Phase 1：批次 canonical 分類查詢（公開） |
 | GET | `/api/signals/expectation-prices?snapshot_date=` | M26：當日 watchlist 對應的「保守 / 夢想價」批次預測（公開） |

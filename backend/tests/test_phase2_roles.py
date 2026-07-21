@@ -40,8 +40,10 @@ def test_base_eligibility_rejects_weakening_phase():
     assert roles.is_base_momentum_eligible(_candidate("A", momentum_phase="weakening")) is False
 
 
-def test_base_eligibility_rejects_distribution_hint():
-    assert roles.is_base_momentum_eligible(_candidate("A", soft_hints=["distribution"])) is False
+def test_base_eligibility_does_not_reject_distribution_hint():
+    """2026-07-21 修正：distribution 不再是 base eligibility 的門檻（跟
+    regime_gate.py 的決定一致），否則會從另一個入口把已降級的硬剔除決定繞回來。"""
+    assert roles.is_base_momentum_eligible(_candidate("A", soft_hints=["distribution"])) is True
 
 
 def test_base_ineligible_gets_role_none_not_deleted():
