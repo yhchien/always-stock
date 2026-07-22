@@ -311,15 +311,16 @@ def run_signal_pipeline_sync(
                     phase2_after_regime = _cap_llm_input(
                         phase2_survivors, limit=LLM_INPUT_HARD_LIMIT
                     )
+                    legacy_survivor_ids = [
+                        str(c.get("stock_id") or "") for c in after_regime
+                    ]
 
                     _persist_phase2_shadow_snapshot(
                         db,
                         target_date,
                         phase2_candidates,
                         phase2_result,
-                        legacy_survivor_ids=[
-                            str(c.get("stock_id") or "") for c in after_regime
-                        ],
+                        legacy_survivor_ids=legacy_survivor_ids,
                     )
 
                     after_regime = phase2_after_regime
@@ -341,7 +342,7 @@ def run_signal_pipeline_sync(
                         len(phase2_candidates),
                         len(phase2_survivors),
                         len(after_regime),
-                        len(conviction_by_stock),
+                        len(legacy_survivor_ids),
                     )
                 except Exception:
                     logger.exception(
