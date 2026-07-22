@@ -92,6 +92,9 @@ def compute_regime_metrics(
         if closes[i - 1]
     ]
     max_down_1d_3d_pct = min(rets_1d[-3:]) if rets_1d else None
+    # 當日大盤報酬（Phase 2 hard exclusion REVERSAL_FAILURE 用：個股相對大盤的
+    # excess return 需要這個當分母比較基準；純新增欄位，不影響 classify_regime 判斷）
+    return_1d_pct = rets_1d[-1] if rets_1d else None
 
     # 盤中振幅 + 創高急殺反轉日
     intraday_range_5d_avg_pct = None
@@ -130,6 +133,7 @@ def compute_regime_metrics(
         "ma20_slope_5d": ma20_slope_5d,
         "return_5d_pct": return_5d_pct,
         "return_10d_pct": return_10d_pct,
+        "return_1d_pct": return_1d_pct,
         "intraday_range_5d_avg_pct": intraday_range_5d_avg_pct,
         "reversal_days_5d": reversal_days_5d,
         "max_down_1d_3d_pct": max_down_1d_3d_pct,

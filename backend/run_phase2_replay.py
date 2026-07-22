@@ -91,10 +91,20 @@ def run_replay(target_date: date, watch_stock_ids: list[str], persist: bool, qui
         if legacy_survivors:
             _p("  ", [c.get("stock_id") for c in legacy_survivors])
 
-        phase2_pool = pipeline_v2.build_phase2_pool(pool)
-        _p(f"\n[Phase 2] 定義性 hard exclusion 後（無 classify_stocks 硬刪除）：{len(phase2_pool)} 檔")
+        taiex_return_1d_pct = (regime_info.get("metrics") or {}).get("return_1d_pct")
+        phase2_hard_excluded: list = []
+        phase2_pool = pipeline_v2.build_phase2_pool(
+            pool, taiex_return_1d_pct=taiex_return_1d_pct, excluded_out=phase2_hard_excluded
+        )
+        _p(f"\n[Phase 2] 定義性 hard exclusion 後：{len(phase2_pool)} 檔（剔除 {len(phase2_hard_excluded)} 檔）")
 
-        result = pipeline_v2.run_phase2_pipeline(db, phase2_pool, regime_info["regime"])
+        result = pipeline_v2.run_phase2_pipeline(
+            db,
+            phase2_pool,
+            regime_info["regime"],
+            hard_excluded=phase2_hard_excluded,
+            taiex_return_1d_pct=taiex_return_1d_pct,
+        )
         survivors = result["survivors"]
         _p(f"[Phase 2] regime gate 後存活：{len(survivors)} 檔")
         if survivors:

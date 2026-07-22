@@ -249,6 +249,89 @@
   的「legacy would have produced N survivors」log 曾誤讀已被 phase2 覆寫後的
   `conviction_by_stock`，改用覆寫前就先存好的 `legacy_survivor_ids` 變數
 
+### Hard Exclusion 重構（2026-07-22 第二輪，`regime_gate.is_true_hard_exclusion`）
+
+> 起因：production cutover 後想查「8039 台虹哪幾天進候選池」，發現它在 7/14
+> （3 日漲幅 +32.5%）被 `overheat_3d` 直接剔除——過熱 ≠ 失敗，這條規則跟其他
+> 幾條單一 % 門檻一樣，把「entry risk 高」錯當「momentum failure」處理。
+
+**核心原則**：Hard Exclusion 只能代表「即使後續題材/角色/LLM 驗證多好，也不應
+再進入 WATCH 評估」的真正失效情況；「漲很多」「短線過熱」「法人單日小幅轉賣」
+「單日跌幅較大」都只是 entry risk 高，不是失敗證明。
+
+**重構後 TRUE HARD EXCLUSION 只剩 6 種**（原本 9 條規則）：
+`MANUAL_BLACKLIST` / `FAILED_FOLLOW_THROUGH_CURRENT_EPISODE` /
+`STRUCTURE_DAMAGED` / `COMPOSITE_RISK_EXCLUDE`（原 `risk_gate_action=EXCLUDE`）/
+`LIQUIDITY_FAILURE` / `REVERSAL_FAILURE`（新）。
+
+**取消的舊硬剔除，全部降級為 risk_warning（不再剔除，只標記）**：
+- ETF / 金融股資產類型（`is_etf`/`is_financial` 不再是排除理由，只有人工黑名單
+  `manual_blacklist` 才是；`candidate_pool.py` Step 1 候選池建立仍會濾掉 ETF/金融，
+  這次刻意沒動，屬於已知落差，見下）
+- 近 3 日漲幅 > 15% → `EXTENDED_3D` warning
+- 股價級距 × 日張數門檻 → `LOW_RAW_VOLUME` warning（raw 張數不分股價高低的舊
+  bug，25 天 replay 顯示這是**最大的誤殺來源**，996/3000 檔命中）
+- 近 10 日漲幅 >25% + 法人轉賣 → `EXTENDED_PROFIT_TAKING_WARNING`
+- 3D 法人正 + 今日反轉賣 + 跌 >1.5% → `INSTITUTION_REVERSAL_WARNING`
+
+**新增 `REVERSAL_FAILURE`**：取代上面兩條粗糙規則，改成三條件同時成立才 Hard：
+(A) 法人反轉具實質性 `institution_reversal_ratio`（今日賣超 / 前段扣除今日的
+累積買超）≥0.5、(B) 相對大盤明顯轉弱 `excess_return_vs_market`（個股當日報酬 -
+大盤當日報酬，非絕對報酬）≤-1.5、(C) 至少再一個獨立 family 的 deterioration
+confirmation（PRICE_STRUCTURE/VOLUME_PRICE/SECTOR_ROTATION 任一）。大盤 -5%、
+個股 -2%（相對 +3%）不再被誤判出貨——這正是舊規則的根因。`market_regime.py`
+新增 `return_1d_pct`（純新增欄位，不改 `classify_regime` 判斷邏輯）供這裡使用。
+
+**COMPOSITE_RISK_EXCLUDE**（原 `risk_gate_action=EXCLUDE`）沿用既有兩條路徑
+（distribution+institution_flow_reversal，或 failed_rotation+weakening），本輪
+只補 `evidence_families` 標記確認本來就跨兩個獨立維度，判斷邏輯沒重寫。
+
+**重構過程中發現並順手修正的 2 個既有 bug**（都直接跟 hard exclusion 相關，
+非額外功能，故在授權範圍內修）：
+1. `build_phase2_pool` 呼叫 `attach_deterministic_signals` 的時機早於
+   `_detect_soft_hints` 設定 `soft_hints`，導致 `distribution`/`weakening`/
+   `retail_overheated` 三個訊號衍生的 `deterministic_signals` 欄位從未被正確
+   套用過（永遠讀到空 hints list）
+2. 舊版 `risk_gate_action == EXCLUDE` 讀扁平欄位 `candidate["risk_gate_action"]`，
+   實際資料在巢狀 `candidate["deterministic_signals"]["risk_gate_action"]`，
+   這條 hard exclusion **從未在 production 真正觸發過**
+
+**Explain trace / funnel 不再 silent delete**：`build_phase2_pool` 新增
+`excluded_out` 參數收集每檔被剔除的候選（含 reason/risk_warnings/
+evidence_families），`run_phase2_pipeline` 合併進 `explain_traces` 並統計
+`funnel_metrics.hard_exclusion_reason_counts`（每種原因剔除了幾檔，一眼看到）+
+`hard_exclusion_version="phase2_new_hard_gate"`（供 historical snapshot 區分
+新舊規則）。
+
+**Regression 驗證**：
+- 8039（台虹 7/14）：不再被 3D>15% 誤殺，`excluded=false`，只標 `EXTENDED_3D`，
+  角色判為 `INDEPENDENT_LEADER`，正確送進 LLM
+- 6243（迅杰 7/21）：確認未被誤剔除
+- ETF/金融/人工黑名單/低張數但金額足夠/failed_follow_through episode-scoped：
+  16 個新單元測試（`tests/test_phase2_hard_exclusion_v2.py`）全通過
+- 全 backend suite：1022 pass / 20 fail（既有 baseline，零新增失敗）
+
+**25 天 historical replay（06-15~07-21，總候選池 3000 筆）**：
+```
+舊規則命中：OLD_VOLUME_TIER 996 / OLD_3D_OVERHEAT 412 / OLD_10D_EXTENDED_SELL 97
+           / OLD_3D_FLOW_REVERSAL 88；舊規則下總存活 1407/3000
+新規則命中：LIQUIDITY_FAILURE 817 / COMPOSITE_RISK_EXCLUDE 181 /
+           FAILED_FOLLOW_THROUGH_CURRENT_EPISODE 8；新規則下總存活 1994/3000
+```
+多放行 587 檔（+41.7%）。**`REVERSAL_FAILURE` 在這 25 天真實資料中 0 命中**——
+不代表機制失效（單元測試已用合成數據證明三條件同時成立時能正確觸發），比較
+可能是門檻本來就設計成「只抓真正嚴重」的罕見情況，需要更長 replay 觀察，
+**不得為了讓某天有命中而調鬆門檻**。
+
+**已檢查、確認不需要改的部分**：`entry_state.py` 的 `STRUCTURE_DAMAGED` 判斷
+本來就要求「距高點 ≥4 倍 ATR（結構性、非固定 %）」+「RS 排名同時惡化（相對
+維度）」雙重確認，符合本輪「絕對價格弱勢 + 結構/相對確認」的原則，未修改。
+
+**已知、刻意不動的落差**：`candidate_pool.py`（Step 1 候選池建立，本次任務明確
+排除）仍用 `should_exclude()` 在源頭排除 ETF/金融股，所以牠們現在還是進不了
+候選池——這次只解決「Phase 2 hard exclusion 這一關不再把 ETF/金融當排除理由」，
+要讓 ETF/金融真的流過完整 pipeline 需要另外處理 Step 1，超出本次授權範圍。
+
 ### 尚未做（下一輪接手指引）
 1. LLM v6（§X：backend 唯一 deterministic authority，LLM 只做業務/題材/供應鏈
    驗證 + 降級/REMOVE，不可重跑 threshold）**完全未動**——現有 v1/v4/v5 prompt

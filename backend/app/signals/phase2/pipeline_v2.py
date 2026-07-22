@@ -23,6 +23,7 @@ LLM 解釋層留到 §X（v6 prompt）穩定後才接。
 """
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
@@ -98,25 +99,62 @@ def role_to_prelim_type(candidate: Dict[str, Any]) -> str:
     return _TRACKING_STATE_TO_PRELIM_TYPE.get(tracking, "LAGGARD")
 
 
-def build_phase2_pool(pool: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def build_phase2_pool(
+    pool: List[Dict[str, Any]],
+    *,
+    taiex_return_1d_pct: Optional[float] = None,
+    excluded_out: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
     """從 **raw** `candidate_pool.build_candidate_pool()` 輸出（未經 legacy
     `classification.classify_stocks()` 三選一硬刪除）建立 Phase 2 候選池。
 
-    只套用 §P 定義的「真正定義性」hard exclusion（見
-    `regime_gate.is_true_hard_exclusion` docstring：legacy 條件 #2「法人 5 日
+    只套用 §十四定義的 6 種「真正定義性」hard exclusion（見
+    `regime_gate.build_hard_exclusion_result` docstring：legacy 條件 #2「法人 5 日
     流出且非 ROTATION_LAGGARD」依賴 prelim_type，Phase 2 刻意不搬過來）。
 
-    `pipeline.py` 的 shadow hook 與 `run_phase2_replay.py` 共用這個函式，
-    確保 production shadow 與離線 replay 走同一套邏輯。
+    `taiex_return_1d_pct`：REVERSAL_FAILURE 判斷需要的大盤當日報酬（用來算個股
+    相對大盤的超額報酬）；未提供時 REVERSAL_FAILURE 永遠不會觸發（缺資料不臆測）。
+
+    `excluded_out`：若提供一個 list，被 Hard Exclusion 剔除的候選會以
+    `{"stock_id": ..., "hard_exclusion_result": {...}}` 的形式 append 進去
+    （2026-07-22 §十九「不要 silent delete」——呼叫端可用這個組完整 funnel 統計 /
+    explain trace，不提供則維持原本輕量行為，向後相容）。
+
+    存活的候選會額外帶 `risk_warnings` / `liquidity_state` 欄位（原本會被
+    Hard Exclude 的單一條件，如 `EXTENDED_3D`，重構後降級為 warning 而非剔除，
+    仍需要讓下游看得到）。
+
+    `pipeline.py` 的 phase2 分支與 `run_phase2_replay.py` 共用這個函式，
+    確保 production 與離線 replay 走同一套邏輯。
+
+    **2026-07-22 順手修正的既有 bug**：舊版先呼叫 `attach_deterministic_signals`
+    才呼叫 `_detect_soft_hints` 設定 `soft_hints`——但
+    `deterministic_signals.build_deterministic_signals()` 內部的
+    `chip_trend`/`technical_status`/`risk_flags` 全部依賴 `candidate.get(
+    "soft_hints")`，導致這些欄位在計算當下永遠讀到空 list（`soft_hints` 那時
+    還不存在），`distribution`/`weakening`/`retail_overheated` 三個 soft hint
+    衍生出的 deterministic_signals 從未被正確套用過。這條 bug 直接影響本輪
+    COMPOSITE_RISK_EXCLUDE 是否能被正確判斷，屬於 hard exclusion 直接相關範圍，
+    順手修正（不是額外新功能，只是把兩行呼叫順序對調）。
     """
-    with_signals = det_signals.attach_deterministic_signals(pool)
+    with_hints = []
+    for c in pool:
+        hints = legacy_filters._detect_soft_hints(c)
+        with_hints.append({**c, "soft_hints": hints})
+    with_signals = det_signals.attach_deterministic_signals(with_hints)
+
     survivors = []
     for c in with_signals:
-        hints = legacy_filters._detect_soft_hints(c)
-        c_with_hints = {**c, "soft_hints": hints}
-        if regime_mod.is_true_hard_exclusion(c_with_hints):
+        result = regime_mod.build_hard_exclusion_result(c, taiex_return_1d_pct=taiex_return_1d_pct)
+        if result["excluded"]:
+            if excluded_out is not None:
+                excluded_out.append({"stock_id": c.get("stock_id"), "hard_exclusion_result": result})
             continue
-        survivors.append(c_with_hints)
+        survivors.append({
+            **c,
+            "risk_warnings": result["risk_warnings"],
+            "liquidity_state": result["liquidity_state"],
+        })
     return survivors
 
 
@@ -146,20 +184,33 @@ def run_phase2_pipeline(
     db: Session,
     candidates: List[Dict[str, Any]],
     market_regime: str,
+    *,
+    hard_excluded: Optional[List[Dict[str, Any]]] = None,
+    taiex_return_1d_pct: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     對已經建好的候選池（legacy candidate_pool 輸出，含 momentum frame 特徵 +
     tracking_status）跑完整 Phase 2 deterministic 決策層。
 
+    `hard_excluded`：`build_phase2_pool(..., excluded_out=[])` 收集到的、在
+    候選池建立階段就被 Hard Exclusion 剔除的候選（MANUAL_BLACKLIST /
+    FAILED_FOLLOW_THROUGH_CURRENT_EPISODE / LIQUIDITY_FAILURE /
+    COMPOSITE_RISK_EXCLUDE / REVERSAL_FAILURE）。這裡會幫他們也建一份
+    explain trace（2026-07-22 §十九「不要 silent delete」），並計入
+    `funnel_metrics.hard_exclusion_reason_counts`。
+    **`STRUCTURE_DAMAGED` 不會出現在這裡**——它依賴 `entry_state`，只有進到這個
+    函式（Step 3 算完 entry_state 之後）才判斷得出來，見下方 Step 8 迴圈。
+
     回傳：
         {
             "survivors": [...],       # 通過 regime gate 的候選（含 role/conviction/entry_state）
-            "explain_traces": {...},  # stock_id -> explain trace
-            "funnel_metrics": {...},
+            "explain_traces": {...},  # stock_id -> explain trace（含 hard-excluded）
+            "funnel_metrics": {...},  # 含 hard_exclusion_reason_counts / hard_exclusion_version
             "sector_context": {...},  # stock_id -> sector context（debug 用）
             "sector_clusters": {...},
         }
     """
+    hard_excluded = hard_excluded or []
     stock_ids = [c["stock_id"] for c in candidates]
     classifications = load_classifications(db, stock_ids)
 
@@ -210,11 +261,17 @@ def run_phase2_pipeline(
     survivors = regime_mod.apply_regime_gate_v2(eligible_candidates, market_regime)
     survivor_ids = {c["stock_id"] for c in survivors}
 
-    # Step 8：explain trace（每一檔候選都要有，不論存活與否）
+    # Step 8：explain trace（每一檔候選都要有，不論存活與否）。用完整的
+    # `build_hard_exclusion_result` 而不是精簡版 `is_true_hard_exclusion`，
+    # 這裡是 STRUCTURE_DAMAGED 唯一能被正確判斷的時機點（entry_state 到這裡才有值）。
     explain_traces: Dict[str, Any] = {}
+    hard_exclusion_reason_counter: Counter = Counter()
     for c in candidates:
         sid = c["stock_id"]
-        hard_reason = regime_mod.is_true_hard_exclusion(c)
+        hard_result = regime_mod.build_hard_exclusion_result(c, taiex_return_1d_pct=taiex_return_1d_pct)
+        hard_reason = hard_result["reason"]
+        if hard_reason:
+            hard_exclusion_reason_counter[hard_reason] += 1
         regime_passed = sid in survivor_ids if c.get("base_eligible") else None
         explain_traces[sid] = trace_mod.build_explain_trace(
             sid,
@@ -229,10 +286,32 @@ def run_phase2_pipeline(
             tracking_state=c.get("tracking_state"),
             entry_state=c.get("entry_state"),
             hard_exclusion_reason=hard_reason,
+            hard_exclusion_risk_warnings=hard_result["risk_warnings"],
+            hard_exclusion_evidence_families=hard_result["evidence_families"],
+            hard_exclusion_liquidity_state=hard_result["liquidity_state"],
             regime_gate_passed=regime_passed,
             regime=market_regime,
             conviction=next((s.get("conviction") for s in survivors if s["stock_id"] == sid), None),
             sent_to_llm=sid in survivor_ids,
+        )
+
+    # 候選池建立階段（`build_phase2_pool`）就被剔除的候選：MANUAL_BLACKLIST /
+    # FAILED_FOLLOW_THROUGH_CURRENT_EPISODE / LIQUIDITY_FAILURE /
+    # COMPOSITE_RISK_EXCLUDE / REVERSAL_FAILURE。這裡才第一次幫他們建 explain
+    # trace（2026-07-22 §十九「不要 silent delete」，之前完全不會出現在 trace 裡）。
+    for rec in hard_excluded:
+        sid = rec.get("stock_id")
+        if not sid:
+            continue
+        result = rec.get("hard_exclusion_result") or {}
+        hard_exclusion_reason_counter[result.get("reason")] += 1
+        explain_traces[sid] = trace_mod.build_explain_trace(
+            sid,
+            hard_exclusion_reason=result.get("reason"),
+            hard_exclusion_risk_warnings=result.get("risk_warnings"),
+            hard_exclusion_evidence_families=result.get("evidence_families"),
+            hard_exclusion_liquidity_state=result.get("liquidity_state"),
+            regime=market_regime,
         )
 
     role_counts = funnel_mod.role_counts_from_results(role_results)
@@ -247,7 +326,7 @@ def run_phase2_pipeline(
             sector_role_none_counts[sector] = sector_role_none_counts.get(sector, 0) + 1
 
     funnel = funnel_mod.compute_funnel_metrics(
-        candidate_count=len(candidates),
+        candidate_count=len(candidates) + len(hard_excluded),
         momentum_eligible_count=sum(1 for c in candidates if c.get("base_eligible")),
         role_counts=role_counts,
         hard_risk_survivor_count=len(eligible_candidates),
@@ -256,6 +335,8 @@ def run_phase2_pipeline(
         watch_count=len(survivors),
         sector_candidate_counts=sector_candidate_counts,
         sector_role_none_counts=sector_role_none_counts,
+        hard_exclusion_reason_counts=dict(hard_exclusion_reason_counter),
+        hard_exclusion_version=regime_mod.HARD_EXCLUSION_VERSION,
     )
 
     return {

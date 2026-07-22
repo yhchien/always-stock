@@ -128,6 +128,8 @@ def _run_phase2_shadow(
     target_date: date,
     raw_pool: list,
     regime: str,
+    *,
+    taiex_return_1d_pct: Optional[float] = None,
 ) -> None:
     """在 `SIGNALS_PIPELINE_MODE=phase2_shadow` 時執行；任何例外都只 log，
     不 raise——shadow mode 對 legacy pipeline 必須是零風險的旁路。
@@ -146,8 +148,13 @@ def _run_phase2_shadow(
     try:
         from app.signals.phase2 import pipeline_v2
 
-        candidates = pipeline_v2.build_phase2_pool(raw_pool)
-        result = pipeline_v2.run_phase2_pipeline(db, candidates, regime)
+        hard_excluded: list = []
+        candidates = pipeline_v2.build_phase2_pool(
+            raw_pool, taiex_return_1d_pct=taiex_return_1d_pct, excluded_out=hard_excluded
+        )
+        result = pipeline_v2.run_phase2_pipeline(
+            db, candidates, regime, hard_excluded=hard_excluded, taiex_return_1d_pct=taiex_return_1d_pct
+        )
         _persist_phase2_shadow_snapshot(db, target_date, candidates, result)
     except Exception:
         logger.exception("Phase 2 shadow pipeline failed for %s (non-fatal, legacy unaffected)", target_date)
@@ -297,9 +304,22 @@ def run_signal_pipeline_sync(
                 try:
                     from app.signals.phase2 import pipeline_v2
 
-                    phase2_candidates = pipeline_v2.build_phase2_pool(pool)
+                    # 2026-07-22 Hard Exclusion 重構：REVERSAL_FAILURE 需要大盤當日
+                    # 報酬當比較基準（個股相對大盤的超額報酬）；缺值時 REVERSAL_FAILURE
+                    # 永遠不觸發（不臆測），不影響其餘 5 種 hard exclusion reason。
+                    taiex_return_1d_pct = (regime_info.get("metrics") or {}).get("return_1d_pct")
+                    phase2_hard_excluded: list = []
+                    phase2_candidates = pipeline_v2.build_phase2_pool(
+                        pool,
+                        taiex_return_1d_pct=taiex_return_1d_pct,
+                        excluded_out=phase2_hard_excluded,
+                    )
                     phase2_result = pipeline_v2.run_phase2_pipeline(
-                        db, phase2_candidates, regime_info["regime"]
+                        db,
+                        phase2_candidates,
+                        regime_info["regime"],
+                        hard_excluded=phase2_hard_excluded,
+                        taiex_return_1d_pct=taiex_return_1d_pct,
                     )
                     phase2_survivors = phase2_result["survivors"]
                     for c in phase2_survivors:
@@ -355,7 +375,13 @@ def run_signal_pipeline_sync(
                     # 保留上面 legacy 算好的值，本次 run 以 legacy 輸出為準，
                     # 不讓 Phase 2 的 bug 拖垮整個 cron。
             else:
-                _run_phase2_shadow(db, target_date, pool, regime_info["regime"])
+                _run_phase2_shadow(
+                    db,
+                    target_date,
+                    pool,
+                    regime_info["regime"],
+                    taiex_return_1d_pct=(regime_info.get("metrics") or {}).get("return_1d_pct"),
+                )
 
             # Step 5：LLM Research（batch）
             total_for_llm = max(len(after_regime), 1)

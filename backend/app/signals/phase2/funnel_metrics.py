@@ -24,8 +24,19 @@ def compute_funnel_metrics(
     watch_count: int,
     sector_candidate_counts: Optional[Dict[str, int]] = None,
     sector_role_none_counts: Optional[Dict[str, int]] = None,
+    hard_exclusion_reason_counts: Optional[Dict[str, int]] = None,
+    hard_exclusion_version: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """組出每日 funnel 統計 + 異常偵測旗標。"""
+    """組出每日 funnel 統計 + 異常偵測旗標。
+
+    2026-07-22 Hard Exclusion 重構（§十九「不要 silent delete」）：
+    `hard_exclusion_reason_counts` 讓每個 Hard Exclusion reason 剔除了幾檔可以
+    直接被看到（例：`candidate 120 → MANUAL_BLACKLIST 2 → FAILED_FOLLOW_THROUGH 3
+    → ... → survivors N`），不必等使用者自己發現「今天怎麼都沒有訊號」。
+    `hard_exclusion_version` 標記本次用的是哪一版 Hard Exclusion 方法論
+    （見 `regime_gate.HARD_EXCLUSION_VERSION`），讓 historical snapshot 可以
+    區分新舊規則產生的結果。
+    """
     survival_rate = (
         round(momentum_eligible_count / candidate_count, 3) if candidate_count > 0 else 0.0
     )
@@ -52,6 +63,8 @@ def compute_funnel_metrics(
         "sector_lockout_sectors": sector_lockouts,
         "no_output_day": no_output_day,
         "anomaly_flags": _compute_anomaly_flags(survival_rate, sector_lockouts, sent_to_llm_count, no_output_day),
+        "hard_exclusion_reason_counts": dict(hard_exclusion_reason_counts or {}),
+        "hard_exclusion_version": hard_exclusion_version,
     }
 
 
