@@ -1,5 +1,9 @@
 # always-stock 專案記憶
 
+> **完整選股邏輯 / hard exclusion / pipeline step-by-step 說明**：
+> [docs/plans/魚尾選股邏輯與排除規則說明.md](docs/plans/魚尾選股邏輯與排除規則說明.md)
+> （2026-07-22，含 legacy + Phase 2 兩條路徑完整對照，給要查「某天某檔股票被剔除在哪一關」的人）
+
 ## Phase 2：魚尾 Canonical Momentum Pipeline（**production cutover 完成，2026-07-22**）
 
 > **狀態**：deterministic 決策層（sector context → role taxonomy → sector cluster →
