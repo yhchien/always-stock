@@ -226,6 +226,25 @@
   分支 2 個：使用 phase2 候選送進 LLM / phase2 例外 fail-safe 退回 legacy）；
   全 backend suite 1008 pass / 20 fail（既有 baseline），零新增失敗
 
+### Production 真實重跑驗證（2026-07-22，`run_daily_signals.py 2026-07-21`）
+- 直接對 production DB 跑一次真正的 pipeline（非 replay，會真的呼叫 OpenAI +
+  覆寫 `signal_snapshots`/`signal_watch_hits`）；選 2026-07-21 是因為 07-22 當天
+  ETL 尚未跑（18:00 台北才有資料），且 07-21 legacy 原本產出剛好是 **0 檔
+  watchlist**，覆寫無「毀掉既有好結果」風險
+- **結果**：候選池 120 檔 → Phase 2 定義性 hard exclusion 後 56 檔 → regime gate
+  （RISK_OFF）後存活 13 檔（含 2634 漢翔 / 2912 統一超 / 1326 台化 等）→
+  LLM 決策後最終 WATCH 2 檔：**1810 和成**、**2912 統一超**（皆 LEADER /
+  conviction=medium / watch_intensity=cautious）；`signal_shadow_snapshots.
+  comparison_summary` 同時記到 `legacy_survivor_count=0`，證實這天若還在用
+  legacy 選股，使用者會看到完全空的清單
+- **統一超（2912）正是最初驅動 Phase 2 的案例之一被真實 production 選中**
+  （spec 動機：hit_count 曾被 legacy 當 RISK_OFF 硬門檻擋下，Phase 2 移除該
+  門檻後正確存活）；漢翔進了候選池但沒進最終 LLM WATCH 名單（LLM 決策層
+  這次判斷不足以 WATCH，屬正常篩選，不代表 Phase 2 候選池機制沒生效）
+- 順手修正一個純 log 訊息 bug（不影響任何 persisted 資料）：production 分支
+  的「legacy would have produced N survivors」log 曾誤讀已被 phase2 覆寫後的
+  `conviction_by_stock`，改用覆寫前就先存好的 `legacy_survivor_ids` 變數
+
 ### 尚未做（下一輪接手指引）
 1. LLM v6（§X：backend 唯一 deterministic authority，LLM 只做業務/題材/供應鏈
    驗證 + 降級/REMOVE，不可重跑 threshold）**完全未動**——現有 v1/v4/v5 prompt
