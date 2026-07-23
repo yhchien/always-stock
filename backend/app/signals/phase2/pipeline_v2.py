@@ -23,6 +23,7 @@ LLM 解釋層留到 §X（v6 prompt）穩定後才接。
 """
 from __future__ import annotations
 
+import os
 from collections import Counter
 from typing import Any, Dict, List, Optional
 
@@ -34,13 +35,25 @@ from app.signals import filters as legacy_filters
 from app.signals.phase2 import entry_state as entry_state_mod
 from app.signals.phase2 import explain_trace as trace_mod
 from app.signals.phase2 import funnel_metrics as funnel_mod
+from app.signals.phase2 import momentum_freshness as freshness_mod
 from app.signals.phase2 import regime_gate as regime_mod
 from app.signals.phase2 import roles as roles_mod
 from app.signals.phase2 import sector_cluster as cluster_mod
 from app.signals.phase2 import sector_context as sector_ctx_mod
 from app.signals.phase2 import tracking_state as tracking_mod
+from app.signals.phase2 import watch_quality as quality_mod
 
 PIPELINE_VERSION = "phase2-v1"
+
+# Phase 2.5（2026-07-23）：Momentum Freshness + Final Watch Quality Layer 的接線模式。
+#   - "off"：完全不算，行為與 Phase 2.5 開工前逐 byte 相同
+#   - "shadow"（預設）：照算 freshness/watch_quality，寫進 explain_trace/funnel_metrics
+#     供觀察，但**不過濾**送進 LLM 的候選（`llm_eligible` = 全部 regime gate 存活者，
+#     與現行行為一致）——延續本專案既有「新 gate 先 shadow 觀察再切 production」慣例
+#   - "production"：只有 READY/SETUP 送進 LLM，RESERVE 保留在 `survivors`（供
+#     debug/未來 re-entry 觀察）但不出現在 `llm_eligible`
+WATCH_QUALITY_MODE = os.getenv("WATCH_QUALITY_MODE", "shadow").strip().lower()
+_VALID_WATCH_QUALITY_MODES = ("off", "shadow", "production")
 
 # §U（2026-07-22）：production cutover 的 LLM 相容層。
 #
@@ -261,6 +274,37 @@ def run_phase2_pipeline(
     survivors = regime_mod.apply_regime_gate_v2(eligible_candidates, market_regime)
     survivor_ids = {c["stock_id"] for c in survivors}
 
+    # Step 7.5（Phase 2.5，2026-07-23）：Momentum Freshness + Final Watch Quality Layer。
+    # 只對 regime gate 存活者（真正合格的候選）疊這一層——不是 Hard Exclusion、
+    # 不是新的 eligibility 條件，只回答「這批合格候選裡，誰值得進正式 WATCH」。
+    # `WATCH_QUALITY_MODE=off` 時完全跳過（欄位不存在，行為與加這層之前一致）。
+    freshness_mode_active = WATCH_QUALITY_MODE != "off"
+    watch_quality_mode = WATCH_QUALITY_MODE if WATCH_QUALITY_MODE in _VALID_WATCH_QUALITY_MODES else "shadow"
+    if freshness_mode_active:
+        for c in survivors:
+            sid = c["stock_id"]
+            fresh = freshness_mod.compute_momentum_freshness(c, taiex_return_1d_pct=taiex_return_1d_pct)
+            c["momentum_freshness"] = fresh["momentum_freshness"]
+            c["momentum_freshness_detail"] = fresh
+
+            ctx = sector_ctx_by_id.get(sid)
+            cluster_state = cluster_mod.get_cluster_state((ctx or {}).get("primary_sector"), clusters)
+            quality = quality_mod.compute_watch_quality(c, fresh, sector_ctx=ctx, cluster_state=cluster_state)
+            c["watch_quality_state"] = quality["watch_quality_state"]
+            c["watch_quality_score"] = quality["watch_quality_score"]
+            c["quality_evidence"] = quality["quality_evidence"]
+            c["quality_reasons"] = quality["quality_reasons"]
+
+    if freshness_mode_active and watch_quality_mode == "production":
+        llm_eligible_ids = {
+            c["stock_id"]
+            for c in survivors
+            if c.get("watch_quality_state") in (quality_mod.WATCH_QUALITY_READY, quality_mod.WATCH_QUALITY_SETUP)
+        }
+    else:
+        # off / shadow：沿用既有行為，regime gate 存活者全數視為 llm_eligible
+        llm_eligible_ids = set(survivor_ids)
+
     # Step 8：explain trace（每一檔候選都要有，不論存活與否）。用完整的
     # `build_hard_exclusion_result` 而不是精簡版 `is_true_hard_exclusion`，
     # 這裡是 STRUCTURE_DAMAGED 唯一能被正確判斷的時機點（entry_state 到這裡才有值）。
@@ -273,6 +317,7 @@ def run_phase2_pipeline(
         if hard_reason:
             hard_exclusion_reason_counter[hard_reason] += 1
         regime_passed = sid in survivor_ids if c.get("base_eligible") else None
+        is_llm_eligible = sid in llm_eligible_ids
         explain_traces[sid] = trace_mod.build_explain_trace(
             sid,
             candidate_channels=[
@@ -292,7 +337,12 @@ def run_phase2_pipeline(
             regime_gate_passed=regime_passed,
             regime=market_regime,
             conviction=next((s.get("conviction") for s in survivors if s["stock_id"] == sid), None),
-            sent_to_llm=sid in survivor_ids,
+            sent_to_llm=is_llm_eligible,
+            momentum_freshness=c.get("momentum_freshness"),
+            watch_quality_state=c.get("watch_quality_state"),
+            watch_quality_score=c.get("watch_quality_score"),
+            quality_reasons=c.get("quality_reasons"),
+            held_by_watch_quality=(sid in survivor_ids and not is_llm_eligible),
         )
 
     # 候選池建立階段（`build_phase2_pool`）就被剔除的候選：MANUAL_BLACKLIST /
@@ -325,25 +375,39 @@ def run_phase2_pipeline(
         if not c.get("role") and not c.get("tracking_state"):
             sector_role_none_counts[sector] = sector_role_none_counts.get(sector, 0) + 1
 
+    llm_eligible = [c for c in survivors if c["stock_id"] in llm_eligible_ids]
+    freshness_counts = Counter(c.get("momentum_freshness") or "UNKNOWN" for c in survivors) if freshness_mode_active else Counter()
+    watch_quality_counts = Counter(c.get("watch_quality_state") or "UNKNOWN" for c in survivors) if freshness_mode_active else Counter()
+
     funnel = funnel_mod.compute_funnel_metrics(
         candidate_count=len(candidates) + len(hard_excluded),
         momentum_eligible_count=sum(1 for c in candidates if c.get("base_eligible")),
         role_counts=role_counts,
         hard_risk_survivor_count=len(eligible_candidates),
         regime_survivor_count=len(survivors),
-        sent_to_llm_count=len(survivors),
-        watch_count=len(survivors),
+        sent_to_llm_count=len(llm_eligible),
+        watch_count=len(llm_eligible),
         sector_candidate_counts=sector_candidate_counts,
         sector_role_none_counts=sector_role_none_counts,
         hard_exclusion_reason_counts=dict(hard_exclusion_reason_counter),
         hard_exclusion_version=regime_mod.HARD_EXCLUSION_VERSION,
+        freshness_counts=dict(freshness_counts),
+        watch_quality_counts=dict(watch_quality_counts),
+        watch_quality_mode=watch_quality_mode if freshness_mode_active else "off",
     )
 
     return {
+        # `survivors`：regime gate 通過的全部合格候選（向後相容，語意不變——
+        # 既有 caller，如 `run_v6_llm_validation.py` / shadow snapshot，讀到的仍是
+        # 「合格」而非「已被 Watch Quality 過濾」的名單）。
         "survivors": survivors,
+        # Phase 2.5 新增：真正該送進 LLM 的子集。`WATCH_QUALITY_MODE=production`
+        # 時是 READY+SETUP；`off`/`shadow` 時等於 `survivors`（向後相容，行為不變）。
+        "llm_eligible": llm_eligible,
         "explain_traces": explain_traces,
         "funnel_metrics": funnel,
         "sector_context": sector_ctx_by_id,
         "sector_clusters": clusters,
         "pipeline_version": PIPELINE_VERSION,
+        "watch_quality_mode": watch_quality_mode if freshness_mode_active else "off",
     }

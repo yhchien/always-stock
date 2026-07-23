@@ -19,6 +19,7 @@ STAGE_TRACKING_STATE = "tracking_state"
 STAGE_ENTRY_STATE = "entry_state"
 STAGE_HARD_EXCLUSION = "hard_exclusion"
 STAGE_REGIME_GATE = "regime_gate"
+STAGE_WATCH_QUALITY = "watch_quality"  # Phase 2.5：regime gate 通過但 quality=RESERVE，未送 LLM
 STAGE_SENT_TO_LLM = "sent_to_llm"
 
 
@@ -40,10 +41,22 @@ def build_explain_trace(
     regime: Optional[str] = None,
     conviction: Optional[str] = None,
     sent_to_llm: bool = False,
+    momentum_freshness: Optional[str] = None,
+    watch_quality_state: Optional[str] = None,
+    watch_quality_score: Optional[float] = None,
+    quality_reasons: Optional[List[str]] = None,
+    held_by_watch_quality: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """組出單一 candidate 的完整決策追蹤。`final_stage` / `first_exclusion_reason`
     由最先發生的排除點決定——一旦某一關把它擋下，後面關卡就不會再跑，這裡忠實
-    反映「跑到哪一關為止」，而不是假裝跑完全部關卡。"""
+    反映「跑到哪一關為止」，而不是假裝跑完全部關卡。
+
+    Phase 2.5：`held_by_watch_quality=True` 代表這檔通過了 regime gate（真正合格），
+    但 `watch_quality_state=RESERVE` 且 `WATCH_QUALITY_MODE=production`，因此沒有被
+    送進 LLM——這**不是**排除（`hard_exclusion_result.excluded` 仍是 False），
+    只是「今天證據不足以進正式 WATCH」（§37 RESERVE ≠ FAILED），所以不計入
+    `first_exclusion_reason`，改用獨立的 `STAGE_WATCH_QUALITY` 標記。
+    """
     final_stage = STAGE_CANDIDATE_DISCOVERY
     first_exclusion_reason: Optional[str] = None
 
@@ -58,6 +71,8 @@ def build_explain_trace(
         first_exclusion_reason = f"regime_excluded:{regime}"
     elif sent_to_llm:
         final_stage = STAGE_SENT_TO_LLM
+    elif held_by_watch_quality:
+        final_stage = STAGE_WATCH_QUALITY
     elif role is not None:
         final_stage = STAGE_ROLE_ANNOTATION
 
@@ -79,6 +94,13 @@ def build_explain_trace(
             "liquidity_state": hard_exclusion_liquidity_state,
         },
         "regime_gate_result": {"pass": regime_gate_passed, "regime": regime, "conviction": conviction},
+        "momentum_freshness": momentum_freshness,
+        "watch_quality": {
+            "state": watch_quality_state,
+            "score": watch_quality_score,
+            "reasons": quality_reasons or [],
+        },
+        "llm_eligible": bool(sent_to_llm),
         "final_stage": final_stage,
         "first_exclusion_reason": first_exclusion_reason,
     }

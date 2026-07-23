@@ -67,16 +67,21 @@ DEFAULT_WATCH_REASON_MODEL = os.getenv(
 # 讓 30 日追蹤可以區分「這檔是哪一版 prompt 抓出來的」做績效歸因。
 #
 # 2026-07-15：v5 以 v4 deterministic risk cap 為底，把價格動能 / 相對強度提升為最高優先。
-# 所有 regime 預設都走 v5；v1 / v4 保留給人工重跑與版本對照實驗。
+# 2026-07-22：v6 是 Phase 2 → LLM contract 對齊版——backend Phase 2 deterministic
+# pipeline 是唯一的 candidate eligibility authority，LLM 不再跑第二套 momentum
+# gate / regime gate / role eligibility gate，只做外部事實驗證（業務/題材/供應鏈）
+# + 否決（veto）+ 中文解釋。v6 為新預設；v1/v4/v5 保留給人工重跑與版本對照實驗
+# （`SIGNALS_FORCE_PROMPT_VERSION` 強制指定）。
 # regime 由 pipeline 以 TAIEX 指數 deterministic 算出後塞進 market_context["market_regime"]，
 # 各 LLM stage 讀該欄位 resolve 對應版本；label 也跟著 regime 走（見 _resolve_prompt_version）。
 PROMPT_VERSION_LEGACY_BULL = "v1"
 PROMPT_VERSION_LEGACY_VOLATILE = "v4"
 PROMPT_VERSION_MOMENTUM = "v5"
-PROMPT_VERSION_BULL = PROMPT_VERSION_MOMENTUM
-PROMPT_VERSION_VOLATILE = PROMPT_VERSION_MOMENTUM
+PROMPT_VERSION_V6 = "v6"
+PROMPT_VERSION_BULL = PROMPT_VERSION_V6
+PROMPT_VERSION_VOLATILE = PROMPT_VERSION_V6
 # 向後相容：舊 caller / 未提供 market_regime 時的預設版本（收斂版）
-PROMPT_VERSION = PROMPT_VERSION_MOMENTUM
+PROMPT_VERSION = PROMPT_VERSION_V6
 
 # 系統 prompt 路徑（spec §10 LLM I/O contract 全文）：一版一檔。
 _PROMPTS_DIR = Path(__file__).resolve().parents[1] / "prompts"
@@ -84,6 +89,7 @@ _PROMPT_PATHS: Dict[str, Path] = {
     PROMPT_VERSION_LEGACY_BULL: _PROMPTS_DIR / "watch-list-stock-v1.md",
     PROMPT_VERSION_LEGACY_VOLATILE: _PROMPTS_DIR / "watch-list-stock.md",
     PROMPT_VERSION_MOMENTUM: _PROMPTS_DIR / "watch-list-stock-v5.md",
+    PROMPT_VERSION_V6: _PROMPTS_DIR / "watch-list-stock-v6.md",
 }
 # 保留舊常數名（部分工具 / 訊息引用）指向預設版檔案
 _PROMPT_PATH = _PROMPT_PATHS[PROMPT_VERSION]
@@ -92,14 +98,14 @@ _PROMPT_PATH = _PROMPT_PATHS[PROMPT_VERSION]
 def _resolve_prompt_version(market_regime: Optional[str]) -> str:
     """依大盤 regime 決定要跑哪一版 prompt。
 
-    預設所有 regime → v5（相對強度動能版）。
-    env `SIGNALS_FORCE_PROMPT_VERSION`（值須為已知版本，如 v1 / v4 / v5）可強制覆寫
-    regime routing，給人工重跑做版本對照實驗用；未知值一律忽略走原邏輯。
+    預設所有 regime → v6（Phase 2 → LLM contract 對齊版）。
+    env `SIGNALS_FORCE_PROMPT_VERSION`（值須為已知版本，如 v1 / v4 / v5 / v6）可強制
+    覆寫 regime routing，給人工重跑做版本對照實驗用；未知值一律忽略走原邏輯。
     """
     forced = os.getenv("SIGNALS_FORCE_PROMPT_VERSION", "").strip()
     if forced in _PROMPT_PATHS:
         return forced
-    return PROMPT_VERSION_MOMENTUM
+    return PROMPT_VERSION_V6
 
 # OpenAI 回應的 max tokens；reason 規則要求 500-1000 字 × batch 8 → 預留充足
 _MAX_OUTPUT_TOKENS = 8000
@@ -233,38 +239,97 @@ def run_research_batch(
     version = _resolve_prompt_version(market_context.get("market_regime"))
     system_prompt = _load_system_prompt(stage="research", version=version)
     evidence_view = _to_evidence_view(stocks_batch)
-    user_msg = (
-        "[只執行 STEP 2 / STEP 3 / STEP 4：research 部分]\n"
-        "對下列每檔股票，請上網查詢主要業務、題材延續性、產業鏈位置、龍頭 / 集團，"
-        "並輸出每檔 research result。**不要做最終 decision**（那是 STEP 5-9 的事）。\n\n"
-        "[硬規則]\n"
-        "1. `type` 已由後端決定（prelim_type 欄位），請直接照填，不可重判 LEADER/FOLLOWER/LAGGARD。\n"
-        "2. 每檔 stock 都有 `evidence` 段落，是後端 deterministic 從 DB 算出的數字；\n"
-        "   你的 research 結果應與 evidence 一致（例如 evidence 顯示外資 3 日連買、\n"
-        "   就不可在 theme_reason 寫「外資未進駐」）。\n\n"
-        f"[market_context]\n"
-        f"{json.dumps(market_context, ensure_ascii=False, indent=2)}\n\n"
-        f"[stocks_batch]\n"
-        f"{json.dumps(evidence_view, ensure_ascii=False, indent=2)}\n\n"
-        "輸出格式（JSON only，不要 markdown code fence）：\n"
-        "{\n"
-        '  "research": [\n'
-        '    {\n'
-        '      "stock": "股票代碼",\n'
-        '      "name": "股票名稱",\n'
-        '      "industry": "產業",\n'
-        '      "sub_industry": "細產業",\n'
-        '      "type": "LEADER | FOLLOWER | LAGGARD",  // 直接照填 prelim_type\n'
-        '      "business_summary": "公司主要業務說明",\n'
-        '      "supply_chain_position": "upstream | midstream | downstream | equipment | component | material | brand | channel | service | other",\n'
-        '      "theme_fit": "HIGH | MEDIUM | LOW | NONE",\n'
-        '      "theme": { "main_theme": "...", "theme_duration": "short | 1Q | 2Q_plus", "theme_maturity": "early | mid | late | post_event | unclear", "theme_score": 0-3, "theme_reason": "..." },\n'
-        '      "group_info": { "is_group_stock": bool, "group_name": "..." | null, "related_group_stocks": [...], "group_price_sync": "strong | moderate | weak | none" },\n'
-        '      "leader_check": { "industry_leader": "...", "leader_price_trend": "strong_up | up | flat | down", "leader_supports_theme": bool }\n'
-        '    }\n'
-        '  ]\n'
-        "}\n"
-    )
+
+    if version == PROMPT_VERSION_V6:
+        # LLM v6 contract（2026-07-22）：research 是「外部事實驗證」而非再分類。
+        # 新增 asset_type-aware 研究指示 + VERIFIED/UNCONFIRMED/MISMATCH 驗證欄位；
+        # 不再要求 LLM 對 `type` 重新判斷（那已經是 legacy display_type 相容層）。
+        user_msg = (
+            "[只執行 STEP 1 / STEP 2 / STEP 3 / STEP 4：candidate context + research 部分]\n"
+            "你不是主要選股者——backend Phase 2 deterministic pipeline 已經決定了候選資格、"
+            "動能門檻、產業脈絡、角色分類、追蹤狀態、風險、regime、conviction、"
+            "backend_max_decision。這些都是 authoritative，你不可重新產生、覆寫或取代。\n"
+            "你的職責：\n"
+            "1. 驗證公司實際業務（或 ETF 曝險）是否真的符合系統認定的產業/題材\n"
+            "2. 驗證題材延續性是否真實\n"
+            "3. 驗證供應鏈/集團關係是否真實\n"
+            "4. 找出足以否決的重大外部矛盾（若有）\n"
+            "5. 用中文清楚解釋 backend 動能證據\n\n"
+            "[硬規則]\n"
+            "1. `display_type` 是後端決定的舊版三分類（僅供 UI 相容顯示），不可重判、不可用它重新做選股判斷。\n"
+            "2. 若 `phase2_role` / `phase2_tracking_state` 有值，這才是真正的角色/追蹤狀態；"
+            "   `display_type` 只是它們映射後的簡化桶，不要因為 `display_type=FOLLOWER` 就要求「必須有 formal sector leader」"
+            "   ——那是 legacy 規則，Phase 2 角色（如 EMERGING_MOMENTUM / HEALTHY_PULLBACK）有自己的語意。\n"
+            "3. 若 `asset_type == \"ETF\"`：研究 ETF 的追蹤指數、資產類別、地區、策略、主要成分與題材曝險；"
+            "   **不要**要求 ETF 提供公司月營收、核心產品、供應鏈位置——這些欄位對 ETF 不適用，"
+            "   缺席不是弱勢（missing != bad）。\n"
+            "4. 每檔 stock 都有 `evidence` 段落，是後端 deterministic 從 DB 算出的數字；"
+            "   你的 research 結果應與 evidence 一致。\n"
+            "5. `business_validation` / `theme_validation` / `supply_chain_validation` 三個驗證欄位"
+            "   只能是 VERIFIED（有可信證據支持）/ UNCONFIRMED（資料不足，但沒有反證）/ "
+            "   MISMATCH（有可信證據明確證明系統認定的關係不成立）。**沒找到最新新聞或題材文章"
+            "   只能算 UNCONFIRMED，不可算 MISMATCH**——兩者天差地遠。\n\n"
+            f"[market_context]\n"
+            f"{json.dumps(market_context, ensure_ascii=False, indent=2)}\n\n"
+            f"[stocks_batch]\n"
+            f"{json.dumps(evidence_view, ensure_ascii=False, indent=2)}\n\n"
+            "輸出格式（JSON only，不要 markdown code fence）：\n"
+            "{\n"
+            '  "research": [\n'
+            '    {\n'
+            '      "stock": "股票代碼",\n'
+            '      "name": "股票名稱",\n'
+            '      "industry": "產業",\n'
+            '      "sub_industry": "細產業",\n'
+            '      "asset_type": "COMMON_STOCK | FINANCIAL | ETF",  // 直接照填輸入的 asset_type\n'
+            '      "type": "LEADER | FOLLOWER | LAGGARD",  // 直接照填 display_type，不可重判\n'
+            '      "business_summary": "公司主要業務說明（ETF 則為投資標的/追蹤指數說明）",\n'
+            '      "supply_chain_position": "upstream | midstream | downstream | equipment | component | material | brand | channel | service | other | not_applicable",\n'
+            '      "business_validation": "VERIFIED | UNCONFIRMED | MISMATCH",\n'
+            '      "theme_fit": "HIGH | MEDIUM | LOW | NONE",\n'
+            '      "theme": { "main_theme": "...", "theme_duration": "short | 1Q | 2Q_plus", "theme_maturity": "early | mid | late | post_event | unclear", "theme_score": 0-3, "theme_reason": "..." },\n'
+            '      "theme_validation": "VERIFIED | UNCONFIRMED | MISMATCH",\n'
+            '      "group_info": { "is_group_stock": bool, "group_name": "..." | null, "related_group_stocks": [...], "group_price_sync": "strong | moderate | weak | none" },\n'
+            '      "leader_check": { "industry_leader": "...", "leader_price_trend": "strong_up | up | flat | down", "leader_supports_theme": bool },\n'
+            '      "supply_chain_validation": "VERIFIED | UNCONFIRMED | MISMATCH",\n'
+            '      "material_negative_event": null\n'
+            '    }\n'
+            '  ]\n'
+            "}\n"
+        )
+    else:
+        user_msg = (
+            "[只執行 STEP 2 / STEP 3 / STEP 4：research 部分]\n"
+            "對下列每檔股票，請上網查詢主要業務、題材延續性、產業鏈位置、龍頭 / 集團，"
+            "並輸出每檔 research result。**不要做最終 decision**（那是 STEP 5-9 的事）。\n\n"
+            "[硬規則]\n"
+            "1. `type` 已由後端決定（prelim_type 欄位），請直接照填，不可重判 LEADER/FOLLOWER/LAGGARD。\n"
+            "2. 每檔 stock 都有 `evidence` 段落，是後端 deterministic 從 DB 算出的數字；\n"
+            "   你的 research 結果應與 evidence 一致（例如 evidence 顯示外資 3 日連買、\n"
+            "   就不可在 theme_reason 寫「外資未進駐」）。\n\n"
+            f"[market_context]\n"
+            f"{json.dumps(market_context, ensure_ascii=False, indent=2)}\n\n"
+            f"[stocks_batch]\n"
+            f"{json.dumps(evidence_view, ensure_ascii=False, indent=2)}\n\n"
+            "輸出格式（JSON only，不要 markdown code fence）：\n"
+            "{\n"
+            '  "research": [\n'
+            '    {\n'
+            '      "stock": "股票代碼",\n'
+            '      "name": "股票名稱",\n'
+            '      "industry": "產業",\n'
+            '      "sub_industry": "細產業",\n'
+            '      "type": "LEADER | FOLLOWER | LAGGARD",  // 直接照填 prelim_type\n'
+            '      "business_summary": "公司主要業務說明",\n'
+            '      "supply_chain_position": "upstream | midstream | downstream | equipment | component | material | brand | channel | service | other",\n'
+            '      "theme_fit": "HIGH | MEDIUM | LOW | NONE",\n'
+            '      "theme": { "main_theme": "...", "theme_duration": "short | 1Q | 2Q_plus", "theme_maturity": "early | mid | late | post_event | unclear", "theme_score": 0-3, "theme_reason": "..." },\n'
+            '      "group_info": { "is_group_stock": bool, "group_name": "..." | null, "related_group_stocks": [...], "group_price_sync": "strong | moderate | weak | none" },\n'
+            '      "leader_check": { "industry_leader": "...", "leader_price_trend": "strong_up | up | flat | down", "leader_supports_theme": bool }\n'
+            '    }\n'
+            '  ]\n'
+            "}\n"
+        )
 
     payload, diagnostic = _call_llm_json(
         system_prompt,
@@ -539,14 +604,23 @@ def _build_stage_prompt(full: str, stage: str) -> str:
             if boundary < header_line:
                 start = boundary
                 break
-        # 終點：下一個 section_header 上方的 ==== 邊界（或檔尾）
+        # 終點：下一個 section_header 上方最近的 ==== 邊界（或檔尾）。
+        #
+        # 2026-07-22 修正一個既有 bug：每個 STEP 標題本身是「==== / STEP N：xxx / ====」
+        # 三明治結構，標題正下方也有一條 ==== 邊界（用來跟內文分隔）。舊版用
+        # `break` 在第一個滿足 `header_line < boundary < next_header_line` 的邊界
+        # 就停下——但那第一個邊界正是「這個 STEP 標題正下方」那條，導致 `end`
+        # 永遠切在標題正下方，內文整段被吃掉（v5/v6 皆受影響：research/decision/
+        # watch_reason 這些有做 stage 切片的 caller，實際送給 LLM 的只有 STEP
+        # 標題文字，內文完全消失）。修法：不要在第一個符合的邊界就 break，
+        # 保留最後一個符合的邊界（即最靠近下一個 STEP 標題正上方的那條），
+        # 這樣才會涵蓋到當前 STEP 的完整內文。
         if idx + 1 < len(section_headers):
             next_header_line = section_headers[idx + 1][0]
             end = next_header_line
             for boundary in section_starts:
                 if boundary < next_header_line and boundary > header_line:
                     end = boundary
-                    break
         else:
             end = len(lines)
 
@@ -694,33 +768,95 @@ def _run_decision_chunk(
     """單個 chunk 的短 decision call。"""
     version = _resolve_prompt_version(market_context.get("market_regime"))
     system_prompt = _load_system_prompt(stage="decision", version=version)
-    user_msg = (
-        "[執行 STEP 5 / STEP 6 / STEP 7.8 / STEP 8：先對全候選做短 decision]\n"
-        "你現在只需要判斷 WATCH / REMOVE，並給 1-2 句短理由。"
-        "請對每一檔獨立判斷，不要因為名額限制、批次內相對排序或同批有更強股票，就把原本符合條件的股票判成 REMOVE。"
-        "不要產生長文分析，長理由只留給最後的 WATCH 名單。\n\n"
-        "[硬規則]\n"
-        "1. `type` 由 research_results 帶入，**不可修改**（後端 deterministic 決定）。\n"
-        "2. 必須先套用 Momentum Gate，再套用 Market Regime Gate；題材與法人不能補救弱相對強度。\n"
-        "3. 若 momentum_signals 有值，short_reason 必須優先引用 momentum_score / rs_market_percentile_20d / rs_industry_percentile_20d / momentum_phase。\n"
-        "4. short_reason 必須引用 evidence 或 momentum_signals 內的至少 1 個具體數字（相對強度 / 漲幅 / 法人金額 / 連買日數 / 量能比），\n"
-        "   只寫「籌碼好」「題材熱」等空話會被視為品質不足。\n\n"
-        f"[market_context]\n"
-        f"{json.dumps(market_context, ensure_ascii=False, indent=2)}\n\n"
-        f"[research_results]\n"
-        f"{json.dumps(chunk, ensure_ascii=False, indent=2)}\n\n"
-        "輸出格式（JSON only，不要 markdown code fence）：\n"
-        "{\n"
-        '  "items": [\n'
-        '    {\n'
-        '      "stock": "股票代碼",\n'
-        '      "signals": { "capital_flow": "strong | moderate | weak", "chip_trend": "accumulating | neutral | weakening | retail_overheated | short_squeeze_potential", "margin_short_signal": "positive | neutral | negative", "technical_status": "breakout | steady_uptrend | early_turn | range_bound | distribution | weak", "entry_quality": "breakout_confirmed | pullback_setup | extended_chase | failed_rotation | neutral", "sector_rotation_status": "inflow | cooling | failed_rotation | neutral", "institution_flow_momentum": "accelerating | stable | decelerating | reversal | neutral" },\n'
-        '      "decision": "WATCH | REMOVE",\n'
-        '      "short_reason": "1-2 句繁體中文，120 字內，說明保留或排除主因"\n'
-        '    }\n'
-        '  ]\n'
-        "}\n"
-    )
+
+    if version == PROMPT_VERSION_V6:
+        # LLM v6（2026-07-22）：backend_max_decision 是天花板（程式碼也會強制驗證，
+        # 這裡只是先讓 LLM 自己對齊）；LLM 不再跑第二套 momentum/regime 數字門檻，
+        # 只能因外部驗證失敗（veto_reason）把 WATCH 降級為 REMOVE。
+        user_msg = (
+            "[執行 STEP 5 / STEP 6 / STEP 6.5 / STEP 7：檢查 backend_max_decision + 外部否決驗證 + "
+            "quality_assessment + 短 decision]\n"
+            "你現在只需要判斷 WATCH / REMOVE，並給 1-2 句短理由。"
+            "backend 已經完成候選資格、動能門檻、regime 篩選、Momentum Freshness、Final Watch Quality "
+            "（`phase2_watch_quality_state` = READY/SETUP 才會出現在這個池子裡）；你不可再用自己的數字"
+            "門檻或自己重算 freshness 來 REMOVE。\n"
+            "只有以下情況才可 REMOVE：(a) backend_max_decision = REMOVE（天花板，你必須遵守），"
+            "或 (b) 外部驗證矛盾（veto_reason 為 BUSINESS_MISMATCH / THEME_MISMATCH / "
+            "FALSE_SUPPLY_CHAIN_LINK / MATERIAL_NEGATIVE_EVENT / DATA_CONTRADICTION 之一），"
+            "或 (c) 你綜合 backend 提供的 `phase2_momentum_freshness` / `phase2_watch_quality_state` / "
+            "`quality_evidence` 與研究到的題材證據，發現「多維度共振不足」（veto_reason 為 "
+            "INSUFFICIENT_CONFIRMATION / MOMENTUM_NOT_FRESH / WEAK_PARTICIPATION / CATALYST_TOO_WEAK / "
+            "EVIDENCE_NOT_COHERENT 之一）——(c) 類理由**必須引用 backend 已提供的 quality_evidence / "
+            "momentum_freshness 欄位**，不可自己另訂數字門檻或自行判斷「今天下跌所以轉弱」。"
+            "「漲太多」「momentum_phase=extended」「entry risk 高」「UNCONFIRMED」都不是合法的 REMOVE 理由。\n\n"
+            "[硬規則]\n"
+            "1. `display_type` 由 research_results 帶入，**不可修改**（後端 deterministic 決定，僅供 UI 相容）。\n"
+            "2. `backend_max_decision = REMOVE` 時你必須輸出 REMOVE；反過來 `backend_max_decision = WATCH` "
+            "   不代表你必須 WATCH，仍需要有外部驗證支持才 WATCH，也可以因為 (b)/(c) 而 REMOVE。\n"
+            "3. short_reason 必須說明是動能證據支持 WATCH，還是哪一種外部矛盾/品質不足造成 REMOVE，"
+            "   不可只寫「動能不足」（那是 backend 的權責，不是你可以用的理由）。\n"
+            "4. 若你判斷 REMOVE，`veto_reason` 必填其中一個 enum 值。\n"
+            "5. `phase2_momentum_freshness` / `phase2_watch_quality_state` 只能讀取，不可自己重新計算；"
+            "   若這兩個欄位為 null（legacy 候選或 backend 尚未提供），不可使用 (c) 類 quality veto reason。\n"
+            "6. `quality_assessment` 四個欄位中，`momentum_quality` / `participation_quality` 必須反映 "
+            "   backend 已提供的 evidence（不可自創數字），`catalyst_quality` 才是你自己對外部題材證據"
+            "   的判斷，`evidence_coherence` 是你對 A（動能）/B（籌碼參與）/C（題材催化劑）三維度是否"
+            "   互相印證的整體判斷。\n\n"
+            f"[market_context]\n"
+            f"{json.dumps(market_context, ensure_ascii=False, indent=2)}\n\n"
+            f"[research_results]\n"
+            f"{json.dumps(chunk, ensure_ascii=False, indent=2)}\n\n"
+            "[signals 說明]\n"
+            "`chip_trend` / `technical_status` / `entry_quality` / `sector_rotation_status` / "
+            "`institution_flow_momentum` 這 5 項已由 backend `deterministic_signals` 提供，"
+            "**不要重新產生**，程式會直接採用 evidence 裡的值。你只需要判斷 `capital_flow` "
+            "（strong | moderate | weak）與 `margin_short_signal`（positive | neutral | negative）"
+            "這兩項——這是需要你綜合法人與融資融券證據給出的判斷，backend 沒有直接算好。\n\n"
+            "輸出格式（JSON only，不要 markdown code fence）：\n"
+            "{\n"
+            '  "items": [\n'
+            '    {\n'
+            '      "stock": "股票代碼",\n'
+            '      "signals": { "capital_flow": "strong | moderate | weak", "margin_short_signal": "positive | neutral | negative" },\n'
+            '      "business_validation": "VERIFIED | UNCONFIRMED | MISMATCH",\n'
+            '      "theme_validation": "VERIFIED | UNCONFIRMED | MISMATCH",\n'
+            '      "supply_chain_validation": "VERIFIED | UNCONFIRMED | MISMATCH",\n'
+            '      "quality_assessment": { "momentum_quality": "HIGH | MEDIUM | LOW", "participation_quality": "HIGH | MEDIUM | LOW", "catalyst_quality": "HIGH | MEDIUM | LOW | UNCONFIRMED", "evidence_coherence": "STRONG | MODERATE | WEAK" },\n'
+            '      "decision": "WATCH | REMOVE",\n'
+            '      "veto_reason": "BACKEND_MAX_REMOVE | BUSINESS_MISMATCH | THEME_MISMATCH | FALSE_SUPPLY_CHAIN_LINK | MATERIAL_NEGATIVE_EVENT | DATA_CONTRADICTION | INSUFFICIENT_CONFIRMATION | MOMENTUM_NOT_FRESH | WEAK_PARTICIPATION | CATALYST_TOO_WEAK | EVIDENCE_NOT_COHERENT | null",\n'
+            '      "short_reason": "1-2 句繁體中文，120 字內，說明保留或排除主因"\n'
+            '    }\n'
+            '  ]\n'
+            "}\n"
+        )
+    else:
+        user_msg = (
+            "[執行 STEP 5 / STEP 6 / STEP 7.8 / STEP 8：先對全候選做短 decision]\n"
+            "你現在只需要判斷 WATCH / REMOVE，並給 1-2 句短理由。"
+            "請對每一檔獨立判斷，不要因為名額限制、批次內相對排序或同批有更強股票，就把原本符合條件的股票判成 REMOVE。"
+            "不要產生長文分析，長理由只留給最後的 WATCH 名單。\n\n"
+            "[硬規則]\n"
+            "1. `type` 由 research_results 帶入，**不可修改**（後端 deterministic 決定）。\n"
+            "2. 必須先套用 Momentum Gate，再套用 Market Regime Gate；題材與法人不能補救弱相對強度。\n"
+            "3. 若 momentum_signals 有值，short_reason 必須優先引用 momentum_score / rs_market_percentile_20d / rs_industry_percentile_20d / momentum_phase。\n"
+            "4. short_reason 必須引用 evidence 或 momentum_signals 內的至少 1 個具體數字（相對強度 / 漲幅 / 法人金額 / 連買日數 / 量能比），\n"
+            "   只寫「籌碼好」「題材熱」等空話會被視為品質不足。\n\n"
+            f"[market_context]\n"
+            f"{json.dumps(market_context, ensure_ascii=False, indent=2)}\n\n"
+            f"[research_results]\n"
+            f"{json.dumps(chunk, ensure_ascii=False, indent=2)}\n\n"
+            "輸出格式（JSON only，不要 markdown code fence）：\n"
+            "{\n"
+            '  "items": [\n'
+            '    {\n'
+            '      "stock": "股票代碼",\n'
+            '      "signals": { "capital_flow": "strong | moderate | weak", "chip_trend": "accumulating | neutral | weakening | retail_overheated | short_squeeze_potential", "margin_short_signal": "positive | neutral | negative", "technical_status": "breakout | steady_uptrend | early_turn | range_bound | distribution | weak", "entry_quality": "breakout_confirmed | pullback_setup | extended_chase | failed_rotation | neutral", "sector_rotation_status": "inflow | cooling | failed_rotation | neutral", "institution_flow_momentum": "accelerating | stable | decelerating | reversal | neutral" },\n'
+            '      "decision": "WATCH | REMOVE",\n'
+            '      "short_reason": "1-2 句繁體中文，120 字內，說明保留或排除主因"\n'
+            '    }\n'
+            '  ]\n'
+            "}\n"
+        )
 
     payload, diagnostic = _call_llm_json(
         system_prompt,
@@ -753,17 +889,59 @@ def _run_decision_chunk(
     for research in chunk:
         sid = str(research.get("stock") or research.get("stock_id") or "")
         merged: Dict[str, Any] = {**research}
+        backend_max_decision = (research.get("deterministic_signals") or {}).get("max_decision")
+        merged["backend_max_decision"] = backend_max_decision
         if sid in by_id:
             ext = by_id[sid]
-            merged["signals"] = ext.get("signals", _default_signals())
-            merged["decision"] = str(ext.get("decision") or "REMOVE").upper()
+            if version == PROMPT_VERSION_V6:
+                # §十七：chip_trend/technical_status/entry_quality/sector_rotation_status/
+                # institution_flow_momentum 只能由 backend 提供，LLM 不得重新產生；
+                # 只有 capital_flow / margin_short_signal 兩項需要 LLM 綜合判斷。
+                merged["signals"] = _compose_v6_signals(research, ext.get("signals"))
+                # Phase 2.5：quality_assessment 是 LLM 對 A/B/C 三維度共振的整體判斷，
+                # 不是 backend 算好的欄位，直接採用 LLM 輸出（缺值時保守回 None，
+                # 前端 / 下游對 None 已有 fallback）。
+                qa = ext.get("quality_assessment")
+                merged["quality_assessment"] = qa if isinstance(qa, dict) else None
+            else:
+                merged["signals"] = ext.get("signals", _default_signals())
+            llm_decision = str(ext.get("decision") or "REMOVE").upper()
+            merged["business_validation"] = _normalize_validation(ext.get("business_validation"))
+            merged["theme_validation"] = _normalize_validation(ext.get("theme_validation"))
+            merged["supply_chain_validation"] = _normalize_validation(ext.get("supply_chain_validation"))
+            veto_reason = ext.get("veto_reason")
+            # LLM v6 天花板（也回溯適用 v5，因為 v5 prompt STEP 7.5 早就宣稱這條
+            # 規則，只是從未被程式碼驗證過）：backend_max_decision=REMOVE 時，
+            # 最終決定必須是 REMOVE，LLM 只能維持或降級，不可把 REMOVE 升級為 WATCH。
+            if backend_max_decision == "REMOVE" and llm_decision == "WATCH":
+                logger.info(
+                    "M23 backend_max_decision ceiling: stock=%s LLM 判 WATCH 但 "
+                    "backend_max_decision=REMOVE，強制覆寫為 REMOVE。",
+                    sid,
+                )
+                merged["decision"] = "REMOVE"
+                merged["veto_reason"] = veto_reason or "BACKEND_MAX_REMOVE"
+            else:
+                merged["decision"] = llm_decision
+                merged["veto_reason"] = veto_reason if llm_decision == "REMOVE" else None
             merged["short_reason"] = ext.get("short_reason", "")
             merged["llm_diagnostic"] = diagnostic
         else:
             fb = _decision_fallback(research, diagnostic=diagnostic)
             merged.update(fb)
+            merged["backend_max_decision"] = backend_max_decision
         aligned.append(merged)
     return aligned
+
+
+def _normalize_validation(raw: Any) -> str:
+    """LLM v6 §十九：research/decision 驗證欄位只能是 VERIFIED / UNCONFIRMED /
+    MISMATCH 三態；未知或缺值保守視為 UNCONFIRMED（資料不足，不是矛盾證據，
+    不可因此 REMOVE——UNCONFIRMED != MISMATCH，見 prompt §十九）。"""
+    value = str(raw or "").upper().strip()
+    if value in {"VERIFIED", "UNCONFIRMED", "MISMATCH"}:
+        return value
+    return "UNCONFIRMED"
 
 
 def _run_watch_reason_chunk(
@@ -1011,7 +1189,10 @@ def _format_watch_entry(item: Dict[str, Any]) -> Dict[str, Any]:
     entry: Dict[str, Any] = {
         "stock": item.get("stock") or item.get("stock_id"),
         "name": item.get("name", ""),
-        "type": str(item.get("type") or "LEADER").upper(),
+        # 2026-07-22：unknown→LEADER 的舊 fallback 已移除，改用 LAGGARD（最保守桶）；
+        # 正常情況下這裡一定有值（上游已由 _normalize_prelim_type 鎖定過)。
+        "type": str(item.get("type") or "LAGGARD").upper(),
+        "asset_type": item.get("asset_type", "COMMON_STOCK"),
         "industry": item.get("industry"),
         "sub_industry": item.get("sub_industry"),
         "business_summary": item.get("business_summary", ""),
@@ -1023,6 +1204,26 @@ def _format_watch_entry(item: Dict[str, Any]) -> Dict[str, Any]:
         "signals": item.get("signals", _default_signals()),
         "decision": "WATCH",
         "reason": item.get("reason") or item.get("short_reason", ""),
+        # LLM v6 contract：backend authoritative 天花板 + 外部驗證欄位（v1/v4/v5
+        # 沒有這些欄位，會是 None，前端/資料庫多存幾個 null 欄位無害）
+        "backend_max_decision": item.get("backend_max_decision"),
+        "business_validation": item.get("business_validation"),
+        "theme_validation": item.get("theme_validation"),
+        "supply_chain_validation": item.get("supply_chain_validation"),
+        "veto_reason": item.get("veto_reason"),
+        # Phase 2 internal role（legacy 候選為 None）：讓 explain trace /
+        # debug view 能同時看到 internal_role 與映射後的 display_type（= type）。
+        # 注意：candidate dict 上的原始欄位名是 `role`/`tracking_state`/`entry_state`
+        # （`phase2_role` 這個名字只在 `_to_evidence_view` 送給 LLM 的投影裡才會
+        # 改名，`item` 這裡走的是原始 candidate 欄位，要讀對應到原始 key）。
+        "phase2_role": item.get("role"),
+        "phase2_tracking_state": item.get("tracking_state"),
+        "phase2_entry_state": item.get("entry_state"),
+        # Phase 2.5（2026-07-23）：Momentum Freshness + Final Watch Quality Layer；
+        # legacy 候選或 WATCH_QUALITY_MODE=off 時皆為 None，向後相容。
+        "phase2_momentum_freshness": item.get("momentum_freshness"),
+        "phase2_watch_quality_state": item.get("watch_quality_state"),
+        "quality_assessment": item.get("quality_assessment") if isinstance(item.get("quality_assessment"), dict) else None,
     }
     momentum = item.get("momentum")
     entry["momentum"] = momentum if isinstance(momentum, dict) else None
@@ -1158,7 +1359,24 @@ def _to_evidence_view(stocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "name": s.get("name", ""),
             "industry": s.get("industry") or s.get("industry_name"),
             "sub_industry": s.get("sub_industry"),
+            # LLM v6 contract（2026-07-22）：asset_type 只用於 research 模式選擇
+            # （公司業務 research vs ETF 曝險 research）與 UI，不可成為 REMOVE /
+            # Hard Exclusion / 弱勢判斷的理由。缺值（legacy 候選或舊 snapshot）
+            # 保守視為 COMMON_STOCK。
+            "asset_type": s.get("asset_type") or "COMMON_STOCK",
+            # display_type：僅供舊 UI / historical DB 相容顯示（LEADER/FOLLOWER/
+            # LAGGARD），**不是** LLM 決策依據；真正角色語意見下方 phase2_role /
+            # phase2_tracking_state（Phase 2 候選才有值，legacy 候選為 None）。
+            "display_type": _normalize_prelim_type(s.get("prelim_type")),
+            # 向後相容：舊 prompt（v1/v4/v5）與既有 caller 仍讀 `prelim_type` 這個
+            # key 名；新 v6 prompt 應改讀 display_type，語意相同、值相同。
             "prelim_type": _normalize_prelim_type(s.get("prelim_type")),
+            # backend_max_decision（LLM v6 天花板）：deterministic_signals.max_decision
+            # 已存在（WATCH|REMOVE），這裡额外攤平到頂層方便 v6 prompt 直接讀取，
+            # 不必深入 deterministic_signals 巢狀結構。LLM 只能維持或降級
+            # （WATCH→REMOVE），永遠不可把 REMOVE 升級為 WATCH——這條由
+            # `_run_decision_chunk` 在程式碼層強制執行，不只是 prompt 指示。
+            "backend_max_decision": (s.get("deterministic_signals") or {}).get("max_decision"),
             "evidence": {
                 "industry_rank_5d": s.get("industry_rank_5d"),
                 "industry_rank_net_3d": s.get("industry_rank_net_3d"),
@@ -1202,6 +1420,14 @@ def _to_evidence_view(stocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "phase2_role": s.get("role"),
             "phase2_tracking_state": s.get("tracking_state"),
             "phase2_entry_state": s.get("entry_state"),
+            # Phase 2.5（2026-07-23）：Momentum Freshness + Final Watch Quality Layer；
+            # None 代表 legacy 候選或 `WATCH_QUALITY_MODE=off`，此時不可自創
+            # quality veto reason（見 v6 prompt STEP 6.5 說明）。`quality_evidence`
+            # 只給 7 個 boolean family（供解釋參考），不含 watch_quality_score
+            # （score 是排序用途，不該變成 LLM 的另一套數字門檻）。
+            "phase2_momentum_freshness": s.get("momentum_freshness"),
+            "phase2_watch_quality_state": s.get("watch_quality_state"),
+            "quality_evidence": s.get("quality_evidence"),
         })
     return out
 
@@ -1274,17 +1500,28 @@ def _serialize_dates(value: Any) -> Any:
 
 
 def _normalize_prelim_type(raw: Any) -> str:
-    """把 candidate_pool 的 prelim_type 映射到 watchlist[].type 接受的 3 個值。
+    """把 candidate_pool 的 prelim_type 映射到 watchlist[].type（display_type，
+    僅供舊 UI / historical DB 相容顯示，不是 LLM 決策依據——真正的角色語意見
+    `phase2_role` / `phase2_tracking_state`，見 `_to_evidence_view`）。
 
     `LAGGARD_CANDIDATE` / `ROTATION_LAGGARD`（v2.1 改名） → `LAGGARD`；
-    未知 / 缺值 → 保守 `LEADER`（沿用舊 fallback 行為）。
+    未知 / 缺值 → **`LAGGARD`**（2026-07-22 LLM v6 contract 對齊：舊版 fallback
+    到 `LEADER` 等於把「不知道是什麼」silently 升級成最強分類，這是一種
+    unknown → strongest class 的偏誤。理論上不該發生（legacy `classify_stocks`
+    與 Phase 2 `role_to_prelim_type` 都保證回傳已知值之一），這裡只是防禦性
+    fallback，故意選最保守的桶並記 log，方便日後追查上游是不是漏設了欄位）。
     """
     value = str(raw or "").upper().strip()
     if value in {"LAGGARD_CANDIDATE", "ROTATION_LAGGARD"}:
         return "LAGGARD"
     if value in {"LEADER", "FOLLOWER", "LAGGARD"}:
         return value
-    return "LEADER"
+    logger.warning(
+        "M23 _normalize_prelim_type: 未知/缺值 prelim_type=%r，fallback 到 LAGGARD"
+        "（不再 fallback 到 LEADER）；理論上不該發生，請檢查上游是否漏設 prelim_type。",
+        raw,
+    )
+    return "LAGGARD"
 
 
 def _research_fallback(
@@ -1321,6 +1558,11 @@ def _research_fallback(
             "leader_price_trend": "flat",
             "leader_supports_theme": False,
         },
+        # LLM v6：research 不可用時三個驗證欄位保守回 UNCONFIRMED（資料不足，
+        # 不是矛盾證據）；v1/v4/v5 忽略這幾個多餘欄位，無害。
+        "business_validation": "UNCONFIRMED",
+        "theme_validation": "UNCONFIRMED",
+        "supply_chain_validation": "UNCONFIRMED",
         "_unavailable": True,
         "_unavailable_reason": _stage_fallback_reason("research", diagnostic),
         "llm_diagnostic": diagnostic,
@@ -1336,6 +1578,13 @@ def _decision_fallback(
         **research,
         "signals": _default_signals(),
         "decision": "REMOVE",
+        # LLM 不可用時的保守 REMOVE 不是真正的外部驗證失敗，veto_reason 留 None
+        # （不可從 enum 裡硬套一個不成立的理由）；三個驗證欄位保守回 UNCONFIRMED。
+        "business_validation": "UNCONFIRMED",
+        "theme_validation": "UNCONFIRMED",
+        "supply_chain_validation": "UNCONFIRMED",
+        "quality_assessment": None,
+        "veto_reason": None,
         "short_reason": _stage_fallback_reason("decision", diagnostic),
         "llm_diagnostic": diagnostic,
     }
@@ -1429,6 +1678,28 @@ def _exception_reason(diagnostic: Dict[str, Any]) -> str:
     if exc_type:
         return exc_type
     return "OpenAI 例外"
+
+
+def _compose_v6_signals(
+    research: Dict[str, Any],
+    llm_signals: Any,
+) -> Dict[str, str]:
+    """LLM v6 §十七：組合最終 `signals` dict——5 項只能來自 backend
+    `deterministic_signals`（LLM 不得重新產生/覆寫），只有 `capital_flow` /
+    `margin_short_signal` 兩項由 LLM 判斷（backend 沒有直接算好這兩個）。
+    """
+    det = research.get("deterministic_signals") or {}
+    llm = llm_signals if isinstance(llm_signals, dict) else {}
+    defaults = _default_signals()
+    return {
+        "capital_flow": llm.get("capital_flow") or defaults["capital_flow"],
+        "margin_short_signal": llm.get("margin_short_signal") or defaults["margin_short_signal"],
+        "chip_trend": det.get("chip_trend") or defaults["chip_trend"],
+        "technical_status": det.get("technical_status") or defaults["technical_status"],
+        "entry_quality": det.get("entry_quality") or defaults["entry_quality"],
+        "sector_rotation_status": det.get("sector_rotation_status") or defaults["sector_rotation_status"],
+        "institution_flow_momentum": det.get("institution_flow_momentum") or defaults["institution_flow_momentum"],
+    }
 
 
 def _default_signals() -> Dict[str, str]:

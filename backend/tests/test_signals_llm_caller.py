@@ -341,7 +341,7 @@ def test_run_research_batch_falls_back_for_missing_stock_in_response(monkeypatch
     }
     _patch_openai(monkeypatch, json.dumps(response, ensure_ascii=False))
     batch = [
-        {"stock_id": "2330", "name": "台積電"},
+        {"stock_id": "2330", "name": "台積電", "prelim_type": "LEADER"},
         {"stock_id": "9999", "name": "缺資料股", "prelim_type": "FOLLOWER"},
     ]
     out = llm_caller.run_research_batch(batch)
@@ -350,7 +350,7 @@ def test_run_research_batch_falls_back_for_missing_stock_in_response(monkeypatch
     # 9999 走 fallback
     assert by_id["9999"].get("_unavailable") is True
     assert by_id["9999"]["type"] == "FOLLOWER"  # 從 prelim_type 帶入
-    # 2330 是 LLM 回應
+    # 2330 是 LLM 回應，但 type 仍鎖死 deterministic prelim_type（B4 規則）
     assert by_id["2330"]["type"] == "LEADER"
     assert "_unavailable" not in by_id["2330"] or by_id["2330"].get("_unavailable") is not True
 
@@ -428,6 +428,9 @@ def test_run_explanation_batch_attaches_decision_and_short_reason(monkeypatch):
 
 
 def test_run_explanation_batch_prompt_does_not_force_top_3_cap(monkeypatch):
+    """這個測試鎖定 v5 的既有措辭（v6 是全新的 backend_max_decision 天花板語言，
+    沒有這句歷史文字，改用 SIGNALS_FORCE_PROMPT_VERSION=v5 明確指定版本）。"""
+    monkeypatch.setenv("SIGNALS_FORCE_PROMPT_VERSION", "v5")
     response = {"items": []}
     fake_client = _patch_openai(monkeypatch, json.dumps(response, ensure_ascii=False))
     research = [
@@ -437,6 +440,20 @@ def test_run_explanation_batch_prompt_does_not_force_top_3_cap(monkeypatch):
     prompt = fake_client._responses_api.calls[0]["input"]
     assert "最終 WATCH 名單只保留最值得追蹤的 3 檔" not in prompt
     assert "不要因為名額限制、批次內相對排序或同批有更強股票" in prompt
+
+
+def test_run_explanation_batch_v6_uses_backend_max_decision_ceiling_language(monkeypatch):
+    """v6（預設版本）的 decision prompt 不再有 legacy 的「批次相對排序」措辭，
+    改用 backend_max_decision 天花板 + veto_reason 語言。"""
+    response = {"items": []}
+    fake_client = _patch_openai(monkeypatch, json.dumps(response, ensure_ascii=False))
+    research = [
+        {"stock": "1303", "name": "南亞", "type": "FOLLOWER", "deterministic_signals": {"max_decision": "WATCH"}},
+    ]
+    llm_caller.run_explanation_batch(research, market_context={"market_state": "RANGE"})
+    prompt = fake_client._responses_api.calls[0]["input"]
+    assert "backend_max_decision" in prompt
+    assert "veto_reason" in prompt
 
 
 def test_run_explanation_batch_chunks_by_default_batch_size(monkeypatch):
@@ -728,11 +745,11 @@ def test_assemble_final_output_stamps_prompt_version():
 
 
 def test_resolve_prompt_version_routes_by_regime():
-    """所有 regime 預設跑 v5（相對強度動能版）。"""
-    assert llm_caller._resolve_prompt_version("BULL_TREND") == "v5"
-    assert llm_caller._resolve_prompt_version("VOLATILE_RANGE") == "v5"
-    assert llm_caller._resolve_prompt_version("RISK_OFF") == "v5"
-    assert llm_caller._resolve_prompt_version(None) == "v5"
+    """2026-07-22 起所有 regime 預設跑 v6（Phase 2 → LLM contract 對齊版）。"""
+    assert llm_caller._resolve_prompt_version("BULL_TREND") == "v6"
+    assert llm_caller._resolve_prompt_version("VOLATILE_RANGE") == "v6"
+    assert llm_caller._resolve_prompt_version("RISK_OFF") == "v6"
+    assert llm_caller._resolve_prompt_version(None) == "v6"
 
 
 def test_resolve_prompt_version_env_override(monkeypatch):
@@ -752,7 +769,7 @@ def test_resolve_prompt_version_env_override(monkeypatch):
 
 
 def test_assemble_final_output_prompt_version_follows_regime():
-    """prompt_version label 預設走 v5，避免不同 regime 回到舊 prompt 方法論。"""
+    """prompt_version label 預設走 v6，避免不同 regime 回到舊 prompt 方法論。"""
     explanation = [_watch_item("2330", "台積電", "LEADER", "半導體業")]
 
     bull = llm_caller.assemble_final_output(
@@ -760,15 +777,15 @@ def test_assemble_final_output_prompt_version_follows_regime():
         explanation,
         candidate_pool_size=5,
     )
-    assert bull["prompt_version"] == "v5"
-    assert all(item["prompt_version"] == "v5" for item in bull["watchlist"])
+    assert bull["prompt_version"] == "v6"
+    assert all(item["prompt_version"] == "v6" for item in bull["watchlist"])
 
     volatile = llm_caller.assemble_final_output(
         {"market_state": "RANGE", "market_regime": "VOLATILE_RANGE"},
         explanation,
         candidate_pool_size=5,
     )
-    assert volatile["prompt_version"] == "v5"
+    assert volatile["prompt_version"] == "v6"
 
 
 def test_load_system_prompt_v1_file_exists_and_slices():
@@ -833,12 +850,16 @@ def test_assemble_final_output_keeps_all_watch_items(monkeypatch):
 
 
 def test_normalize_prelim_type_maps_laggard_candidate_to_laggard():
-    """B4：candidate_pool 給的 LAGGARD_CANDIDATE 對外應顯示為 LAGGARD。"""
+    """B4：candidate_pool 給的 LAGGARD_CANDIDATE 對外應顯示為 LAGGARD。
+
+    2026-07-22（LLM v6 contract 對齊）：未知/缺值不再 fallback 到 LEADER
+    （那是 unknown → strongest class 的偏誤），改為保守的 LAGGARD。
+    """
     assert llm_caller._normalize_prelim_type("LAGGARD_CANDIDATE") == "LAGGARD"
     assert llm_caller._normalize_prelim_type("LEADER") == "LEADER"
     assert llm_caller._normalize_prelim_type("follower") == "FOLLOWER"
-    assert llm_caller._normalize_prelim_type(None) == "LEADER"
-    assert llm_caller._normalize_prelim_type("UNKNOWN") == "LEADER"
+    assert llm_caller._normalize_prelim_type(None) == "LAGGARD"
+    assert llm_caller._normalize_prelim_type("UNKNOWN") == "LAGGARD"
 
 
 def test_run_research_batch_overrides_llm_type_with_prelim_type(monkeypatch):
@@ -908,10 +929,14 @@ def test_run_research_batch_user_msg_includes_evidence_view(monkeypatch):
 
 
 def test_run_research_batch_loads_research_stage_prompt(monkeypatch):
-    """A4：research stage 收到的 system prompt 只含 research 相關 STEP（1-4）。
+    """A4：v5 research stage 收到的 system prompt 只含 research 相關 STEP（1-4），
+    且**必須含 STEP 內文**（2026-07-22 修正 stage-splitter 曾把內文整段吃掉的 bug，
+    這裡明確斷言內文關鍵字存在，不只是標題）。
 
-    這個 test 走真實 prompt（不 patch `_load_system_prompt`），只 mock OpenAI client。
+    這個 test 走真實 prompt（不 patch `_load_system_prompt`），只 mock OpenAI client，
+    明確指定走 v5 版本以鎖定既有措辭。
     """
+    monkeypatch.setenv("SIGNALS_FORCE_PROMPT_VERSION", "v5")
     fake_client = _FakeOpenAIClient(json.dumps({"research": []}))
 
     def _factory(**_kwargs: Any) -> _FakeOpenAIClient:
@@ -924,14 +949,36 @@ def test_run_research_batch_loads_research_stage_prompt(monkeypatch):
     llm_caller.run_research_batch([{"stock_id": "2330", "name": "X", "prelim_type": "LEADER"}])
     sent_instructions = fake_client._responses_api.calls[0]["instructions"]
 
-    # research stage 應含 STEP 1~4，不含 STEP 5/6/7/8/9
+    # research stage 應含 STEP 1~4 的標題與內文，不含 STEP 5/6/7/8/9
     assert "STEP 1：建立候選池" in sent_instructions
     assert "STEP 4：龍頭股、同業、集團股檢查" in sent_instructions
+    # 內文必須真的存在（不是只有標題被裁到剩空殼）
+    assert "公司實際主要業務" in sent_instructions
     assert "STEP 5：解讀 backend 角色分類" not in sent_instructions
     assert "STEP 9：最終輸出格式" not in sent_instructions
     # 共用 preamble + 重要限制必須在
     assert "核心原則" in sent_instructions
     assert "重要限制" in sent_instructions
+
+
+def test_run_research_batch_loads_v6_research_stage_prompt_with_body(monkeypatch):
+    """v6（預設版本）research stage 同樣必須含 STEP 內文，不能只有標題殘影。"""
+    fake_client = _FakeOpenAIClient(json.dumps({"research": []}))
+
+    def _factory(**_kwargs: Any) -> _FakeOpenAIClient:
+        return fake_client
+
+    monkeypatch.setattr(llm_caller, "OpenAI", _factory)
+    monkeypatch.setattr(llm_caller, "get_openai_api_key", lambda: "fake-key")
+    llm_caller._PROMPT_FRAGMENT_CACHE.clear()
+
+    llm_caller.run_research_batch([{"stock_id": "2330", "name": "X", "prelim_type": "LEADER"}])
+    sent_instructions = fake_client._responses_api.calls[0]["instructions"]
+
+    assert "STEP 2：業務 / ETF 曝險研究" in sent_instructions
+    assert "tracking index" in sent_instructions  # STEP 2 內文（ETF 研究指示）
+    assert "STEP 6：外部否決驗證" not in sent_instructions
+    assert "FALSE_SUPPLY_CHAIN_LINK" not in sent_instructions  # STEP 6 內文不該滲入 research
 
 
 def test_assemble_market_context_caches_for_subsequent_calls(monkeypatch):

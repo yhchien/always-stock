@@ -26,6 +26,9 @@ def compute_funnel_metrics(
     sector_role_none_counts: Optional[Dict[str, int]] = None,
     hard_exclusion_reason_counts: Optional[Dict[str, int]] = None,
     hard_exclusion_version: Optional[str] = None,
+    freshness_counts: Optional[Dict[str, int]] = None,
+    watch_quality_counts: Optional[Dict[str, int]] = None,
+    watch_quality_mode: Optional[str] = None,
 ) -> Dict[str, Any]:
     """組出每日 funnel 統計 + 異常偵測旗標。
 
@@ -56,6 +59,10 @@ def compute_funnel_metrics(
         "role_counts": dict(role_counts),
         "hard_risk_survivor_count": hard_risk_survivor_count,
         "regime_survivor_count": regime_survivor_count,
+        # Phase 2.5：regime gate 通過的合格候選數（尚未經 Watch Quality 過濾），
+        # 與 `sent_to_llm_count`（quality 過濾後真正送 LLM 的數量）對照可看出
+        # Momentum Freshness + Final Watch Quality Layer 這一關擋掉了幾檔。
+        "after_regime_count": regime_survivor_count,
         "sent_to_llm_count": sent_to_llm_count,
         "watch_count": watch_count,
         "classification_survival_rate": survival_rate,
@@ -65,6 +72,10 @@ def compute_funnel_metrics(
         "anomaly_flags": _compute_anomaly_flags(survival_rate, sector_lockouts, sent_to_llm_count, no_output_day),
         "hard_exclusion_reason_counts": dict(hard_exclusion_reason_counts or {}),
         "hard_exclusion_version": hard_exclusion_version,
+        # Phase 2.5（momentum freshness + watch quality layer）
+        "freshness_counts": dict(freshness_counts or {}),
+        "watch_quality_counts": dict(watch_quality_counts or {}),
+        "watch_quality_mode": watch_quality_mode,
     }
 
 

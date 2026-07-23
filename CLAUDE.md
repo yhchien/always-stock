@@ -349,6 +349,159 @@ evidence_families），`run_phase2_pipeline` 合併進 `explain_traces` 並統�
    臨時帶入單次 uvicorn 進程，**沒有寫進任何 `.env` 或程式碼**，重啟後即失效，
    不影響任何持久化設定
 
+### LLM v6 Contract Alignment：backend 是唯一 candidate eligibility authority（2026-07-22）
+
+> 完整規格：本輪 spec「魚尾 Phase 2 → LLM v6 Contract Alignment」（對話中，未落地為獨立文件）
+
+**背景**：Phase 2 deterministic 決策層（sector context / role / tracking state / entry
+state / hard exclusion / regime gate / conviction）已完整實作，但 LLM prompt（v1/v4/v5）
+仍保留「重新判斷動能門檻」的權責，容易出現「backend 已判定合格，LLM 卻用自己的一套
+RS/momentum 門檻再刪一次」的矛盾。本輪目標：LLM 從「選股者」降為「外部事實驗證 +
+否決 + 中文解釋層」，backend 是唯一的 candidate eligibility authority。
+
+**候選池 ETF/金融修復**（`candidate_pool.py` Step 1、`momentum.py` universe）：ETF/金融股
+不再單獨被排除（只有人工黑名單才排除）；新增 `asset_type`（COMMON_STOCK/FINANCIAL/ETF）
+供 LLM 決定研究流程，本身不可成為 REMOVE 理由。真實 3 天驗證（07-14/07-20/07-21）證實
+2 檔金融股（2886 兆豐金、5871 中租-KY）成功走完整流程進入最終 WATCH。
+
+**新 prompt** [watch-list-stock-v6.md](backend/app/prompts/watch-list-stock-v6.md)：
+- 明確宣告 backend authoritative 清單，LLM 絕不能重建/覆寫/取代
+- `internal_role`（`phase2_role`/`phase2_tracking_state`/`phase2_entry_state`）與
+  `display_type`（映射後 LEADER/FOLLOWER/LAGGARD，僅供 UI 相容）並存傳給 LLM，禁止用
+  `display_type` 重新套用 legacy 角色資格規則（例如「FOLLOWER 必須有 formal leader」）
+- 移除 LLM 端 Momentum Gate / regime 數字門檻重判
+- 新增驗證三態 `business_validation`/`theme_validation`/`supply_chain_validation`：
+  `VERIFIED`/`UNCONFIRMED`/`MISMATCH`，`UNCONFIRMED ≠ MISMATCH`（缺新聞不是矛盾證據）
+- 新增 `veto_reason` enum（`BUSINESS_MISMATCH`/`THEME_MISMATCH`/`FALSE_SUPPLY_CHAIN_LINK`/
+  `MATERIAL_NEGATIVE_EVENT`/`DATA_CONTRADICTION`/`BACKEND_MAX_REMOVE`）：任何 REMOVE
+  必須有明確理由，禁止「漲太多」「entry risk 高」等偽理由
+
+**`backend_max_decision` 天花板**（[llm_caller.py](backend/app/signals/llm_caller.py)
+`_run_decision_chunk`）：程式碼層強制執行（不只是 prompt 宣稱）——`backend_max_decision
+=REMOVE` 時，即使 LLM 誤判 WATCH，也強制覆寫回 REMOVE + `veto_reason=BACKEND_MAX_REMOVE`。
+**這條規則回溯適用所有 prompt 版本**（v1/v4/v5 皆套用同一段合併邏輯），因為 v5 prompt
+STEP 7.5 本就宣稱這個規則，只是從未被程式碼驗證過。
+
+**`_normalize_prelim_type` fallback 修正**：unknown/缺值 fallback 從 `"LEADER"` 改為
+`"LAGGARD"`（最保守桶）+ 加 `logger.warning`——避免資料缺漏的候選被系統性灌水成最高
+優先桶。
+
+**LLM_INPUT_HARD_LIMIT 截斷排序**（`pipeline.py::_phase2_llm_priority_key`）：Phase 2
+候選（有 `role`/`tracking_state` 欄位）改用 `conviction → momentum_score →
+rs_market_percentile_20d → risk_warning 數量` 數字排序，取代舊的 `prelim_type` 角色桶
+排序——避免 `EMERGING_MOMENTUM`/`UNCLASSIFIED_MOMENTUM` 這類映射到較弱顯示桶的角色被
+系統性犧牲截斷名額。Legacy 候選（無 `role` 欄位）排序邏輯完全不變。
+
+**意外發現並修正的既有 bug**：`_build_stage_prompt`（A4 prompt 分段優化，2026-05-18）
+邊界判斷有誤——每個 STEP 標題是「==== / STEP N / ====」三明治結構，舊版在**第一個**
+符合的 `====` 邊界（正是標題正下方那條）就 `break`，導致 research/decision/
+watch_reason 三個 stage 過去只收到 STEP **標題文字**，內文完整消失。**v1/v4/v5/v6
+全部受影響**（自 A4 上線起）。修法：不要在第一個符合邊界就 break，保留最後一個符合
+邊界（最靠近下一個 STEP 標題正上方那條）。已修正 + 補 regression test。
+
+**真實 3 天驗證**（`run_v6_llm_validation.py`，真呼叫 OpenAI，只寫本機 scratch 檔、
+不動任何 production 表）：
+
+| 日期 | Regime | 候選池 | 送 LLM | backend REMOVE→LLM WATCH 違反 | LLM 主動否決 | 最終 WATCH |
+|---|---|---|---|---|---|---|
+| 2026-07-20 | RISK_OFF | 120 | 25 | 0 | BUSINESS_MISMATCH×2 | 23（含 2 檔金融股） |
+| 2026-07-14 | RISK_OFF | 120 | 36 | 0 | BUSINESS_MISMATCH×4 | 32 |
+| 2026-07-21 | RISK_OFF | 120 | 20 | 0 | 無 | 20 |
+
+天花板 3 天合計 0/81 違反（誠實揭露：這 3 天 backend 送進 LLM 的候選 `backend_max_decision`
+全部是 WATCH，天花板在這 3 天真實資料中沒被自然觸發；覆寫生效是靠合成情境單元測試
+`test_backend_max_decision_remove_forces_final_remove_even_if_llm_says_watch` 驗證）；
+全 3 天 0 筆「REMOVE 但無 veto_reason」的靜默否決。
+
+**已記錄未修（超出本次範圍）**：`exclusions.is_etf()` regex 認不出「00665L」一類帶字母
+後綴的槓桿/反向 ETF；Phase 1 canonical classification 已修過同類問題但未反向對齊。
+
+**版本**：`PROMPT_VERSION_MOMENTUM`/`PROMPT_VERSION_BULL`/`PROMPT_VERSION_VOLATILE` 均
+指向 v6；`SIGNALS_FORCE_PROMPT_VERSION=v5` 可強制回跑舊版做對照。
+
+---
+
+### Phase 2.5：Momentum Freshness + Final Watch Quality Layer（2026-07-23）
+
+**背景**：Phase 2（含 v6 LLM contract）已解決「不要過早刪掉真正強股」，但下一步問題是
+「不要讓所有勉強符合 Momentum 的股票都變成 WATCH」——`Candidate Eligible ≠ High-quality
+WATCH`。本輪在 Regime Gate 通過後、送進 LLM 之前，新增一層 deterministic 品質過濾。
+
+**新模組**：
+- [momentum_freshness.py](backend/app/signals/phase2/momentum_freshness.py)：
+  `compute_momentum_freshness()` 用**相對報酬優先於絕對報酬**（大盤跌 5%、個股跌 2% 是
+  相對抗跌）+ 多維度證據聚合（非單一固定門檻）判斷 `FRESH_STRONG`/`FRESH_STABLE`/
+  `HEALTHY_PULLBACK`/`STALE`/`DETERIORATING` 五種狀態。刻意不新增獨立
+  `REACCELERATING` 狀態（避免與既有 `entry_state.ENTRY_REACCELERATING` 混淆），改
+  作為 FRESH_STRONG 的一項證據。
+- [watch_quality.py](backend/app/signals/phase2/watch_quality.py)：
+  `compute_watch_quality()` 用 7 個獨立 evidence family（MOMENTUM_STRENGTH /
+  FRESHNESS / RELATIVE_STRENGTH / PARTICIPATION / SECTOR_CONFIRMATION /
+  INSTITUTION_CONFIRMATION / PRICE_STRUCTURE）+ freshness state + role/tracking_state
+  （輔助調整，非唯一決定）判斷 `READY`/`SETUP`/`RESERVE`。`EMERGING_MOMENTUM`/
+  `UNCLASSIFIED_MOMENTUM` 預設 `RESERVE`，只有證據足夠強才升級（不可只因排名改善或
+  base eligible 就 READY）；`EXTENDED_3D` 等 risk warning **不自動降級**（EXTENDED ≠
+  FAILED）；`tracking_state=DETERIORATING` 強制 `RESERVE`。
+
+**Pipeline 接線**（`pipeline_v2.run_phase2_pipeline`，regime gate 之後）：新增
+`WATCH_QUALITY_MODE` 環境變數（`off`/`shadow`/**`shadow`（預設）**/`production`），
+沿用本專案「新 gate 先 shadow 觀察，滿意後再切 production」慣例：
+- `off`：完全不算（行為與加這層之前逐 byte 相同）
+- `shadow`（**預設**）：照算 freshness/watch_quality，寫進 explain_trace/funnel_metrics
+  供觀察，但**不過濾**送進 LLM 的候選（`llm_eligible` = 全部 regime gate 存活者，與
+  cutover 前行為一致）
+- `production`：只有 `READY`/`SETUP` 進 `llm_eligible`，`RESERVE` 保留在 `survivors`
+  （供 debug / 未來 re-entry 觀察）但不送 LLM
+
+`run_phase2_pipeline()` 回傳新增 `llm_eligible`（真正該送 LLM 的子集）與
+`watch_quality_mode`；`survivors` key 語意不變（向後相容既有 caller）。`pipeline.py`
+的 production 分支從讀 `phase2_result["survivors"]` 改讀 `phase2_result["llm_eligible"]`
+建 `_cap_llm_input`。`explain_trace.py` 新增 `STAGE_WATCH_QUALITY` + `llm_eligible`
+欄位；`RESERVE` 不計入 `first_exclusion_reason`（§37 RESERVE ≠ FAILED，只是「今天證據
+不足以進正式 WATCH」，明天可重新升級，逐日重算天然支援 re-entry）。
+
+**v6 prompt 同步更新**：新增 STEP 6.5「Final Quality 否決」+ 5 種 quality veto reason
+（`INSUFFICIENT_CONFIRMATION`/`MOMENTUM_NOT_FRESH`/`WEAK_PARTICIPATION`/
+`CATALYST_TOO_WEAK`/`EVIDENCE_NOT_COHERENT`），**只能在 `phase2_watch_quality_state`
+有值時使用**、且必須引用 backend 提供的 `quality_evidence`/`momentum_freshness` 具體
+欄位值，禁止自行判斷「今天下跌所以轉弱」；decision 輸出新增 `quality_assessment`
+四維度整體判斷（`momentum_quality`/`participation_quality`/`catalyst_quality`/
+`evidence_coherence`）。
+
+**Deterministic-only replay（`run_phase25_replay_analysis.py`，不呼叫 OpenAI，2026-04-13
+~ 2026-07-07 共 60 個交易日，N=617 去重候選，10 交易日遠期報酬 evaluation-only）**——
+本輪最重要的誠實發現，記錄於
+[docs/plans/phase25_future_recommendations.md](docs/plans/phase25_future_recommendations.md)
+第 3 節：
+
+- 全體去重候選（regime gate 存活者）：正報酬率 58.2%、平均報酬 +4.81%、跌超 10% 比例
+  10.7%（regime 分布 BULL_TREND 32 天 / VOLATILE_RANGE 22 天 / RISK_OFF 僅 6 天，
+  偏多頭視窗）
+- **現行門檻下 `RESERVE` 只攔下 11/617（1.8%）候選，且這一小群事後平均報酬反而是
+  +15.68%（優於全體平均）**；對 66 檔真正大虧股（跌超 10%）只抓到 0 檔——目前的 7 項
+  evidence family 在這個視窗裡幾乎沒有區分力
+- 離線試算更嚴格門檻（`ready_min=6, setup_min=5`）：RESERVE 擴大到 21.9%、可攔到
+  18.2% 大虧股，但會把 regression 案例 8039 也推到 RESERVE，且 RESERVE cohort 事後
+  平均報酬仍是正的 +5.71%——找不到能同時「顯著降低左尾」又「不誤殺真贏家」的門檻組合
+- **根因假設**：候選池本身已是動能/法人資金篩選過的子集，本次設計的 evidence family
+  與「已經進入候選池」高度相關，天生區分力有限；且視窗以多頭/震盪為主，RISK_OFF 樣本
+  太少，無法驗證 spec 原始關切的「退潮盤品質層是否有用」情境
+- **決策**：維持程式碼內建工程起始門檻不變（不為了讓數字好看硬調）；
+  `WATCH_QUALITY_MODE` 維持 `shadow`（現行預設），**不建議近期切換至 `production`**
+- 6505/8039/6414/1810 四檔 regression winner 在整個 60 天視窗中**從未被推到 RESERVE**
+
+**測試**：28 個新測試（momentum_freshness 12 / watch_quality 13 / pipeline wiring
+模式 4）全 pass；全 backend suite 1065 pass / 20 fail（既有 baseline，零新增失敗）。
+
+**尚未做（下一輪接手指引）**：
+1. `WATCH_QUALITY_MODE` 維持 `shadow`，**不建議近期切 `production`**（見上方 replay
+   結論）——除非重新設計 evidence family 或補齊 RISK_OFF 樣本後重跑
+2. 若要讓這層真正發揮作用，下一輪應該重新設計 evidence family 本身（例如接入 M25
+   peer_rank 機制），而非調整既有門檻數字——本次已證實調門檻無法解決根本的區分力問題
+3. Quality veto reason 的 LLM 遵循度需要 production 觀察（見
+   phase25_future_recommendations.md 第 4 點）
+4. `exclusions.is_etf()` regex 對齊（見 phase25_future_recommendations.md 第 2 點）
+
 ## Phase 1：魚尾 Canonical Market Classification System 完成（2026-07-21）
 
 > **交付檔案目錄**：[docs/plans/canonical_classification/](docs/plans/canonical_classification/)

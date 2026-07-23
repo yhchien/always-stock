@@ -30,9 +30,25 @@ from app.signals import momentum
 from app.signals.exclusions import (
     find_group_for_stock,
     get_group_members,
+    is_blacklisted,
+    is_etf,
     is_financial,
-    should_exclude,
 )
+
+# LLM v6 contract（2026-07-22）：asset_type 三分類，供 LLM research 決定用哪一套
+# 研究流程（公司業務 vs ETF 曝險），本身**不可**成為 REMOVE / Hard Exclusion / 弱勢
+# 判斷的理由——只用於 research 模式選擇、UI 顯示、feature-missing 語意判斷。
+ASSET_TYPE_COMMON_STOCK = "COMMON_STOCK"
+ASSET_TYPE_FINANCIAL = "FINANCIAL"
+ASSET_TYPE_ETF = "ETF"
+
+
+def _resolve_asset_type(stock_id: str, stock_name: Optional[str], industry_name: Optional[str]) -> str:
+    if is_etf(stock_id, stock_name):
+        return ASSET_TYPE_ETF
+    if is_financial(industry_name):
+        return ASSET_TYPE_FINANCIAL
+    return ASSET_TYPE_COMMON_STOCK
 
 # Spec §再偵測閘門（2026-05-26）：首次抓到後驗證失敗的閾值
 # 與 archive.py 的兩條 early-exit（-30% / drawdown 30%）是不同層級的早期警示
@@ -275,13 +291,24 @@ def build_candidate_pool(
     candidate_ids |= acceleration_ids
     candidate_ids |= fundamental_ids
 
-    # 2. 排除 ETF / 金融股 / 不在 stocks_master 的（無業務面資料）
+    # 2. 排除人工黑名單 / 不在 stocks_master 的（無業務面資料）
+    #
+    # 2026-07-22（LLM v6 contract 對齊）：ETF / 金融股**不再**在這裡被排除。
+    # Phase 2 hard exclusion（2026-07-22 第一輪重構）已經確認資產類型不該是
+    # 排除理由，只有真正的失效條件才是；若候選池 Step 1 這裡還是把 ETF/金融
+    # 濾掉，等於矛盾——「hard exclusion 說可以進，candidate pool 卻連門都不讓
+    # 進」。人工黑名單仍然排除。
+    #
+    # legacy 路徑不受影響：`filters._is_hard_excluded` 自己也獨立呼叫
+    # `exclusions.should_exclude()`（含 ETF/金融判斷）作為它自己的 rule #1，
+    # 所以 ETF/金融就算進了候選池，legacy 最終輸出仍會在 hard exclusion 那關
+    # 被擋下，legacy 行為零改變。
     filtered_ids: List[str] = []
     for sid in candidate_ids:
         master = masters.get(sid)
         if master is None:
             continue
-        if should_exclude(sid, master.stock_name, master.industry_name):
+        if is_blacklisted(sid):
             continue
         filtered_ids.append(sid)
 
@@ -309,13 +336,17 @@ def build_candidate_pool(
         ts = tracking_by_stock.get(sid) or _empty_tracking_status()
         mf = momentum_frame.get(sid) or momentum.empty_momentum_features()
         in_top = master.industry_name in industry_set
+        asset_type = _resolve_asset_type(sid, master.stock_name, master.industry_name)
         candidate = {
             "stock_id": sid,
             "name": master.stock_name,
             "industry": master.industry_name,
             "sub_industry": master.sub_industry,
-            "is_etf": False,
-            "is_financial": False,
+            "asset_type": asset_type,
+            # is_etf / is_financial 保留給既有 caller 相容（legacy filters._is_hard_excluded
+            # 仍用 exclusions.should_exclude() 自己重新判斷，不依賴這兩個欄位）
+            "is_etf": asset_type == ASSET_TYPE_ETF,
+            "is_financial": asset_type == ASSET_TYPE_FINANCIAL,
             "group_name": find_group_for_stock(sid),
             "in_top_industries_3d": in_top,
             "in_top_stocks_3d": sid in top_stock_id_set,

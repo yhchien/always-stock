@@ -292,7 +292,11 @@ def test_build_candidate_pool_unions_top_stocks_and_industry_members(db):
     assert "2454" in ids
 
 
-def test_build_candidate_pool_drops_etf_and_financial(db):
+def test_build_candidate_pool_no_longer_drops_etf_and_financial(db):
+    """2026-07-22（LLM v6 contract 對齊）：ETF / 金融股不再因資產類型被 Step 1
+    排除——Phase 2 hard exclusion 已經確認資產類型不該是排除理由，候選池這裡
+    也要跟進，否則會出現「hard exclusion 說可以進，candidate pool 卻不讓進」
+    的矛盾。三檔都應該進候選池，並各自帶正確的 `asset_type`。"""
     stocks = {
         "0050": {"name": "元大台灣 50", "industry": "ETF"},
         "2330": {"name": "台積電", "industry": "半導體業"},
@@ -310,9 +314,46 @@ def test_build_candidate_pool_drops_etf_and_financial(db):
     rankings = compute_rankings(db, date(2026, 4, 22), ingestion)
     pool = build_candidate_pool(db, date(2026, 4, 22), ingestion, rankings)
 
+    by_id = {c["stock_id"]: c for c in pool}
+    assert "0050" in by_id
+    assert "2880" in by_id
+    assert "2330" in by_id
+
+    assert by_id["0050"]["asset_type"] == "ETF"
+    assert by_id["0050"]["is_etf"] is True
+    assert by_id["0050"]["is_financial"] is False
+
+    assert by_id["2880"]["asset_type"] == "FINANCIAL"
+    assert by_id["2880"]["is_financial"] is True
+    assert by_id["2880"]["is_etf"] is False
+
+    assert by_id["2330"]["asset_type"] == "COMMON_STOCK"
+    assert by_id["2330"]["is_etf"] is False
+    assert by_id["2330"]["is_financial"] is False
+
+
+def test_build_candidate_pool_still_drops_manual_blacklist(db, monkeypatch):
+    """人工黑名單仍然是唯一在 Step 1 排除候選的理由。"""
+    from app.signals import exclusions
+
+    stocks = {
+        "9999": {"name": "黑名單測試股", "industry": "半導體業"},
+        "2330": {"name": "台積電", "industry": "半導體業"},
+    }
+    dates = [date(2026, 4, 20), date(2026, 4, 21), date(2026, 4, 22)]
+    _seed_full_market(db, dates, stocks)
+    for d in dates:
+        _seed_industry_flow(db, d, "半導體業", 4.0e9)
+    db.commit()
+
+    monkeypatch.setattr(exclusions, "EXCLUSION_BLACKLIST", {"9999"})
+
+    ingestion = ingest_data(db, date(2026, 4, 22))
+    rankings = compute_rankings(db, date(2026, 4, 22), ingestion)
+    pool = build_candidate_pool(db, date(2026, 4, 22), ingestion, rankings)
+
     ids = {c["stock_id"] for c in pool}
-    assert "0050" not in ids
-    assert "2880" not in ids
+    assert "9999" not in ids
     assert "2330" in ids
 
 

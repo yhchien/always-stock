@@ -10,6 +10,8 @@
 import json
 from datetime import date, timedelta
 
+import pytest
+
 from app.models import DailyPrice, InstStockFlow, StockMaster
 from app.signals import momentum
 
@@ -244,13 +246,16 @@ def test_frame_percentiles_and_distance(db):
     dates, stock_ids = _seed_market(db)
     frame = momentum.compute_market_momentum_frame(db, dates[-1], _masters_map(db))
 
-    # 金融股不在 universe
-    assert "2881" not in frame
+    # 2026-07-22（LLM v6 contract 對齊）：金融股不再被排除在 universe 外，
+    # 只有人工黑名單才排除；資產類型不該影響是否算得到 percentile。
+    assert "2881" in frame
 
     strongest = frame["S22"]
     weakest = frame["S01"]
     assert strongest["rs_market_percentile_20d"] == 100.0
-    assert weakest["rs_market_percentile_20d"] == 0.0
+    # 2881 加入 universe 後分母多 1 檔，S01 不再是 percentile 0（rank 1 of N+1）；
+    # 這是 universe 擴大的預期副作用，不是 percentile 公式改變。
+    assert weakest["rs_market_percentile_20d"] == pytest.approx(4.545454545454546)
     # 一路上漲 → 收盤即 20 日高點
     assert strongest["distance_to_20d_high"] == 0.0
     # 只有 30 天資料 → 60d 報酬缺值

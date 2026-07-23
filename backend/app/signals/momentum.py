@@ -35,7 +35,7 @@ from app.models import (
     StockMaster,
     StockSharesOutstanding,
 )
-from app.signals.exclusions import should_exclude
+from app.signals.exclusions import is_blacklisted
 
 logger = logging.getLogger(__name__)
 
@@ -188,8 +188,15 @@ def compute_market_momentum_frame(
 ) -> Dict[str, Dict[str, Any]]:
     """全市場動能特徵 frame：{stock_id: features}。
 
-    universe = stocks_master active 且非 ETF / 金融 / 黑名單（與候選池排除規則一致，
+    universe = stocks_master active 且非人工黑名單（與候選池排除規則一致，
     spec §7.1 注意事項：breadth / percentile universe 必須與 candidate pool 一致）。
+
+    2026-07-22（LLM v6 contract 對齊）：universe **不再**排除 ETF / 金融股——
+    Phase 2 hard exclusion 已確認資產類型不該是排除理由，candidate_pool.py
+    Step 1 也已同步跟進；若這裡的 universe 還是把 ETF/金融排除在外，即使
+    candidate_pool 讓它們進了候選池，也會因為抓不到 `rs_market_percentile_20d`
+    等 percentile 特徵而在下游動能門檻全數落空，等於候選池的修正是無效的。
+    這是純粹擴大 universe 成員，不改變 percentile 計算公式本身。
 
     benchmark 說明：`relative_strength_market_20d` 用「universe 20 日報酬中位數」當
     market benchmark（而非 TAIEX），因為 percentile 對常數 benchmark 平移不變，
@@ -199,7 +206,7 @@ def compute_market_momentum_frame(
     universe_ids = {
         sid
         for sid, m in masters.items()
-        if not should_exclude(sid, m.stock_name, m.industry_name)
+        if not is_blacklisted(sid)
     }
     if not universe_ids:
         return {}

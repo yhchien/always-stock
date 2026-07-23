@@ -328,8 +328,13 @@ def run_signal_pipeline_sync(
                         # 是 `regime_conviction`（filters.py）；llm_caller evidence view
                         # 讀的是後者的 key 名，這裡別名一份避免 LLM 看到全 null。
                         c["regime_conviction"] = c.get("conviction")
+                    # Phase 2.5（2026-07-23）：真正送 LLM 的是 `llm_eligible`（
+                    # WATCH_QUALITY_MODE=production 時只有 READY/SETUP；off/shadow
+                    # 時等於 phase2_survivors，行為不變）。同一批 dict 物件參照，
+                    # 上面對 phase2_survivors 做的 in-place 欄位更新一併反映在這裡。
+                    phase2_llm_eligible = phase2_result.get("llm_eligible", phase2_survivors)
                     phase2_after_regime = _cap_llm_input(
-                        phase2_survivors, limit=LLM_INPUT_HARD_LIMIT
+                        phase2_llm_eligible, limit=LLM_INPUT_HARD_LIMIT
                     )
                     legacy_survivor_ids = [
                         str(c.get("stock_id") or "") for c in after_regime
@@ -356,11 +361,13 @@ def run_signal_pipeline_sync(
                     }
                     logger.info(
                         "Phase 2 production mode active for %s: candidates=%d "
-                        "survivors=%d (capped to %d for LLM); legacy would have "
-                        "produced %d survivors",
+                        "survivors=%d llm_eligible=%d (watch_quality_mode=%s, capped to "
+                        "%d for LLM); legacy would have produced %d survivors",
                         target_date,
                         len(phase2_candidates),
                         len(phase2_survivors),
+                        len(phase2_llm_eligible),
+                        phase2_result.get("watch_quality_mode"),
                         len(after_regime),
                         len(legacy_survivor_ids),
                     )
@@ -682,6 +689,14 @@ def _cap_llm_input(
 
 
 def _llm_input_sort_key(candidate: Dict[str, Any]) -> tuple:
+    """LLM_INPUT_HARD_LIMIT 截斷排序。Phase 2 候選（有 `role`/`tracking_state`
+    欄位，即使值為 None）改走 `_phase2_llm_priority_key`（見 2026-07-22 LLM v6
+    contract 對齊 §29-31）；legacy 候選（兩個欄位都不存在）維持原本
+    prelim_type-based 排序不變。
+    """
+    if "role" in candidate or "tracking_state" in candidate:
+        return _phase2_llm_priority_key(candidate)
+
     prelim_type = str(candidate.get("prelim_type") or "").upper()
     priority = {
         "LEADER": 0,
@@ -702,5 +717,34 @@ def _llm_input_sort_key(candidate: Dict[str, Any]) -> tuple:
         -flow_3d,
         -flow_1d,
         -price_5d,
+        str(candidate.get("stock_id") or ""),
+    )
+
+
+def _phase2_llm_priority_key(candidate: Dict[str, Any]) -> tuple:
+    """LLM v6 contract §29-31（2026-07-22）：Phase 2 候選超過
+    `LLM_INPUT_HARD_LIMIT` 時，不能再用 `prelim_type`（display_type 映射後的
+    LEADER/FOLLOWER/LAGGARD 三桶）當主排序——`EMERGING_MOMENTUM` /
+    `UNCLASSIFIED_MOMENTUM` 這類角色會被映射進 FOLLOWER/LAGGARD 桶，用桶排序
+    截斷等於系統性把它們排到後面優先被砍掉，重新帶入本來要拿掉的 legacy bias。
+
+    改用 deterministic 數字排序：conviction（backend 信心度）> momentum_score >
+    rs_market_percentile_20d > risk_warnings 數量（越少越優先）。`internal_role`
+    本身**不參與排序**，只是候選攜帶的描述性資訊——spec §31 明確要求「不可因為
+    UNCLASSIFIED → automatic low quality，實際仍以 numeric momentum/conviction/
+    risk 為主」。
+    """
+    conviction_rank = {"high": 0, "medium": 1, "low": 2}.get(
+        candidate.get("conviction"), 3
+    )
+    momentum_score = float(candidate.get("momentum_score") or 0.0)
+    rs_market = float(candidate.get("rs_market_percentile_20d") or 0.0)
+    risk_warning_count = len(candidate.get("risk_warnings") or [])
+
+    return (
+        conviction_rank,
+        -momentum_score,
+        -rs_market,
+        risk_warning_count,
         str(candidate.get("stock_id") or ""),
     )
