@@ -1,0 +1,7 @@
+signal,first_warning_date,warning_duration,warning_recovery_date,false_alarm_count,days_before_2026_07_02,days_before_phase3f_weakening,days_before_production_risk_off,threshold_source,first_warning_on_or_after_2026_07_02,first_sustained_warning_on_or_after_2026_07_02,sustained_days_before_phase3f_weakening
+E1,2026-06-26,5,2026-07-03,4,4,8,11,Dataset A pre-2026-06-26,2026-07-02,2026-07-07,1.0
+E2,2026-07-01,2,2026-07-03,1,1,5,8,Dataset A pre-2026-06-26,2026-07-02,,
+E3,2026-06-26,5,2026-07-02,4,4,8,11,Dataset A pre-2026-06-26,2026-07-07,2026-07-07,1.0
+E4,2026-06-26,2,2026-06-29,1,4,8,11,Dataset A pre-2026-06-26,2026-07-06,2026-07-06,2.0
+E5,2026-06-26,2,2026-06-30,3,4,8,11,Dataset A pre-2026-06-26,2026-07-07,2026-07-07,1.0
+COMPOSITE_PROTECTIVE,2026-06-26,6,,3,4,8,11,fixed E1-E5 composition,2026-07-02,2026-07-07,1.0

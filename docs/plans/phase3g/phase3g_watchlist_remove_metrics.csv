@@ -1,0 +1,2 @@
+completed_watch_episodes,loser_risk_episodes,loser_early_removal_count,loser_early_removal_rate,loser_early_removal_wilson_low,loser_early_removal_wilson_high,winner_close_episodes,winner_premature_removal_count,winner_premature_removal_rate,decision_threshold
+314,173,55,0.3179190751445087,0.2531275819674853,0.3906211158857231,42,9,0.21428571428571427,"removal>=30%, winner premature removal<=10%, plus warning criteria"

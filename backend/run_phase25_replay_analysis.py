@@ -138,10 +138,9 @@ def _load_forward_closes(db, stock_ids: List[str], dates: List[date]) -> Dict[An
     return {(sid, td): float(close) for sid, td, close in rows if close is not None}
 
 
-def run_replay(days: int, out_path: str) -> Dict[str, Any]:
+def run_replay(days: int, out_path: str, end_date: date = date(2026, 7, 22)) -> Dict[str, Any]:
     db = SessionLocal()
     try:
-        end_date = date(2026, 7, 22)
         all_days = get_recent_trade_dates(db, end_date, days + FORWARD_TRADE_DAYS + 5)
         if len(all_days) <= FORWARD_TRADE_DAYS:
             raise ValueError("not enough trading days available for replay")
@@ -293,9 +292,11 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--days", type=int, default=90)
     parser.add_argument("--out", type=str, default="/tmp/phase25_replay.json")
+    parser.add_argument("--end-date", type=str, default="2026-07-22",
+                         help="YYYY-MM-DD，預設沿用原本硬編碼值以維持既有呼叫者行為不變")
     args = parser.parse_args()
     pipeline_v2.WATCH_QUALITY_MODE = "shadow"  # 強制計算 freshness/quality，但不影響 survivors 內容
-    run_replay(args.days, args.out)
+    run_replay(args.days, args.out, end_date=date.fromisoformat(args.end_date))
     return 0
 
 
