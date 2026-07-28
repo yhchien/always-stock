@@ -1,0 +1,2134 @@
+[
+  {
+    "evaluation_date": "2026-06-15",
+    "production_market_regime": "VOLATILE_RANGE",
+    "market_path_state": "NORMAL",
+    "winner_enrichment_policy": "STAGED_DAY1_DAY3",
+    "day0_candidates": [
+      {
+        "stock_id": "6202",
+        "episode_start_date": "2026-06-15",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "00941",
+        "episode_start_date": "2026-06-15",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "4952",
+        "episode_start_date": "2026-06-15",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "00954",
+        "episode_start_date": "2026-06-15",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "00951",
+        "episode_start_date": "2026-06-15",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "5471",
+        "episode_start_date": "2026-06-15",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "4551",
+        "episode_start_date": "2026-06-15",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "3041",
+        "episode_start_date": "2026-06-15",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "3044",
+        "episode_start_date": "2026-06-15",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH"
+        ],
+        "point_in_time_valid": true
+      }
+    ],
+    "day1_confirmations": [],
+    "day3_confirmations": []
+  },
+  {
+    "evaluation_date": "2026-06-16",
+    "production_market_regime": "VOLATILE_RANGE",
+    "market_path_state": "NORMAL",
+    "winner_enrichment_policy": "STAGED_DAY1_DAY3",
+    "day0_candidates": [
+      {
+        "stock_id": "00983A",
+        "episode_start_date": "2026-06-16",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "2340",
+        "episode_start_date": "2026-06-16",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH"
+        ],
+        "point_in_time_valid": true
+      }
+    ],
+    "day1_confirmations": [
+      {
+        "stock_id": "6202",
+        "episode_start_date": "2026-06-15",
+        "confirmation_date": "2026-06-16",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 62.0,
+        "reasons": [],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "00941",
+        "episode_start_date": "2026-06-15",
+        "confirmation_date": "2026-06-16",
+        "confirmation_state": "KEEP_RESERVE_SHADOW",
+        "promotion_reference_close": 28.55,
+        "reasons": [
+          "RS_HEALTH",
+          "RANK_HEALTH",
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "4952",
+        "episode_start_date": "2026-06-15",
+        "confirmation_date": "2026-06-16",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 56.0,
+        "reasons": [
+          "RANK_HEALTH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "00954",
+        "episode_start_date": "2026-06-15",
+        "confirmation_date": "2026-06-16",
+        "confirmation_state": "KEEP_RESERVE_SHADOW",
+        "promotion_reference_close": 21.02,
+        "reasons": [
+          "RS_HEALTH",
+          "RANK_HEALTH",
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "00951",
+        "episode_start_date": "2026-06-15",
+        "confirmation_date": "2026-06-16",
+        "confirmation_state": "KEEP_RESERVE_SHADOW",
+        "promotion_reference_close": 19.69,
+        "reasons": [
+          "RS_HEALTH",
+          "RANK_HEALTH",
+          "CONTROLLED"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "5471",
+        "episode_start_date": "2026-06-15",
+        "confirmation_date": "2026-06-16",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 57.5,
+        "reasons": [
+          "RS_HEALTH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "4551",
+        "episode_start_date": "2026-06-15",
+        "confirmation_date": "2026-06-16",
+        "confirmation_state": "PROMOTE_DAY1_SHADOW",
+        "promotion_reference_close": 183.5,
+        "reasons": [
+          "RELATIVE",
+          "RS_HEALTH",
+          "RANK_HEALTH",
+          "FLOW",
+          "CONTROLLED"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "3041",
+        "episode_start_date": "2026-06-15",
+        "confirmation_date": "2026-06-16",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 26.4,
+        "reasons": [
+          "RS_HEALTH",
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "3044",
+        "episode_start_date": "2026-06-15",
+        "confirmation_date": "2026-06-16",
+        "confirmation_state": "KEEP_RESERVE_SHADOW",
+        "promotion_reference_close": 546.0,
+        "reasons": [
+          "RELATIVE",
+          "RS_HEALTH",
+          "RANK_HEALTH",
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      }
+    ],
+    "day3_confirmations": []
+  },
+  {
+    "evaluation_date": "2026-06-17",
+    "production_market_regime": "VOLATILE_RANGE",
+    "market_path_state": "NORMAL",
+    "winner_enrichment_policy": "STAGED_DAY1_DAY3",
+    "day0_candidates": [
+      {
+        "stock_id": "1515",
+        "episode_start_date": "2026-06-17",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RANK_HEALTH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "2460",
+        "episode_start_date": "2026-06-17",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "2489",
+        "episode_start_date": "2026-06-17",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "4722",
+        "episode_start_date": "2026-06-17",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "1301",
+        "episode_start_date": "2026-06-17",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "1541",
+        "episode_start_date": "2026-06-17",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "RS_PATH",
+          "RANK_HEALTH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "00403A",
+        "episode_start_date": "2026-06-17",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "2402",
+        "episode_start_date": "2026-06-17",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH"
+        ],
+        "point_in_time_valid": true
+      }
+    ],
+    "day1_confirmations": [
+      {
+        "stock_id": "00983A",
+        "episode_start_date": "2026-06-16",
+        "confirmation_date": "2026-06-17",
+        "confirmation_state": "KEEP_RESERVE_SHADOW",
+        "promotion_reference_close": 11.88,
+        "reasons": [
+          "FLOW",
+          "CONTROLLED"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "2340",
+        "episode_start_date": "2026-06-16",
+        "confirmation_date": "2026-06-17",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 38.5,
+        "reasons": [
+          "RANK_HEALTH"
+        ],
+        "point_in_time_valid": true
+      }
+    ],
+    "day3_confirmations": []
+  },
+  {
+    "evaluation_date": "2026-06-18",
+    "production_market_regime": "BULL_TREND",
+    "market_path_state": "NORMAL",
+    "winner_enrichment_policy": "STAGED_DAY1_DAY3",
+    "day0_candidates": [
+      {
+        "stock_id": "00993A",
+        "episode_start_date": "2026-06-18",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "00762",
+        "episode_start_date": "2026-06-18",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH",
+          "RANK_HEALTH"
+        ],
+        "point_in_time_valid": true
+      }
+    ],
+    "day1_confirmations": [
+      {
+        "stock_id": "1515",
+        "episode_start_date": "2026-06-17",
+        "confirmation_date": "2026-06-18",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 25.9,
+        "reasons": [
+          "RS_HEALTH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "2460",
+        "episode_start_date": "2026-06-17",
+        "confirmation_date": "2026-06-18",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 34.8,
+        "reasons": [
+          "RANK_HEALTH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "2489",
+        "episode_start_date": "2026-06-17",
+        "confirmation_date": "2026-06-18",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 48.15,
+        "reasons": [],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "4722",
+        "episode_start_date": "2026-06-17",
+        "confirmation_date": "2026-06-18",
+        "confirmation_state": "KEEP_RESERVE_SHADOW",
+        "promotion_reference_close": 277.5,
+        "reasons": [
+          "RELATIVE",
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "1301",
+        "episode_start_date": "2026-06-17",
+        "confirmation_date": "2026-06-18",
+        "confirmation_state": "PROMOTE_DAY1_SHADOW",
+        "promotion_reference_close": 51.7,
+        "reasons": [
+          "RELATIVE",
+          "RS_HEALTH",
+          "RANK_HEALTH",
+          "FLOW",
+          "CONTROLLED"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "1541",
+        "episode_start_date": "2026-06-17",
+        "confirmation_date": "2026-06-18",
+        "confirmation_state": "KEEP_RESERVE_SHADOW",
+        "promotion_reference_close": 22.0,
+        "reasons": [],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "00403A",
+        "episode_start_date": "2026-06-17",
+        "confirmation_date": "2026-06-18",
+        "confirmation_state": "PROMOTE_DAY1_SHADOW",
+        "promotion_reference_close": 11.03,
+        "reasons": [
+          "RELATIVE",
+          "RS_HEALTH",
+          "FLOW",
+          "CONTROLLED"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "2402",
+        "episode_start_date": "2026-06-17",
+        "confirmation_date": "2026-06-18",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 70.0,
+        "reasons": [],
+        "point_in_time_valid": true
+      }
+    ],
+    "day3_confirmations": [
+      {
+        "stock_id": "6202",
+        "episode_start_date": "2026-06-15",
+        "confirmation_date": "2026-06-18",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 67.0,
+        "reasons": [
+          "RELATIVE"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "00941",
+        "episode_start_date": "2026-06-15",
+        "confirmation_date": "2026-06-18",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 28.6,
+        "reasons": [
+          "RS_HEALTH",
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "4952",
+        "episode_start_date": "2026-06-15",
+        "confirmation_date": "2026-06-18",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 57.9,
+        "reasons": [],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "00954",
+        "episode_start_date": "2026-06-15",
+        "confirmation_date": "2026-06-18",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 21.84,
+        "reasons": [
+          "RELATIVE",
+          "RS_HEALTH",
+          "RANK_HEALTH",
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "00951",
+        "episode_start_date": "2026-06-15",
+        "confirmation_date": "2026-06-18",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 20.46,
+        "reasons": [
+          "RELATIVE",
+          "RS_HEALTH",
+          "RANK_HEALTH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "5471",
+        "episode_start_date": "2026-06-15",
+        "confirmation_date": "2026-06-18",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 60.9,
+        "reasons": [
+          "RELATIVE",
+          "RS_HEALTH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "4551",
+        "episode_start_date": "2026-06-15",
+        "confirmation_date": "2026-06-18",
+        "confirmation_state": "PROMOTE_DAY3_SHADOW",
+        "promotion_reference_close": 221.5,
+        "reasons": [
+          "RELATIVE",
+          "RS_HEALTH",
+          "RANK_HEALTH",
+          "FLOW",
+          "CONTROLLED"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "3041",
+        "episode_start_date": "2026-06-15",
+        "confirmation_date": "2026-06-18",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 28.15,
+        "reasons": [
+          "RELATIVE",
+          "RS_HEALTH",
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "3044",
+        "episode_start_date": "2026-06-15",
+        "confirmation_date": "2026-06-18",
+        "confirmation_state": "PROMOTE_DAY3_SHADOW",
+        "promotion_reference_close": 573.0,
+        "reasons": [
+          "RELATIVE",
+          "RS_HEALTH",
+          "RANK_HEALTH",
+          "FLOW",
+          "CONTROLLED"
+        ],
+        "point_in_time_valid": true
+      }
+    ]
+  },
+  {
+    "evaluation_date": "2026-06-22",
+    "production_market_regime": "BULL_TREND",
+    "market_path_state": "NORMAL",
+    "winner_enrichment_policy": "STAGED_DAY1_DAY3",
+    "day0_candidates": [
+      {
+        "stock_id": "6919",
+        "episode_start_date": "2026-06-22",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH",
+          "RANK_HEALTH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "00639",
+        "episode_start_date": "2026-06-22",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH",
+          "RANK_HEALTH"
+        ],
+        "point_in_time_valid": true
+      }
+    ],
+    "day1_confirmations": [
+      {
+        "stock_id": "00993A",
+        "episode_start_date": "2026-06-18",
+        "confirmation_date": "2026-06-22",
+        "confirmation_state": "KEEP_RESERVE_SHADOW",
+        "promotion_reference_close": 14.64,
+        "reasons": [
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "00762",
+        "episode_start_date": "2026-06-18",
+        "confirmation_date": "2026-06-22",
+        "confirmation_state": "KEEP_RESERVE_SHADOW",
+        "promotion_reference_close": 123.15,
+        "reasons": [
+          "RANK_HEALTH",
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      }
+    ],
+    "day3_confirmations": [
+      {
+        "stock_id": "00983A",
+        "episode_start_date": "2026-06-16",
+        "confirmation_date": "2026-06-22",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 12.05,
+        "reasons": [
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "2340",
+        "episode_start_date": "2026-06-16",
+        "confirmation_date": "2026-06-22",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 42.8,
+        "reasons": [
+          "RELATIVE",
+          "RANK_HEALTH",
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      }
+    ]
+  },
+  {
+    "evaluation_date": "2026-06-23",
+    "production_market_regime": "VOLATILE_RANGE",
+    "market_path_state": "NORMAL",
+    "winner_enrichment_policy": "STAGED_DAY1_DAY3",
+    "day0_candidates": [
+      {
+        "stock_id": "6573",
+        "episode_start_date": "2026-06-23",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "5283",
+        "episode_start_date": "2026-06-23",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "6715",
+        "episode_start_date": "2026-06-23",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "6243",
+        "episode_start_date": "2026-06-23",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "3530",
+        "episode_start_date": "2026-06-23",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "2466",
+        "episode_start_date": "2026-06-23",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "8438",
+        "episode_start_date": "2026-06-23",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH"
+        ],
+        "point_in_time_valid": true
+      }
+    ],
+    "day1_confirmations": [
+      {
+        "stock_id": "6919",
+        "episode_start_date": "2026-06-22",
+        "confirmation_date": "2026-06-23",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 108.0,
+        "reasons": [],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "00639",
+        "episode_start_date": "2026-06-22",
+        "confirmation_date": "2026-06-23",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 18.56,
+        "reasons": [],
+        "point_in_time_valid": true
+      }
+    ],
+    "day3_confirmations": [
+      {
+        "stock_id": "1515",
+        "episode_start_date": "2026-06-17",
+        "confirmation_date": "2026-06-23",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 26.8,
+        "reasons": [
+          "RELATIVE",
+          "RS_HEALTH",
+          "RANK_HEALTH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "2460",
+        "episode_start_date": "2026-06-17",
+        "confirmation_date": "2026-06-23",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 36.8,
+        "reasons": [
+          "RELATIVE",
+          "RS_HEALTH",
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "2489",
+        "episode_start_date": "2026-06-17",
+        "confirmation_date": "2026-06-23",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 47.35,
+        "reasons": [],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "4722",
+        "episode_start_date": "2026-06-17",
+        "confirmation_date": "2026-06-23",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 274.0,
+        "reasons": [
+          "RELATIVE",
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "1301",
+        "episode_start_date": "2026-06-17",
+        "confirmation_date": "2026-06-23",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 49.55,
+        "reasons": [
+          "RELATIVE",
+          "RS_HEALTH",
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "1541",
+        "episode_start_date": "2026-06-17",
+        "confirmation_date": "2026-06-23",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 21.85,
+        "reasons": [
+          "RS_HEALTH",
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "00403A",
+        "episode_start_date": "2026-06-17",
+        "confirmation_date": "2026-06-23",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 11.1,
+        "reasons": [
+          "RELATIVE"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "2402",
+        "episode_start_date": "2026-06-17",
+        "confirmation_date": "2026-06-23",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 68.3,
+        "reasons": [
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      }
+    ]
+  },
+  {
+    "evaluation_date": "2026-06-24",
+    "production_market_regime": "VOLATILE_RANGE",
+    "market_path_state": "NORMAL",
+    "winner_enrichment_policy": "STAGED_DAY1_DAY3",
+    "day0_candidates": [
+      {
+        "stock_id": "3588",
+        "episode_start_date": "2026-06-24",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "1216",
+        "episode_start_date": "2026-06-24",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "6909",
+        "episode_start_date": "2026-06-24",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "4169",
+        "episode_start_date": "2026-06-24",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "2539",
+        "episode_start_date": "2026-06-24",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "1315",
+        "episode_start_date": "2026-06-24",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RANK_HEALTH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "1449",
+        "episode_start_date": "2026-06-24",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RANK_HEALTH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "4119",
+        "episode_start_date": "2026-06-24",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "RS_PATH",
+          "RANK_HEALTH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "6505",
+        "episode_start_date": "2026-06-24",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH"
+        ],
+        "point_in_time_valid": true
+      }
+    ],
+    "day1_confirmations": [
+      {
+        "stock_id": "6573",
+        "episode_start_date": "2026-06-23",
+        "confirmation_date": "2026-06-24",
+        "confirmation_state": "KEEP_RESERVE_SHADOW",
+        "promotion_reference_close": 21.5,
+        "reasons": [
+          "RELATIVE",
+          "RS_HEALTH",
+          "RANK_HEALTH",
+          "CONTROLLED"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "5283",
+        "episode_start_date": "2026-06-23",
+        "confirmation_date": "2026-06-24",
+        "confirmation_state": "KEEP_RESERVE_SHADOW",
+        "promotion_reference_close": 57.5,
+        "reasons": [
+          "RELATIVE",
+          "RANK_HEALTH",
+          "CONTROLLED"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "6715",
+        "episode_start_date": "2026-06-23",
+        "confirmation_date": "2026-06-24",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 513.0,
+        "reasons": [
+          "RANK_HEALTH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "6243",
+        "episode_start_date": "2026-06-23",
+        "confirmation_date": "2026-06-24",
+        "confirmation_state": "KEEP_RESERVE_SHADOW",
+        "promotion_reference_close": 45.65,
+        "reasons": [
+          "RELATIVE",
+          "RS_HEALTH",
+          "RANK_HEALTH",
+          "CONTROLLED"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "3530",
+        "episode_start_date": "2026-06-23",
+        "confirmation_date": "2026-06-24",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 73.2,
+        "reasons": [
+          "RELATIVE"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "2466",
+        "episode_start_date": "2026-06-23",
+        "confirmation_date": "2026-06-24",
+        "confirmation_state": "PROMOTE_DAY1_SHADOW",
+        "promotion_reference_close": 59.0,
+        "reasons": [
+          "RELATIVE",
+          "RS_HEALTH",
+          "RANK_HEALTH",
+          "FLOW",
+          "CONTROLLED"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "8438",
+        "episode_start_date": "2026-06-23",
+        "confirmation_date": "2026-06-24",
+        "confirmation_state": "KEEP_RESERVE_SHADOW",
+        "promotion_reference_close": 97.1,
+        "reasons": [
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      }
+    ],
+    "day3_confirmations": [
+      {
+        "stock_id": "00993A",
+        "episode_start_date": "2026-06-18",
+        "confirmation_date": "2026-06-24",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 14.18,
+        "reasons": [
+          "RELATIVE",
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "00762",
+        "episode_start_date": "2026-06-18",
+        "confirmation_date": "2026-06-24",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 117.75,
+        "reasons": [],
+        "point_in_time_valid": true
+      }
+    ]
+  },
+  {
+    "evaluation_date": "2026-06-25",
+    "production_market_regime": "VOLATILE_RANGE",
+    "market_path_state": "NORMAL",
+    "winner_enrichment_policy": "STAGED_DAY1_DAY3",
+    "day0_candidates": [
+      {
+        "stock_id": "8464",
+        "episode_start_date": "2026-06-25",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RANK_HEALTH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "2458",
+        "episode_start_date": "2026-06-25",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH",
+          "RANK_HEALTH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "2103",
+        "episode_start_date": "2026-06-25",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "00674R",
+        "episode_start_date": "2026-06-25",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH",
+          "RANK_HEALTH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "1313",
+        "episode_start_date": "2026-06-25",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "3591",
+        "episode_start_date": "2026-06-25",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "6582",
+        "episode_start_date": "2026-06-25",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "2107",
+        "episode_start_date": "2026-06-25",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "4414",
+        "episode_start_date": "2026-06-25",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH",
+          "RANK_HEALTH"
+        ],
+        "point_in_time_valid": true
+      }
+    ],
+    "day1_confirmations": [
+      {
+        "stock_id": "3588",
+        "episode_start_date": "2026-06-24",
+        "confirmation_date": "2026-06-25",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 72.0,
+        "reasons": [],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "1216",
+        "episode_start_date": "2026-06-24",
+        "confirmation_date": "2026-06-25",
+        "confirmation_state": "KEEP_RESERVE_SHADOW",
+        "promotion_reference_close": 75.6,
+        "reasons": [
+          "RELATIVE",
+          "RS_HEALTH",
+          "RANK_HEALTH",
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "6909",
+        "episode_start_date": "2026-06-24",
+        "confirmation_date": "2026-06-25",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 58.4,
+        "reasons": [
+          "RS_HEALTH",
+          "RANK_HEALTH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "4169",
+        "episode_start_date": "2026-06-24",
+        "confirmation_date": "2026-06-25",
+        "confirmation_state": "KEEP_RESERVE_SHADOW",
+        "promotion_reference_close": 191.0,
+        "reasons": [
+          "RS_HEALTH",
+          "RANK_HEALTH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "2539",
+        "episode_start_date": "2026-06-24",
+        "confirmation_date": "2026-06-25",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 38.95,
+        "reasons": [
+          "RS_HEALTH",
+          "RANK_HEALTH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "1315",
+        "episode_start_date": "2026-06-24",
+        "confirmation_date": "2026-06-25",
+        "confirmation_state": "KEEP_RESERVE_SHADOW",
+        "promotion_reference_close": 62.3,
+        "reasons": [
+          "CONTROLLED"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "1449",
+        "episode_start_date": "2026-06-24",
+        "confirmation_date": "2026-06-25",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 14.75,
+        "reasons": [],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "4119",
+        "episode_start_date": "2026-06-24",
+        "confirmation_date": "2026-06-25",
+        "confirmation_state": "KEEP_RESERVE_SHADOW",
+        "promotion_reference_close": 44.65,
+        "reasons": [
+          "RELATIVE",
+          "RS_HEALTH",
+          "RANK_HEALTH",
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "6505",
+        "episode_start_date": "2026-06-24",
+        "confirmation_date": "2026-06-25",
+        "confirmation_state": "KEEP_RESERVE_SHADOW",
+        "promotion_reference_close": 55.9,
+        "reasons": [
+          "RELATIVE",
+          "RS_HEALTH",
+          "RANK_HEALTH",
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      }
+    ],
+    "day3_confirmations": [
+      {
+        "stock_id": "6919",
+        "episode_start_date": "2026-06-22",
+        "confirmation_date": "2026-06-25",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 99.3,
+        "reasons": [],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "00639",
+        "episode_start_date": "2026-06-22",
+        "confirmation_date": "2026-06-25",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 18.92,
+        "reasons": [
+          "RELATIVE",
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      }
+    ]
+  },
+  {
+    "evaluation_date": "2026-06-26",
+    "production_market_regime": "RISK_OFF",
+    "market_path_state": "WEAKENING",
+    "winner_enrichment_policy": "STAGED_DAY1_DAY3",
+    "day0_candidates": [],
+    "day1_confirmations": [
+      {
+        "stock_id": "8464",
+        "episode_start_date": "2026-06-25",
+        "confirmation_date": "2026-06-26",
+        "confirmation_state": "KEEP_RESERVE_SHADOW",
+        "promotion_reference_close": 350.5,
+        "reasons": [
+          "RELATIVE",
+          "RANK_HEALTH",
+          "CONTROLLED"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "2458",
+        "episode_start_date": "2026-06-25",
+        "confirmation_date": "2026-06-26",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 172.0,
+        "reasons": [
+          "RS_HEALTH",
+          "RANK_HEALTH",
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "2103",
+        "episode_start_date": "2026-06-25",
+        "confirmation_date": "2026-06-26",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 20.25,
+        "reasons": [],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "00674R",
+        "episode_start_date": "2026-06-25",
+        "confirmation_date": "2026-06-26",
+        "confirmation_state": "KEEP_RESERVE_SHADOW",
+        "promotion_reference_close": 30.59,
+        "reasons": [
+          "RELATIVE"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "1313",
+        "episode_start_date": "2026-06-25",
+        "confirmation_date": "2026-06-26",
+        "confirmation_state": "KEEP_RESERVE_SHADOW",
+        "promotion_reference_close": 12.35,
+        "reasons": [
+          "RELATIVE"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "3591",
+        "episode_start_date": "2026-06-25",
+        "confirmation_date": "2026-06-26",
+        "confirmation_state": "KEEP_RESERVE_SHADOW",
+        "promotion_reference_close": 26.45,
+        "reasons": [
+          "RELATIVE"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "6582",
+        "episode_start_date": "2026-06-25",
+        "confirmation_date": "2026-06-26",
+        "confirmation_state": "KEEP_RESERVE_SHADOW",
+        "promotion_reference_close": 33.5,
+        "reasons": [
+          "RELATIVE",
+          "RS_HEALTH",
+          "RANK_HEALTH",
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "2107",
+        "episode_start_date": "2026-06-25",
+        "confirmation_date": "2026-06-26",
+        "confirmation_state": "KEEP_RESERVE_SHADOW",
+        "promotion_reference_close": 25.4,
+        "reasons": [
+          "RELATIVE",
+          "RANK_HEALTH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "4414",
+        "episode_start_date": "2026-06-25",
+        "confirmation_date": "2026-06-26",
+        "confirmation_state": "KEEP_RESERVE_SHADOW",
+        "promotion_reference_close": 8.38,
+        "reasons": [
+          "RELATIVE"
+        ],
+        "point_in_time_valid": true
+      }
+    ],
+    "day3_confirmations": [
+      {
+        "stock_id": "6573",
+        "episode_start_date": "2026-06-23",
+        "confirmation_date": "2026-06-26",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 19.85,
+        "reasons": [
+          "RELATIVE",
+          "RS_HEALTH",
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "5283",
+        "episode_start_date": "2026-06-23",
+        "confirmation_date": "2026-06-26",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 52.5,
+        "reasons": [
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "6715",
+        "episode_start_date": "2026-06-23",
+        "confirmation_date": "2026-06-26",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 455.0,
+        "reasons": [],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "6243",
+        "episode_start_date": "2026-06-23",
+        "confirmation_date": "2026-06-26",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 43.0,
+        "reasons": [
+          "RELATIVE",
+          "RS_HEALTH",
+          "RANK_HEALTH",
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "3530",
+        "episode_start_date": "2026-06-23",
+        "confirmation_date": "2026-06-26",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 67.6,
+        "reasons": [
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "2466",
+        "episode_start_date": "2026-06-23",
+        "confirmation_date": "2026-06-26",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 58.0,
+        "reasons": [
+          "RELATIVE",
+          "RS_HEALTH",
+          "RANK_HEALTH",
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "8438",
+        "episode_start_date": "2026-06-23",
+        "confirmation_date": "2026-06-26",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 92.7,
+        "reasons": [
+          "RS_HEALTH",
+          "RANK_HEALTH"
+        ],
+        "point_in_time_valid": true
+      }
+    ]
+  },
+  {
+    "evaluation_date": "2026-06-29",
+    "production_market_regime": "RISK_OFF",
+    "market_path_state": "RISK_OFF",
+    "winner_enrichment_policy": "STAGED_DAY1_DAY3",
+    "day0_candidates": [],
+    "day1_confirmations": [],
+    "day3_confirmations": [
+      {
+        "stock_id": "3588",
+        "episode_start_date": "2026-06-24",
+        "confirmation_date": "2026-06-29",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 68.0,
+        "reasons": [
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "1216",
+        "episode_start_date": "2026-06-24",
+        "confirmation_date": "2026-06-29",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 75.7,
+        "reasons": [
+          "RELATIVE",
+          "RS_HEALTH",
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "6909",
+        "episode_start_date": "2026-06-24",
+        "confirmation_date": "2026-06-29",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 55.5,
+        "reasons": [],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "4169",
+        "episode_start_date": "2026-06-24",
+        "confirmation_date": "2026-06-29",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 209.0,
+        "reasons": [
+          "RELATIVE",
+          "RS_HEALTH",
+          "RANK_HEALTH",
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "2539",
+        "episode_start_date": "2026-06-24",
+        "confirmation_date": "2026-06-29",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 39.3,
+        "reasons": [
+          "RELATIVE",
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "1315",
+        "episode_start_date": "2026-06-24",
+        "confirmation_date": "2026-06-29",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 62.1,
+        "reasons": [
+          "RELATIVE",
+          "RS_HEALTH",
+          "RANK_HEALTH",
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "1449",
+        "episode_start_date": "2026-06-24",
+        "confirmation_date": "2026-06-29",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 14.45,
+        "reasons": [
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "4119",
+        "episode_start_date": "2026-06-24",
+        "confirmation_date": "2026-06-29",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 44.25,
+        "reasons": [
+          "RELATIVE",
+          "RS_HEALTH",
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "6505",
+        "episode_start_date": "2026-06-24",
+        "confirmation_date": "2026-06-29",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 55.3,
+        "reasons": [
+          "RELATIVE",
+          "RS_HEALTH",
+          "RANK_HEALTH",
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      }
+    ]
+  },
+  {
+    "evaluation_date": "2026-06-30",
+    "production_market_regime": "VOLATILE_RANGE",
+    "market_path_state": "WEAKENING",
+    "winner_enrichment_policy": "STAGED_DAY1_DAY3",
+    "day0_candidates": [],
+    "day1_confirmations": [],
+    "day3_confirmations": [
+      {
+        "stock_id": "8464",
+        "episode_start_date": "2026-06-25",
+        "confirmation_date": "2026-06-30",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 346.0,
+        "reasons": [],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "2458",
+        "episode_start_date": "2026-06-25",
+        "confirmation_date": "2026-06-30",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 189.0,
+        "reasons": [
+          "RELATIVE",
+          "RS_HEALTH",
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "2103",
+        "episode_start_date": "2026-06-25",
+        "confirmation_date": "2026-06-30",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 20.7,
+        "reasons": [
+          "RANK_HEALTH",
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "00674R",
+        "episode_start_date": "2026-06-25",
+        "confirmation_date": "2026-06-30",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 30.88,
+        "reasons": [
+          "RELATIVE",
+          "RS_HEALTH",
+          "RANK_HEALTH",
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "1313",
+        "episode_start_date": "2026-06-25",
+        "confirmation_date": "2026-06-30",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 12.45,
+        "reasons": [
+          "RS_HEALTH",
+          "RANK_HEALTH",
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "3591",
+        "episode_start_date": "2026-06-25",
+        "confirmation_date": "2026-06-30",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 26.1,
+        "reasons": [
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "6582",
+        "episode_start_date": "2026-06-25",
+        "confirmation_date": "2026-06-30",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 33.0,
+        "reasons": [
+          "RELATIVE",
+          "RS_HEALTH",
+          "RANK_HEALTH",
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "2107",
+        "episode_start_date": "2026-06-25",
+        "confirmation_date": "2026-06-30",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 25.55,
+        "reasons": [],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "4414",
+        "episode_start_date": "2026-06-25",
+        "confirmation_date": "2026-06-30",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 8.49,
+        "reasons": [
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      }
+    ]
+  },
+  {
+    "evaluation_date": "2026-07-01",
+    "production_market_regime": "VOLATILE_RANGE",
+    "market_path_state": "NORMAL",
+    "winner_enrichment_policy": "STAGED_DAY1_DAY3",
+    "day0_candidates": [
+      {
+        "stock_id": "2345",
+        "episode_start_date": "2026-07-01",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "9935",
+        "episode_start_date": "2026-07-01",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RANK_HEALTH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "8466",
+        "episode_start_date": "2026-07-01",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH",
+          "RANK_HEALTH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "2528",
+        "episode_start_date": "2026-07-01",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH",
+          "RANK_HEALTH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "3605",
+        "episode_start_date": "2026-07-01",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "2429",
+        "episode_start_date": "2026-07-01",
+        "day0_state": "WATCH_CANDIDATE_SHADOW",
+        "day0_bundle": "D0-A",
+        "reasons": [
+          "FRESHNESS",
+          "RS_PATH"
+        ],
+        "point_in_time_valid": true
+      }
+    ],
+    "day1_confirmations": [],
+    "day3_confirmations": []
+  },
+  {
+    "evaluation_date": "2026-07-02",
+    "production_market_regime": "VOLATILE_RANGE",
+    "market_path_state": "NORMAL",
+    "winner_enrichment_policy": "STAGED_DAY1_DAY3",
+    "day0_candidates": [],
+    "day1_confirmations": [
+      {
+        "stock_id": "2345",
+        "episode_start_date": "2026-07-01",
+        "confirmation_date": "2026-07-02",
+        "confirmation_state": "KEEP_RESERVE_SHADOW",
+        "promotion_reference_close": 2750.0,
+        "reasons": [
+          "RELATIVE",
+          "RANK_HEALTH",
+          "CONTROLLED"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "9935",
+        "episode_start_date": "2026-07-01",
+        "confirmation_date": "2026-07-02",
+        "confirmation_state": "KEEP_RESERVE_SHADOW",
+        "promotion_reference_close": 20.05,
+        "reasons": [
+          "RELATIVE",
+          "RS_HEALTH",
+          "RANK_HEALTH",
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "8466",
+        "episode_start_date": "2026-07-01",
+        "confirmation_date": "2026-07-02",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 17.25,
+        "reasons": [
+          "RANK_HEALTH"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "2528",
+        "episode_start_date": "2026-07-01",
+        "confirmation_date": "2026-07-02",
+        "confirmation_state": "KEEP_RESERVE_SHADOW",
+        "promotion_reference_close": 23.0,
+        "reasons": [
+          "RELATIVE",
+          "FLOW",
+          "CONTROLLED"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "3605",
+        "episode_start_date": "2026-07-01",
+        "confirmation_date": "2026-07-02",
+        "confirmation_state": "PROMOTE_DAY1_SHADOW",
+        "promotion_reference_close": 90.1,
+        "reasons": [
+          "RELATIVE",
+          "RS_HEALTH",
+          "RANK_HEALTH",
+          "FLOW",
+          "CONTROLLED"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "2429",
+        "episode_start_date": "2026-07-01",
+        "confirmation_date": "2026-07-02",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 44.3,
+        "reasons": [],
+        "point_in_time_valid": true
+      }
+    ],
+    "day3_confirmations": []
+  },
+  {
+    "evaluation_date": "2026-07-06",
+    "production_market_regime": "VOLATILE_RANGE",
+    "market_path_state": "NORMAL",
+    "winner_enrichment_policy": "STAGED_DAY1_DAY3",
+    "day0_candidates": [],
+    "day1_confirmations": [],
+    "day3_confirmations": [
+      {
+        "stock_id": "2345",
+        "episode_start_date": "2026-07-01",
+        "confirmation_date": "2026-07-06",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 2645.0,
+        "reasons": [
+          "RELATIVE"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "9935",
+        "episode_start_date": "2026-07-01",
+        "confirmation_date": "2026-07-06",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 18.9,
+        "reasons": [
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "8466",
+        "episode_start_date": "2026-07-01",
+        "confirmation_date": "2026-07-06",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 17.3,
+        "reasons": [
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "2528",
+        "episode_start_date": "2026-07-01",
+        "confirmation_date": "2026-07-06",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 22.55,
+        "reasons": [
+          "RELATIVE"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "3605",
+        "episode_start_date": "2026-07-01",
+        "confirmation_date": "2026-07-06",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 87.7,
+        "reasons": [
+          "RELATIVE",
+          "RS_HEALTH",
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      },
+      {
+        "stock_id": "2429",
+        "episode_start_date": "2026-07-01",
+        "confirmation_date": "2026-07-06",
+        "confirmation_state": "REJECT_CONFIRMATION_SHADOW",
+        "promotion_reference_close": 49.05,
+        "reasons": [
+          "RELATIVE",
+          "RS_HEALTH",
+          "RANK_HEALTH",
+          "FLOW"
+        ],
+        "point_in_time_valid": true
+      }
+    ]
+  },
+  {
+    "evaluation_date": "2026-07-13",
+    "production_market_regime": "VOLATILE_RANGE",
+    "market_path_state": "RISK_OFF",
+    "winner_enrichment_policy": "STAGED_DAY1_DAY3",
+    "day0_candidates": [],
+    "day1_confirmations": [],
+    "day3_confirmations": []
+  },
+  {
+    "evaluation_date": "2026-07-14",
+    "production_market_regime": "RISK_OFF",
+    "market_path_state": "RISK_OFF",
+    "winner_enrichment_policy": "STAGED_DAY1_DAY3",
+    "day0_candidates": [],
+    "day1_confirmations": [],
+    "day3_confirmations": []
+  },
+  {
+    "evaluation_date": "2026-07-15",
+    "production_market_regime": "RISK_OFF",
+    "market_path_state": "RISK_OFF",
+    "winner_enrichment_policy": "STAGED_DAY1_DAY3",
+    "day0_candidates": [],
+    "day1_confirmations": [],
+    "day3_confirmations": []
+  },
+  {
+    "evaluation_date": "2026-07-16",
+    "production_market_regime": "RISK_OFF",
+    "market_path_state": "RISK_OFF",
+    "winner_enrichment_policy": "STAGED_DAY1_DAY3",
+    "day0_candidates": [],
+    "day1_confirmations": [],
+    "day3_confirmations": []
+  },
+  {
+    "evaluation_date": "2026-07-17",
+    "production_market_regime": "RISK_OFF",
+    "market_path_state": "RISK_OFF",
+    "winner_enrichment_policy": "STAGED_DAY1_DAY3",
+    "day0_candidates": [],
+    "day1_confirmations": [],
+    "day3_confirmations": []
+  },
+  {
+    "evaluation_date": "2026-07-20",
+    "production_market_regime": "RISK_OFF",
+    "market_path_state": "RISK_OFF",
+    "winner_enrichment_policy": "STAGED_DAY1_DAY3",
+    "day0_candidates": [],
+    "day1_confirmations": [],
+    "day3_confirmations": []
+  },
+  {
+    "evaluation_date": "2026-07-21",
+    "production_market_regime": "RISK_OFF",
+    "market_path_state": "RISK_OFF",
+    "winner_enrichment_policy": "STAGED_DAY1_DAY3",
+    "day0_candidates": [],
+    "day1_confirmations": [],
+    "day3_confirmations": []
+  },
+  {
+    "evaluation_date": "2026-07-22",
+    "production_market_regime": "RISK_OFF",
+    "market_path_state": "RISK_OFF",
+    "winner_enrichment_policy": "STAGED_DAY1_DAY3",
+    "day0_candidates": [],
+    "day1_confirmations": [],
+    "day3_confirmations": []
+  },
+  {
+    "evaluation_date": "2026-07-23",
+    "production_market_regime": "RISK_OFF",
+    "market_path_state": "RISK_OFF",
+    "winner_enrichment_policy": "STAGED_DAY1_DAY3",
+    "day0_candidates": [],
+    "day1_confirmations": [],
+    "day3_confirmations": []
+  },
+  {
+    "evaluation_date": "2026-07-24",
+    "production_market_regime": "RISK_OFF",
+    "market_path_state": "RISK_OFF",
+    "winner_enrichment_policy": "STAGED_DAY1_DAY3",
+    "day0_candidates": [],
+    "day1_confirmations": [],
+    "day3_confirmations": []
+  }
+]
