@@ -1,0 +1,7 @@
+branch,audit_item,affected_rows,denominator_rows,missing_rate,affected_dates,severity,data_quality_blocker,detail
+BOTH,FROZEN_RULE_REPRODUCIBILITY,0.0,473.0,0.0,,OK,False,"{""branch_n_reproducible"": true, ""branch_r_reproducible"": true, ""d0_a_mismatch_rows"": 0, ""d1_c_mismatch_rows"": 0, ""p4_mismatch_rows"": 0}"
+R,MISSING_REQUIRED_SURVIVAL_FEATURE,0.0,140.0,0.0,[],OK,False,Frozen comparison is not imputed.
+N,INDEPENDENT_NORMAL_COHORT_AVAILABLE,0.0,140.0,,,SAMPLE_PENDING,False,Dataset C contains no NORMAL episode; no prospective trade date exists after 2026-07-27.
+BOTH,2026_07_27_PHASE2_INPUT_SNAPSHOT,,,,2026-07-27,BLOCKER,True,"Formal production snapshot exists, but frozen raw-union, Top120 row frame and deterministic Phase2 survivor rows stop at 2026-07-24. Episode denominator is not fabricated."
+BOTH,LATEST_SOURCE_DATES,0.0,0.0,0.0,,INFO,False,"{""price_available_through"": ""2026-07-27"", ""formal_snapshot_available_through"": ""2026-07-27"", ""frozen_raw_union_available_through"": ""2026-07-24"", ""frozen_top120_available_through"": ""2026-07-24"", ""requested_2026_07_28"": ""UNAVAILABLE_NOT_FABRICATED""}"
+BOTH,FROZEN_COHORT_PRODUCTION_EXACTNESS,140.0,140.0,0.0,"[""2026-07-13"", ""2026-07-14"", ""2026-07-15"", ""2026-07-16"", ""2026-07-17"", ""2026-07-20"", ""2026-07-21"", ""2026-07-22"", ""2026-07-23"", ""2026-07-24""]",WARNING,False,Dataset C is the specification-authorized frozen RECONSTRUCTED_NOT_PRODUCTION_EXACT first-seen proxy.

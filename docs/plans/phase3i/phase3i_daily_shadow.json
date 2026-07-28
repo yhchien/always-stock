@@ -1,0 +1,1014 @@
+[
+  {
+    "evaluation_date": "2026-07-13",
+    "config_hash": "a1b9b6306a17bb9b089c2695ac7dbdef29e6455d76827ec96614000f578d98a0",
+    "production_market_regime": "VOLATILE_RANGE",
+    "market_path_state": "RISK_OFF",
+    "normal_branch": {
+      "day0_candidates": [],
+      "day1_evaluations": []
+    },
+    "risk_branch": {
+      "eligible_candidates": 18,
+      "selected_candidates": [
+        {
+          "stock_id": "1232",
+          "state": "RISK_CONTROL_PRIMARY_SHADOW",
+          "predicate_trace": [
+            {
+              "predicate": "BRANCH_R_MARKET_STATE",
+              "feature": "market_path_state",
+              "raw": "RISK_OFF",
+              "pass": true
+            },
+            {
+              "predicate": "MARKET_PUBLISHING",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 92.5,
+              "comparison": ">=",
+              "threshold": 90.0,
+              "pass": true
+            },
+            {
+              "predicate": "SURVIVAL_BUNDLE_A",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 92.5,
+              "comparison": ">=",
+              "threshold": 70.0,
+              "pass": true
+            }
+          ],
+          "point_in_time_valid": true
+        },
+        {
+          "stock_id": "2101",
+          "state": "RISK_CONTROL_PRIMARY_SHADOW",
+          "predicate_trace": [
+            {
+              "predicate": "BRANCH_R_MARKET_STATE",
+              "feature": "market_path_state",
+              "raw": "RISK_OFF",
+              "pass": true
+            },
+            {
+              "predicate": "MARKET_PUBLISHING",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 92.5,
+              "comparison": ">=",
+              "threshold": 90.0,
+              "pass": true
+            },
+            {
+              "predicate": "SURVIVAL_BUNDLE_A",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 92.5,
+              "comparison": ">=",
+              "threshold": 70.0,
+              "pass": true
+            }
+          ],
+          "point_in_time_valid": true
+        },
+        {
+          "stock_id": "2482",
+          "state": "RISK_CONTROL_PRIMARY_SHADOW",
+          "predicate_trace": [
+            {
+              "predicate": "BRANCH_R_MARKET_STATE",
+              "feature": "market_path_state",
+              "raw": "RISK_OFF",
+              "pass": true
+            },
+            {
+              "predicate": "MARKET_PUBLISHING",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 92.5,
+              "comparison": ">=",
+              "threshold": 90.0,
+              "pass": true
+            },
+            {
+              "predicate": "SURVIVAL_BUNDLE_A",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 92.5,
+              "comparison": ">=",
+              "threshold": 70.0,
+              "pass": true
+            }
+          ],
+          "point_in_time_valid": true
+        },
+        {
+          "stock_id": "6863",
+          "state": "RISK_CONTROL_PRIMARY_SHADOW",
+          "predicate_trace": [
+            {
+              "predicate": "BRANCH_R_MARKET_STATE",
+              "feature": "market_path_state",
+              "raw": "RISK_OFF",
+              "pass": true
+            },
+            {
+              "predicate": "MARKET_PUBLISHING",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 92.5,
+              "comparison": ">=",
+              "threshold": 90.0,
+              "pass": true
+            },
+            {
+              "predicate": "SURVIVAL_BUNDLE_A",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 92.5,
+              "comparison": ">=",
+              "threshold": 70.0,
+              "pass": true
+            }
+          ],
+          "point_in_time_valid": true
+        },
+        {
+          "stock_id": "9925",
+          "state": "RISK_CONTROL_PRIMARY_SHADOW",
+          "predicate_trace": [
+            {
+              "predicate": "BRANCH_R_MARKET_STATE",
+              "feature": "market_path_state",
+              "raw": "RISK_OFF",
+              "pass": true
+            },
+            {
+              "predicate": "MARKET_PUBLISHING",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 92.5,
+              "comparison": ">=",
+              "threshold": 90.0,
+              "pass": true
+            },
+            {
+              "predicate": "SURVIVAL_BUNDLE_A",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 92.5,
+              "comparison": ">=",
+              "threshold": 70.0,
+              "pass": true
+            }
+          ],
+          "point_in_time_valid": true
+        }
+      ],
+      "zero_primary_reason": null
+    }
+  },
+  {
+    "evaluation_date": "2026-07-14",
+    "config_hash": "a1b9b6306a17bb9b089c2695ac7dbdef29e6455d76827ec96614000f578d98a0",
+    "production_market_regime": "RISK_OFF",
+    "market_path_state": "RISK_OFF",
+    "normal_branch": {
+      "day0_candidates": [],
+      "day1_evaluations": []
+    },
+    "risk_branch": {
+      "eligible_candidates": 21,
+      "selected_candidates": [
+        {
+          "stock_id": "1468",
+          "state": "RISK_CONTROL_PRIMARY_SHADOW",
+          "predicate_trace": [
+            {
+              "predicate": "BRANCH_R_MARKET_STATE",
+              "feature": "market_path_state",
+              "raw": "RISK_OFF",
+              "pass": true
+            },
+            {
+              "predicate": "MARKET_PUBLISHING",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 91.25,
+              "comparison": ">=",
+              "threshold": 90.0,
+              "pass": true
+            },
+            {
+              "predicate": "SURVIVAL_BUNDLE_A",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 91.25,
+              "comparison": ">=",
+              "threshold": 70.0,
+              "pass": true
+            }
+          ],
+          "point_in_time_valid": true
+        },
+        {
+          "stock_id": "1476",
+          "state": "RISK_CONTROL_PRIMARY_SHADOW",
+          "predicate_trace": [
+            {
+              "predicate": "BRANCH_R_MARKET_STATE",
+              "feature": "market_path_state",
+              "raw": "RISK_OFF",
+              "pass": true
+            },
+            {
+              "predicate": "MARKET_PUBLISHING",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 91.25,
+              "comparison": ">=",
+              "threshold": 90.0,
+              "pass": true
+            },
+            {
+              "predicate": "SURVIVAL_BUNDLE_A",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 91.25,
+              "comparison": ">=",
+              "threshold": 70.0,
+              "pass": true
+            }
+          ],
+          "point_in_time_valid": true
+        },
+        {
+          "stock_id": "1733",
+          "state": "RISK_CONTROL_PRIMARY_SHADOW",
+          "predicate_trace": [
+            {
+              "predicate": "BRANCH_R_MARKET_STATE",
+              "feature": "market_path_state",
+              "raw": "RISK_OFF",
+              "pass": true
+            },
+            {
+              "predicate": "MARKET_PUBLISHING",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 91.25,
+              "comparison": ">=",
+              "threshold": 90.0,
+              "pass": true
+            },
+            {
+              "predicate": "SURVIVAL_BUNDLE_A",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 91.25,
+              "comparison": ">=",
+              "threshold": 70.0,
+              "pass": true
+            }
+          ],
+          "point_in_time_valid": true
+        },
+        {
+          "stock_id": "1734",
+          "state": "RISK_CONTROL_PRIMARY_SHADOW",
+          "predicate_trace": [
+            {
+              "predicate": "BRANCH_R_MARKET_STATE",
+              "feature": "market_path_state",
+              "raw": "RISK_OFF",
+              "pass": true
+            },
+            {
+              "predicate": "MARKET_PUBLISHING",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 91.25,
+              "comparison": ">=",
+              "threshold": 90.0,
+              "pass": true
+            },
+            {
+              "predicate": "SURVIVAL_BUNDLE_A",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 91.25,
+              "comparison": ">=",
+              "threshold": 70.0,
+              "pass": true
+            }
+          ],
+          "point_in_time_valid": true
+        },
+        {
+          "stock_id": "2704",
+          "state": "RISK_CONTROL_PRIMARY_SHADOW",
+          "predicate_trace": [
+            {
+              "predicate": "BRANCH_R_MARKET_STATE",
+              "feature": "market_path_state",
+              "raw": "RISK_OFF",
+              "pass": true
+            },
+            {
+              "predicate": "MARKET_PUBLISHING",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 91.25,
+              "comparison": ">=",
+              "threshold": 90.0,
+              "pass": true
+            },
+            {
+              "predicate": "SURVIVAL_BUNDLE_A",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 91.25,
+              "comparison": ">=",
+              "threshold": 70.0,
+              "pass": true
+            }
+          ],
+          "point_in_time_valid": true
+        },
+        {
+          "stock_id": "4104",
+          "state": "RISK_CONTROL_PRIMARY_SHADOW",
+          "predicate_trace": [
+            {
+              "predicate": "BRANCH_R_MARKET_STATE",
+              "feature": "market_path_state",
+              "raw": "RISK_OFF",
+              "pass": true
+            },
+            {
+              "predicate": "MARKET_PUBLISHING",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 91.25,
+              "comparison": ">=",
+              "threshold": 90.0,
+              "pass": true
+            },
+            {
+              "predicate": "SURVIVAL_BUNDLE_A",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 91.25,
+              "comparison": ">=",
+              "threshold": 70.0,
+              "pass": true
+            }
+          ],
+          "point_in_time_valid": true
+        },
+        {
+          "stock_id": "4106",
+          "state": "RISK_CONTROL_PRIMARY_SHADOW",
+          "predicate_trace": [
+            {
+              "predicate": "BRANCH_R_MARKET_STATE",
+              "feature": "market_path_state",
+              "raw": "RISK_OFF",
+              "pass": true
+            },
+            {
+              "predicate": "MARKET_PUBLISHING",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 91.25,
+              "comparison": ">=",
+              "threshold": 90.0,
+              "pass": true
+            },
+            {
+              "predicate": "SURVIVAL_BUNDLE_A",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 91.25,
+              "comparison": ">=",
+              "threshold": 70.0,
+              "pass": true
+            }
+          ],
+          "point_in_time_valid": true
+        },
+        {
+          "stock_id": "4736",
+          "state": "RISK_CONTROL_PRIMARY_SHADOW",
+          "predicate_trace": [
+            {
+              "predicate": "BRANCH_R_MARKET_STATE",
+              "feature": "market_path_state",
+              "raw": "RISK_OFF",
+              "pass": true
+            },
+            {
+              "predicate": "MARKET_PUBLISHING",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 91.25,
+              "comparison": ">=",
+              "threshold": 90.0,
+              "pass": true
+            },
+            {
+              "predicate": "SURVIVAL_BUNDLE_A",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 91.25,
+              "comparison": ">=",
+              "threshold": 70.0,
+              "pass": true
+            }
+          ],
+          "point_in_time_valid": true
+        },
+        {
+          "stock_id": "6534",
+          "state": "RISK_CONTROL_PRIMARY_SHADOW",
+          "predicate_trace": [
+            {
+              "predicate": "BRANCH_R_MARKET_STATE",
+              "feature": "market_path_state",
+              "raw": "RISK_OFF",
+              "pass": true
+            },
+            {
+              "predicate": "MARKET_PUBLISHING",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 91.25,
+              "comparison": ">=",
+              "threshold": 90.0,
+              "pass": true
+            },
+            {
+              "predicate": "SURVIVAL_BUNDLE_A",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 91.25,
+              "comparison": ">=",
+              "threshold": 70.0,
+              "pass": true
+            }
+          ],
+          "point_in_time_valid": true
+        },
+        {
+          "stock_id": "8411",
+          "state": "RISK_CONTROL_PRIMARY_SHADOW",
+          "predicate_trace": [
+            {
+              "predicate": "BRANCH_R_MARKET_STATE",
+              "feature": "market_path_state",
+              "raw": "RISK_OFF",
+              "pass": true
+            },
+            {
+              "predicate": "MARKET_PUBLISHING",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 91.25,
+              "comparison": ">=",
+              "threshold": 90.0,
+              "pass": true
+            },
+            {
+              "predicate": "SURVIVAL_BUNDLE_A",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 91.25,
+              "comparison": ">=",
+              "threshold": 70.0,
+              "pass": true
+            }
+          ],
+          "point_in_time_valid": true
+        },
+        {
+          "stock_id": "8462",
+          "state": "RISK_CONTROL_PRIMARY_SHADOW",
+          "predicate_trace": [
+            {
+              "predicate": "BRANCH_R_MARKET_STATE",
+              "feature": "market_path_state",
+              "raw": "RISK_OFF",
+              "pass": true
+            },
+            {
+              "predicate": "MARKET_PUBLISHING",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 91.25,
+              "comparison": ">=",
+              "threshold": 90.0,
+              "pass": true
+            },
+            {
+              "predicate": "SURVIVAL_BUNDLE_A",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 91.25,
+              "comparison": ">=",
+              "threshold": 70.0,
+              "pass": true
+            }
+          ],
+          "point_in_time_valid": true
+        },
+        {
+          "stock_id": "8481",
+          "state": "RISK_CONTROL_PRIMARY_SHADOW",
+          "predicate_trace": [
+            {
+              "predicate": "BRANCH_R_MARKET_STATE",
+              "feature": "market_path_state",
+              "raw": "RISK_OFF",
+              "pass": true
+            },
+            {
+              "predicate": "MARKET_PUBLISHING",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 91.25,
+              "comparison": ">=",
+              "threshold": 90.0,
+              "pass": true
+            },
+            {
+              "predicate": "SURVIVAL_BUNDLE_A",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 91.25,
+              "comparison": ">=",
+              "threshold": 70.0,
+              "pass": true
+            }
+          ],
+          "point_in_time_valid": true
+        }
+      ],
+      "zero_primary_reason": null
+    }
+  },
+  {
+    "evaluation_date": "2026-07-15",
+    "config_hash": "a1b9b6306a17bb9b089c2695ac7dbdef29e6455d76827ec96614000f578d98a0",
+    "production_market_regime": "RISK_OFF",
+    "market_path_state": "RISK_OFF",
+    "normal_branch": {
+      "day0_candidates": [],
+      "day1_evaluations": []
+    },
+    "risk_branch": {
+      "eligible_candidates": 8,
+      "selected_candidates": [
+        {
+          "stock_id": "6464",
+          "state": "RISK_CONTROL_PRIMARY_SHADOW",
+          "predicate_trace": [
+            {
+              "predicate": "BRANCH_R_MARKET_STATE",
+              "feature": "market_path_state",
+              "raw": "RISK_OFF",
+              "pass": true
+            },
+            {
+              "predicate": "MARKET_PUBLISHING",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 92.08333333333331,
+              "comparison": ">=",
+              "threshold": 90.0,
+              "pass": true
+            },
+            {
+              "predicate": "SURVIVAL_BUNDLE_A",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 92.08333333333331,
+              "comparison": ">=",
+              "threshold": 70.0,
+              "pass": true
+            }
+          ],
+          "point_in_time_valid": true
+        },
+        {
+          "stock_id": "9927",
+          "state": "RISK_CONTROL_PRIMARY_SHADOW",
+          "predicate_trace": [
+            {
+              "predicate": "BRANCH_R_MARKET_STATE",
+              "feature": "market_path_state",
+              "raw": "RISK_OFF",
+              "pass": true
+            },
+            {
+              "predicate": "MARKET_PUBLISHING",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 92.08333333333331,
+              "comparison": ">=",
+              "threshold": 90.0,
+              "pass": true
+            },
+            {
+              "predicate": "SURVIVAL_BUNDLE_A",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 92.08333333333331,
+              "comparison": ">=",
+              "threshold": 70.0,
+              "pass": true
+            }
+          ],
+          "point_in_time_valid": true
+        }
+      ],
+      "zero_primary_reason": null
+    }
+  },
+  {
+    "evaluation_date": "2026-07-16",
+    "config_hash": "a1b9b6306a17bb9b089c2695ac7dbdef29e6455d76827ec96614000f578d98a0",
+    "production_market_regime": "RISK_OFF",
+    "market_path_state": "RISK_OFF",
+    "normal_branch": {
+      "day0_candidates": [],
+      "day1_evaluations": []
+    },
+    "risk_branch": {
+      "eligible_candidates": 15,
+      "selected_candidates": [
+        {
+          "stock_id": "00916",
+          "state": "RISK_CONTROL_PRIMARY_SHADOW",
+          "predicate_trace": [
+            {
+              "predicate": "BRANCH_R_MARKET_STATE",
+              "feature": "market_path_state",
+              "raw": "RISK_OFF",
+              "pass": true
+            },
+            {
+              "predicate": "MARKET_PUBLISHING",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 94.16666666666669,
+              "comparison": ">=",
+              "threshold": 90.0,
+              "pass": true
+            },
+            {
+              "predicate": "SURVIVAL_BUNDLE_A",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 94.16666666666669,
+              "comparison": ">=",
+              "threshold": 70.0,
+              "pass": true
+            }
+          ],
+          "point_in_time_valid": true
+        },
+        {
+          "stock_id": "1103",
+          "state": "RISK_CONTROL_PRIMARY_SHADOW",
+          "predicate_trace": [
+            {
+              "predicate": "BRANCH_R_MARKET_STATE",
+              "feature": "market_path_state",
+              "raw": "RISK_OFF",
+              "pass": true
+            },
+            {
+              "predicate": "MARKET_PUBLISHING",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 94.16666666666669,
+              "comparison": ">=",
+              "threshold": 90.0,
+              "pass": true
+            },
+            {
+              "predicate": "SURVIVAL_BUNDLE_A",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 94.16666666666669,
+              "comparison": ">=",
+              "threshold": 70.0,
+              "pass": true
+            }
+          ],
+          "point_in_time_valid": true
+        },
+        {
+          "stock_id": "1436",
+          "state": "RISK_CONTROL_PRIMARY_SHADOW",
+          "predicate_trace": [
+            {
+              "predicate": "BRANCH_R_MARKET_STATE",
+              "feature": "market_path_state",
+              "raw": "RISK_OFF",
+              "pass": true
+            },
+            {
+              "predicate": "MARKET_PUBLISHING",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 94.16666666666669,
+              "comparison": ">=",
+              "threshold": 90.0,
+              "pass": true
+            },
+            {
+              "predicate": "SURVIVAL_BUNDLE_A",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 94.16666666666669,
+              "comparison": ">=",
+              "threshold": 70.0,
+              "pass": true
+            }
+          ],
+          "point_in_time_valid": true
+        },
+        {
+          "stock_id": "1442",
+          "state": "RISK_CONTROL_PRIMARY_SHADOW",
+          "predicate_trace": [
+            {
+              "predicate": "BRANCH_R_MARKET_STATE",
+              "feature": "market_path_state",
+              "raw": "RISK_OFF",
+              "pass": true
+            },
+            {
+              "predicate": "MARKET_PUBLISHING",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 94.16666666666669,
+              "comparison": ">=",
+              "threshold": 90.0,
+              "pass": true
+            },
+            {
+              "predicate": "SURVIVAL_BUNDLE_A",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 94.16666666666669,
+              "comparison": ">=",
+              "threshold": 70.0,
+              "pass": true
+            }
+          ],
+          "point_in_time_valid": true
+        },
+        {
+          "stock_id": "2459",
+          "state": "RISK_CONTROL_PRIMARY_SHADOW",
+          "predicate_trace": [
+            {
+              "predicate": "BRANCH_R_MARKET_STATE",
+              "feature": "market_path_state",
+              "raw": "RISK_OFF",
+              "pass": true
+            },
+            {
+              "predicate": "MARKET_PUBLISHING",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 94.16666666666669,
+              "comparison": ">=",
+              "threshold": 90.0,
+              "pass": true
+            },
+            {
+              "predicate": "SURVIVAL_BUNDLE_A",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 94.16666666666669,
+              "comparison": ">=",
+              "threshold": 70.0,
+              "pass": true
+            }
+          ],
+          "point_in_time_valid": true
+        }
+      ],
+      "zero_primary_reason": null
+    }
+  },
+  {
+    "evaluation_date": "2026-07-17",
+    "config_hash": "a1b9b6306a17bb9b089c2695ac7dbdef29e6455d76827ec96614000f578d98a0",
+    "production_market_regime": "RISK_OFF",
+    "market_path_state": "RISK_OFF",
+    "normal_branch": {
+      "day0_candidates": [],
+      "day1_evaluations": []
+    },
+    "risk_branch": {
+      "eligible_candidates": 16,
+      "selected_candidates": [],
+      "zero_primary_reason": "NO_CANDIDATE_PASSED_FROZEN_P4"
+    }
+  },
+  {
+    "evaluation_date": "2026-07-20",
+    "config_hash": "a1b9b6306a17bb9b089c2695ac7dbdef29e6455d76827ec96614000f578d98a0",
+    "production_market_regime": "RISK_OFF",
+    "market_path_state": "RISK_OFF",
+    "normal_branch": {
+      "day0_candidates": [],
+      "day1_evaluations": []
+    },
+    "risk_branch": {
+      "eligible_candidates": 14,
+      "selected_candidates": [],
+      "zero_primary_reason": "NO_CANDIDATE_PASSED_FROZEN_P4"
+    }
+  },
+  {
+    "evaluation_date": "2026-07-21",
+    "config_hash": "a1b9b6306a17bb9b089c2695ac7dbdef29e6455d76827ec96614000f578d98a0",
+    "production_market_regime": "RISK_OFF",
+    "market_path_state": "RISK_OFF",
+    "normal_branch": {
+      "day0_candidates": [],
+      "day1_evaluations": []
+    },
+    "risk_branch": {
+      "eligible_candidates": 6,
+      "selected_candidates": [],
+      "zero_primary_reason": "NO_CANDIDATE_PASSED_FROZEN_P4"
+    }
+  },
+  {
+    "evaluation_date": "2026-07-22",
+    "config_hash": "a1b9b6306a17bb9b089c2695ac7dbdef29e6455d76827ec96614000f578d98a0",
+    "production_market_regime": "RISK_OFF",
+    "market_path_state": "RISK_OFF",
+    "normal_branch": {
+      "day0_candidates": [],
+      "day1_evaluations": []
+    },
+    "risk_branch": {
+      "eligible_candidates": 25,
+      "selected_candidates": [],
+      "zero_primary_reason": "NO_CANDIDATE_PASSED_FROZEN_P4"
+    }
+  },
+  {
+    "evaluation_date": "2026-07-23",
+    "config_hash": "a1b9b6306a17bb9b089c2695ac7dbdef29e6455d76827ec96614000f578d98a0",
+    "production_market_regime": "RISK_OFF",
+    "market_path_state": "RISK_OFF",
+    "normal_branch": {
+      "day0_candidates": [],
+      "day1_evaluations": []
+    },
+    "risk_branch": {
+      "eligible_candidates": 7,
+      "selected_candidates": [
+        {
+          "stock_id": "1325",
+          "state": "RISK_CONTROL_PRIMARY_SHADOW",
+          "predicate_trace": [
+            {
+              "predicate": "BRANCH_R_MARKET_STATE",
+              "feature": "market_path_state",
+              "raw": "RISK_OFF",
+              "pass": true
+            },
+            {
+              "predicate": "MARKET_PUBLISHING",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 90.83333333333331,
+              "comparison": ">=",
+              "threshold": 90.0,
+              "pass": true
+            },
+            {
+              "predicate": "SURVIVAL_BUNDLE_A",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 90.83333333333331,
+              "comparison": ">=",
+              "threshold": 70.0,
+              "pass": true
+            }
+          ],
+          "point_in_time_valid": true
+        }
+      ],
+      "zero_primary_reason": null
+    }
+  },
+  {
+    "evaluation_date": "2026-07-24",
+    "config_hash": "a1b9b6306a17bb9b089c2695ac7dbdef29e6455d76827ec96614000f578d98a0",
+    "production_market_regime": "RISK_OFF",
+    "market_path_state": "RISK_OFF",
+    "normal_branch": {
+      "day0_candidates": [],
+      "day1_evaluations": []
+    },
+    "risk_branch": {
+      "eligible_candidates": 10,
+      "selected_candidates": [
+        {
+          "stock_id": "2385",
+          "state": "RISK_CONTROL_PRIMARY_SHADOW",
+          "predicate_trace": [
+            {
+              "predicate": "BRANCH_R_MARKET_STATE",
+              "feature": "market_path_state",
+              "raw": "RISK_OFF",
+              "pass": true
+            },
+            {
+              "predicate": "MARKET_PUBLISHING",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 91.25,
+              "comparison": ">=",
+              "threshold": 90.0,
+              "pass": true
+            },
+            {
+              "predicate": "SURVIVAL_BUNDLE_A",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 91.25,
+              "comparison": ">=",
+              "threshold": 70.0,
+              "pass": true
+            }
+          ],
+          "point_in_time_valid": true
+        },
+        {
+          "stock_id": "2616",
+          "state": "RISK_CONTROL_PRIMARY_SHADOW",
+          "predicate_trace": [
+            {
+              "predicate": "BRANCH_R_MARKET_STATE",
+              "feature": "market_path_state",
+              "raw": "RISK_OFF",
+              "pass": true
+            },
+            {
+              "predicate": "MARKET_PUBLISHING",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 91.25,
+              "comparison": ">=",
+              "threshold": 90.0,
+              "pass": true
+            },
+            {
+              "predicate": "SURVIVAL_BUNDLE_A",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 91.25,
+              "comparison": ">=",
+              "threshold": 70.0,
+              "pass": true
+            }
+          ],
+          "point_in_time_valid": true
+        },
+        {
+          "stock_id": "2701",
+          "state": "RISK_CONTROL_PRIMARY_SHADOW",
+          "predicate_trace": [
+            {
+              "predicate": "BRANCH_R_MARKET_STATE",
+              "feature": "market_path_state",
+              "raw": "RISK_OFF",
+              "pass": true
+            },
+            {
+              "predicate": "MARKET_PUBLISHING",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 91.25,
+              "comparison": ">=",
+              "threshold": 90.0,
+              "pass": true
+            },
+            {
+              "predicate": "SURVIVAL_BUNDLE_A",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 91.25,
+              "comparison": ">=",
+              "threshold": 70.0,
+              "pass": true
+            }
+          ],
+          "point_in_time_valid": true
+        },
+        {
+          "stock_id": "7765",
+          "state": "RISK_CONTROL_PRIMARY_SHADOW",
+          "predicate_trace": [
+            {
+              "predicate": "BRANCH_R_MARKET_STATE",
+              "feature": "market_path_state",
+              "raw": "RISK_OFF",
+              "pass": true
+            },
+            {
+              "predicate": "MARKET_PUBLISHING",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 91.25,
+              "comparison": ">=",
+              "threshold": 90.0,
+              "pass": true
+            },
+            {
+              "predicate": "SURVIVAL_BUNDLE_A",
+              "feature": "down_survival_ratio_top120_percentile",
+              "raw": 91.25,
+              "comparison": ">=",
+              "threshold": 70.0,
+              "pass": true
+            }
+          ],
+          "point_in_time_valid": true
+        }
+      ],
+      "zero_primary_reason": null
+    }
+  },
+  {
+    "evaluation_date": "2026-07-27",
+    "config_hash": "a1b9b6306a17bb9b089c2695ac7dbdef29e6455d76827ec96614000f578d98a0",
+    "production_market_regime": null,
+    "market_path_state": null,
+    "normal_branch": {
+      "day0_candidates": [],
+      "day1_evaluations": []
+    },
+    "risk_branch": {
+      "eligible_candidates": null,
+      "selected_candidates": [],
+      "zero_primary_reason": "INPUT_SNAPSHOT_UNAVAILABLE_NOT_FABRICATED"
+    }
+  }
+]

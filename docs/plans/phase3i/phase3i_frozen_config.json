@@ -1,0 +1,213 @@
+{
+  "research_start_date": "2026-07-28",
+  "prospective_new_data_starts_after": "2026-07-27",
+  "code_version": "c094178c6c49274483c851ff010ef1427f103cc2",
+  "runner_version": "phase3i_runner_v1",
+  "prompt_version": "v6",
+  "schema_version": "phase3i_schema_v1",
+  "outcome_version": "day10_close_v1_plus12_minus6",
+  "candidate_source_version": "phase3f_v2_reconstructed_abcd_raw_union_first_seen_proxy",
+  "momentum_score_version": "v1_available_weight_normalization_disabled",
+  "top120_version": "phase2_v2_1_momentum_score_desc_then_inst_flow_3d_desc_then_stock_id",
+  "market_path_version": "phase3f_v2_dataset_a_fixed_distribution",
+  "day1_c_rule_version": "phase3h_p6_d1_c_frozen_c094178",
+  "day1_c_threshold_source": "phase3h_discovery_dates_2026_06_15_through_2026_06_22",
+  "market_survival_rule_version": "phase3g_p4_market_plus_survival_frozen_c094178",
+  "survival_threshold_source": "phase3f_v2_dataset_a_locked",
+  "normal_definition": {
+    "market_path_state": [
+      "NORMAL"
+    ],
+    "production_market_regime": [
+      "BULL_TREND",
+      "healthy_VOLATILE_RANGE"
+    ]
+  },
+  "outcome_definition": {
+    "winner": "return_10d >= 12.0",
+    "neutral": "-6.0 < return_10d < 12.0",
+    "loser": "return_10d <= -6.0",
+    "episode_reference": "Day0 close",
+    "promotion_reference": "Day1 close"
+  },
+  "day1_c_thresholds": {
+    "d0_fresh_rs_p40": 1.0,
+    "d0_fresh_volume_p40": 3.0,
+    "d0_rs_slope5_p70": 6.708057106025629,
+    "d0_rank_change3_p50": 114.0,
+    "d1_market_excess_p70": 0.033209940654632675,
+    "d1_rs_change_p40": 0.04062997403032401,
+    "d1_rank_change_p40": -22.4,
+    "d1_flow_p50": 4943366.0,
+    "d1_close_location_p30": 0.43671497584541175,
+    "d1_upper_shadow_p70": 0.23815384615384746
+  },
+  "day1_c_predicate": {
+    "d0_freshness": {
+      "logic": "OR",
+      "predicates": [
+        {
+          "feature": "days_since_first_rs_above_80",
+          "usage": "raw trading-session count",
+          "comparison": "<=",
+          "threshold": 1.0,
+          "missing_value_policy": "comparison_false"
+        },
+        {
+          "feature": "days_since_first_volume_expansion",
+          "usage": "raw trading-session count",
+          "comparison": "<=",
+          "threshold": 3.0,
+          "missing_value_policy": "comparison_false"
+        }
+      ],
+      "pass_logic": "at least one predicate true"
+    },
+    "d0_rs_path": {
+      "feature": "rs_slope_5d",
+      "usage": "raw percentile-point slope per session",
+      "comparison": ">=",
+      "threshold": 6.708057106025629,
+      "missing_value_policy": "comparison_false"
+    },
+    "d0_rank_health": {
+      "feature": "momentum_rank_change_3d",
+      "usage": "raw rank improvement",
+      "comparison": ">=",
+      "threshold": 114.0,
+      "missing_value_policy": "comparison_false"
+    },
+    "d0_a": {
+      "logic": "count_true(d0_freshness,d0_rs_path,d0_rank_health)>=2",
+      "missing_value_policy": "component comparison false"
+    },
+    "d1_relative": {
+      "feature": "day1_market_excess_return",
+      "usage": "raw percentage points",
+      "comparison": ">=",
+      "threshold": 0.033209940654632675,
+      "missing_value_policy": "comparison_false"
+    },
+    "d1_rs_health": {
+      "feature": "day1_rs_change",
+      "usage": "raw percentile-point change",
+      "comparison": ">=",
+      "threshold": 0.04062997403032401,
+      "missing_value_policy": "comparison_false"
+    },
+    "d1_rank_health": {
+      "logic": "day1_top120_status is true OR day1_momentum_rank_change >= threshold",
+      "threshold": -22.4,
+      "missing_value_policy": "missing rank comparison false; absent Top120 membership false"
+    },
+    "d1_a": {
+      "logic": "d0_a AND count_true(d1_relative,d1_rs_health,d1_rank_health)>=2",
+      "missing_value_policy": "component comparison false"
+    },
+    "d1_flow": {
+      "logic": "day1_institution_flow >= threshold OR day1_price_flow_alignment == 1",
+      "threshold": 4943366.0,
+      "missing_value_policy": "stock absent from frozen flow source uses 0.0; alignment comparison false"
+    },
+    "d1_controlled": {
+      "logic": "day1_close_location >= lower_threshold AND day1_upper_shadow <= upper_threshold AND NOT day1_failed_follow_through",
+      "lower_threshold": 0.43671497584541175,
+      "upper_threshold": 0.23815384615384746,
+      "missing_value_policy": "required comparison false"
+    },
+    "day1_failed_follow_through": {
+      "logic": "(day1_market_excess_return < 0 AND day1_close_location < 0.4) OR (day0_price_new_high_volume_confirmation AND NOT day1_breakout_hold)",
+      "missing_value_policy": "boolean components follow frozen calculation"
+    },
+    "d1_c_pass": {
+      "logic": "d1_a AND d1_flow AND d1_controlled",
+      "pass_state": "HIGH_CONVICTION_PRIMARY_SHADOW",
+      "fail_state": "NOT_HIGH_CONVICTION_SHADOW",
+      "day3_rescue": false
+    }
+  },
+  "market_predicate": {
+    "NORMAL": {
+      "comparison": "always true",
+      "note": "excluded from Branch R"
+    },
+    "WEAKENING": {
+      "feature": "down_survival_ratio_top120_percentile",
+      "usage": "within-date Top120 percentile",
+      "comparison": ">=",
+      "threshold": 70.0,
+      "missing_value_policy": "MISSING_REQUIRED_FEATURE and fail"
+    },
+    "RISK_OFF": {
+      "feature": "down_survival_ratio_top120_percentile",
+      "usage": "within-date Top120 percentile",
+      "comparison": ">=",
+      "threshold": 90.0,
+      "missing_value_policy": "MISSING_REQUIRED_FEATURE and fail"
+    },
+    "other": {
+      "comparison": "false",
+      "missing_value_policy": "fail"
+    }
+  },
+  "survival_predicate": {
+    "feature": "down_survival_ratio_top120_percentile",
+    "usage": "within-date Top120 percentile",
+    "comparison": ">=",
+    "threshold": 70.0,
+    "missing_value_policy": "MISSING_REQUIRED_FEATURE and fail",
+    "pass_logic": "Bundle A pass"
+  },
+  "market_plus_survival_predicate": {
+    "logic": "market_predicate AND survival_predicate",
+    "WEAKENING_effective_threshold": 70.0,
+    "RISK_OFF_effective_threshold": 90.0,
+    "pass_state": "RISK_CONTROL_PRIMARY_SHADOW",
+    "fail_state": "FILTERED_BY_RISK_CONTROL_SHADOW"
+  },
+  "feature_definitions": {
+    "days_since_first_rs_above_80": "sessions since onset of rs_market_percentile_20d >=80 within frozen 20-session lookback",
+    "days_since_first_volume_expansion": "sessions since onset of volume/prior20_mean >=1.2 within frozen 20-session lookback",
+    "rs_slope_5d": "(Day0 rs_market_percentile_20d - Day-5 percentile)/5",
+    "momentum_rank_change_3d": "frozen raw-union rank at Day-3 minus Day0 rank; positive means improvement",
+    "day1_market_excess_return": "stock Day0-close to Day1-close return minus TAIEX return",
+    "day1_rs_change": "Day1 rs_market_percentile_20d minus Day0 percentile",
+    "day1_momentum_rank_change": "Day0 raw-union rank minus Day1 raw-union rank",
+    "day1_institution_flow": "Day1 sum of frozen institutional net_amount_est",
+    "day1_close_location": "(close-low)/(high-low) on Day1",
+    "day1_upper_shadow": "(high-max(open,close))/(high-low) on Day1",
+    "down_survival_ratio_top120_percentile": "within-date Top120 percentile of five-session market-down-day outperformance ratio"
+  },
+  "expected_input_columns": {
+    "branch_n": [
+      "stock_id",
+      "episode_start_date",
+      "market_path_state",
+      "days_since_first_rs_above_80",
+      "days_since_first_volume_expansion",
+      "rs_slope_5d",
+      "momentum_rank_change_3d",
+      "price_new_high_volume_confirmation",
+      "day1_market_excess_return",
+      "day1_rs_change",
+      "day1_top120_status",
+      "day1_momentum_rank_change",
+      "day1_institution_flow",
+      "day1_price_flow_alignment",
+      "day1_close_location",
+      "day1_upper_shadow",
+      "day1_breakout_hold",
+      "promotion_reference_close"
+    ],
+    "branch_r": [
+      "stock_id",
+      "episode_start_date",
+      "market_path_state",
+      "down_survival_ratio_top120_percentile",
+      "entry_close"
+    ]
+  },
+  "pocket_policy": "DESCRIPTIVE_CONTEXT_ONLY",
+  "watchlist_policy": "OBJECTIVE_LOG_ONLY_NO_DECISION_EFFECT",
+  "config_hash": "a1b9b6306a17bb9b089c2695ac7dbdef29e6455d76827ec96614000f578d98a0"
+}
