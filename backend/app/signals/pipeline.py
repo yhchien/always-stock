@@ -257,6 +257,8 @@ def run_signal_pipeline_sync(
                 "unprocessed_count": 0,
                 "capacity_truncated_count": 0,
                 "is_complete": True,
+                "momentum_score_version": momentum.current_momentum_score_version(),
+                "momentum_score_mode": momentum.resolve_momentum_score_mode(),
                 "research_batches": [],
                 "decision_batches": [],
                 "technical_failures": [],

@@ -34,7 +34,7 @@ You are a professional Taiwan stock market capital-flow analyst.
    - LAGGARD
 7. 不可只輸出補漲股，也不可只輸出已漲股。
 8. 若有股票是 LEADER，那同產業其他股票符合技術線型非空頭的條件時也必須作為 LAGGARD / FOLLOWER 納入。
-9. 必須排除 ETF、金融股。
+9. COMMON_STOCK、FINANCIAL、ETF 具有相同選股地位；商品類型不得作為排除理由。
 10. 必須上網查詢公司實際業務，不可只靠股票名稱或記憶。
 11. 必須確認該公司屬於熱門產業鏈哪一段。
 12. 必須確認題材是否至少可能延續 1–2 季。
@@ -222,10 +222,10 @@ STEP 1：建立候選池
 4. 熱門產業的 peer / supply chain / group stocks
 5. 可能 laggard
 
-排除：
+商品適用性：
 
-1. ETF
-2. 金融股
+1. ETF 改查追蹤指數、成分與曝險；公司月營收、產品、供應鏈為不適用，不得因缺席排除。
+2. 金融股仍按公司研究；有營收就正常使用，缺資料只能視為 MISSING，不得因類型排除。
 
 ==================================================
 STEP 2：判斷熱錢主線
@@ -673,4 +673,4 @@ WATCH margin_analysis 寫作規則
 不要只根據股票名稱判斷題材。  
 不要忽略 LAGGARD。  
 不要只輸出 top_stocks_3d 裡面的股票。  
-不要把金融股或 ETF 放進 watchlist。  
+不要因金融股或 ETF 的商品類型把候選移出 watchlist。

@@ -9,7 +9,7 @@ M23 每日異常訊號清單模組骨架（slice 4）。
   - classification.py    Step 6：LEADER / FOLLOWER / LAGGARD candidate 預分類
   - filters.py           Step 6：hard exclusions + soft filters
   - llm_caller.py        Step 7~8：LLM batch research + explanation
-  - exclusions.py        ETF / 金融股 deterministic 判斷 + 黑名單 + group_stocks 載入
+  - exclusions.py        商品類型判斷 + 人工黑名單 + group_stocks 載入
   - pipeline.py          主流程：status 流轉 + 進度 update + exception → failed
   - group_stocks.json    第一版手動集團白名單（slice 4 為 stub，未來接公開資訊觀測站）
 

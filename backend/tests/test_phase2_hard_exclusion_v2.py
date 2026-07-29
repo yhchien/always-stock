@@ -132,6 +132,17 @@ def test_g_financial_not_hard_excluded():
     assert rg.is_true_hard_exclusion(c) is None
 
 
+def test_hard_exclusion_is_asset_type_invariant_for_equal_evidence():
+    variants = [
+        _candidate("COMMON", asset_type="COMMON_STOCK"),
+        _candidate("FIN", asset_type="FINANCIAL", is_financial=True),
+        _candidate("ETF", asset_type="ETF", is_etf=True),
+    ]
+    results = [rg.build_hard_exclusion_result(c) for c in variants]
+    assert [r["excluded"] for r in results] == [False, False, False]
+    assert [r["reason"] for r in results] == [None, None, None]
+
+
 def test_candidate_source_combination_does_not_change_hard_exclusion():
     """P3B：只改來源通道，不得讓 backend 從存活變成自動 REMOVE。"""
     source_a = _candidate(

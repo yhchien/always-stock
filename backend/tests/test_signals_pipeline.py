@@ -304,6 +304,11 @@ def test_pipeline_persists_partial_failure_and_processing_summary(
         assert processing["decision_requested_count"] == 0
         assert processing["unprocessed_count"] == 1
         assert processing["capacity_truncated_count"] == 0
+        assert processing["momentum_score_mode"] == "applicability_aware"
+        assert (
+            processing["momentum_score_version"]
+            == pipeline_mod.momentum.MOMENTUM_SCORE_VERSION
+        )
         assert processing["is_complete"] is False
 
 

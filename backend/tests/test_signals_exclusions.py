@@ -86,11 +86,11 @@ def test_is_blacklisted_with_monkeypatched_set(monkeypatch):
 
 
 def test_should_exclude_etf():
-    assert should_exclude("0050", "元大台灣 50", "ETF") is True
+    assert should_exclude("0050", "元大台灣 50", "ETF") is False
 
 
 def test_should_exclude_financial():
-    assert should_exclude("2880", "華南金", "金融保險業") is True
+    assert should_exclude("2880", "華南金", "金融保險業") is False
 
 
 def test_should_exclude_normal_stock_returns_false():

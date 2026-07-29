@@ -46,6 +46,15 @@ def test_base_eligibility_does_not_reject_distribution_hint():
     assert roles.is_base_momentum_eligible(_candidate("A", soft_hints=["distribution"])) is True
 
 
+def test_base_eligibility_is_asset_type_invariant():
+    variants = [
+        _candidate("COMMON", asset_type="COMMON_STOCK"),
+        _candidate("FIN", asset_type="FINANCIAL", is_financial=True),
+        _candidate("ETF", asset_type="ETF", is_etf=True),
+    ]
+    assert [roles.is_base_momentum_eligible(c) for c in variants] == [True, True, True]
+
+
 def test_base_ineligible_gets_role_none_not_deleted():
     """§G：base 不合格不代表消失——呼叫端仍拿得到一筆 result，role=None。"""
     candidates = [_candidate("A", momentum_score=10.0)]

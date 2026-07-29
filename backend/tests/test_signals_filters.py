@@ -57,16 +57,16 @@ def _candidate(**overrides):
 # ---------- §9.1 Hard Exclusions ----------
 
 
-def test_hard_exclusions_drops_etf():
+def test_hard_exclusions_keeps_etf_when_other_rules_pass():
     pool = [_candidate(stock_id="0050", name="元大台灣 50")]
     out = apply_hard_exclusions(None, date(2026, 4, 25), pool)
-    assert out == []
+    assert len(out) == 1
 
 
-def test_hard_exclusions_drops_financial():
+def test_hard_exclusions_keeps_financial_when_other_rules_pass():
     pool = [_candidate(stock_id="2880", name="華南金", industry="金融保險業")]
     out = apply_hard_exclusions(None, date(2026, 4, 25), pool)
-    assert out == []
+    assert len(out) == 1
 
 
 def test_hard_exclusions_drops_negative_5d_flow_for_non_laggard():

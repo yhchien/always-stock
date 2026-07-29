@@ -213,8 +213,16 @@ def test_evidence_view_defaults_asset_type_to_common_stock_when_missing():
 
 def test_v6_default_prompt_version_used_when_no_force_env(monkeypatch):
     monkeypatch.delenv("SIGNALS_FORCE_PROMPT_VERSION", raising=False)
-    assert llm_caller._resolve_prompt_version("BULL_TREND") == "v6"
-    assert llm_caller._resolve_prompt_version(None) == "v6"
+    assert llm_caller._resolve_prompt_version("BULL_TREND") == "v6.1"
+    assert llm_caller._resolve_prompt_version(None) == "v6.1"
+
+
+def test_all_executable_prompts_enforce_asset_parity():
+    for path in set(llm_caller._PROMPT_PATHS.values()):
+        text = path.read_text(encoding="utf-8")
+        assert "必須排除 ETF、金融股" not in text
+        assert "不要把金融股或 ETF 放進 watchlist" not in text
+        assert "商品類型不得作為排除理由" in text or "具有相同選股地位" in text
 
 
 def test_v6_decision_prompt_contains_p0_selection_guardrails():

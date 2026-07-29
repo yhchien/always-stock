@@ -33,14 +33,14 @@ def _full_strength_candidate(**overrides):
     return base
 
 
-def test_momentum_score_full_strength_is_90():
-    """v1（預設，SIGNALS_MOMENTUM_SCORE_AVAILABLE_WEIGHT 未開）：滿分 = 30+25+20+15 = 90
-    （基本面 10 分缺席時直接貢獻 0，不 rescale——這是目前 production 的既有行為，
-    Phase 2 的 available-weight normalization 需要 shadow 驗證後才開關，見下方
-    test_momentum_score_available_weight_normalization_when_enabled）。"""
+def test_momentum_score_common_stock_missing_fundamental_stays_90():
+    """一般股 MISSING 不可冒充 N/A，因此缺基本面時維持 0 分且不重配權重。"""
     out = momentum.compute_momentum_score(_full_strength_candidate())
     assert out["momentum_score"] == 90.0
-    assert out["momentum_score_version"] == "v1"
+    assert out["momentum_score_version"] == momentum.MOMENTUM_SCORE_VERSION
+    assert out["fundamental_applicability"] == "MISSING"
+    assert out["missing_score_weight"] == 10.0
+    assert out["not_applicable_score_weight"] == 0.0
     assert out["score_confidence"] == "MEDIUM"
     detail = out["momentum_score_detail"]
     assert detail["price"] == 30.0
@@ -51,16 +51,80 @@ def test_momentum_score_full_strength_is_90():
     assert detail["risk_penalty"] == 0.0
 
 
-def test_momentum_score_available_weight_normalization_when_enabled(monkeypatch):
-    """Phase 2（2026-07-21，behind flag）：開啟 SIGNALS_MOMENTUM_SCORE_AVAILABLE_WEIGHT
-    後，核心四項滿分 + 缺基本面 → rescale 到 100 分滿分（missing != bad）。
-    這個 flag 預設關閉，要等 shadow replay 驗證過再由使用者決定是否正式開啟。"""
+def test_momentum_score_legacy_replay_honors_available_weight_env(monkeypatch):
+    """舊 env 只控制 explicit legacy replay，不污染 production applicability mode。"""
     monkeypatch.setattr(momentum, "_AVAILABLE_WEIGHT_NORMALIZATION_ENABLED", True)
-    out = momentum.compute_momentum_score(_full_strength_candidate())
+    out = momentum.compute_momentum_score(
+        _full_strength_candidate(),
+        score_mode="legacy",
+    )
     assert out["momentum_score"] == 100.0
-    assert out["momentum_score_version"] == "v2"
+    assert out["momentum_score_version"] == momentum.LEGACY_AVAILABLE_WEIGHT_SCORE_VERSION
     assert out["feature_coverage"] == 0.9
     assert out["score_confidence"] == "MEDIUM"
+
+
+def test_momentum_score_etf_fundamental_not_applicable_normalizes_to_100():
+    out = momentum.compute_momentum_score(
+        _full_strength_candidate(asset_type="ETF"),
+    )
+    assert out["momentum_score"] == 100.0
+    assert out["fundamental_applicability"] == "NOT_APPLICABLE"
+    assert out["applicable_score_weight"] == 90.0
+    assert out["missing_score_weight"] == 0.0
+    assert out["not_applicable_score_weight"] == 10.0
+    assert out["score_before_penalty"] == 100.0
+    assert out["feature_coverage"] == 1.0
+    assert out["score_confidence"] == "HIGH"
+
+
+def test_financial_fundamental_available_and_missing_are_not_na():
+    available = momentum.compute_momentum_score(
+        _full_strength_candidate(
+            asset_type="FINANCIAL",
+            revenue_yoy=12.0,
+            revenue_yoy_percentile=80.0,
+        )
+    )
+    missing = momentum.compute_momentum_score(
+        _full_strength_candidate(asset_type="FINANCIAL"),
+    )
+    assert available["fundamental_applicability"] == "AVAILABLE"
+    assert available["momentum_score_detail"]["fundamental"] == 4.8
+    assert missing["fundamental_applicability"] == "MISSING"
+    assert missing["momentum_score"] == 90.0
+
+
+@pytest.mark.parametrize("asset_type", ["COMMON_STOCK", "FINANCIAL", "ETF"])
+def test_same_complete_evidence_has_same_score_across_asset_types(asset_type):
+    out = momentum.compute_momentum_score(
+        _full_strength_candidate(
+            asset_type=asset_type,
+            revenue_yoy=20.0,
+            revenue_yoy_percentile=100.0,
+            revenue_yoy_acceleration=5.0,
+            revenue_mom=3.0,
+        )
+    )
+    assert out["fundamental_applicability"] == (
+        "NOT_APPLICABLE" if asset_type == "ETF" else "AVAILABLE"
+    )
+    assert out["momentum_score"] == 100.0
+
+
+def test_etf_penalty_is_applied_after_not_applicable_normalization():
+    out = momentum.compute_momentum_score(
+        _full_strength_candidate(
+            asset_type="ETF",
+            volume_1d_to_60d_ratio=2.5,
+            open_1d=100.0,
+            close_1d=101.0,
+            high_1d=108.0,
+        )
+    )
+    assert out["score_before_penalty"] == 100.0
+    assert out["risk_penalty_total"] == 10.0
+    assert out["momentum_score"] == 90.0
 
 
 def test_momentum_score_all_missing_is_zero():
@@ -333,7 +397,17 @@ def test_build_signal_metrics_is_json_serializable():
         "distance_to_20d_high": -1.2,
         "distance_to_ma20": 4.0,
         "momentum_score": 76.5,
-        "momentum_score_detail": {"price": 28.0},
+        "momentum_score_detail": {
+            "price": 28.0,
+            "fundamental_applicability": "NOT_APPLICABLE",
+        },
+        "momentum_score_version": momentum.MOMENTUM_SCORE_VERSION,
+        "applicable_score_weight": 90.0,
+        "missing_score_weight": 0.0,
+        "not_applicable_score_weight": 10.0,
+        "score_before_penalty": 86.5,
+        "risk_penalty_total": 10.0,
+        "fundamental_applicability": "NOT_APPLICABLE",
     }
     regime_info = {"regime": "BULL_TREND", "reason": "多頭排列", "metrics": {"close": 47000.0}}
     out = momentum.build_signal_metrics(candidate, regime_info)
@@ -342,6 +416,10 @@ def test_build_signal_metrics_is_json_serializable():
     assert out["momentum_score"] == 76.5
     assert out["distance_to_high_20d"] == -1.2
     assert out["breadth_score"] is None
+    assert out["momentum_score_version"] == momentum.MOMENTUM_SCORE_VERSION
+    assert out["fundamental_applicability"] == "NOT_APPLICABLE"
+    assert out["not_applicable_score_weight"] == 10.0
+    assert out["risk_penalty_total"] == 10.0
 
 
 # ---------- 基本面動能（spec §6.1 D + available_date gate） ----------
@@ -369,6 +447,28 @@ def test_channel_d_yoy_turned_positive():
 def test_channel_d_industry_percentile():
     frame = {"A": _feats(revenue_yoy_industry_percentile=85.0)}
     assert momentum.select_momentum_candidates(frame)["fundamental"] == ["A"]
+
+
+@pytest.mark.parametrize("asset_type", ["COMMON_STOCK", "FINANCIAL", "ETF"])
+def test_channels_b_and_c_are_asset_type_invariant(asset_type):
+    frame = {
+        "A": _feats(
+            asset_type=asset_type,
+            rs_market_percentile_20d=90.0,
+            rs_rank_improvement_5d=250,
+        )
+    }
+    out = momentum.select_momentum_candidates(frame)
+    assert out["price_momentum"] == ["A"]
+    assert out["acceleration"] == ["A"]
+
+
+def test_channel_d_requires_actual_fundamental_evidence():
+    frame = {
+        "ETF": _feats(),
+        "FIN": _feats(revenue_yoy=20.0, revenue_yoy_accel_2m=True),
+    }
+    assert momentum.select_momentum_candidates(frame)["fundamental"] == ["FIN"]
 
 
 def test_momentum_score_fundamental_full_strength_adds_10():

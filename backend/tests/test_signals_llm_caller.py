@@ -748,11 +748,11 @@ def test_assemble_final_output_stamps_prompt_version():
 
 
 def test_resolve_prompt_version_routes_by_regime():
-    """2026-07-22 起所有 regime 預設跑 v6（Phase 2 → LLM contract 對齊版）。"""
-    assert llm_caller._resolve_prompt_version("BULL_TREND") == "v6"
-    assert llm_caller._resolve_prompt_version("VOLATILE_RANGE") == "v6"
-    assert llm_caller._resolve_prompt_version("RISK_OFF") == "v6"
-    assert llm_caller._resolve_prompt_version(None) == "v6"
+    """2026-07-29 起所有 regime 預設跑 v6.1 parity 對齊版。"""
+    assert llm_caller._resolve_prompt_version("BULL_TREND") == "v6.1"
+    assert llm_caller._resolve_prompt_version("VOLATILE_RANGE") == "v6.1"
+    assert llm_caller._resolve_prompt_version("RISK_OFF") == "v6.1"
+    assert llm_caller._resolve_prompt_version(None) == "v6.1"
 
 
 def test_resolve_prompt_version_env_override(monkeypatch):
@@ -772,7 +772,7 @@ def test_resolve_prompt_version_env_override(monkeypatch):
 
 
 def test_assemble_final_output_prompt_version_follows_regime():
-    """prompt_version label 預設走 v6，避免不同 regime 回到舊 prompt 方法論。"""
+    """prompt_version label 預設走 v6.1，避免不同 regime 回到舊 prompt 方法論。"""
     explanation = [_watch_item("2330", "台積電", "LEADER", "半導體業")]
 
     bull = llm_caller.assemble_final_output(
@@ -780,15 +780,15 @@ def test_assemble_final_output_prompt_version_follows_regime():
         explanation,
         candidate_pool_size=5,
     )
-    assert bull["prompt_version"] == "v6"
-    assert all(item["prompt_version"] == "v6" for item in bull["watchlist"])
+    assert bull["prompt_version"] == "v6.1"
+    assert all(item["prompt_version"] == "v6.1" for item in bull["watchlist"])
 
     volatile = llm_caller.assemble_final_output(
         {"market_state": "RANGE", "market_regime": "VOLATILE_RANGE"},
         explanation,
         candidate_pool_size=5,
     )
-    assert volatile["prompt_version"] == "v6"
+    assert volatile["prompt_version"] == "v6.1"
 
 
 def test_load_system_prompt_v1_file_exists_and_slices():

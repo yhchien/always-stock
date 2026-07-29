@@ -12,6 +12,7 @@ import pytest
 
 from app.models import (
     DailyPrice,
+    EtfClassification,
     IndustryDailyFlow,
     InstStockFlow,
     MarginTrade,
@@ -166,10 +167,8 @@ def test_compute_rankings_picks_top_industries_by_3d_net(db):
     inds = [r["industry_name"] for r in rankings["top_industries_3d"]]
     assert inds[0] == "半導體"
     assert inds[1] == "水泥"
-    # stock_count 目前仍以 stocks_master 原始 industry_name 比對；
-    # 本測試 seed 用「半導體業」，而 industry flow canonicalized 後是「半導體」。
     sem = next(r for r in rankings["top_industries_3d"] if r["industry_name"] == "半導體")
-    assert sem["stock_count"] == 0
+    assert sem["stock_count"] == 1
 
 
 def test_compute_rankings_top_stocks_uses_hot_money_service(db):
@@ -196,13 +195,13 @@ def test_compute_rankings_handles_empty_ingestion(db):
     assert out == {"top_industries_3d": [], "top_stocks_3d": []}
 
 
-def test_compute_rankings_skips_financial_industries_and_backfills(db):
-    """金融類產業即使三日淨買超最高，也要被跳過順延，由非金融產業遞補。"""
+def test_compute_rankings_includes_financial_industries_by_same_rule(db):
+    """P2：金融類產業淨買超最高時必須正常取得 A 通道產業名次。"""
     stocks = {"2330": {"name": "台積電", "industry": "半導體業"}}
     dates = [date(2026, 4, 20), date(2026, 4, 21), date(2026, 4, 22)]
     _seed_full_market(db, dates, stocks)
     for d in dates:
-        _seed_industry_flow(db, d, "金融保險業", 9.0e9)  # 最高，但金融 → 跳過
+        _seed_industry_flow(db, d, "金融保險業", 9.0e9)
         _seed_industry_flow(db, d, "半導體業", 5.0e9)
         _seed_industry_flow(db, d, "水泥", 1.0e9)
     db.commit()
@@ -211,10 +210,25 @@ def test_compute_rankings_skips_financial_industries_and_backfills(db):
     rankings = compute_rankings(db, date(2026, 4, 22), ingestion)
 
     inds = [r["industry_name"] for r in rankings["top_industries_3d"]]
-    assert "金融保險業" not in inds
-    # canonical 後半導體業 → 半導體
-    assert inds[0] == "半導體"
+    assert inds[0] == "金融保險業"
+    assert "半導體" in inds
     assert "水泥" in inds
+
+
+def test_compute_rankings_financial_industry_still_obeys_today_sell_brake(db):
+    stocks = {"2880": {"name": "華南金", "industry": "金融保險業"}}
+    dates = [date(2026, 4, 20), date(2026, 4, 21), date(2026, 4, 22)]
+    _seed_full_market(db, dates, stocks)
+    _seed_industry_flow(db, dates[0], "金融保險業", 9.0e9)
+    _seed_industry_flow(db, dates[1], "金融保險業", 9.0e9)
+    _seed_industry_flow(db, dates[2], "金融保險業", -5.0e9)
+    db.commit()
+
+    ingestion = ingest_data(db, dates[-1])
+    rankings = compute_rankings(db, dates[-1], ingestion)
+    assert "金融保險業" not in {
+        row["industry_name"] for row in rankings["top_industries_3d"]
+    }
 
 
 def test_compute_rankings_industry_ranking_uses_two_day_window(db):
@@ -328,6 +342,82 @@ def test_build_candidate_pool_no_longer_drops_etf_and_financial(db):
     assert by_id["2330"]["asset_type"] == "COMMON_STOCK"
     assert by_id["2330"]["is_etf"] is False
     assert by_id["2330"]["is_financial"] is False
+
+
+def test_build_candidate_pool_prefers_reliable_etf_classification(db):
+    """非 00、名稱無 ETF 關鍵字時，canonical table 仍可可靠辨識 ETF。"""
+    _seed_master(db, "T123", "全球市場基金", "其他")
+    d = date(2026, 4, 22)
+    _seed_price(db, d, "T123")
+    _seed_flow(db, d, "T123", "foreign", 1.0e8)
+    db.add(
+        EtfClassification(
+            stock_id="T123",
+            asset_type="ETF",
+            asset_class="EQUITY",
+            region="GLOBAL",
+            strategy="BROAD_MARKET",
+            themes=[],
+            is_leveraged=False,
+            is_inverse=False,
+            is_active=True,
+            classification_confidence="HIGH",
+            mapping_version="v1",
+        )
+    )
+    db.commit()
+    ingestion = ingest_data(db, d)
+    pool = build_candidate_pool(
+        db,
+        d,
+        ingestion,
+        {"top_industries_3d": [], "top_stocks_3d": [{"stock_id": "T123"}]},
+        momentum_frame={"T123": cp_mod.momentum.empty_momentum_features()},
+    )
+    assert pool[0]["asset_type"] == "ETF"
+    assert pool[0]["fundamental_applicability"] == "NOT_APPLICABLE"
+
+
+@pytest.mark.parametrize(
+    "channels,expected_sources",
+    [
+        ({"price_momentum": ["2330"], "acceleration": [], "fundamental": []}, ["B"]),
+        ({"price_momentum": [], "acceleration": ["2330"], "fundamental": []}, ["C"]),
+        ({"price_momentum": [], "acceleration": [], "fundamental": ["2330"]}, ["D"]),
+        (
+            {
+                "price_momentum": ["2330"],
+                "acceleration": ["2330"],
+                "fundamental": ["2330"],
+            },
+            ["B", "C", "D"],
+        ),
+    ],
+)
+def test_build_candidate_pool_supports_b_c_d_without_a(
+    db,
+    monkeypatch,
+    channels,
+    expected_sources,
+):
+    _seed_master(db, "2330", "台積電", "半導體業")
+    d = date(2026, 4, 22)
+    _seed_price(db, d, "2330")
+    _seed_flow(db, d, "2330", "foreign", 1.0e8)
+    db.commit()
+    monkeypatch.setattr(cp_mod.momentum, "select_momentum_candidates", lambda _: channels)
+
+    ingestion = ingest_data(db, d)
+    pool = build_candidate_pool(
+        db,
+        d,
+        ingestion,
+        {"top_industries_3d": [], "top_stocks_3d": []},
+        momentum_frame={"2330": cp_mod.momentum.empty_momentum_features()},
+    )
+    assert len(pool) == 1
+    assert pool[0]["source_A"] is False
+    assert pool[0]["candidate_sources"] == expected_sources
 
 
 def test_build_candidate_pool_still_drops_manual_blacklist(db, monkeypatch):

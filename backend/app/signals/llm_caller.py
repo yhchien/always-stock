@@ -71,16 +71,19 @@ DEFAULT_WATCH_REASON_MODEL = os.getenv(
 # gate / regime gate / role eligibility gate，只做外部事實驗證（業務/題材/供應鏈）
 # + 否決（veto）+ 中文解釋。v6 為新預設；v1/v4/v5 保留給人工重跑與版本對照實驗
 # （`SIGNALS_FORCE_PROMPT_VERSION` 強制指定）。
+# 2026-07-29：v6.1 只做 P2 金融/ETF selection parity 與證據適用性對齊，
+# 不重寫 v6 方法論；snapshot label bump 讓實驗可辨識。
 # regime 由 pipeline 以 TAIEX 指數 deterministic 算出後塞進 market_context["market_regime"]，
 # 各 LLM stage 讀該欄位 resolve 對應版本；label 也跟著 regime 走（見 _resolve_prompt_version）。
 PROMPT_VERSION_LEGACY_BULL = "v1"
 PROMPT_VERSION_LEGACY_VOLATILE = "v4"
 PROMPT_VERSION_MOMENTUM = "v5"
 PROMPT_VERSION_V6 = "v6"
-PROMPT_VERSION_BULL = PROMPT_VERSION_V6
-PROMPT_VERSION_VOLATILE = PROMPT_VERSION_V6
+PROMPT_VERSION_PARITY = "v6.1"
+PROMPT_VERSION_BULL = PROMPT_VERSION_PARITY
+PROMPT_VERSION_VOLATILE = PROMPT_VERSION_PARITY
 # 向後相容：舊 caller / 未提供 market_regime 時的預設版本（收斂版）
-PROMPT_VERSION = PROMPT_VERSION_V6
+PROMPT_VERSION = PROMPT_VERSION_PARITY
 
 # 系統 prompt 路徑（spec §10 LLM I/O contract 全文）：一版一檔。
 _PROMPTS_DIR = Path(__file__).resolve().parents[1] / "prompts"
@@ -89,6 +92,7 @@ _PROMPT_PATHS: Dict[str, Path] = {
     PROMPT_VERSION_LEGACY_VOLATILE: _PROMPTS_DIR / "watch-list-stock.md",
     PROMPT_VERSION_MOMENTUM: _PROMPTS_DIR / "watch-list-stock-v5.md",
     PROMPT_VERSION_V6: _PROMPTS_DIR / "watch-list-stock-v6.md",
+    PROMPT_VERSION_PARITY: _PROMPTS_DIR / "watch-list-stock-v6.md",
 }
 # 保留舊常數名（部分工具 / 訊息引用）指向預設版檔案
 _PROMPT_PATH = _PROMPT_PATHS[PROMPT_VERSION]
@@ -104,7 +108,7 @@ def _resolve_prompt_version(market_regime: Optional[str]) -> str:
     forced = os.getenv("SIGNALS_FORCE_PROMPT_VERSION", "").strip()
     if forced in _PROMPT_PATHS:
         return forced
-    return PROMPT_VERSION_V6
+    return PROMPT_VERSION_PARITY
 
 # OpenAI 回應的 max tokens；reason 規則要求 500-1000 字 × batch 8 → 預留充足
 _MAX_OUTPUT_TOKENS = 8000
@@ -239,7 +243,7 @@ def run_research_batch(
     system_prompt = _load_system_prompt(stage="research", version=version)
     evidence_view = _to_evidence_view(stocks_batch)
 
-    if version == PROMPT_VERSION_V6:
+    if version in {PROMPT_VERSION_V6, PROMPT_VERSION_PARITY}:
         # LLM v6 contract（2026-07-22）：research 是「外部事實驗證」而非再分類。
         # 新增 asset_type-aware 研究指示 + VERIFIED/UNCONFIRMED/MISMATCH 驗證欄位；
         # 不再要求 LLM 對 `type` 重新判斷（那已經是 legacy display_type 相容層）。
@@ -262,9 +266,13 @@ def run_research_batch(
             "3. 若 `asset_type == \"ETF\"`：研究 ETF 的追蹤指數、資產類別、地區、策略、主要成分與題材曝險；"
             "   **不要**要求 ETF 提供公司月營收、核心產品、供應鏈位置——這些欄位對 ETF 不適用，"
             "   缺席不是弱勢（missing != bad）。\n"
-            "4. 每檔 stock 都有 `evidence` 段落，是後端 deterministic 從 DB 算出的數字；"
+            "4. 若 `asset_type == \"FINANCIAL\"`：仍按公司研究；有實際月營收就正常驗證，"
+            "   沒有資料只能標為 MISSING/UNCONFIRMED，不可當成不適用或弱勢。\n"
+            "5. `asset_type` 只決定適用的研究欄位，COMMON_STOCK / FINANCIAL / ETF "
+            "   具有相同選股地位，不得以商品類型或 instrument validation 本身 REMOVE。\n"
+            "6. 每檔 stock 都有 `evidence` 段落，是後端 deterministic 從 DB 算出的數字；"
             "   你的 research 結果應與 evidence 一致。\n"
-            "5. `business_validation` / `theme_validation` / `supply_chain_validation` 三個驗證欄位"
+            "7. `business_validation` / `theme_validation` / `supply_chain_validation` 三個驗證欄位"
             "   只能是 VERIFIED（有可信證據支持）/ UNCONFIRMED（資料不足，但沒有反證）/ "
             "   MISMATCH（有可信證據明確證明系統認定的關係不成立）。**沒找到最新新聞或題材文章"
             "   只能算 UNCONFIRMED，不可算 MISMATCH**——兩者天差地遠。\n\n"
@@ -767,7 +775,7 @@ def _run_decision_chunk(
     version = _resolve_prompt_version(market_context.get("market_regime"))
     system_prompt = _load_system_prompt(stage="decision", version=version)
 
-    if version == PROMPT_VERSION_V6:
+    if version in {PROMPT_VERSION_V6, PROMPT_VERSION_PARITY}:
         # LLM v6（2026-07-22）：backend_max_decision 是天花板（程式碼也會強制驗證，
         # 這裡只是先讓 LLM 自己對齊）；LLM 不再跑第二套 momentum/regime 數字門檻，
         # 只能因外部驗證失敗（veto_reason）把 WATCH 降級為 REMOVE。
@@ -895,7 +903,7 @@ def _run_decision_chunk(
         merged["backend_max_decision"] = backend_max_decision
         if sid in by_id:
             ext = by_id[sid]
-            if version == PROMPT_VERSION_V6:
+            if version in {PROMPT_VERSION_V6, PROMPT_VERSION_PARITY}:
                 # §十七：chip_trend/technical_status/entry_quality/sector_rotation_status/
                 # institution_flow_momentum 只能由 backend 提供，LLM 不得重新產生；
                 # 只有 capital_flow / margin_short_signal 兩項需要 LLM 綜合判斷。

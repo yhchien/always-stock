@@ -29,6 +29,7 @@ import {
 import { Dialog } from "@base-ui/react/dialog"
 
 import { CanonicalSectorTag } from "@/components/CanonicalSectorTag"
+import SignalAssetBadge from "@/components/SignalAssetBadge"
 import SignalEmotionCard, { type EmotionTone } from "@/components/SignalEmotionCard"
 import {
   isSignalProcessingIncomplete,
@@ -220,6 +221,8 @@ type ResolvedMomentum = {
   atrPct14d: number | null
   return20d: number | null
   return60d: number | null
+  fundamentalApplicability: string | null
+  fundamentalScore: number | null
   reasons: string[]
 }
 
@@ -241,6 +244,11 @@ function resolveMomentum(item: SignalWatchlistItem): ResolvedMomentum | null {
     atrPct14d: llm?.atr_pct_14d ?? null,
     return20d: pick(det?.return_20d, llm?.return_20d),
     return60d: pick(det?.return_60d, llm?.return_60d),
+    fundamentalApplicability:
+      det?.fundamental_applicability ??
+      det?.momentum_score_detail?.fundamental_applicability ??
+      null,
+    fundamentalScore: det?.momentum_score_detail?.fundamental ?? null,
     reasons: Array.isArray(llm?.momentum_reason) ? llm.momentum_reason : [],
   }
   if (resolved.score == null && resolved.rsMarketPct == null) return null
@@ -345,6 +353,18 @@ function MomentumPanel({ item }: { item: SignalWatchlistItem }) {
           label="趨勢效率 / ATR"
           value={`${fmt(m.trendEfficiency, 2)} / ${fmt(m.atrPct14d, 1, "%")}`}
         />
+        {m.fundamentalApplicability ? (
+          <MomentumMetric
+            label="公司基本面證據"
+            value={
+              m.fundamentalApplicability === "NOT_APPLICABLE"
+                ? "不適用（N/A）"
+                : m.fundamentalApplicability === "MISSING"
+                  ? "資料缺漏（Missing）"
+                  : `可用${m.fundamentalScore != null ? `・${m.fundamentalScore.toFixed(1)} 分` : ""}`
+            }
+          />
+        ) : null}
       </div>
 
       {m.reasons.length > 0 ? (
@@ -690,7 +710,7 @@ function SignalCard({
   const themeFit = item.theme_fit
   const promptVersion = item.prompt_version || "v1"
   const subtitle =
-    item.industry != null || item.canonical ? (
+    item.industry != null || item.canonical || item.asset_type ? (
       <span className="inline-flex flex-wrap items-center gap-1.5">
         {item.industry != null && (
           <span>
@@ -698,6 +718,7 @@ function SignalCard({
             {item.sub_industry ? <span className="text-slate-500"> · {item.sub_industry}</span> : null}
           </span>
         )}
+        <SignalAssetBadge assetType={item.asset_type} />
         <CanonicalSectorTag canonical={item.canonical} compact />
       </span>
     ) : null
@@ -867,6 +888,7 @@ function SignalDetailDialog({
                     {item.type === "LEADER" ? "領漲" : item.type === "FOLLOWER" ? "跟漲" : "補漲"}
                   </span>
                 ) : null}
+                <SignalAssetBadge assetType={item.asset_type} />
               </Dialog.Title>
               <Dialog.Description className="mt-1 flex flex-wrap items-center gap-3 text-xs text-slate-400">
                 {item.industry ? (

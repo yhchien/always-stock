@@ -2,7 +2,7 @@
 
 把魚尾從「法人異常訊號」升級成「動能選股」的 feature engine：
 
-1. `compute_market_momentum_frame`：全市場（active、非 ETF / 金融 / 黑名單）
+1. `compute_market_momentum_frame`：全市場（active、僅排除人工黑名單）
    近 66 個交易日的價格動能 / 相對強度 / 排名改善 / 法人買超佔成交比特徵。
    percentile 一律 0~100、越高越強；樣本不足時回 None（不硬給 50）。
 2. `select_momentum_candidates`：候選池 B（價格動能）/ C（動能加速）/
@@ -23,6 +23,7 @@ import logging
 import math
 import os
 from datetime import date, timedelta
+from enum import Enum
 from typing import Any, Dict, List, Optional, Sequence, Set
 
 from sqlalchemy.orm import Session
@@ -90,17 +91,67 @@ _W_INSTITUTION = 20.0
 _W_VOLUME = 15.0
 _W_FUNDAMENTAL = 10.0  # v2.1 未接 announcement_date → 恆 0，保留權重位
 
-# Phase 2（2026-07-21）：momentum_score 公式版本；改動 available-weight 語意時必須
-# bump 版本並對歷史 signal_metrics 重新計算，避免不同版本的分數混在一起比較
-MOMENTUM_SCORE_VERSION = "v2"
+# P2（2026-07-29）：production score 明確區分 MISSING 與 NOT_APPLICABLE。
+# 歷史 snapshot 不回填；replay 若要重現舊公式，明確傳 score_mode="legacy"。
+MOMENTUM_SCORE_VERSION = "v3_applicability_aware"
+LEGACY_MOMENTUM_SCORE_VERSION = "v1_legacy_missing_as_zero"
+LEGACY_AVAILABLE_WEIGHT_SCORE_VERSION = "v2_legacy_available_weight"
 _CORE_WEIGHT_TOTAL = _W_PRICE + _W_RS + _W_INSTITUTION + _W_VOLUME  # 90（不含基本面）
 
-# 這一項會實際改變哪些股票能過 LEADER/FOLLOWER 分數門檻（選股結果，不是純顯示），
-# 在還沒跑過 shadow replay 驗證前預設關閉（= 沿用 v1 舊行為：缺基本面封頂 90 分）。
-# 使用者要正式啟用時設 SIGNALS_MOMENTUM_SCORE_AVAILABLE_WEIGHT=true。
+# 舊 env 只在 legacy replay mode 有效，保留既有實驗可重現性；production 的
+# applicability-aware mode 不會把一般股/金融股的 MISSING 誤當 NOT_APPLICABLE。
 _AVAILABLE_WEIGHT_NORMALIZATION_ENABLED = (
     os.getenv("SIGNALS_MOMENTUM_SCORE_AVAILABLE_WEIGHT", "false").strip().lower() == "true"
 )
+_MOMENTUM_SCORE_MODE = os.getenv(
+    "SIGNALS_MOMENTUM_SCORE_MODE", "applicability_aware"
+).strip().lower()
+_VALID_SCORE_MODES = {"applicability_aware", "legacy"}
+
+
+class EvidenceApplicability(str, Enum):
+    """證據對特定金融商品的適用狀態；不可把不適用與資料缺漏混為一談。"""
+
+    AVAILABLE = "AVAILABLE"
+    MISSING = "MISSING"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+
+
+def resolve_evidence_applicability(
+    *,
+    asset_type: Optional[str],
+    evidence_family: str,
+    evidence_available: bool,
+) -> EvidenceApplicability:
+    """回傳證據適用性。
+
+    目前唯一真正不適用的組合是 ETF × 公司基本面（月營收）。金融股仍是公司：
+    有實際營收資料為 AVAILABLE，沒有則 MISSING。其他證據族群缺值一律是 MISSING。
+    """
+    if str(asset_type or "COMMON_STOCK").upper() == "ETF" and evidence_family == "fundamental":
+        return EvidenceApplicability.NOT_APPLICABLE
+    if evidence_available:
+        return EvidenceApplicability.AVAILABLE
+    return EvidenceApplicability.MISSING
+
+
+def resolve_momentum_score_mode(score_mode: Optional[str] = None) -> str:
+    mode = (score_mode or _MOMENTUM_SCORE_MODE or "applicability_aware").lower()
+    if mode not in _VALID_SCORE_MODES:
+        logger.warning("Unknown momentum score mode %r; using applicability_aware", mode)
+        return "applicability_aware"
+    return mode
+
+
+def current_momentum_score_version(score_mode: Optional[str] = None) -> str:
+    mode = resolve_momentum_score_mode(score_mode)
+    if mode == "applicability_aware":
+        return MOMENTUM_SCORE_VERSION
+    return (
+        LEGACY_AVAILABLE_WEIGHT_SCORE_VERSION
+        if _AVAILABLE_WEIGHT_NORMALIZATION_ENABLED
+        else LEGACY_MOMENTUM_SCORE_VERSION
+    )
 
 # 風險扣分
 _PENALTY_BLOWOFF_SHADOW = 10.0       # 爆量長上影（派發嫌疑）
@@ -829,14 +880,22 @@ def _is_fundamental_candidate(feats: Dict[str, Any]) -> bool:
 # ---------- momentum_score ----------
 
 
-def compute_momentum_score(candidate: Dict[str, Any]) -> Dict[str, Any]:
+def compute_momentum_score(
+    candidate: Dict[str, Any],
+    *,
+    score_mode: Optional[str] = None,
+) -> Dict[str, Any]:
     """spec §6.2：deterministic momentum_score（0~100）+ 子分數明細。
 
     輸入為「候選池 dict」（已 merge frame 特徵 + pool metrics：consecutive_buy_days_3d /
     OHLC / volume ratios）。純函式、無 DB 依賴，方便單元測試。
 
-    缺資料的子項給 0 分（不硬給中性 50）：新上市 / 資料缺漏股不應靠「未知」得分，
-    在震盪盤的 score gate（>= 60）下會自然被擋掉。
+    MISSING 子項給 0 分（不硬給中性 50）；NOT_APPLICABLE 子項從分母排除，
+    再把適用項等比例正規化到 100。所有風險扣分都在正規化之後套用。
+
+    `score_mode="legacy"` 只供 replay 重現 v1/v2；production 預設
+    applicability-aware。舊 `SIGNALS_MOMENTUM_SCORE_AVAILABLE_WEIGHT` 僅控制
+    legacy mode 的歷史 missing-normalization 行為。
     """
     price_score = _W_PRICE * _weighted_percentile(
         candidate,
@@ -861,6 +920,20 @@ def compute_momentum_score(candidate: Dict[str, Any]) -> Dict[str, Any]:
 
     # 基本面動能 10 分（2026-07-15 第二輪啟用；available_date gate 已在 frame 層擋掉未公告月份）
     # 無月營收 percentile（金控子公司未申報 / 新上市 / 樣本不足）→ 子分數缺席（None，貢獻 0）
+    fundamental_evidence_available = any(
+        candidate.get(key) is not None
+        for key in (
+            "revenue_yoy",
+            "revenue_yoy_percentile",
+            "revenue_yoy_acceleration",
+            "revenue_mom",
+        )
+    )
+    fundamental_applicability = resolve_evidence_applicability(
+        asset_type=candidate.get("asset_type"),
+        evidence_family="fundamental",
+        evidence_available=fundamental_evidence_available,
+    )
     fund_pct = candidate.get("revenue_yoy_percentile")
     fundamental_component: Optional[float] = None
     if fund_pct is not None:
@@ -887,44 +960,86 @@ def compute_momentum_score(candidate: Dict[str, Any]) -> Dict[str, Any]:
         penalty += _PENALTY_OVERHEAT_3D
         penalty_reasons.append("overheat_3d")
 
-    # Phase 2（2026-07-21）：missing != bad。基本面資料常態性缺席（月營收公告時間差 /
-    # 產業內樣本不足 / 金控子公司未申報），不是股票體質差；缺席時不應讓它永遠只能拿
-    # 90 分封頂。改用 available-weight normalization：把基本面的 10 分權重按比例
-    # 讓渡給另外四個「幾乎必有資料」的核心分量，讓沒有基本面資料的股票仍可拿到 100 分
-    # 滿分（不是靠猜分數，是把「缺席」從一個扣分項變成「這題不計分、其餘題目權重
-    # 等比放大」）。核心四項本身缺值時維持舊行為（0 分，thin-data 股票應被自然濾掉，
-    # 見下方 _weighted_percentile 說明）——這裡只處理 fundamental 這一項的常態性缺席。
-    fundamental_available = fundamental_component is not None
+    mode = resolve_momentum_score_mode(score_mode)
+
     core_raw = price_score + rs_score + inst_score + volume_score
-    if fundamental_available:
-        raw = core_raw + fundamental_score - penalty
-        feature_coverage = 1.0
-        score_confidence = "HIGH"
-    elif _AVAILABLE_WEIGHT_NORMALIZATION_ENABLED:
-        raw = core_raw * (100.0 / _CORE_WEIGHT_TOTAL) - penalty
-        feature_coverage = round(_CORE_WEIGHT_TOTAL / 100.0, 2)
-        score_confidence = "MEDIUM"
+    available_score_weight = _CORE_WEIGHT_TOTAL + (
+        _W_FUNDAMENTAL
+        if fundamental_applicability == EvidenceApplicability.AVAILABLE
+        else 0.0
+    )
+    missing_score_weight = (
+        _W_FUNDAMENTAL
+        if fundamental_applicability == EvidenceApplicability.MISSING
+        else 0.0
+    )
+    not_applicable_score_weight = (
+        _W_FUNDAMENTAL
+        if fundamental_applicability == EvidenceApplicability.NOT_APPLICABLE
+        else 0.0
+    )
+    applicable_score_weight = 100.0 - not_applicable_score_weight
+
+    if mode == "legacy":
+        if (
+            fundamental_applicability != EvidenceApplicability.AVAILABLE
+            and _AVAILABLE_WEIGHT_NORMALIZATION_ENABLED
+        ):
+            score_before_penalty = core_raw * (100.0 / _CORE_WEIGHT_TOTAL)
+            score_version = current_momentum_score_version(mode)
+        else:
+            score_before_penalty = core_raw + fundamental_score
+            score_version = current_momentum_score_version(mode)
     else:
-        # 舊行為（v1，預設）：缺基本面直接視為 0 分貢獻，最高只能拿到 90 分
-        raw = core_raw + fundamental_score - penalty
-        feature_coverage = round(_CORE_WEIGHT_TOTAL / 100.0, 2)
-        score_confidence = "MEDIUM"
+        if fundamental_applicability == EvidenceApplicability.NOT_APPLICABLE:
+            score_before_penalty = core_raw * (100.0 / applicable_score_weight)
+        else:
+            # AVAILABLE 正常納入；MISSING 維持 0 分且不重配權重。
+            score_before_penalty = core_raw + fundamental_score
+        score_version = current_momentum_score_version(mode)
+
+    raw = score_before_penalty - penalty
+    feature_coverage = round(
+        available_score_weight / applicable_score_weight
+        if applicable_score_weight
+        else 0.0,
+        2,
+    )
+    score_confidence = (
+        "MEDIUM"
+        if fundamental_applicability == EvidenceApplicability.MISSING
+        else "HIGH"
+    )
     score = round(max(0.0, min(100.0, raw)), 1)
 
     return {
         "momentum_score": score,
-        "momentum_score_version": (
-            MOMENTUM_SCORE_VERSION if _AVAILABLE_WEIGHT_NORMALIZATION_ENABLED else "v1"
-        ),
+        "momentum_score_version": score_version,
         "feature_coverage": feature_coverage,
         "score_confidence": score_confidence,
+        "applicable_score_weight": round(applicable_score_weight, 1),
+        "missing_score_weight": round(missing_score_weight, 1),
+        "not_applicable_score_weight": round(not_applicable_score_weight, 1),
+        "score_before_penalty": round(score_before_penalty, 1),
+        "risk_penalty_total": round(penalty, 1),
+        "fundamental_applicability": fundamental_applicability.value,
         "momentum_score_detail": {
             "price": round(price_score, 1),
             "relative_strength": round(rs_score, 1),
             "institution": round(inst_score, 1),
             "volume_quality": round(volume_score, 1),
-            "fundamental": round(fundamental_score, 1) if fundamental_component is not None else None,
+            "fundamental": (
+                round(fundamental_score, 1)
+                if fundamental_applicability == EvidenceApplicability.AVAILABLE
+                else None
+            ),
+            "fundamental_applicability": fundamental_applicability.value,
+            "applicable_score_weight": round(applicable_score_weight, 1),
+            "missing_score_weight": round(missing_score_weight, 1),
+            "not_applicable_score_weight": round(not_applicable_score_weight, 1),
+            "score_before_penalty": round(score_before_penalty, 1),
             "risk_penalty": round(penalty, 1),
+            "risk_penalty_total": round(penalty, 1),
             "penalty_reasons": penalty_reasons,
         },
     }
@@ -1091,9 +1206,15 @@ def build_signal_metrics(
         "distance_to_ma20": candidate.get("distance_to_ma20"),
         "momentum_score": candidate.get("momentum_score"),
         "momentum_score_detail": candidate.get("momentum_score_detail"),
-        "momentum_score_version": candidate.get("momentum_score_version"),  # Phase 2：score 公式版本
-        "feature_coverage": candidate.get("feature_coverage"),  # Phase 2：available-weight 覆蓋率
-        "score_confidence": candidate.get("score_confidence"),  # Phase 2：HIGH（全特徵）/ MEDIUM（缺基本面）
+        "momentum_score_version": candidate.get("momentum_score_version"),
+        "feature_coverage": candidate.get("feature_coverage"),
+        "score_confidence": candidate.get("score_confidence"),
+        "applicable_score_weight": candidate.get("applicable_score_weight"),
+        "missing_score_weight": candidate.get("missing_score_weight"),
+        "not_applicable_score_weight": candidate.get("not_applicable_score_weight"),
+        "score_before_penalty": candidate.get("score_before_penalty"),
+        "risk_penalty_total": candidate.get("risk_penalty_total"),
+        "fundamental_applicability": candidate.get("fundamental_applicability"),
         "momentum_grade": candidate.get("momentum_grade"),   # v2.2（v5 A/B/C/D）
         "momentum_phase": candidate.get("momentum_phase"),   # v2.2（v5 五階段）
         "market_regime_detail": regime_detail,

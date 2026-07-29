@@ -15,14 +15,17 @@ from datetime import date
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from sqlalchemy import func
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.hot_money_service import compute_hot_money, get_recent_trade_dates
 from app.industry_flow_service import load_industry_flow_rows_for_dates
 from app.models import (
     DailyPrice,
+    EtfClassification,
     InstStockFlow,
     MarginTrade,
+    SecurityClassification,
     SignalWatchHit,
     StockMaster,
 )
@@ -43,12 +46,96 @@ ASSET_TYPE_FINANCIAL = "FINANCIAL"
 ASSET_TYPE_ETF = "ETF"
 
 
-def _resolve_asset_type(stock_id: str, stock_name: Optional[str], industry_name: Optional[str]) -> str:
+def _resolve_asset_type(
+    stock_id: str,
+    stock_name: Optional[str],
+    industry_name: Optional[str],
+    preferred_asset_type: Optional[str] = None,
+) -> str:
+    """Canonical classification first; keyword/id rules are an observable fallback."""
+    if preferred_asset_type in {
+        ASSET_TYPE_COMMON_STOCK,
+        ASSET_TYPE_FINANCIAL,
+        ASSET_TYPE_ETF,
+    }:
+        return preferred_asset_type
     if is_etf(stock_id, stock_name):
         return ASSET_TYPE_ETF
     if is_financial(industry_name):
         return ASSET_TYPE_FINANCIAL
     return ASSET_TYPE_COMMON_STOCK
+
+
+def _load_asset_types(
+    db: Session,
+    stock_ids: Sequence[str],
+    masters: Dict[str, StockMaster],
+) -> Dict[str, str]:
+    """Load reliable Phase 1 classifications, then conservatively fall back.
+
+    ETF/ETN rows are authoritative for the ETF research/scoring contract.
+    SecurityClassification.is_financial is authoritative for financial stocks.
+    Missing classification never excludes a candidate; fallback usage is logged.
+    """
+    ids = list(dict.fromkeys(stock_ids))
+    if not ids:
+        return {}
+
+    resolved: Dict[str, str] = {}
+    try:
+        # SAVEPOINT keeps the caller transaction usable if an older deployment
+        # has not created the additive classification tables yet.
+        with db.begin_nested():
+            etf_rows = (
+                db.query(EtfClassification.stock_id)
+                .filter(EtfClassification.stock_id.in_(ids))
+                .all()
+            )
+            for row in etf_rows:
+                resolved[row.stock_id] = ASSET_TYPE_ETF
+
+            security_rows = (
+                db.query(
+                    SecurityClassification.stock_id,
+                    SecurityClassification.is_financial,
+                )
+                .filter(SecurityClassification.stock_id.in_(ids))
+                .all()
+            )
+            for row in security_rows:
+                if row.stock_id in resolved:
+                    continue
+                resolved[row.stock_id] = (
+                    ASSET_TYPE_FINANCIAL
+                    if row.is_financial
+                    else ASSET_TYPE_COMMON_STOCK
+                )
+    except SQLAlchemyError as exc:
+        # Older deployments may not have completed the additive classification
+        # migration yet. Selection remains available and the fallback is visible.
+        logger.warning("Asset classification lookup failed; using fallback rules: %s", exc)
+        resolved.clear()
+
+    fallback_ids: List[str] = []
+    for sid in ids:
+        if sid in resolved:
+            continue
+        master = masters.get(sid)
+        if master is None:
+            continue
+        resolved[sid] = _resolve_asset_type(
+            sid,
+            master.stock_name,
+            master.industry_name,
+        )
+        fallback_ids.append(sid)
+    if fallback_ids:
+        logger.warning(
+            "Asset classification fallback used for %d candidates: %s",
+            len(fallback_ids),
+            ",".join(fallback_ids[:20]),
+        )
+    return resolved
 
 # Spec §再偵測閘門（2026-05-26）：首次抓到後驗證失敗的閾值
 # 與 archive.py 的兩條 early-exit（-30% / drawdown 30%）是不同層級的早期警示
@@ -72,7 +159,7 @@ _INST_TYPES = ("foreign", "trust", "dealer")
 # 注意：rankings dict key 與 candidate flag 沿用 `_3d` 歷史命名（避免下游連動改名），
 #       實際窗已是 RANKING_WINDOW_DAYS；語義以本常數為準。
 RANKING_WINDOW_DAYS = 2
-# 產業：N 日法人買超前 10 大「非金融」產業（金融類順延），再剔除「當日賣超前 10」（2026-06-05 改版）
+# 產業：N 日法人買超前 10 大產業，再剔除「當日賣超前 10」（P2 金融平權）
 TOP_INDUSTRIES_LIMIT = 10
 TODAY_SELL_BLACKLIST_LIMIT = 10  # 當日（1 日）淨額最賣超的前 N 產業，落在此名單的產業剔除
 TOP_STOCKS_LIMIT = 30
@@ -139,7 +226,7 @@ def compute_rankings(
 
     產業規則（2026-06-05 改版，2026-06-08 排序窗 3→2 日）：
       1. 全市場各產業以「N 日（RANKING_WINDOW_DAYS）」法人淨買超排序
-      2. 由高往低取，遇金融類產業跳過順延，湊滿 TOP_INDUSTRIES_LIMIT 個非金融產業
+      2. 由高往低取 TOP_INDUSTRIES_LIMIT 個產業；金融業與其他產業同規則
       3. 另算「當日（1 日）」各產業淨額，最賣超的前 TODAY_SELL_BLACKLIST_LIMIT 個產業為黑名單
       4. 步驟 2 結果落在黑名單者剔除（不再回補，剩幾個算幾個）
     """
@@ -173,14 +260,12 @@ def compute_rankings(
         if net < 0
     }
 
-    # 由高往低取，遇金融類順延，湊滿 TOP_INDUSTRIES_LIMIT 個非金融產業
-    selected: List[Tuple[str, float]] = []
-    for ind, net in sorted(industry_totals_rank.items(), key=lambda item: item[1], reverse=True):
-        if is_financial(ind):
-            continue
-        selected.append((ind, net))
-        if len(selected) >= TOP_INDUSTRIES_LIMIT:
-            break
+    # P2：金融產業不得因資產類型跳過；當日賣超煞車仍一視同仁。
+    selected: List[Tuple[str, float]] = sorted(
+        industry_totals_rank.items(),
+        key=lambda item: item[1],
+        reverse=True,
+    )[:TOP_INDUSTRIES_LIMIT]
 
     # 剔除當日賣超前 N 的產業（不再回補）
     industry_rows = [(ind, net) for ind, net in selected if ind not in today_sell_blacklist]
@@ -188,8 +273,9 @@ def compute_rankings(
     industry_counts: Dict[str, int] = {}
     for master in masters.values():
         if master.industry_name:
-            industry_counts[master.industry_name] = (
-                industry_counts.get(master.industry_name, 0) + 1
+            normalized = _normalized_industry(master.industry_name) or master.industry_name
+            industry_counts[normalized] = (
+                industry_counts.get(normalized, 0) + 1
             )
 
     top_industries = [
@@ -236,7 +322,7 @@ def build_candidate_pool(
     """spec §5 Step 4 + §6：候選池組合 + 擴散 + deterministic ordering。
 
     v2.1（fishtail momentum upgrade）：候選池從單一「法人資金」通道升級為多通道聯集：
-      A. 法人資金（既有：熱錢前 30 + 前 10 非金融產業成分股 + 集團擴散）
+      A. 法人資金（既有：熱錢前 30 + 前 10 產業成分股 + 集團擴散）
       B. 價格動能（rs_market_percentile_20d / 產業內 RS / 創 20 日新高帶量 / 60d 報酬前段）
       C. 動能加速（rs_rank_improvement_5d >= 200 且 rs_market >= 70）
       D. 基本面動能（2026-07-15 第二輪上線：月營收 yoy 加速 / 轉正 / 產業內前 20%；
@@ -247,7 +333,7 @@ def build_candidate_pool(
     top_industries = rankings.get("top_industries_3d") or []
     top_stocks = rankings.get("top_stocks_3d") or []
 
-    if not masters or (not top_industries and not top_stocks):
+    if not masters:
         return []
 
     # v2.1：全市場動能特徵 frame（B/C 通道選股 + 每檔 enrich 都要用）。
@@ -270,7 +356,10 @@ def build_candidate_pool(
     # 1b. top_industries_3d 前 10 的所有成分股
     industry_set = {ind["industry_name"] for ind in top_industries}
     for sid, master in masters.items():
-        if master.industry_name in industry_set:
+        if (
+            master.industry_name in industry_set
+            or _normalized_industry(master.industry_name) in industry_set
+        ):
             source_a_ids.add(sid)
 
     # 1c. top_stocks_3d 前 6 的同集團（spec §6）
@@ -281,7 +370,7 @@ def build_candidate_pool(
         for member_id in get_group_members(group_name):
             source_a_ids.add(member_id)
 
-    # 1d. v2.1 B/C/D 通道（frame universe 已排除 ETF / 金融，這裡直接聯集）
+    # 1d. v2.1 B/C/D 通道；各資產類型採相同 admission 規則。
     candidate_ids = (
         source_a_ids
         | price_momentum_ids
@@ -297,10 +386,6 @@ def build_candidate_pool(
     # 濾掉，等於矛盾——「hard exclusion 說可以進，candidate pool 卻連門都不讓
     # 進」。人工黑名單仍然排除。
     #
-    # legacy 路徑不受影響：`filters._is_hard_excluded` 自己也獨立呼叫
-    # `exclusions.should_exclude()`（含 ETF/金融判斷）作為它自己的 rule #1，
-    # 所以 ETF/金融就算進了候選池，legacy 最終輸出仍會在 hard exclusion 那關
-    # 被擋下，legacy 行為零改變。
     filtered_ids: List[str] = []
     for sid in candidate_ids:
         master = masters.get(sid)
@@ -312,6 +397,8 @@ def build_candidate_pool(
 
     if not filtered_ids:
         return []
+
+    asset_types = _load_asset_types(db, filtered_ids, masters)
 
     # 3. 計算每檔的 metrics（一次性 query，不 per-stock）
     metrics = _compute_pool_metrics(db, ingestion, filtered_ids)
@@ -333,8 +420,15 @@ def build_candidate_pool(
         m = metrics.get(sid) or _empty_metrics()
         ts = tracking_by_stock.get(sid) or _empty_tracking_status()
         mf = momentum_frame.get(sid) or momentum.empty_momentum_features()
-        in_top = master.industry_name in industry_set
-        asset_type = _resolve_asset_type(sid, master.stock_name, master.industry_name)
+        in_top = (
+            master.industry_name in industry_set
+            or _normalized_industry(master.industry_name) in industry_set
+        )
+        asset_type = asset_types.get(sid) or _resolve_asset_type(
+            sid,
+            master.stock_name,
+            master.industry_name,
+        )
         source_flags = {
             "source_A": sid in source_a_ids,
             "source_B": sid in price_momentum_ids,
@@ -347,8 +441,7 @@ def build_candidate_pool(
             "industry": master.industry_name,
             "sub_industry": master.sub_industry,
             "asset_type": asset_type,
-            # is_etf / is_financial 保留給既有 caller 相容（legacy filters._is_hard_excluded
-            # 仍用 exclusions.should_exclude() 自己重新判斷，不依賴這兩個欄位）
+            # is_etf / is_financial 保留給既有 caller 與 Phase 2 trace 相容。
             "is_etf": asset_type == ASSET_TYPE_ETF,
             "is_financial": asset_type == ASSET_TYPE_FINANCIAL,
             "group_name": find_group_for_stock(sid),

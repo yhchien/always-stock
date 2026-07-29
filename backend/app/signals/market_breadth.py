@@ -7,7 +7,7 @@
   （`_above_ma20` / `_above_ma60` / `_ret_1d` / `_new_high_20d` / `_new_low_20d` /
   `return_5d` / `industry_return_20d`）聚合出 breadth metrics + `breadth_score`。
   **與 momentum frame 共用同一次全市場 query**，不重複掃 daily_price。
-- universe 與 candidate pool 排除規則一致（frame 已排除 ETF / 金融 / 黑名單，
+- universe 與 candidate pool 排除規則一致（frame 只排除人工黑名單，
   spec §7.1 注意事項）。
 - `resolve_regime_detail(regime, breadth_score)`：把 3 態 regime 疊 breadth 升成
   4 態 detail（BROAD_BULL / NARROW_BULL / VOLATILE_RANGE / RISK_OFF）。

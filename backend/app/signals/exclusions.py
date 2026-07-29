@@ -1,11 +1,11 @@
 """
-M23 deterministic 排除規則：ETF、金融股、人工黑名單，以及集團對照表載入。
+M23 商品分類 helpers、人工黑名單，以及集團對照表載入。
 
-Spec §3.1.1（ETF / 金融股判斷）+ §6.2（group_stocks 對照表）。
+P2 起 ETF / 金融股判斷只用於分類與 evidence applicability，不是 exclusion。
 
 設計：
   - 純規則、不查 DB（讓 candidate_pool / filters 自己組查 DB 後呼叫）
-  - 跨 slice 5/6 都會用：候選池建立階段排除、filter 階段二次驗證
+  - `should_exclude` 保留舊 caller API，但只代表人工黑名單
   - group_stocks.json 在 import 時讀一次到 module-level cache，測試可以 monkeypatch
     `_GROUP_STOCKS_CACHE` 注入 fixture 資料
 """
@@ -76,18 +76,13 @@ def should_exclude(
     stock_name: Optional[str] = None,
     industry_name: Optional[str] = None,
 ) -> bool:
-    """三條規則合一：ETF / 金融 / 黑名單任一命中 → 排除。
+    """Selection-policy exclusion compatibility API：僅人工黑名單。
 
-    候選池建立階段（slice 5）會傳入 stocks_master 取得的 name / industry，
-    一次判斷三條規則。
+    `stock_name` / `industry_name` 保留簽章相容；商品類型只供分類，不得在此
+    轉成 hard exclusion。
     """
-    if is_blacklisted(stock_id):
-        return True
-    if is_etf(stock_id, stock_name):
-        return True
-    if is_financial(industry_name):
-        return True
-    return False
+    del stock_name, industry_name
+    return is_blacklisted(stock_id)
 
 
 def load_group_stocks(force_reload: bool = False) -> Dict[str, Dict]:

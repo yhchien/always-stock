@@ -98,3 +98,14 @@ def test_bull_trend_allows_non_leader_roles_through():
     c = _candidate("A", role=rg.roles_mod.ROLE_SECTOR_FOLLOWER, rs_market_percentile_20d=60.0)
     survivors = rg.apply_regime_gate_v2([c], rg.REGIME_BULL_TREND)
     assert len(survivors) == 1
+
+
+def test_regime_gate_is_asset_type_invariant():
+    variants = [
+        _candidate("COMMON", asset_type="COMMON_STOCK"),
+        _candidate("FIN", asset_type="FINANCIAL", is_financial=True),
+        _candidate("ETF", asset_type="ETF", is_etf=True),
+    ]
+    survivors = rg.apply_regime_gate_v2(variants, rg.REGIME_RISK_OFF)
+    assert {c["stock_id"] for c in survivors} == {"COMMON", "FIN", "ETF"}
+    assert len({c["conviction"] for c in survivors}) == 1

@@ -705,9 +705,10 @@ class SecurityClassification(Base):
     Phase 1 Canonical Market Classification（2026-07-21）。
 
     涵蓋所有 `stocks_master` 證券（普通股/金融股/特別股/TDR/REIT/指數佔位列），
-    ETF/ETN 另存 `EtfClassification`（見下）。**顯示層專用**：不被
-    `app/signals/*` 選股 pipeline 引用，`stocks_master.industry_name/sub_industry`
-    （source_industry 的來源）也不受本表影響——兩者平行存在，見
+    ETF/ETN 另存 `EtfClassification`（見下）。主要供顯示層使用；P2 起 signals
+    pipeline 只讀 `is_financial` / ETF table 來可靠辨識商品類型與證據適用性，
+    **不以分類值作為 eligibility gate**。`stocks_master.industry_name/sub_industry`
+    （source_industry 的來源）仍不受本表影響——兩者平行存在，見
     docs/plans/canonical_classification/current_industry_data_flow.md。
     """
     __tablename__ = "security_classification"

@@ -165,6 +165,10 @@ Backend: watch_quality_state=SETUP（已判定值得研究）→ LLM: 自己覺�
   不要當成新股重新要求 formal sector leader 或 RS 門檻。
 - 若 `asset_type = "ETF"`：不要要求月營收、核心產品、供應鏈位置——這些欄位對 ETF 不適用，
   缺席不是弱勢（missing != bad）。
+- 若 `asset_type = "FINANCIAL"`：仍按公司研究；有實際月營收就正常驗證，沒有資料只能視為
+  MISSING / UNCONFIRMED，不可誤標 NOT_APPLICABLE，也不可因此 REMOVE。
+- COMMON_STOCK / FINANCIAL / ETF 具有相同選股地位。`asset_type` 與 instrument validation
+  只決定適用的 evidence / research 欄位，不得成為 eligibility gate、弱勢標籤或 REMOVE 理由。
 - 已經硬閘門排除的候選（failed_follow_through 當前 episode / 結構性破壞 / 複合風險 / 流動性不足 /
   真正反轉失效 / 人工黑名單）不會出現在 `stock_pool` 中，你看到的池子已是通過 backend 6 種
   Hard Exclusion 之後的候選。

@@ -1228,6 +1228,8 @@ export interface SignalWatchlistItem {
   stock: string
   name?: string | null
   type?: SignalDecisionType | null
+  /** P2：商品類型只控制 evidence applicability，不是 eligibility/rank。舊快照可缺。 */
+  asset_type?: "COMMON_STOCK" | "FINANCIAL" | "ETF" | string | null
   industry?: string | null
   sub_industry?: string | null
   business_summary?: string | null
@@ -1326,6 +1328,30 @@ export interface SignalMetrics {
   consecutive_hit_count?: number | null
   independent_hit_count?: number | null
   revenue_yoy?: number | null
+  momentum_score_version?: string | null
+  feature_coverage?: number | null
+  score_confidence?: string | null
+  applicable_score_weight?: number | null
+  missing_score_weight?: number | null
+  not_applicable_score_weight?: number | null
+  score_before_penalty?: number | null
+  risk_penalty_total?: number | null
+  fundamental_applicability?: "AVAILABLE" | "MISSING" | "NOT_APPLICABLE" | string | null
+  momentum_score_detail?: {
+    price?: number | null
+    relative_strength?: number | null
+    institution?: number | null
+    volume_quality?: number | null
+    fundamental?: number | null
+    fundamental_applicability?: "AVAILABLE" | "MISSING" | "NOT_APPLICABLE" | string | null
+    applicable_score_weight?: number | null
+    missing_score_weight?: number | null
+    not_applicable_score_weight?: number | null
+    score_before_penalty?: number | null
+    risk_penalty?: number | null
+    risk_penalty_total?: number | null
+    penalty_reasons?: string[] | null
+  } | null
 }
 
 export interface SignalMarginAnalysisTable {
@@ -1373,6 +1399,8 @@ export interface SignalProcessingSummary {
   final_remove_count?: number
   unprocessed_count?: number
   capacity_truncated_count?: number
+  momentum_score_version?: string
+  momentum_score_mode?: string
   is_complete?: boolean
 }
 

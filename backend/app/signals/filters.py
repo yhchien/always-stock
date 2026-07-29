@@ -5,7 +5,7 @@ Slice 5：實作完成。
 
 對應 spec §9：
   §9.1 Hard Exclusions（直接剔除）
-    1. ETF / 金融股（`exclusions.should_exclude` 已封裝）
+    1. 人工黑名單（資產類型不是 exclusion）
     2. 三大法人合計近 5 日 net_amount < 0 且**非** LAGGARD_CANDIDATE
        （LAGGARD 本身就是「落後股」，允許 5 日累計法人為負，等待法人轉強）
     3. price_change_3d > 15%（過熱避免追高）
@@ -39,7 +39,7 @@ from app.signals.classification import (
     PRELIM_TYPE_LEADER,
     PRELIM_TYPE_ROTATION_LAGGARD,
 )
-from app.signals.exclusions import should_exclude
+from app.signals.exclusions import is_blacklisted
 from app.signals.market_regime import (
     REGIME_BULL_TREND,
     REGIME_RISK_OFF,
@@ -103,7 +103,7 @@ def apply_hard_exclusions(
     輸出：剔除後的 list（保留 prelim_type 欄位）
 
     db / target_date 暫時保留簽章；hard exclusions 全部用候選池欄位即可決策，
-    不需另查 DB（exclusions.should_exclude 是純規則）。
+    不需另查 DB（exclusions.is_blacklisted 是純規則）。
     """
     if not classified:
         return []
@@ -355,11 +355,9 @@ def _regime_gate_note(market_regime: str, conviction: str) -> str:
 def _is_hard_excluded(candidate: Dict[str, Any]) -> bool:
     """spec §9.1 任一條件命中即剔除。"""
     sid = candidate.get("stock_id") or ""
-    name = candidate.get("name")
-    industry = candidate.get("industry")
-
-    # 1. ETF / 金融 / 黑名單（idempotent；候選池應已過濾，但保險再過一次）
-    if should_exclude(sid, name, industry):
+    # 1. 人工黑名單（idempotent；候選池應已過濾，但保險再過一次）。
+    # P2：ETF / 金融股與一般股共用後續 hard/base/regime gate。
+    if is_blacklisted(sid):
         return True
 
     # 2. 三大法人合計近 5 日 net < 0 且非 ROTATION_LAGGARD
