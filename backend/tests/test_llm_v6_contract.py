@@ -217,6 +217,17 @@ def test_v6_default_prompt_version_used_when_no_force_env(monkeypatch):
     assert llm_caller._resolve_prompt_version(None) == "v6"
 
 
+def test_v6_decision_prompt_contains_p0_selection_guardrails():
+    llm_caller._PROMPT_FRAGMENT_CACHE.clear()
+    prompt = llm_caller._load_system_prompt(stage="decision", version="v6")
+    assert "固定 WATCH 名額" in prompt
+    assert "Candidate Source" in prompt
+    assert "Momentum Rank 只能影響排序" in prompt
+    assert "Persistence" in prompt
+    assert "WEAK、SHADOW_ONLY、INCOMPLETE" in prompt
+    assert "REJECT 證據完全不得參與正式決策" in prompt
+
+
 def test_force_prompt_version_v5_still_works_for_replay(monkeypatch):
     monkeypatch.setenv("SIGNALS_FORCE_PROMPT_VERSION", "v5")
     assert llm_caller._resolve_prompt_version("BULL_TREND") == "v5"

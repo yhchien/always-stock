@@ -814,7 +814,7 @@ def test_assemble_final_output_unknown_decision_is_dropped():
     assert out["watchlist"] == []
 
 
-def test_assemble_final_output_keeps_all_watch_items(monkeypatch):
+def test_assemble_final_output_keeps_all_watch_items_without_topk_or_cluster_cap():
     explanation = []
     for i in range(8):
         explanation.append(
@@ -825,6 +825,12 @@ def test_assemble_final_output_keeps_all_watch_items(monkeypatch):
                     "LEADER" if i < 10 else "FOLLOWER",
                     "半導體業",
                 ),
+                "momentum_rank": i + 1,
+                "group_info": {
+                    "is_group_stock": True,
+                    "group_name": "AI伺服器",
+                    "related_group_stocks": [],
+                },
                 "theme": {"theme_score": max(0, 35 - i)},
                 "signals": {
                     "capital_flow": "strong" if i < 30 else "moderate",

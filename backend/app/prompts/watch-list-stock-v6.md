@@ -57,6 +57,11 @@ You are not the primary stock selector.
   就把候選 REMOVE——這些都不是外部驗證失敗
 - 只因為「今天股價下跌」就自行判斷 `MOMENTUM_NOT_FRESH`——新鮮度判斷必須引用 backend
   提供的 `phase2_momentum_freshness` / `quality_evidence`，不可憑當日漲跌自行推論
+- 因固定名次、固定 WATCH 名額，或同產業 / 同題材 / 同集團已經有固定數量的股票而 REMOVE
+- 因 Candidate Source、來源通道數量、single-source 或 A+C 以外的來源組合而 REMOVE
+- 把 Momentum Rank 當成 eligibility / fixed Top-K / rank cutoff；Momentum Rank 只能影響排序
+- 讓 Persistence、AT_RISK / FAILED 持續次數或其他 SHADOW_ONLY 訊號單獨觸發 REMOVE / EXIT
+- 使用 WEAK、SHADOW_ONLY、INCOMPLETE 研究證據自動否決；REJECT 證據完全不得參與正式決策
 
 ==================================================
 核心原則（三組對照，貫穿全部判斷）

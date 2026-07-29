@@ -36,7 +36,6 @@ logger = logging.getLogger(__name__)
 # explanation 降到 4 以降低單次 payload。
 DEFAULT_RESEARCH_BATCH_SIZE = 8
 DEFAULT_EXPLANATION_BATCH_SIZE = 4
-MAX_FINAL_WATCHLIST_SIZE = 3
 
 # Spec §3.2：第一版模型 fallback；workflow / Render env 可由 OPENAI_MODEL 覆寫。
 # 這裡避免再預設舊的 search-preview model 名稱，改以目前線上可用的 signals model
@@ -442,9 +441,8 @@ def assemble_final_output(
         if decision == "WATCH":
             watchlist_candidates.append(_format_watch_entry(item))
 
-    # 2026-05-05：先取消程式端 top-N 裁切，改由 prompt / LLM 自己決定保留幾檔。
-    # 若之後要恢復「最後再硬裁前 3 檔」的產品策略，可直接打開下一行：
-    # watchlist = _cap_final_watchlist(watchlist_candidates)
+    # P0 selection policy：final WATCH 不套固定 Top-K；保留 LLM 的逐檔決定與順序。
+    # raw union 120 與 LLM input 50 是上游容量限制，不在這一層處理。
     watchlist = watchlist_candidates
 
     # 依大盤 regime resolve 這次實際跑的 prompt 版本；v5 起所有 regime 預設同版。
@@ -801,7 +799,11 @@ def _run_decision_chunk(
             "6. `quality_assessment` 四個欄位中，`momentum_quality` / `participation_quality` 必須反映 "
             "   backend 已提供的 evidence（不可自創數字），`catalyst_quality` 才是你自己對外部題材證據"
             "   的判斷，`evidence_coherence` 是你對 A（動能）/B（籌碼參與）/C（題材催化劑）三維度是否"
-            "   互相印證的整體判斷。\n\n"
+            "   互相印證的整體判斷。\n"
+            "7. 每檔必須獨立判斷：不得因固定名次、固定 WATCH 名額、同產業/題材/集團已有 N 檔，"
+            "   或 candidate source/來源通道組合而 REMOVE。Momentum rank 只能影響順序；"
+            "   Persistence 與 SHADOW_ONLY 訊號只能作風險提示，不得單獨觸發 REMOVE。\n"
+            "8. WEAK、SHADOW_ONLY、INCOMPLETE 研究證據不得作為自動否決依據；REJECT 證據完全不得參與決策。\n\n"
             f"[market_context]\n"
             f"{json.dumps(market_context, ensure_ascii=False, indent=2)}\n\n"
             f"[research_results]\n"
@@ -1235,88 +1237,6 @@ def _format_watch_entry(item: Dict[str, Any]) -> Dict[str, Any]:
     margin = item.get("margin_analysis")
     entry["margin_analysis"] = margin if isinstance(margin, dict) else None
     return entry
-
-
-def _cap_final_watchlist(
-    watchlist: List[Dict[str, Any]],
-    *,
-    limit: int = MAX_FINAL_WATCHLIST_SIZE,
-) -> List[Dict[str, Any]]:
-    if limit <= 0 or len(watchlist) <= limit:
-        return watchlist
-
-    ranked = sorted(watchlist, key=_watch_rank_key)
-    return ranked[:limit]
-
-
-def _watch_rank_key(item: Dict[str, Any]) -> tuple:
-    type_priority = {
-        "LEADER": 0,
-        "FOLLOWER": 1,
-        "LAGGARD": 2,
-        "LAGGARD_CANDIDATE": 2,
-        "ROTATION_LAGGARD": 2,  # v2.1 改名（對外仍顯示 LAGGARD）
-    }.get(str(item.get("type") or "").upper(), 3)
-    signal_score = _signal_strength_score(item.get("signals"))
-    theme_score = _theme_score(item.get("theme"))
-    theme_fit_score = {
-        "HIGH": 0,
-        "MEDIUM": 1,
-        "LOW": 2,
-        "NONE": 3,
-    }.get(str(item.get("theme_fit") or "").upper(), 4)
-    stock = str(item.get("stock") or "")
-
-    return (
-        type_priority,
-        -signal_score,
-        -theme_score,
-        theme_fit_score,
-        stock,
-    )
-
-
-def _signal_strength_score(signals: Any) -> int:
-    if not isinstance(signals, dict):
-        return 0
-
-    score = 0
-    score += {
-        "strong": 3,
-        "moderate": 1,
-        "weak": -2,
-    }.get(str(signals.get("capital_flow") or "").lower(), 0)
-    score += {
-        "accumulating": 3,
-        "neutral": 0,
-        "short_squeeze_potential": 1,
-        "weakening": -2,
-        "retail_overheated": -3,
-    }.get(str(signals.get("chip_trend") or "").lower(), 0)
-    score += {
-        "positive": 2,
-        "neutral": 0,
-        "negative": -2,
-    }.get(str(signals.get("margin_short_signal") or "").lower(), 0)
-    score += {
-        "breakout": 3,
-        "steady_uptrend": 2,
-        "early_turn": 1,
-        "range_bound": -1,
-        "distribution": -2,
-        "weak": -3,
-    }.get(str(signals.get("technical_status") or "").lower(), 0)
-    return score
-
-
-def _theme_score(theme: Any) -> int:
-    if not isinstance(theme, dict):
-        return 0
-    value = theme.get("theme_score")
-    try:
-        return int(value or 0)
-    except (TypeError, ValueError):
-        return 0
 
 
 def _market_context_fallback(

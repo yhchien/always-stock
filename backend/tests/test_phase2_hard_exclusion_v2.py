@@ -1,5 +1,6 @@
 """Phase 2 Hard Exclusion 重構（2026-07-22）regression tests，對應 spec §二十
 Test A~J：過熱 != 失敗、ETF/金融不再是排除理由、真正反轉需要多維度證據。"""
+from app.signals import deterministic_signals
 from app.signals.phase2 import regime_gate as rg
 
 
@@ -129,6 +130,34 @@ def test_f_etf_not_hard_excluded():
 def test_g_financial_not_hard_excluded():
     c = _candidate("A", is_financial=True)
     assert rg.is_true_hard_exclusion(c) is None
+
+
+def test_candidate_source_combination_does_not_change_hard_exclusion():
+    """P3B：只改來源通道，不得讓 backend 從存活變成自動 REMOVE。"""
+    source_a = _candidate(
+        "A",
+        candidate_sources=["A"],
+        source_A=True,
+        source_C=False,
+        in_top_stocks_3d=True,
+        in_acceleration_pool=False,
+    )
+    source_ac = _candidate(
+        "A",
+        candidate_sources=["A", "C"],
+        source_A=True,
+        source_C=True,
+        in_top_stocks_3d=True,
+        in_acceleration_pool=True,
+    )
+
+    result_a = rg.build_hard_exclusion_result(source_a)
+    result_ac = rg.build_hard_exclusion_result(source_ac)
+    assert result_a["excluded"] is False
+    assert result_ac["excluded"] is False
+    assert result_a["reason"] == result_ac["reason"] is None
+    assert deterministic_signals.build_deterministic_signals(source_a)["max_decision"] == "WATCH"
+    assert deterministic_signals.build_deterministic_signals(source_ac)["max_decision"] == "WATCH"
 
 
 # ---------------- Test H：人工黑名單 ----------------
