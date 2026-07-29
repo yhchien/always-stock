@@ -13,7 +13,7 @@
 - `filters.py`：§6.4 三條 gate 全上（RS<40 且未改善 hard exclusion / 震盪盤 score<60 / 退潮盤 RS<90）
 - persistence：`SignalWatchHit.signal_metrics` JSON column（idempotent ALTER 已加進 signal_watch_schema.py）；pipeline 把 §9.2 欄位 deterministic 蓋回 watchlist item → snapshot + watch hit 都可回看
 - 測試：`tests/test_signals_momentum.py` 新增 20 案例；classification 重寫 30 案例；filters +8；candidate_pool +2；archive +1。全 backend suite 無新增失敗（baseline 20 fail 不變）
-- **工程決策（spec 未定部分）**：B 通道上限 40 / C 通道上限 20（避免 percentile 門檻灌爆 POOL_HARD_LIMIT）；percentile 樣本 guard（全市場 >=20、產業內 >=3、產業數 >=5，不足回 None）；market benchmark 用 universe 中位數（非 TAIEX，percentile 等價）；rolling high 用收盤價；LLM prompt / evidence card 未動（依 §10 Step 7 最後才改）
+- **工程決策（spec 未定部分）**：B 通道上限 40 / C 通道上限 20（通道 admission 控制；P1 已移除 raw-union 總量截斷）；percentile 樣本 guard（全市場 >=20、產業內 >=3、產業數 >=5，不足回 None）；market benchmark 用 universe 中位數（非 TAIEX，percentile 等價）；rolling high 用收盤價；LLM prompt / evidence card 未動（依 §10 Step 7 最後才改）
 
 ### v2.2 資料前置 ✅ 完成（2026-07-15 第二輪）
 §4.2「要先補資料或 schema」的前兩項已解：
@@ -706,4 +706,3 @@ episode 判定規則：
 - `momentum_score`
 
 這三個欄位完成後，系統才算真正開始從「法人異常系統」轉成「動能選股系統」。
-

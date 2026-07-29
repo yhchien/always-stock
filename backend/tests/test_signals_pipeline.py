@@ -18,7 +18,15 @@ from sqlalchemy.orm import sessionmaker
 from app.models import Base, SignalGenerationJob, SignalSnapshot, SignalWatchHit
 from app.signals import candidate_pool, classification, filters, llm_caller
 from app.signals import market_snapshot
-from app.signals.pipeline import _cap_llm_input, run_signal_pipeline_sync
+from app.signals import pipeline as pipeline_mod
+from app.signals.pipeline import (
+    _build_batches,
+    _cap_llm_input,
+    _order_llm_input,
+    _partition_stage_results,
+    _run_parallel_batches,
+    run_signal_pipeline_sync,
+)
 
 
 @pytest.fixture
@@ -229,6 +237,76 @@ def test_pipeline_marks_done_when_all_stages_noop(session_factory, monkeypatch):
         assert rec.error_message is None
 
 
+def test_pipeline_persists_partial_failure_and_processing_summary(
+    session_factory, monkeypatch
+):
+    _stub_all_stages_noop(monkeypatch)
+    candidate = {"stock_id": "2330", "prelim_type": "LEADER"}
+    monkeypatch.setattr(pipeline_mod, "SIGNALS_PIPELINE_MODE", "legacy")
+    monkeypatch.setattr(classification, "classify_stocks", lambda db, td, pool: [candidate])
+    monkeypatch.setattr(filters, "apply_hard_exclusions", lambda db, td, rows: list(rows))
+    monkeypatch.setattr(filters, "apply_soft_filters", lambda db, td, rows: list(rows))
+    monkeypatch.setattr(
+        pipeline_mod.det_signals, "attach_deterministic_signals", lambda rows: list(rows)
+    )
+    monkeypatch.setattr(
+        pipeline_mod.market_regime,
+        "compute_market_regime",
+        lambda db, td: {
+            "regime": "BULL_TREND",
+            "regime_label": "多頭",
+            "reason": "test",
+            "metrics": {},
+        },
+    )
+    monkeypatch.setattr(
+        pipeline_mod.market_breadth,
+        "compute_breadth_from_frame",
+        lambda frame, masters: {"breadth_score": 60},
+    )
+    monkeypatch.setattr(
+        pipeline_mod.market_breadth,
+        "resolve_regime_detail",
+        lambda regime, score: "BROAD_BULL",
+    )
+    monkeypatch.setattr(filters, "apply_regime_gate", lambda rows, *args, **kwargs: list(rows))
+    monkeypatch.setattr(
+        llm_caller,
+        "run_research_batch",
+        lambda batch, ctx: [
+            {
+                **item,
+                "stock": item["stock_id"],
+                "_unavailable": True,
+                "_unavailable_reason": "timeout",
+                "processing_status": "RESEARCH_FAILED",
+            }
+            for item in batch
+        ],
+    )
+
+    job_id = str(uuid.uuid4())
+    target_date = date(2026, 4, 25)
+    _seed_pending_job(session_factory, job_id, snapshot_date=target_date)
+    run_signal_pipeline_sync(job_id, target_date, session_factory=session_factory)
+
+    with session_factory() as db:
+        job = db.get(SignalGenerationJob, job_id)
+        snap = db.query(SignalSnapshot).filter_by(snapshot_date=target_date).one()
+        processing = snap.summary["processing_summary"]
+
+        assert job.status == "partial_failure"
+        assert job.progress_pct == 100
+        assert processing["llm_eligible_count"] == 1
+        assert processing["research_requested_count"] == 1
+        assert processing["research_completed_count"] == 0
+        assert processing["research_failed_count"] == 1
+        assert processing["decision_requested_count"] == 0
+        assert processing["unprocessed_count"] == 1
+        assert processing["capacity_truncated_count"] == 0
+        assert processing["is_complete"] is False
+
+
 def test_pipeline_passes_db_market_snapshot_into_step_zero(session_factory, monkeypatch):
     monkeypatch.setattr(candidate_pool, "ingest_data", lambda db, td: {"target": td})
     monkeypatch.setattr(candidate_pool, "compute_rankings", lambda db, td, ing: {})
@@ -424,7 +502,7 @@ def test_pipeline_persists_signal_watch_hits_and_replaces_same_day(session_facto
         assert rows[0].reason == "第二次重產覆蓋同日"
 
 
-def test_cap_llm_input_prioritizes_prelim_type_then_flow():
+def test_legacy_cap_wrapper_only_orders_and_keeps_every_candidate():
     candidates = [
         {
             "stock_id": "L1",
@@ -465,4 +543,103 @@ def test_cap_llm_input_prioritizes_prelim_type_then_flow():
     ]
 
     out = _cap_llm_input(candidates, limit=2)
-    assert [item["stock_id"] for item in out] == ["L2", "L1"]
+    assert [item["stock_id"] for item in out] == ["L2", "L1", "F1", "G1"]
+
+
+def test_phase2_llm_input_orders_all_73_without_truncation():
+    candidates = [
+        {
+            "stock_id": f"S{i:03d}",
+            "role": "SECTOR_FOLLOWER",
+            "tracking_state": None,
+            "conviction": ("high", "medium", "low")[i % 3],
+            "momentum_score": float(73 - i),
+            "rs_market_percentile_20d": float(i),
+            "risk_warnings": [],
+        }
+        for i in range(73)
+    ]
+
+    out = _order_llm_input(list(reversed(candidates)))
+
+    assert len(out) == 73
+    assert {item["stock_id"] for item in out} == {
+        item["stock_id"] for item in candidates
+    }
+
+
+@pytest.mark.parametrize(
+    ("candidate_count", "batch_size", "expected_batches", "last_batch_size"),
+    [(73, 8, 10, 1), (73, 4, 19, 1)],
+)
+def test_build_batches_has_no_duplicates_or_omissions(
+    candidate_count, batch_size, expected_batches, last_batch_size
+):
+    candidates = [{"stock_id": f"S{i:03d}"} for i in range(candidate_count)]
+
+    batches = _build_batches(candidates, batch_size)
+
+    assert len(batches) == expected_batches
+    assert len(batches[-1]) == last_batch_size
+    flattened = [item["stock_id"] for batch in batches for item in batch]
+    assert flattened == [item["stock_id"] for item in candidates]
+
+
+@pytest.mark.parametrize("candidate_count", [50, 120, 180, 250])
+def test_synthetic_candidate_sizes_keep_all_items_and_expected_batch_counts(
+    candidate_count,
+):
+    candidates = [
+        {
+            "stock_id": f"S{i:03d}",
+            "role": "SECTOR_FOLLOWER",
+            "tracking_state": None,
+            "conviction": "medium",
+            "momentum_score": float(candidate_count - i),
+            "rs_market_percentile_20d": float(i % 100),
+            "risk_warnings": [],
+        }
+        for i in range(candidate_count)
+    ]
+
+    ordered = _order_llm_input(candidates)
+    research_batches = _build_batches(ordered, 8)
+    decision_batches = _build_batches(ordered, 4)
+
+    assert len(ordered) == candidate_count
+    assert len(research_batches) == (candidate_count + 7) // 8
+    assert len(decision_batches) == (candidate_count + 3) // 4
+    assert sum(map(len, research_batches)) == candidate_count
+    assert sum(map(len, decision_batches)) == candidate_count
+
+
+def test_parallel_batch_failure_isolated_and_not_mapped_to_remove():
+    candidates = [{"stock_id": f"S{i:02d}"} for i in range(12)]
+    batches = _build_batches(candidates, 4)
+    seen = []
+
+    def runner(batch):
+        seen.extend(item["stock_id"] for item in batch)
+        if batch[0]["stock_id"] == "S04":
+            raise TimeoutError("middle batch timed out")
+        return [{**item, "decision": "WATCH"} for item in batch]
+
+    execution = _run_parallel_batches(
+        batches, runner, stage="decision", concurrency=1
+    )
+    successful, failures = _partition_stage_results(
+        execution, failure_status="DECISION_FAILED"
+    )
+
+    assert seen == [item["stock_id"] for item in candidates]
+    assert [item["stock_id"] for item in successful] == [
+        "S00", "S01", "S02", "S03", "S08", "S09", "S10", "S11"
+    ]
+    assert {item["stock_id"] for item in failures} == {
+        "S04", "S05", "S06", "S07"
+    }
+    assert all(item["processing_status"] == "DECISION_FAILED" for item in failures)
+    assert all("decision" not in item for item in failures)
+    assert [batch["status"] for batch in execution.batches] == [
+        "COMPLETED", "FAILED", "COMPLETED"
+    ]

@@ -30,6 +30,11 @@ import { Dialog } from "@base-ui/react/dialog"
 
 import { CanonicalSectorTag } from "@/components/CanonicalSectorTag"
 import SignalEmotionCard, { type EmotionTone } from "@/components/SignalEmotionCard"
+import {
+  isSignalProcessingIncomplete,
+  SignalIncompleteWarning,
+  SignalProcessingCounts,
+} from "@/components/SignalProcessingSummary"
 import TradingPlanPanel, {
   PanelBulletList,
   type TradingPlanAccent,
@@ -1178,7 +1183,7 @@ export default function DailySignalsPanel({
     }
   }, [])
 
-  // 載入最新 snapshot；當 job 由 running 轉 done 時重新拉一次
+  // 載入最新 snapshot；當 job 進入完整或部分完成的 terminal state 時重新拉一次
   const loadSnapshot = useCallback(async () => {
     setSnapshotLoading(true)
     setSnapshotError(null)
@@ -1214,9 +1219,9 @@ export default function DailySignalsPanel({
     void loadRegenerateQuota()
   }, [loadRegenerateQuota, bumpKey, jobStatus])
 
-  // 偵測 job 完成 → 重新拉 snapshot
+  // 偵測 job 完成 → 重新拉 snapshot（partial failure 仍有可用的部分 snapshot）
   useEffect(() => {
-    if (jobStatus === "done") {
+    if (jobStatus === "done" || jobStatus === "partial_failure") {
       void loadSnapshot()
     }
   }, [jobStatus, loadSnapshot])
@@ -1313,6 +1318,7 @@ export default function DailySignalsPanel({
 
   const watchlist = useMemo(() => snapshot?.data.watchlist ?? [], [snapshot])
   const summary = snapshot?.data.summary
+  const processingSummary = summary?.processing_summary
   const leaderCount = summary?.leader_count ?? watchlist.filter((w) => w.type === "LEADER").length
   const followerCount =
     summary?.follower_count ?? watchlist.filter((w) => w.type === "FOLLOWER").length
@@ -1321,6 +1327,7 @@ export default function DailySignalsPanel({
 
   const isAuthed = authStatus === "authenticated"
   const isJobActive = jobStatus === "pending" || jobStatus === "running"
+  const isIncomplete = isSignalProcessingIncomplete(processingSummary, jobStatus)
   const quotaReached = isAuthed && !!regenerateQuota?.disabled
 
   // 「重新產生」按鈕狀態（spec §13.5）
@@ -1420,7 +1427,7 @@ export default function DailySignalsPanel({
         </div>
       </header>
 
-      {(isJobActive || regenerateError) && (
+      {(isJobActive || isIncomplete || regenerateError) && (
         <div className="border-t border-zinc-700 px-4 py-2">
           {isJobActive && job && (
             <div className="space-y-1">
@@ -1435,6 +1442,9 @@ export default function DailySignalsPanel({
                 />
               </div>
             </div>
+          )}
+          {isIncomplete && (
+            <SignalIncompleteWarning summary={processingSummary} />
           )}
           {regenerateError && (
             <p className="mt-1 text-xs text-rose-300">{regenerateError}</p>
@@ -1473,6 +1483,12 @@ export default function DailySignalsPanel({
                 <span className="inline-flex items-center rounded border border-sky-600/50 bg-sky-900/30 px-2 py-0.5 font-medium text-sky-100">
                   補漲 {laggardCount}
                 </span>
+                {processingSummary && (
+                  <SignalProcessingCounts
+                    summary={processingSummary}
+                    incomplete={isIncomplete}
+                  />
+                )}
               </div>
               <SignalCardGrid
                 items={allSignals}

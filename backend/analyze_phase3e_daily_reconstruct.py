@@ -1,6 +1,6 @@
 """Phase 3E Step 1: Consecutive 30-Day Reconstruction（2026-07-27）。
 
-**純研究**，不修改任何 production 程式碼、Candidate Pool 120 上限、A/B/C/D
+**純研究**，不修改任何 production 程式碼；`top120` 僅重建 P1 前歷史 policy、A/B/C/D
 threshold、momentum_score、Hard Exclusion、Phase 2、Phase 2.5、Role、LLM、
 confidence、Market Regime。
 
@@ -8,8 +8,8 @@ confidence、Market Regime。
 First-Seen Episode 判定正確性的必要條件）逐日重建：
     - 完整 momentum_frame（全市場，用於 first-seen episode 的 Day0 feature
       與 lookback path）
-    - raw candidate union（截斷前）+ momentum_score rank
-    - 正式 Top120（截斷後）
+    - raw candidate union + momentum_score rank
+    - P1 前歷史 Top120 comparator
     - A/B/C/D 通道命中狀態
 
 用法：
@@ -87,13 +87,10 @@ def main() -> None:
                     frame = momentum.compute_market_momentum_frame(db, target_date, masters)
                     frame_clean = {sid: {k: v for k, v in feats.items() if not k.startswith("_")} for sid, feats in frame.items()}
 
-                    orig_soft = candidate_pool.POOL_SOFT_TRIGGER
-                    candidate_pool.POOL_SOFT_TRIGGER = 999999
                     full_pool = candidate_pool.build_candidate_pool(db, target_date, ingestion, rankings, momentum_frame=frame)
-                    candidate_pool.POOL_SOFT_TRIGGER = orig_soft
-                    full_pool.sort(key=lambda c: (-(c.get("momentum_score") or 0.0), -(c.get("total_institution_flow_3d") or 0.0), str(c.get("stock_id") or "")))
 
-                    top120_pool = candidate_pool.build_candidate_pool(db, target_date, ingestion, rankings, momentum_frame=frame)
+                    # Historical comparator only: production P1 no longer truncates to 120.
+                    top120_pool = full_pool[:120]
                     top120_ids = {c["stock_id"] for c in top120_pool}
 
                     top_industries_names = {ind["industry_name"] for ind in rankings.get("top_industries_3d") or []}

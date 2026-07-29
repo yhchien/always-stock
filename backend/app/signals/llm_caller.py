@@ -441,8 +441,8 @@ def assemble_final_output(
         if decision == "WATCH":
             watchlist_candidates.append(_format_watch_entry(item))
 
-    # P0 selection policy：final WATCH 不套固定 Top-K；保留 LLM 的逐檔決定與順序。
-    # raw union 120 與 LLM input 50 是上游容量限制，不在這一層處理。
+    # P0/P1 selection policy：final WATCH 不套固定 Top-K；raw union 與 LLM input
+    # 也不做總量截斷，保留逐檔決定與 deterministic processing order。
     watchlist = watchlist_candidates
 
     # 依大盤 regime resolve 這次實際跑的 prompt 版本；v5 起所有 regime 預設同版。
@@ -1485,6 +1485,7 @@ def _research_fallback(
         "supply_chain_validation": "UNCONFIRMED",
         "_unavailable": True,
         "_unavailable_reason": _stage_fallback_reason("research", diagnostic),
+        "processing_status": "RESEARCH_FAILED",
         "llm_diagnostic": diagnostic,
     }
 
@@ -1497,9 +1498,10 @@ def _decision_fallback(
     return {
         **research,
         "signals": _default_signals(),
-        "decision": "REMOVE",
-        # LLM 不可用時的保守 REMOVE 不是真正的外部驗證失敗，veto_reason 留 None
-        # （不可從 enum 裡硬套一個不成立的理由）；三個驗證欄位保守回 UNCONFIRMED。
+        # 技術失敗不是市場決策；pipeline 會保留失敗紀錄並標 partial_failure。
+        "decision": None,
+        "processing_status": "DECISION_FAILED",
+        # 三個驗證欄位保守回 UNCONFIRMED（資料不足，不代表矛盾證據）。
         "business_validation": "UNCONFIRMED",
         "theme_validation": "UNCONFIRMED",
         "supply_chain_validation": "UNCONFIRMED",

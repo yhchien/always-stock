@@ -62,7 +62,7 @@ CHANNEL_C_RS_MARKET_MIN = 70.0
 CHANNEL_D_YOY_MIN = 15.0                  # revenue_yoy > 15 且連兩月加速
 CHANNEL_D_INDUSTRY_YOY_PERCENTILE_MIN = 80.0
 
-# 通道上限（spec 未定；工程決策避免 percentile>=85 一次灌 200+ 檔爆掉 POOL_HARD_LIMIT）
+# 通道內部上限（P1 保留；只定義各來源 admission，不是 raw union 總量上限）
 CHANNEL_B_LIMIT = 40
 CHANNEL_C_LIMIT = 20
 CHANNEL_D_LIMIT = 20

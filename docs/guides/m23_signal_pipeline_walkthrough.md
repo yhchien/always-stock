@@ -17,7 +17,7 @@
    ┌────────────────────────────────────────────────────────┐
    │  Stage 1: Ingest      讀 60 個交易日的 DB 原始資料             │
    │  Stage 2: Rank        產業 3d 熱錢前 6 + 個股 3d 熱錢前 30     │
-   │  Stage 3: Pool        組候選池（聯集 + 擴散，60~120 檔）      │
+   │  Stage 3: Pool        組候選池（聯集 + 擴散，完整保留）        │
    │  Stage 4: Classify    預分類 LEADER / FOLLOWER / LAGGARD     │
    │  Stage 5: HardFilter  7 條 deterministic 硬閘門過濾           │
    │  Stage 6: SoftFilter  標 4 種 hint（不剔除）                  │
@@ -68,9 +68,8 @@
 | 5. 熱門產業同供應鏈股 | ~10~20 | 抓題材擴散 |
 | 6. top_stocks 前 6 的同集團股 | ~5~10 | 集團共振（鴻海系 / 國巨系 / 聯電系...）|
 
-聯集後 → 砍 ETF / 金融 / 不在 stocks_master → **通常 60~150 檔**。
-
-超過 `POOL_SOFT_TRIGGER=150` 會用「3 日法人淨買超」排序砍到 `POOL_HARD_LIMIT=120`（spec §6.1，實務上很少觸發）。
+聯集後 → 排除不在 stocks_master／人工黑名單，依 momentum score 與法人流排序；
+P1 起不再因 raw union 總量超過 150 而截成 120。
 
 ---
 

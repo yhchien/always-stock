@@ -17,7 +17,7 @@ interface PollingState {
  *
  * 行為：
  *   - mount 時打一次 GET /api/signals/jobs/latest
- *   - 若 status=pending|running → 每 3 秒繼續 poll；status=done|failed 或 null → 停止
+ *   - 若 status=pending|running → 每 3 秒繼續 poll；terminal status 或 null → 停止
  *   - `bumpKey` 變動時重新觸發 polling（讓使用者點「重新產生」後立刻接上新 job）
  *   - unmount 自動清 timer，無 long-lived connection
  */

@@ -328,7 +328,7 @@ class SignalGenerationJob(Base):
     job_id = Column(String(36), primary_key=True)              # uuid4
     snapshot_date = Column(Date, nullable=False, index=True)
     triggered_by = Column(String(64), nullable=False)          # "cron" | "user:{id}" | "admin:{id}"
-    status = Column(String(16), nullable=False, index=True)    # pending | running | done | failed
+    status = Column(String(16), nullable=False, index=True)    # pending | running | done | partial_failure | failed
     current_stage = Column(String(64), nullable=True)          # ingest | rank | candidate | filter | llm_research | llm_explain | persist
     progress_pct = Column(Integer, default=0, nullable=False)  # 0~100
     progress_label = Column(String(255), nullable=True)        # "正在分析第 12 / 45 檔"

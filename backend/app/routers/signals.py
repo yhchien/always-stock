@@ -50,10 +50,10 @@ SIGNALS_SAME_DAY_READY_TIME = time(hour=19, minute=0)
 
 # Spec §11.4：限頻與 concurrency 上限
 # 每帳號每日最多可手動重產 3 次。
-# 只計入 pending / running / done；failed 不算，避免使用者因系統錯誤白白耗掉額度。
+# 計入 pending / running / done / partial_failure；只有完全 failed 不算。
 USER_DAILY_REGENERATE_LIMIT = 3
 GLOBAL_DAILY_REGENERATE_LIMIT = 15
-_COUNTED_JOB_STATUSES = ("pending", "running", "done")
+_COUNTED_JOB_STATUSES = ("pending", "running", "done", "partial_failure")
 
 # Expectation price 手動重產（個股級別）：使用者一天 30 次、全站 100 次
 USER_DAILY_EXPECTATION_LIMIT = 30

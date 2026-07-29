@@ -1,6 +1,6 @@
 """Phase 3D: Candidate Discovery Recall & Truncation Value Audit（2026-07-27）。
 
-**純研究**，不修改任何 production 程式碼、Candidate Pool 120 上限、A/B/C/D
+**純研究**，不修改任何 production 程式碼；Top120 為 P1 前歷史 policy comparator、A/B/C/D
 threshold、momentum_score、Hard Exclusion、Phase 2、Phase 2.5、Role、LLM、
 confidence、Market Regime、Outcome threshold。
 
@@ -101,15 +101,11 @@ def main() -> None:
                         frame = momentum.compute_market_momentum_frame(db, target_date, masters)
                         frame = {sid: {k: v for k, v in feats.items() if not k.startswith("_")} for sid, feats in frame.items()}
 
-                    # ---- 重建 raw union（不截斷）----
-                    orig_soft = candidate_pool.POOL_SOFT_TRIGGER
-                    candidate_pool.POOL_SOFT_TRIGGER = 999999
+                    # ---- raw union（P1 production 已不截斷）----
                     full_pool = candidate_pool.build_candidate_pool(db, target_date, ingestion, rankings, momentum_frame=frame)
-                    candidate_pool.POOL_SOFT_TRIGGER = orig_soft
-                    full_pool.sort(key=lambda c: (-(c.get("momentum_score") or 0.0), -(c.get("total_institution_flow_3d") or 0.0), str(c.get("stock_id") or "")))
 
-                    # ---- 正式 120 檔（原本 soft trigger）----
-                    top120_pool = candidate_pool.build_candidate_pool(db, target_date, ingestion, rankings, momentum_frame=frame)
+                    # ---- Historical 120-policy comparator（非 production）----
+                    top120_pool = full_pool[:120]
                     top120_ids = {c["stock_id"] for c in top120_pool}
 
                     # ---- A/B/C/D 通道命中判定 ----

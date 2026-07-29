@@ -62,8 +62,8 @@ def run_validation(target_date: date, out_path: str) -> dict:
         for c in survivors:
             c["prelim_type"] = pipeline_v2.role_to_prelim_type(c)
             c["regime_conviction"] = c.get("conviction")
-        after_regime = pipeline_mod._cap_llm_input(survivors, limit=pipeline_mod.LLM_INPUT_HARD_LIMIT)
-        print(f"  送進 LLM（cap={pipeline_mod.LLM_INPUT_HARD_LIMIT}）: {len(after_regime)} 檔")
+        after_regime = pipeline_mod._order_llm_input(survivors)
+        print(f"  送進 LLM（完整召回、僅排序）: {len(after_regime)} 檔")
         asset_types = {c.get("stock_id"): c.get("asset_type") for c in after_regime}
         print(f"  asset_type 分布: { {v: list(asset_types.values()).count(v) for v in set(asset_types.values())} }")
 

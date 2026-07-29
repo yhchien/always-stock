@@ -78,11 +78,6 @@ TODAY_SELL_BLACKLIST_LIMIT = 10  # 當日（1 日）淨額最賣超的前 N 產�
 TOP_STOCKS_LIMIT = 30
 TOP_STOCKS_INNER = 6  # spec §6 group expansion 取 top 6
 
-# Spec §6.1 候選池規模
-POOL_SOFT_TRIGGER = 150  # 超過此數量啟動截斷
-POOL_HARD_LIMIT = 120
-
-
 # ---------- Step 1：ingest ----------
 
 
@@ -238,7 +233,7 @@ def build_candidate_pool(
     rankings: Dict[str, Any],
     momentum_frame: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
-    """spec §5 Step 4 + §6：候選池組合 + 擴散 + 截斷。
+    """spec §5 Step 4 + §6：候選池組合 + 擴散 + deterministic ordering。
 
     v2.1（fishtail momentum upgrade）：候選池從單一「法人資金」通道升級為多通道聯集：
       A. 法人資金（既有：熱錢前 30 + 前 10 非金融產業成分股 + 集團擴散）
@@ -265,31 +260,34 @@ def build_candidate_pool(
     acceleration_ids = set(channels.get("acceleration") or [])
     fundamental_ids = set(channels.get("fundamental") or [])
 
-    # 1. 收集候選 stock_id（聯集）
-    candidate_ids: Set[str] = set()
+    # 1. 收集候選 stock_id（聯集）。A/B/C/D 是來源資訊，不是淘汰理由。
+    source_a_ids: Set[str] = set()
 
-    # 1a. top_stocks_3d 前 40
+    # 1a. top_stocks_3d 前 30
     for s in top_stocks:
-        candidate_ids.add(s["stock_id"])
+        source_a_ids.add(s["stock_id"])
 
     # 1b. top_industries_3d 前 10 的所有成分股
     industry_set = {ind["industry_name"] for ind in top_industries}
     for sid, master in masters.items():
         if master.industry_name in industry_set:
-            candidate_ids.add(sid)
+            source_a_ids.add(sid)
 
-    # 1c. top_stocks_3d 前 10 的同集團（spec §6）
+    # 1c. top_stocks_3d 前 6 的同集團（spec §6）
     for s in top_stocks[:TOP_STOCKS_INNER]:
         group_name = find_group_for_stock(s["stock_id"])
         if not group_name:
             continue
         for member_id in get_group_members(group_name):
-            candidate_ids.add(member_id)
+            source_a_ids.add(member_id)
 
     # 1d. v2.1 B/C/D 通道（frame universe 已排除 ETF / 金融，這裡直接聯集）
-    candidate_ids |= price_momentum_ids
-    candidate_ids |= acceleration_ids
-    candidate_ids |= fundamental_ids
+    candidate_ids = (
+        source_a_ids
+        | price_momentum_ids
+        | acceleration_ids
+        | fundamental_ids
+    )
 
     # 2. 排除人工黑名單 / 不在 stocks_master 的（無業務面資料）
     #
@@ -337,6 +335,12 @@ def build_candidate_pool(
         mf = momentum_frame.get(sid) or momentum.empty_momentum_features()
         in_top = master.industry_name in industry_set
         asset_type = _resolve_asset_type(sid, master.stock_name, master.industry_name)
+        source_flags = {
+            "source_A": sid in source_a_ids,
+            "source_B": sid in price_momentum_ids,
+            "source_C": sid in acceleration_ids,
+            "source_D": sid in fundamental_ids,
+        }
         candidate = {
             "stock_id": sid,
             "name": master.stock_name,
@@ -353,6 +357,12 @@ def build_candidate_pool(
             "in_price_momentum_pool": sid in price_momentum_ids,
             "in_acceleration_pool": sid in acceleration_ids,
             "in_fundamental_pool": sid in fundamental_ids,
+            **source_flags,
+            "candidate_sources": [
+                source
+                for source in ("A", "B", "C", "D")
+                if source_flags[f"source_{source}"]
+            ],
             **m,
             **{k: v for k, v in mf.items() if not k.startswith("_")},
             **ts,
@@ -370,19 +380,14 @@ def build_candidate_pool(
     # 5. 算「該產業內」price_change_5d / net_3d 排名
     _attach_industry_rankings(candidates)
 
-    # 6. 截斷（spec §6.1）
-    # v2.1：截斷排序改用 momentum_score（每檔都有，deterministic），分數同時綜合了
-    # 價格動能 / RS / 法人 / 量價品質，比舊的 total_institution_flow_3d proxy 更貼近
-    # 「該保留誰」；tie-break 仍用法人 3 日金額，最後 stock_id 保證 deterministic。
-    if len(candidates) > POOL_SOFT_TRIGGER:
-        candidates.sort(
-            key=lambda c: (
-                -(c.get("momentum_score") or 0.0),
-                -(c.get("total_institution_flow_3d") or 0.0),
-                str(c.get("stock_id") or ""),
-            )
+    # 6. 僅排序、不截斷。排序決定 processing/debug/snapshot 順序，不影響 eligibility。
+    candidates.sort(
+        key=lambda c: (
+            -(c.get("momentum_score") or 0.0),
+            -(c.get("total_institution_flow_3d") or 0.0),
+            str(c.get("stock_id") or ""),
         )
-        candidates = candidates[:POOL_HARD_LIMIT]
+    )
 
     return candidates
 

@@ -3,7 +3,7 @@
 驗證 spec §5 Step 1～4 + §6：
   - ingest_data 取窗口元資料
   - compute_rankings 取產業 / 個股 3d 排行
-  - build_candidate_pool 聯集 + 擴散 + 過濾 + 截斷
+  - build_candidate_pool 聯集 + 擴散 + 過濾 + deterministic ordering（不截斷）
   - per-stock metrics（price_change_*、量能比率、法人累計、margin ratio）
 """
 from datetime import date
@@ -20,8 +20,6 @@ from app.models import (
 )
 from app.signals import candidate_pool as cp_mod
 from app.signals.candidate_pool import (
-    POOL_HARD_LIMIT,
-    POOL_SOFT_TRIGGER,
     build_candidate_pool,
     compute_rankings,
     ingest_data,
@@ -442,29 +440,79 @@ def test_build_candidate_pool_consecutive_buy_days_3d_count(db):
     assert cand["consecutive_buy_days_3d"] == 2
 
 
-def test_build_candidate_pool_truncates_when_exceeding_soft_trigger(db, monkeypatch):
-    """灌爆候選池 → 超過 POOL_SOFT_TRIGGER 應截斷到 POOL_HARD_LIMIT。"""
-    monkeypatch.setattr(cp_mod, "POOL_SOFT_TRIGGER", 5)
-    monkeypatch.setattr(cp_mod, "POOL_HARD_LIMIT", 3)
-
-    stocks = {f"{2000 + i}": {"name": f"S{i}", "industry": "半導體業"} for i in range(8)}
+@pytest.mark.parametrize("candidate_count", [100, 180])
+def test_build_candidate_pool_keeps_full_union_in_deterministic_order(db, candidate_count):
+    """P1：raw union 不論是否超過舊 150 trigger，所有候選都必須保留。"""
+    stocks = {
+        f"{2000 + i}": {"name": f"S{i}", "industry": "半導體業"}
+        for i in range(candidate_count)
+    }
     dates = [date(2026, 4, 20), date(2026, 4, 21), date(2026, 4, 22)]
     _seed_full_market(db, dates, stocks)
-    # 不同股票不同法人累計，第一名 net 最高
+    # 不同股票不同法人累計，驗證完整結果仍以相同 deterministic key 排序。
     for d in dates:
         for i, sid in enumerate(stocks):
-            _seed_flow(db, d, sid, "trust", (8 - i) * 1.0e8)
+            _seed_flow(db, d, sid, "trust", (candidate_count - i) * 1.0e8)
         _seed_industry_flow(db, d, "半導體業", 5.0e9)
     db.commit()
 
     ingestion = ingest_data(db, date(2026, 4, 22))
-    rankings = compute_rankings(db, date(2026, 4, 22), ingestion)
+    # Directly define A's selected industry so the fixture tests union retention,
+    # independently of compute_rankings' industry-name canonicalization.
+    rankings = {
+        "top_industries_3d": [{"industry_name": "半導體業"}],
+        "top_stocks_3d": [],
+    }
     pool = build_candidate_pool(db, date(2026, 4, 22), ingestion, rankings)
 
-    assert len(pool) == 3
-    # 截斷後保留 net flow 最高的 3 檔
-    nets = [c["total_institution_flow_3d"] for c in pool]
-    assert nets == sorted(nets, reverse=True)
+    assert len(pool) == candidate_count
+    expected = sorted(
+        pool,
+        key=lambda c: (
+            -(c.get("momentum_score") or 0.0),
+            -(c.get("total_institution_flow_3d") or 0.0),
+            str(c.get("stock_id") or ""),
+        ),
+    )
+    assert pool == expected
+    assert all(c["source_A"] for c in pool)
+    assert all("A" in c["candidate_sources"] for c in pool)
+
+
+def test_build_candidate_pool_preserves_multi_channel_source_union(db, monkeypatch):
+    stocks = {"2330": {"name": "台積電", "industry": "半導體業"}}
+    dates = [date(2026, 4, 20), date(2026, 4, 21), date(2026, 4, 22)]
+    _seed_full_market(db, dates, stocks)
+    for d in dates:
+        _seed_industry_flow(db, d, "半導體業", 5.0e9)
+    db.commit()
+    monkeypatch.setattr(
+        cp_mod.momentum,
+        "select_momentum_candidates",
+        lambda frame: {
+            "price_momentum": ["2330"],
+            "acceleration": ["2330"],
+            "fundamental": ["2330"],
+        },
+    )
+    ingestion = ingest_data(db, date(2026, 4, 22))
+    momentum_frame = {"2330": cp_mod.momentum.empty_momentum_features()}
+    rankings = {
+        "top_industries_3d": [{"industry_name": "半導體業"}],
+        "top_stocks_3d": [{"stock_id": "2330"}],
+    }
+
+    pool = build_candidate_pool(
+        db,
+        date(2026, 4, 22),
+        ingestion,
+        rankings,
+        momentum_frame=momentum_frame,
+    )
+
+    assert len(pool) == 1
+    assert pool[0]["candidate_sources"] == ["A", "B", "C", "D"]
+    assert all(pool[0][f"source_{source}"] for source in ("A", "B", "C", "D"))
 
 
 def test_build_candidate_pool_returns_empty_when_no_inputs(db):

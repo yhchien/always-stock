@@ -5,8 +5,9 @@ M23 Pipeline 主流程：cron / BackgroundTasks 共用入口。
 
 設計原則：
   - 每個 stage 結束 commit 一次 job 進度，前端 polling 即時看到進度
-  - 任何 stage 拋例外 → 先 rollback session 清 error state，再寫
+  - 非 LLM batch 的 stage 拋例外 → 先 rollback session 清 error state，再寫
     `job.status=failed` + `error_message=traceback`，最後 raise 讓 caller 紀錄
+  - LLM 單批失敗會隔離、繼續其餘批次並保存 partial snapshot
   - 不能用 request session（請求結束會 close）；要嘛用預設 SessionLocal、
     要嘛測試傳 in-memory factory（spec §11.5）
 
@@ -20,6 +21,7 @@ M23 Pipeline 主流程：cron / BackgroundTasks 共用入口。
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 import logging
 import os
 import traceback
@@ -47,7 +49,15 @@ STAGE_LLM_RESEARCH = "llm_research"
 STAGE_LLM_EXPLAIN = "llm_explain"
 STAGE_PERSIST = "persist"
 LLM_BATCH_CONCURRENCY = 2
-LLM_INPUT_HARD_LIMIT = 50
+
+
+@dataclass
+class BatchExecution:
+    """One stage's deterministic batch results and audit trail."""
+
+    results: list
+    batches: list[Dict[str, Any]]
+    failures: list[Dict[str, Any]]
 
 # Phase 2（2026-07-21 shadow 上線 / 2026-07-22 production cutover）：
 # SIGNALS_PIPELINE_MODE 控制候選池 + regime gate 要用 legacy 還是 Phase 2 邏輯。
@@ -172,8 +182,8 @@ def run_signal_pipeline_sync(
     流程：
       1. 從 DB 讀對應 SignalGenerationJob（找不到 raise ValueError）
       2. 逐 stage 跑、commit 進度
-      3. 跑完 → status=done + progress_pct=100 + finished_at
-      4. 任何 stage 拋例外 → status=failed + error_message=traceback + finished_at，
+      3. 完整跑完 → status=done；批次技術失敗 → status=partial_failure
+      4. 非批次 stage 拋例外 → status=failed + error_message=traceback + finished_at，
          並 re-raise（caller 可決定是否吞）
 
     參數：
@@ -225,6 +235,36 @@ def run_signal_pipeline_sync(
             pool = candidate_pool.build_candidate_pool(
                 db, target_date, ingestion, rankings, momentum_frame=momentum_frame
             )
+            processing_summary: Dict[str, Any] = {
+                "raw_union_count": len(pool),
+                "raw_union_count_before_total_cap": len(pool),
+                "raw_union_count_after_total_cap": len(pool),
+                "raw_union_truncated_count": 0,
+                "raw_union_total_cap_applied": False,
+                "phase2_pool_count": len(pool),
+                "hard_exclusion_count": 0,
+                "base_eligibility_survivor_count": 0,
+                "regime_survivor_count": 0,
+                "llm_eligible_count": 0,
+                "research_requested_count": 0,
+                "research_completed_count": 0,
+                "research_failed_count": 0,
+                "decision_requested_count": 0,
+                "decision_completed_count": 0,
+                "decision_failed_count": 0,
+                "final_watch_count": 0,
+                "final_remove_count": 0,
+                "unprocessed_count": 0,
+                "capacity_truncated_count": 0,
+                "is_complete": True,
+                "research_batches": [],
+                "decision_batches": [],
+                "technical_failures": [],
+            }
+            logger.info(
+                "Ordered %d raw candidates for Phase 2 processing; capacity truncation disabled",
+                len(pool),
+            )
 
             # 短路：候選池空 → raise ValueError 讓 cron 分類為 exit 1 (no_data)
             # 觸發情境：週末 / 假日跑、target_date DB 無交易資料、或當天市場太冷沒檔股票
@@ -245,7 +285,7 @@ def run_signal_pipeline_sync(
             )
             classified = classification.classify_stocks(db, target_date, pool)
             after_hard = filters.apply_hard_exclusions(db, target_date, classified)
-            llm_input = _cap_llm_input(after_hard, limit=LLM_INPUT_HARD_LIMIT)
+            llm_input = _order_llm_input(after_hard)
             after_soft = filters.apply_soft_filters(db, target_date, llm_input)
 
             # v2.2：deterministic_signals（v5 STEP 7.5 Risk Cap 的後端 deterministic 化）
@@ -274,6 +314,14 @@ def run_signal_pipeline_sync(
             after_regime = filters.apply_regime_gate(
                 after_soft, regime_info["regime"], regime_detail=regime_detail
             )
+            processing_summary.update(
+                {
+                    "hard_exclusion_count": max(len(classified) - len(after_hard), 0),
+                    "base_eligibility_survivor_count": len(after_soft),
+                    "regime_survivor_count": len(after_regime),
+                    "llm_eligible_count": len(after_regime),
+                }
+            )
             conviction_by_stock = {
                 str(c.get("stock_id") or ""): c.get("regime_conviction")
                 for c in after_regime
@@ -291,7 +339,7 @@ def run_signal_pipeline_sync(
             # 會繼承 legacy 分類已經刪掉漢翔/台虹/航運這類案例的問題。
             #
             # `SIGNALS_PIPELINE_MODE=="phase2"` 時，Phase 2 存活者（映射過
-            # prelim_type，套用同一個 LLM_INPUT_HARD_LIMIT 上限）**取代**上面 legacy
+            # prelim_type，依 deterministic priority 排序但不截斷）**取代**上面 legacy
             # 算出來的 after_regime/conviction_by_stock/signal_metrics_by_stock，
             # 成為真正送進 LLM 與寫進 signal_snapshots 的來源；legacy 這幾個變數在
             # 這個模式下只保留給 fail-safe fallback（Phase 2 丟例外時退回使用）與
@@ -333,9 +381,7 @@ def run_signal_pipeline_sync(
                     # 時等於 phase2_survivors，行為不變）。同一批 dict 物件參照，
                     # 上面對 phase2_survivors 做的 in-place 欄位更新一併反映在這裡。
                     phase2_llm_eligible = phase2_result.get("llm_eligible", phase2_survivors)
-                    phase2_after_regime = _cap_llm_input(
-                        phase2_llm_eligible, limit=LLM_INPUT_HARD_LIMIT
-                    )
+                    phase2_after_regime = _order_llm_input(phase2_llm_eligible)
                     legacy_survivor_ids = [
                         str(c.get("stock_id") or "") for c in after_regime
                     ]
@@ -359,10 +405,24 @@ def run_signal_pipeline_sync(
                         )
                         for c in after_regime
                     }
+                    funnel = phase2_result.get("funnel_metrics") or {}
+                    processing_summary.update(
+                        {
+                            "phase2_pool_count": len(phase2_candidates),
+                            "hard_exclusion_count": len(phase2_hard_excluded),
+                            "base_eligibility_survivor_count": int(
+                                funnel["momentum_eligible_count"]
+                                if funnel.get("momentum_eligible_count") is not None
+                                else len(phase2_survivors)
+                            ),
+                            "regime_survivor_count": len(phase2_survivors),
+                            "llm_eligible_count": len(after_regime),
+                        }
+                    )
                     logger.info(
                         "Phase 2 production mode active for %s: candidates=%d "
-                        "survivors=%d llm_eligible=%d (watch_quality_mode=%s, capped to "
-                        "%d for LLM); legacy would have produced %d survivors",
+                        "survivors=%d llm_eligible=%d (watch_quality_mode=%s; all %d "
+                        "queued in priority order); legacy would have produced %d survivors",
                         target_date,
                         len(phase2_candidates),
                         len(phase2_survivors),
@@ -424,13 +484,17 @@ def run_signal_pipeline_sync(
                     "climate_reason": "大盤融資融券資料聚合失敗。",
                 }
             research_batch_size = llm_caller.DEFAULT_RESEARCH_BATCH_SIZE
-            research_batches = [
-                after_regime[i : i + research_batch_size]
-                for i in range(0, len(after_regime), research_batch_size)
-            ]
-            research_results = _run_parallel_batches(
+            research_batches = _build_batches(after_regime, research_batch_size)
+            processing_summary["research_requested_count"] = len(after_regime)
+            logger.info(
+                "Queued %d Phase 2 survivors for LLM research in %d batches",
+                len(after_regime),
+                len(research_batches),
+            )
+            research_execution = _run_parallel_batches(
                 research_batches,
                 lambda batch: llm_caller.run_research_batch(batch, market_context),
+                stage="research",
                 concurrency=LLM_BATCH_CONCURRENCY,
                 on_batch_done=lambda done_count: _set_progress(
                     db,
@@ -439,6 +503,18 @@ def run_signal_pipeline_sync(
                     pct=45 + int(30 * done_count / total_for_llm),
                     label=f"研究第 {done_count} / {len(after_regime)} 檔",
                 ),
+            )
+            research_results, research_failures = _partition_stage_results(
+                research_execution, failure_status="RESEARCH_FAILED"
+            )
+            processing_summary["research_batches"] = research_execution.batches
+            processing_summary["research_completed_count"] = len(research_results)
+            processing_summary["research_failed_count"] = len(research_failures)
+            logger.info(
+                "Completed research for %d/%d candidates; %d research failures",
+                len(research_results),
+                len(after_regime),
+                len(research_failures),
             )
 
             # Step 6a：LLM 短 decision（全候選）
@@ -451,13 +527,12 @@ def run_signal_pipeline_sync(
                 pct=75,
                 label=f"LLM 初判（共 {len(research_results)} 檔）",
             )
-            explain_batches = [
-                research_results[i : i + explain_batch_size]
-                for i in range(0, len(research_results), explain_batch_size)
-            ]
-            explanation = _run_parallel_batches(
+            explain_batches = _build_batches(research_results, explain_batch_size)
+            processing_summary["decision_requested_count"] = len(research_results)
+            decision_execution = _run_parallel_batches(
                 explain_batches,
                 lambda chunk: llm_caller.run_explanation_batch(chunk, market_context),
+                stage="decision",
                 concurrency=LLM_BATCH_CONCURRENCY,
                 on_batch_done=lambda done_count: _set_progress(
                     db,
@@ -466,6 +541,18 @@ def run_signal_pipeline_sync(
                     pct=75 + int(10 * done_count / total_for_explain),
                     label=f"初判第 {done_count} / {len(research_results)} 檔",
                 ),
+            )
+            explanation, decision_failures = _partition_stage_results(
+                decision_execution, failure_status="DECISION_FAILED"
+            )
+            processing_summary["decision_batches"] = decision_execution.batches
+            processing_summary["decision_completed_count"] = len(explanation)
+            processing_summary["decision_failed_count"] = len(decision_failures)
+            logger.info(
+                "Completed decisions for %d/%d candidates; %d decision failures",
+                len(explanation),
+                len(research_results),
+                len(decision_failures),
             )
 
             # Step 6b：只對 WATCH 名單補長理由
@@ -481,13 +568,11 @@ def run_signal_pipeline_sync(
                 pct=86,
                 label=f"補長理由（共 {len(watch_candidates)} 檔）",
             )
-            watch_batches = [
-                watch_candidates[i : i + explain_batch_size]
-                for i in range(0, len(watch_candidates), explain_batch_size)
-            ]
-            enriched_watch = _run_parallel_batches(
+            watch_batches = _build_batches(watch_candidates, explain_batch_size)
+            watch_reason_execution = _run_parallel_batches(
                 watch_batches,
                 lambda chunk: llm_caller.run_watch_reason_batch(chunk, market_context),
+                stage="watch_reason",
                 concurrency=LLM_BATCH_CONCURRENCY,
                 on_batch_done=lambda done_count: _set_progress(
                     db,
@@ -497,6 +582,7 @@ def run_signal_pipeline_sync(
                     label=f"長理由第 {done_count} / {len(watch_candidates)} 檔",
                 ),
             )
+            enriched_watch = watch_reason_execution.results
 
             if enriched_watch:
                 watch_by_id = {
@@ -523,6 +609,30 @@ def run_signal_pipeline_sync(
             final_payload = llm_caller.assemble_final_output(
                 market_context, explanation, candidate_pool_size=len(pool)
             )
+            technical_failures = [
+                *research_failures,
+                *decision_failures,
+                *watch_reason_execution.failures,
+            ]
+            failed_stock_ids = {
+                str(item.get("stock_id") or "")
+                for item in technical_failures
+                if item.get("stock_id")
+            }
+            processing_summary.update(
+                {
+                    "final_watch_count": len(final_payload.get("watchlist", [])),
+                    "final_remove_count": sum(
+                        1
+                        for item in explanation
+                        if str(item.get("decision") or "").upper() == "REMOVE"
+                    ),
+                    "unprocessed_count": len(failed_stock_ids),
+                    "technical_failures": technical_failures,
+                    "is_complete": not technical_failures,
+                }
+            )
+            final_payload.setdefault("summary", {})["processing_summary"] = processing_summary
             # M27：把 deterministic conviction / watch_intensity 蓋回每筆 watchlist item
             # （不依賴 LLM；regime 為全市場一致）
             for item in final_payload.get("watchlist", []):
@@ -538,7 +648,18 @@ def run_signal_pipeline_sync(
             _persist_snapshot(db, target_date, final_payload, job_id)
             signal_archive.persist_signal_watch_hits(db, target_date, final_payload, job_id)
 
-            _mark_done(db, job)
+            if technical_failures:
+                _mark_partial_failure(
+                    db,
+                    job,
+                    (
+                        f"{len(failed_stock_ids)} candidates were not fully processed; "
+                        f"research_failed={len(research_failures)}, "
+                        f"decision_failed={len(decision_failures)}"
+                    ),
+                )
+            else:
+                _mark_done(db, job)
         except Exception:
             tb = traceback.format_exc()
             logger.exception(
@@ -576,6 +697,20 @@ def _set_progress(
 def _mark_done(db: Session, job: SignalGenerationJob) -> None:
     job.status = "done"
     job.progress_pct = 100
+    job.finished_at = datetime.utcnow()
+    db.commit()
+
+
+def _mark_partial_failure(
+    db: Session,
+    job: SignalGenerationJob,
+    error_summary: str,
+) -> None:
+    """Persist a terminal incomplete state without discarding the usable snapshot."""
+    job.status = "partial_failure"
+    job.progress_pct = 100
+    job.progress_label = "部分候選處理失敗"
+    job.error_message = error_summary[:2000]
     job.finished_at = datetime.utcnow()
     db.commit()
 
@@ -640,60 +775,191 @@ def _run_parallel_batches(
     batches: list[list],
     runner: Callable[[list], list],
     *,
+    stage: str,
     concurrency: int,
     on_batch_done: Optional[Callable[[int], None]] = None,
-) -> list:
+) -> BatchExecution:
+    """Run every batch, isolate failures, and preserve deterministic result order."""
     if not batches:
-        return []
+        return BatchExecution(results=[], batches=[], failures=[])
+
+    total_batches = len(batches)
+    batch_runs = [
+        {
+            "batch_index": idx + 1,
+            "total_batches": total_batches,
+            "candidate_count": len(batch),
+            "candidate_ids": [_candidate_id(item) for item in batch],
+            "started_at": None,
+            "finished_at": None,
+            "status": "PENDING",
+            "retry_count": 0,
+            "error_summary": None,
+        }
+        for idx, batch in enumerate(batches)
+    ]
+    results_by_index: dict[int, list] = {}
+    failures: list[Dict[str, Any]] = []
+    done_count = 0
+
+    def record_failure(idx: int, batch: list, exc: Exception) -> None:
+        error_summary = f"{type(exc).__name__}: {exc}"[:500]
+        meta = batch_runs[idx]
+        meta["status"] = "FAILED"
+        meta["finished_at"] = datetime.utcnow().isoformat()
+        meta["error_summary"] = error_summary
+        failure_status = f"{stage.upper()}_FAILED"
+        for item in batch:
+            failures.append(
+                {
+                    "stock_id": _candidate_id(item),
+                    "processing_status": failure_status,
+                    "batch_index": idx + 1,
+                    "error_summary": error_summary,
+                }
+            )
+        logger.exception(
+            "%s batch %d/%d failed for candidates=%s",
+            stage,
+            idx + 1,
+            total_batches,
+            meta["candidate_ids"],
+            exc_info=exc,
+        )
+
     if concurrency <= 1 or len(batches) == 1:
-        out: list = []
-        done_count = 0
-        for batch in batches:
-            result = runner(batch)
-            out.extend(result)
+        for idx, batch in enumerate(batches):
+            meta = batch_runs[idx]
+            meta["status"] = "RUNNING"
+            meta["started_at"] = datetime.utcnow().isoformat()
+            try:
+                batch_result = runner(batch)
+                if not isinstance(batch_result, list):
+                    raise TypeError("batch runner must return a list")
+                results_by_index[idx] = batch_result
+                meta["status"] = "COMPLETED"
+                meta["finished_at"] = datetime.utcnow().isoformat()
+            except Exception as exc:
+                record_failure(idx, batch, exc)
             done_count += len(batch)
             if on_batch_done is not None:
                 on_batch_done(done_count)
-        return out
-
-    results_by_index: dict[int, list] = {}
-    done_count = 0
-    with ThreadPoolExecutor(max_workers=min(concurrency, len(batches))) as executor:
-        future_to_meta = {
-            executor.submit(runner, batch): (idx, len(batch))
-            for idx, batch in enumerate(batches)
-        }
-        for future in as_completed(future_to_meta):
-            idx, batch_size = future_to_meta[future]
-            results_by_index[idx] = future.result()
-            done_count += batch_size
-            if on_batch_done is not None:
-                on_batch_done(done_count)
+    else:
+        with ThreadPoolExecutor(max_workers=min(concurrency, len(batches))) as executor:
+            future_to_meta = {}
+            for idx, batch in enumerate(batches):
+                meta = batch_runs[idx]
+                meta["status"] = "RUNNING"
+                meta["started_at"] = datetime.utcnow().isoformat()
+                future_to_meta[executor.submit(runner, batch)] = (idx, batch)
+            for future in as_completed(future_to_meta):
+                idx, batch = future_to_meta[future]
+                meta = batch_runs[idx]
+                try:
+                    batch_result = future.result()
+                    if not isinstance(batch_result, list):
+                        raise TypeError("batch runner must return a list")
+                    results_by_index[idx] = batch_result
+                    meta["status"] = "COMPLETED"
+                    meta["finished_at"] = datetime.utcnow().isoformat()
+                except Exception as exc:
+                    record_failure(idx, batch, exc)
+                done_count += len(batch)
+                if on_batch_done is not None:
+                    on_batch_done(done_count)
 
     flattened: list = []
     for idx in range(len(batches)):
-        flattened.extend(results_by_index[idx])
-    return flattened
+        flattened.extend(results_by_index.get(idx, []))
+    return BatchExecution(results=flattened, batches=batch_runs, failures=failures)
+
+
+def _build_batches(items: list, batch_size: int) -> list[list]:
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    return [items[i : i + batch_size] for i in range(0, len(items), batch_size)]
+
+
+def _candidate_id(item: Dict[str, Any]) -> str:
+    return str(item.get("stock_id") or item.get("stock") or "")
+
+
+def _partition_stage_results(
+    execution: BatchExecution,
+    *,
+    failure_status: str,
+) -> tuple[list, list[Dict[str, Any]]]:
+    """Separate LLM technical fallbacks from genuine stage outputs."""
+    successful: list = []
+    failures = list(execution.failures)
+    failed_ids = {item.get("stock_id") for item in failures}
+
+    for item in execution.results:
+        processing_status = str(item.get("processing_status") or "").upper()
+        if item.get("_unavailable") or processing_status.endswith("_FAILED"):
+            stock_id = _candidate_id(item)
+            if stock_id not in failed_ids:
+                diagnostic = item.get("llm_diagnostic") or {}
+                error_summary = (
+                    item.get("_unavailable_reason")
+                    or item.get("short_reason")
+                    or diagnostic.get("message")
+                    or failure_status
+                )
+                failures.append(
+                    {
+                        "stock_id": stock_id,
+                        "processing_status": failure_status,
+                        "batch_index": _batch_index_for_stock(execution.batches, stock_id),
+                        "error_summary": str(error_summary)[:500],
+                    }
+                )
+                failed_ids.add(stock_id)
+            continue
+        successful.append(item)
+
+    failure_by_batch: dict[int, list[str]] = {}
+    for failure in failures:
+        batch_index = failure.get("batch_index")
+        if isinstance(batch_index, int):
+            failure_by_batch.setdefault(batch_index, []).append(
+                str(failure.get("error_summary") or failure_status)
+            )
+    for meta in execution.batches:
+        errors = failure_by_batch.get(meta["batch_index"])
+        if errors:
+            meta["status"] = "FAILED"
+            meta["error_summary"] = "; ".join(dict.fromkeys(errors))[:500]
+
+    return successful, failures
+
+
+def _batch_index_for_stock(batch_runs: list[Dict[str, Any]], stock_id: str) -> Optional[int]:
+    for meta in batch_runs:
+        if stock_id in meta.get("candidate_ids", []):
+            return int(meta["batch_index"])
+    return None
+
+
+def _order_llm_input(
+    candidates: list[Dict[str, Any]],
+) -> list[Dict[str, Any]]:
+    """Return every eligible candidate in deterministic processing priority order."""
+    return sorted(candidates, key=_llm_input_sort_key)
 
 
 def _cap_llm_input(
     candidates: list[Dict[str, Any]],
     *,
-    limit: int,
+    limit: Optional[int] = None,
 ) -> list[Dict[str, Any]]:
-    if limit <= 0 or len(candidates) <= limit:
-        return list(candidates)
-
-    ordered = sorted(candidates, key=_llm_input_sort_key)
-    return ordered[:limit]
+    """Compatibility wrapper retained for callers; P1 intentionally ignores ``limit``."""
+    del limit
+    return _order_llm_input(candidates)
 
 
 def _llm_input_sort_key(candidate: Dict[str, Any]) -> tuple:
-    """LLM_INPUT_HARD_LIMIT 截斷排序。Phase 2 候選（有 `role`/`tracking_state`
-    欄位，即使值為 None）改走 `_phase2_llm_priority_key`（見 2026-07-22 LLM v6
-    contract 對齊 §29-31）；legacy 候選（兩個欄位都不存在）維持原本
-    prelim_type-based 排序不變。
-    """
+    """Choose the deterministic processing order for Phase 2 or legacy candidates."""
     if "role" in candidate or "tracking_state" in candidate:
         return _phase2_llm_priority_key(candidate)
 
@@ -722,11 +988,11 @@ def _llm_input_sort_key(candidate: Dict[str, Any]) -> tuple:
 
 
 def _phase2_llm_priority_key(candidate: Dict[str, Any]) -> tuple:
-    """LLM v6 contract §29-31（2026-07-22）：Phase 2 候選超過
-    `LLM_INPUT_HARD_LIMIT` 時，不能再用 `prelim_type`（display_type 映射後的
+    """LLM v6 contract §29-31（2026-07-22）：Phase 2 processing order 不用
+    `prelim_type`（display_type 映射後的
     LEADER/FOLLOWER/LAGGARD 三桶）當主排序——`EMERGING_MOMENTUM` /
     `UNCLASSIFIED_MOMENTUM` 這類角色會被映射進 FOLLOWER/LAGGARD 桶，用桶排序
-    截斷等於系統性把它們排到後面優先被砍掉，重新帶入本來要拿掉的 legacy bias。
+    排序會系統性把它們排到後面，重新帶入 legacy bias。
 
     改用 deterministic 數字排序：conviction（backend 信心度）> momentum_score >
     rs_market_percentile_20d > risk_warnings 數量（越少越優先）。`internal_role`

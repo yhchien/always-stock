@@ -1352,6 +1352,28 @@ export interface SignalSummary {
   follower_count?: number | null
   laggard_count?: number | null
   risk_note?: string | null
+  /** P1 optional pipeline audit metadata; absent on historical snapshots. */
+  processing_summary?: SignalProcessingSummary | null
+}
+
+export interface SignalProcessingSummary {
+  raw_union_count?: number
+  phase2_pool_count?: number
+  hard_exclusion_count?: number
+  base_eligibility_survivor_count?: number
+  regime_survivor_count?: number
+  llm_eligible_count?: number
+  research_requested_count?: number
+  research_completed_count?: number
+  research_failed_count?: number
+  decision_requested_count?: number
+  decision_completed_count?: number
+  decision_failed_count?: number
+  final_watch_count?: number
+  final_remove_count?: number
+  unprocessed_count?: number
+  capacity_truncated_count?: number
+  is_complete?: boolean
 }
 
 export interface SignalMarketMarginToday {
@@ -1419,7 +1441,7 @@ export interface SignalSnapshotResponse {
   data: SignalSnapshotData
 }
 
-export type SignalJobStatus = "pending" | "running" | "done" | "failed"
+export type SignalJobStatus = "pending" | "running" | "done" | "partial_failure" | "failed"
 
 export interface SignalJobResponse {
   job_id: string

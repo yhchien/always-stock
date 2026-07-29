@@ -484,7 +484,8 @@ def test_run_explanation_batch_chunks_by_default_batch_size(monkeypatch):
     assert call_count["n"] == 4
     # 即使 LLM 都回空 items，每檔仍應走 fallback 補齊
     assert len(out) == 13
-    assert all(r.get("decision") == "REMOVE" for r in out)
+    assert all(r.get("decision") is None for r in out)
+    assert all(r.get("processing_status") == "DECISION_FAILED" for r in out)
 
 
 def test_run_explanation_batch_fallback_when_llm_fails(monkeypatch):
@@ -494,7 +495,8 @@ def test_run_explanation_batch_fallback_when_llm_fails(monkeypatch):
     ]
     out = llm_caller.run_explanation_batch(research, market_context={})
     assert len(out) == 1
-    assert out[0]["decision"] == "REMOVE"
+    assert out[0]["decision"] is None
+    assert out[0]["processing_status"] == "DECISION_FAILED"
     assert "短 decision失敗" in out[0]["short_reason"]
     assert out[0]["llm_diagnostic"]["status"] == llm_caller._DIAG_STATUS_OPENAI_EXCEPTION
 
@@ -518,7 +520,8 @@ def test_run_explanation_batch_falls_back_for_missing_stock_in_response(monkeypa
     out = llm_caller.run_explanation_batch(research, market_context={})
     by_id = {x["stock"]: x for x in out}
     assert by_id["2330"]["decision"] == "WATCH"
-    assert by_id["9999"]["decision"] == "REMOVE"  # fallback
+    assert by_id["9999"]["decision"] is None
+    assert by_id["9999"]["processing_status"] == "DECISION_FAILED"
     assert "短 decision失敗" in by_id["9999"]["short_reason"]
     assert by_id["9999"]["llm_diagnostic"]["status"] == llm_caller._DIAG_STATUS_OK
 

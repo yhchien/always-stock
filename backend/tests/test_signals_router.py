@@ -417,6 +417,20 @@ def test_regenerate_quota_requires_login(api):
     assert res.status_code == 401
 
 
+def test_partial_failure_job_counts_toward_user_regenerate_quota(api):
+    _, db, _ = api
+    target_date = date(2026, 4, 25)
+    _seed_job(
+        db,
+        "user-partial",
+        target_date,
+        triggered_by="user:1",
+        status="partial_failure",
+    )
+
+    assert signals_router._user_count_today(db, 1, target_date) == 1
+
+
 def test_regenerate_quota_returns_remaining_count_and_excludes_failed(api):
     client, db, _ = api
     _seed_trade_date(db, date(2026, 4, 25))
