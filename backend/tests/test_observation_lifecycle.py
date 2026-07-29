@@ -1,0 +1,751 @@
+from __future__ import annotations
+
+from datetime import date, datetime, timedelta
+import json
+import time
+import tracemalloc
+
+import pytest
+
+from app.models import (
+    DailyPrice,
+    SignalObservation,
+    SignalObservationReview,
+    SignalWatchHit,
+)
+from app.signals import observation_lifecycle as lifecycle
+
+
+DAY_0 = date(2026, 7, 20)
+DAY_1 = date(2026, 7, 21)
+DAY_2 = date(2026, 7, 22)
+
+
+def _observation(
+    db,
+    stock: str = "2330",
+    *,
+    started: date = DAY_0,
+    asset_type: str = "COMMON_STOCK",
+    baseline_quality: str = "P3_COMPLETE",
+) -> SignalObservation:
+    row = SignalObservation(
+        stock_id=stock,
+        stock_name=f"Stock-{stock}",
+        asset_type=asset_type,
+        episode_id=f"episode-{stock}-{started}",
+        status="OBSERVING",
+        started_signal_date=started,
+        baseline_quality=baseline_quality,
+        initial_snapshot_json={
+            "recommendation_date": started.isoformat(),
+            "recommendation_thesis": "原始 thesis",
+            "relative_advantage": "相對優勢",
+            "instrument_validation": "VERIFIED",
+            "theme_validation": "VERIFIED",
+        },
+        consecutive_caution_count=0,
+    )
+    db.add(row)
+    db.commit()
+    return row
+
+
+def _healthy_evidence(stock: str = "2330"):
+    return {
+        "stock": stock,
+        "tracking_state": "ACTIVE_TREND",
+        "momentum_freshness": "FRESH_STABLE",
+        "momentum_phase": "trending",
+        "watch_quality_state": "READY",
+        "quality_evidence": {
+            "PARTICIPATION": True,
+            "INSTITUTION_CONFIRMATION": True,
+        },
+        "deterministic_signals": {
+            "institution_flow_momentum": "stable",
+            "chip_trend": "accumulating",
+            "sector_rotation_status": "inflow",
+        },
+        "hard_exclusion": {"excluded": False, "reason": None},
+        "persistence_warning": {"warning": False},
+        "market_regime": "BULL_TREND",
+        "data_quality": {
+            "price_available": True,
+            "baseline_quality": "P3_COMPLETE",
+        },
+    }
+
+
+def _external(
+    stock: str = "2330",
+    *,
+    assessment: str = "THESIS_INTACT",
+    catalyst: str = "ACTIVE",
+):
+    return {
+        "stock": stock,
+        "assessment": assessment,
+        "invalidation_reason_code": None,
+        "instrument_validation": "VERIFIED",
+        "theme_validation": "VERIFIED",
+        "supply_chain_validation": "VERIFIED",
+        "catalyst_status": catalyst,
+        "thesis_dimensions": {
+            "business_or_exposure": "INTACT",
+            "theme": "INTACT",
+            "catalyst": "INTACT",
+        },
+        "assessment_reason": "原始 thesis 仍成立。",
+        "material_evidence": [],
+    }
+
+
+def _recommend(stock: str = "2330", *, asset_type: str = "COMMON_STOCK"):
+    return {
+        "stock": stock,
+        "name": f"Stock-{stock}",
+        "asset_type": asset_type,
+        "decision": "RECOMMEND",
+        "selection_status": "RECOMMEND",
+        "selection_version": "p3_global_v1",
+        "recommendation_rank": 1,
+        "backend_priority_rank": 1,
+        "recommendation_thesis": "原始 thesis",
+        "relative_advantage": "相對優勢",
+        "business_validation": "VERIFIED",
+        "theme_validation": "VERIFIED",
+        "theme_cluster": "AI",
+        "catalyst_summary": "需求延續",
+        "research_confidence": "HIGH",
+        "phase2_role": "SECTOR_LEADER",
+        "phase2_entry_state": "NEAR_HIGH",
+        "phase2_momentum_freshness": "FRESH_STRONG",
+        "phase2_watch_quality_state": "READY",
+        "quality_evidence": {"PARTICIPATION": True},
+        "signal_metrics": {"momentum_score_version": "v3_applicability_aware"},
+    }
+
+
+def _patch_evidence(monkeypatch, mapping):
+    monkeypatch.setattr(
+        lifecycle,
+        "build_current_tracking_evidence",
+        lambda db, **kwargs: mapping,
+    )
+
+
+def _runner_for(mapping, failures=None):
+    return lambda payloads: (mapping, failures or [])
+
+
+def test_daily_review_does_not_require_candidate_rehit(db, monkeypatch):
+    observation = _observation(db)
+    _patch_evidence(monkeypatch, {observation.id: _healthy_evidence()})
+
+    result = lifecycle.run_daily_observation_reviews(
+        db,
+        review_date=DAY_1,
+        market_context={},
+        current_candidates=[],
+        assessment_runner=_runner_for({"2330": _external()}),
+        persist=True,
+    )
+
+    assert result["tracking_summary"]["continue_count"] == 1
+    assert db.get(SignalObservation, observation.id).status == "OBSERVING"
+
+
+def test_same_day_new_recommendation_creates_observation_but_skips_review(db):
+    sync = lifecycle.sync_recommendations(
+        db,
+        signal_date=DAY_1,
+        watchlist=[_recommend()],
+    )
+    result = lifecycle.run_daily_observation_reviews(
+        db,
+        review_date=DAY_1,
+        market_context={},
+        assessment_runner=_runner_for({}),
+        persist=True,
+    )
+
+    assert sync["created"] == ["2330"]
+    assert result["tracking_summary"]["excluded_same_day_count"] == 1
+    assert db.query(SignalObservationReview).count() == 0
+
+
+def test_only_formal_p3_recommendation_starts_observation(db):
+    watch = _recommend()
+    watch["decision"] = "WATCH"
+    watch["selection_status"] = "WATCH"
+    result = lifecycle.sync_recommendations(
+        db,
+        signal_date=DAY_1,
+        watchlist=[watch],
+    )
+    assert result["created"] == []
+    assert db.query(SignalObservation).count() == 0
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "MANUAL_BLACKLIST",
+        "FAILED_FOLLOW_THROUGH_CURRENT_EPISODE",
+        "STRUCTURE_DAMAGED",
+        "LIQUIDITY_FAILURE",
+        "COMPOSITE_RISK_EXCLUDE",
+        "REVERSAL_FAILURE",
+    ],
+)
+def test_immediate_hard_invalidation_stops_without_sell(reason):
+    evidence = _healthy_evidence()
+    evidence["hard_exclusion"] = {"excluded": True, "reason": reason}
+    decision = lifecycle.decide_observation_action(
+        current_backend_evidence=evidence,
+        external_thesis_assessment=None,
+        latest_valid_reviews=[],
+        current_observation={"baseline_quality": "P3_COMPLETE"},
+    )
+    assert decision.decision == "STOP_OBSERVING"
+    assert decision.reason_codes == [reason]
+    assert "SELL" not in decision.reason.upper()
+
+
+def test_tracking_invalidated_stops():
+    evidence = _healthy_evidence()
+    evidence["tracking_state"] = "INVALIDATED"
+    decision = lifecycle.decide_observation_action(
+        current_backend_evidence=evidence,
+        external_thesis_assessment=_external(),
+        latest_valid_reviews=[],
+        current_observation={"baseline_quality": "P3_COMPLETE"},
+    )
+    assert decision.reason_codes == ["TRACKING_INVALIDATED"]
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "BUSINESS_MISMATCH",
+        "THEME_MISMATCH",
+        "FALSE_SUPPLY_CHAIN_LINK",
+        "MATERIAL_NEGATIVE_EVENT",
+        "DATA_CONTRADICTION",
+    ],
+)
+def test_external_thesis_invalidation_stops(reason):
+    external = _external(assessment="THESIS_INVALIDATED")
+    external["invalidation_reason_code"] = reason
+    external["thesis_dimensions"]["theme"] = "INVALIDATED"
+    decision = lifecycle.decide_observation_action(
+        current_backend_evidence=_healthy_evidence(),
+        external_thesis_assessment=external,
+        latest_valid_reviews=[],
+        current_observation={"baseline_quality": "P3_COMPLETE"},
+    )
+    assert decision.decision == "STOP_OBSERVING"
+    assert decision.reason_codes == [reason]
+
+
+def test_unconfirmed_and_material_without_source_cannot_be_validated():
+    raw = _external(assessment="THESIS_INVALIDATED")
+    raw.update(
+        {
+            "invalidation_reason_code": "MATERIAL_NEGATIVE_EVENT",
+            "material_evidence": [],
+        }
+    )
+    raw["thesis_dimensions"]["theme"] = "INVALIDATED"
+    with pytest.raises(ValueError, match="traceable evidence"):
+        lifecycle._validate_external_assessment(raw, review_date=DAY_1)
+
+    unconfirmed = _external(assessment="THESIS_WEAKENING", catalyst="UNCONFIRMED")
+    validated = lifecycle._validate_external_assessment(
+        unconfirmed,
+        review_date=DAY_1,
+    )
+    assert validated["assessment"] == "THESIS_WEAKENING"
+
+
+def test_external_mismatch_requires_consistent_invalidated_contract():
+    inconsistent = _external()
+    inconsistent["instrument_validation"] = "MISMATCH"
+    with pytest.raises(ValueError, match="THESIS_INVALIDATED"):
+        lifecycle._validate_external_assessment(
+            inconsistent,
+            review_date=DAY_1,
+        )
+
+    invalidated = _external(assessment="THESIS_INVALIDATED")
+    invalidated["invalidation_reason_code"] = "BUSINESS_MISMATCH"
+    invalidated["thesis_dimensions"]["business_or_exposure"] = "INVALIDATED"
+    with pytest.raises(ValueError, match="instrument_validation=MISMATCH"):
+        lifecycle._validate_external_assessment(
+            invalidated,
+            review_date=DAY_1,
+        )
+
+
+def test_material_evidence_is_date_bounded_and_records_retrieved_date():
+    raw = _external(assessment="THESIS_INVALIDATED")
+    raw.update(
+        {
+            "invalidation_reason_code": "DATA_CONTRADICTION",
+            "material_evidence": [
+                {
+                    "summary": "公告與 thesis 矛盾",
+                    "url": "https://example.com/filing",
+                    "published_date": DAY_0.isoformat(),
+                }
+            ],
+        }
+    )
+    raw["thesis_dimensions"]["business_or_exposure"] = "INVALIDATED"
+    validated = lifecycle._validate_external_assessment(raw, review_date=DAY_1)
+    assert validated["material_evidence"][0]["retrieved_date"] == DAY_1.isoformat()
+
+
+def test_persistence_or_market_warning_never_stops():
+    for mutator in (
+        lambda evidence: evidence["persistence_warning"].update(
+            {"warning": True, "state": "FAILED", "count": 4}
+        ),
+        lambda evidence: evidence.update({"market_regime": "RISK_OFF"}),
+    ):
+        evidence = _healthy_evidence()
+        mutator(evidence)
+        decision = lifecycle.decide_observation_action(
+            current_backend_evidence=evidence,
+            external_thesis_assessment=_external(),
+            latest_valid_reviews=[
+                {
+                    "decision": "CAUTION",
+                    "failed_dimensions": [],
+                }
+            ],
+            current_observation={"baseline_quality": "P3_COMPLETE"},
+        )
+        assert decision.decision == "CAUTION"
+
+
+def test_one_day_institution_reversal_is_caution_not_stop():
+    evidence = _healthy_evidence()
+    evidence["deterministic_signals"]["institution_flow_momentum"] = "reversal"
+    decision = lifecycle.decide_observation_action(
+        current_backend_evidence=evidence,
+        external_thesis_assessment=_external(),
+        latest_valid_reviews=[],
+        current_observation={"baseline_quality": "P3_COMPLETE"},
+    )
+    assert decision.decision == "CAUTION"
+    assert decision.failed_dimensions == []
+
+
+def test_second_successful_review_can_stop_sustained_two_dimension_failure():
+    evidence = _healthy_evidence()
+    evidence["tracking_state"] = "DETERIORATING"
+    evidence["deterministic_signals"].update(
+        {
+            "institution_flow_momentum": "reversal",
+            "chip_trend": "distribution",
+        }
+    )
+    decision = lifecycle.decide_observation_action(
+        current_backend_evidence=evidence,
+        external_thesis_assessment=_external(),
+        latest_valid_reviews=[
+            {
+                "decision": "CAUTION",
+                "failed_dimensions": [
+                    "MOMENTUM_STRUCTURE",
+                    "PARTICIPATION",
+                ],
+            }
+        ],
+        current_observation={"baseline_quality": "P3_COMPLETE"},
+    )
+    assert decision.decision == "STOP_OBSERVING"
+    assert decision.reason_codes == [
+        "SUSTAINED_MOMENTUM_AND_PARTICIPATION_FAILURE"
+    ]
+
+
+def test_market_and_persistence_do_not_count_as_core_dimensions():
+    evidence = _healthy_evidence()
+    evidence["market_regime"] = "RISK_OFF"
+    evidence["persistence_warning"] = {
+        "warning": True,
+        "state": "FAILED",
+        "count": 5,
+    }
+    decision = lifecycle.decide_observation_action(
+        current_backend_evidence=evidence,
+        external_thesis_assessment=_external(),
+        latest_valid_reviews=[
+            {
+                "decision": "CAUTION",
+                "failed_dimensions": [
+                    "MARKET_CONTEXT",
+                    "PERSISTENCE_WARNING",
+                ],
+            }
+        ],
+        current_observation={"baseline_quality": "P3_COMPLETE"},
+    )
+    assert decision.decision == "CAUTION"
+
+
+def test_reacceleration_recovers_caution_to_continue():
+    evidence = _healthy_evidence()
+    evidence["tracking_state"] = "REACCELERATING"
+    evidence["momentum_freshness"] = "FRESH_STRONG"
+    decision = lifecycle.decide_observation_action(
+        current_backend_evidence=evidence,
+        external_thesis_assessment=_external(),
+        latest_valid_reviews=[
+            {
+                "decision": "CAUTION",
+                "failed_dimensions": ["MOMENTUM_STRUCTURE"],
+            }
+        ],
+        current_observation={"baseline_quality": "P3_COMPLETE"},
+    )
+    assert decision.decision == "CONTINUE"
+    assert decision.reason_codes == ["RECOVERED_FROM_CAUTION"]
+
+
+def test_technical_failure_preserves_status_and_caution_count(db, monkeypatch):
+    observation = _observation(db)
+    observation.status = "CAUTION"
+    observation.consecutive_caution_count = 2
+    db.commit()
+    _patch_evidence(monkeypatch, {observation.id: _healthy_evidence()})
+    failure = {
+        "stock": "2330",
+        "status": "TRACKING_RESEARCH_FAILED",
+        "error_summary": "timeout",
+    }
+
+    result = lifecycle.run_daily_observation_reviews(
+        db,
+        review_date=DAY_1,
+        market_context={},
+        assessment_runner=_runner_for({}, [failure]),
+        persist=True,
+    )
+
+    refreshed = db.get(SignalObservation, observation.id)
+    assert result["tracking_summary"]["review_failed_count"] == 1
+    assert refreshed.status == "CAUTION"
+    assert refreshed.consecutive_caution_count == 2
+    assert db.query(SignalObservationReview).one().decision == "REVIEW_FAILED"
+
+
+def test_tracking_batch_exception_becomes_per_stock_review_failure(monkeypatch):
+    monkeypatch.setattr(
+        lifecycle.llm_caller,
+        "_call_llm_json",
+        lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError("timeout")),
+    )
+    successful, failures = lifecycle.run_tracking_assessments(
+        [
+            {"date": DAY_1.isoformat(), "stock": "2330"},
+            {"date": DAY_1.isoformat(), "stock": "2454"},
+        ],
+        batch_size=2,
+    )
+    assert successful == {}
+    assert {item["stock"] for item in failures} == {"2330", "2454"}
+    assert all(item["processing_status"] == "REVIEW_FAILED" for item in failures)
+
+
+def test_same_date_rerun_is_idempotent(db, monkeypatch):
+    observation = _observation(db)
+    evidence = _healthy_evidence()
+    evidence["market_regime"] = "RISK_OFF"
+    _patch_evidence(monkeypatch, {observation.id: evidence})
+
+    for _ in range(2):
+        lifecycle.run_daily_observation_reviews(
+            db,
+            review_date=DAY_1,
+            market_context={},
+            assessment_runner=_runner_for({"2330": _external()}),
+            persist=True,
+        )
+
+    refreshed = db.get(SignalObservation, observation.id)
+    assert db.query(SignalObservationReview).count() == 1
+    assert refreshed.consecutive_caution_count == 1
+
+
+def test_legacy_baseline_is_marked_and_never_stops_from_missing_fields(db, monkeypatch):
+    db.add(
+        SignalWatchHit(
+            snapshot_date=DAY_0,
+            stock_id="2330",
+            stock_name="台積電",
+            signal_type="LEADER",
+            reason="legacy reason",
+            theme={},
+            group_info={},
+            leader_check={},
+            signals={},
+            signal_metrics={},
+            prompt_version="v1",
+        )
+    )
+    db.commit()
+    assert lifecycle.bootstrap_legacy_observations(db) == 1
+    observation = db.query(SignalObservation).one()
+    assert observation.baseline_quality == "LEGACY_INCOMPLETE"
+    _patch_evidence(monkeypatch, {observation.id: _healthy_evidence()})
+
+    result = lifecycle.run_daily_observation_reviews(
+        db,
+        review_date=DAY_1,
+        market_context={},
+        assessment_runner=_runner_for({"2330": _external()}),
+        persist=True,
+    )
+    assert result["tracking_summary"]["stopped_count"] == 0
+    assert db.get(SignalObservation, observation.id).status == "CAUTION"
+
+
+def test_bootstrap_preserves_complete_p3_initial_evidence(db):
+    db.add(
+        SignalWatchHit(
+            snapshot_date=DAY_0,
+            stock_id="2454",
+            stock_name="聯發科",
+            signal_type="LEADER",
+            reason="complete P3 reason",
+            theme={},
+            group_info={},
+            leader_check={},
+            signals={},
+            signal_metrics={
+                "initial_recommendation_thesis": "完整 thesis",
+                "initial_relative_advantage": "相對優勢",
+                "initial_instrument_validation": "VERIFIED",
+                "initial_theme_validation": "VERIFIED",
+                "initial_catalyst_summary": "催化仍在",
+            },
+            prompt_version="v6.1",
+        )
+    )
+    db.commit()
+    lifecycle.bootstrap_legacy_observations(db)
+    observation = db.query(SignalObservation).one()
+    assert observation.baseline_quality == "P3_COMPLETE"
+    assert observation.initial_snapshot_json["missing_fields"] == []
+
+
+def test_p3_recommend_and_p4_stop_creates_explicit_conflict(db, monkeypatch):
+    observation = _observation(db)
+    evidence = _healthy_evidence()
+    evidence["tracking_state"] = "INVALIDATED"
+    _patch_evidence(monkeypatch, {observation.id: evidence})
+
+    result = lifecycle.run_daily_observation_reviews(
+        db,
+        review_date=DAY_1,
+        market_context={},
+        p3_recommended_stock_ids=["2330"],
+        assessment_runner=_runner_for({}),
+        persist=True,
+    )
+    assert result["tracking_summary"]["conflict_count"] == 1
+    assert result["conflicts"][0]["error_code"] == "TRACKING_SELECTION_CONFLICT"
+    assert db.get(SignalObservation, observation.id).status == "STOPPED"
+
+
+def test_stopped_stock_can_restart_after_existing_five_day_gap(db):
+    observation = _observation(db)
+    observation.status = "STOPPED"
+    observation.stopped_at = datetime.utcnow()
+    db.add(
+        SignalWatchHit(
+            snapshot_date=DAY_0,
+            stock_id="2330",
+            stock_name="台積電",
+            signal_type="LEADER",
+            reason="old",
+            theme={},
+            group_info={},
+            leader_check={},
+            signals={},
+            prompt_version="v6.1",
+        )
+    )
+    for offset in range(7):
+        trade_date = DAY_0 + timedelta(days=offset)
+        db.add(
+            DailyPrice(
+                stock_id="2330",
+                trade_date=trade_date,
+                close_price=100 + offset,
+            )
+        )
+    db.commit()
+
+    sync = lifecycle.sync_recommendations(
+        db,
+        signal_date=DAY_0 + timedelta(days=6),
+        watchlist=[_recommend()],
+    )
+    assert sync["created"] == ["2330"]
+    assert db.query(SignalObservation).count() == 2
+    assert db.query(SignalObservation).filter(
+        SignalObservation.status == "STOPPED"
+    ).count() == 1
+
+
+def test_asset_types_share_identical_state_machine():
+    decisions = []
+    for asset_type in ("COMMON_STOCK", "FINANCIAL", "ETF"):
+        evidence = _healthy_evidence()
+        evidence["asset_type"] = asset_type
+        decisions.append(
+            lifecycle.decide_observation_action(
+                current_backend_evidence=evidence,
+                external_thesis_assessment=_external(),
+                latest_valid_reviews=[],
+                current_observation={"baseline_quality": "P3_COMPLETE"},
+            ).decision
+        )
+    assert decisions == ["CONTINUE", "CONTINUE", "CONTINUE"]
+
+
+def test_tracking_prompt_preserves_lifecycle_authority_and_asset_parity():
+    prompt = lifecycle._PROMPT_PATH.read_text(encoding="utf-8")
+    assert "不決定 CONTINUE、CAUTION 或 STOP_OBSERVING" in prompt
+    assert "不提供 BUY/SELL" in prompt
+    assert "COMMON_STOCK、FINANCIAL、ETF 的 lifecycle 地位一致" in prompt
+    assert "review_date 當日或之前" in prompt
+
+
+def test_replay_is_chronological_point_in_time_and_read_only(db, monkeypatch):
+    observation = _observation(db)
+    for trade_date in (DAY_1, DAY_2):
+        db.add(
+            DailyPrice(
+                stock_id="2330",
+                trade_date=trade_date,
+                close_price=100,
+            )
+        )
+    db.commit()
+    monkeypatch.setattr(
+        lifecycle.candidate_pool,
+        "ingest_data",
+        lambda _db, replay_date: {"stocks_master": {}},
+    )
+    monkeypatch.setattr(
+        lifecycle.momentum,
+        "compute_market_momentum_frame",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        lifecycle.market_regime,
+        "compute_market_regime",
+        lambda *_args: {
+            "regime": "BULL_TREND",
+            "regime_label": "多頭",
+            "reason": "point in time",
+        },
+    )
+    monkeypatch.setattr(
+        lifecycle.market_breadth,
+        "compute_breadth_from_frame",
+        lambda *_args: {"breadth_score": 60},
+    )
+    monkeypatch.setattr(
+        lifecycle.market_snapshot,
+        "build_db_market_snapshot",
+        lambda *_args: {},
+    )
+    monkeypatch.setattr(
+        lifecycle.llm_caller,
+        "assemble_market_context",
+        lambda *_args: {},
+    )
+    monkeypatch.setattr(
+        lifecycle,
+        "build_current_tracking_evidence",
+        lambda _db, observations, review_date, **_kwargs: {
+            row.id: {
+                **_healthy_evidence(row.stock_id),
+                "review_date": review_date.isoformat(),
+            }
+            for row in observations
+        },
+    )
+    prompted_dates = []
+
+    def runner(payloads):
+        prompted_dates.extend(item["date"] for item in payloads)
+        return (
+            {
+                item["stock"]: _external(item["stock"])
+                for item in payloads
+            },
+            [],
+        )
+
+    result = lifecycle.replay_observation_lifecycle(
+        db,
+        start_date=DAY_1,
+        end_date=DAY_2,
+        observation_ids=[observation.id],
+        assessment_runner=runner,
+    )
+
+    assert prompted_dates == [DAY_1.isoformat(), DAY_2.isoformat()]
+    assert [row["review_date"] for row in result["rows"]] == prompted_dates
+    assert all(row["decision"] == "CONTINUE" for row in result["rows"])
+    assert db.query(SignalObservationReview).count() == 0
+    assert db.get(SignalObservation, observation.id).status == "OBSERVING"
+
+
+@pytest.mark.parametrize("count", [25, 50, 100, 200])
+def test_tracking_scale_state_persistence_and_api_serialization(
+    db,
+    monkeypatch,
+    count,
+):
+    observations = [
+        _observation(db, str(1000 + index))
+        for index in range(count)
+    ]
+    mapping = {
+        row.id: _healthy_evidence(row.stock_id) for row in observations
+    }
+    _patch_evidence(monkeypatch, mapping)
+    external = {
+        row.stock_id: _external(row.stock_id) for row in observations
+    }
+
+    tracemalloc.start()
+    started = time.perf_counter()
+    result = lifecycle.run_daily_observation_reviews(
+        db,
+        review_date=DAY_1,
+        market_context={},
+        assessment_runner=_runner_for(external),
+        persist=True,
+    )
+    response = lifecycle.list_observations(db, limit=1000)
+    serialized = json.dumps(response, default=str, separators=(",", ":"))
+    duration = time.perf_counter() - started
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    assert result["tracking_summary"]["continue_count"] == count
+    assert db.query(SignalObservationReview).count() == count
+    assert len(response["observations"]) == count
+    assert len(serialized.encode()) > 0
+    assert duration < 2
+    assert peak < 32 * 1024 * 1024

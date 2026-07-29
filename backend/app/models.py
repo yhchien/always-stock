@@ -416,6 +416,83 @@ class SignalWatchHit(Base):
     )
 
 
+class SignalObservation(Base):
+    """P4 lifecycle episode for a stock formally recommended by P3.
+
+    This table is intentionally independent from ``signal_watch_hits``.  Hits retain
+    their historical performance/archive meaning; stopping an observation never
+    deletes a hit and never represents a SELL action.
+    """
+
+    __tablename__ = "signal_observations"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    stock_id = Column(String, nullable=False, index=True)
+    stock_name = Column(String, nullable=False)
+    asset_type = Column(String(24), nullable=False, default="COMMON_STOCK")
+    episode_id = Column(String(36), nullable=False, unique=True, index=True)
+    status = Column(String(16), nullable=False, default="OBSERVING", index=True)
+    started_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    started_signal_date = Column(Date, nullable=False, index=True)
+    stopped_at = Column(DateTime, nullable=True)
+    stop_reason_code = Column(String(64), nullable=True)
+    stop_reason = Column(Text, nullable=True)
+    last_review_date = Column(Date, nullable=True, index=True)
+    latest_decision = Column(String(32), nullable=True)
+    consecutive_caution_count = Column(Integer, nullable=False, default=0)
+    baseline_quality = Column(String(32), nullable=False, default="P3_COMPLETE")
+    initial_snapshot_json = Column(JSON, nullable=False)
+    latest_snapshot_json = Column(JSON, nullable=True)
+    selection_version = Column(String(32), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "stock_id",
+            "started_signal_date",
+            name="uq_signal_observation_stock_start",
+        ),
+    )
+
+
+class SignalObservationReview(Base):
+    """One idempotent P4 lifecycle review per observation and trading date."""
+
+    __tablename__ = "signal_observation_reviews"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    observation_id = Column(
+        Integer,
+        ForeignKey("signal_observations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    review_date = Column(Date, nullable=False, index=True)
+    decision = Column(String(32), nullable=False)
+    reason_codes = Column(JSON, nullable=False)
+    reason = Column(Text, nullable=False)
+    caution_dimensions = Column(JSON, nullable=False)
+    failed_dimensions = Column(JSON, nullable=False)
+    backend_evidence_json = Column(JSON, nullable=True)
+    external_assessment_json = Column(JSON, nullable=True)
+    market_context_json = Column(JSON, nullable=True)
+    persistence_warning_json = Column(JSON, nullable=True)
+    technical_status = Column(String(32), nullable=True)
+    prompt_version = Column(String(32), nullable=False)
+    state_machine_version = Column(String(32), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "observation_id",
+            "review_date",
+            name="uq_signal_observation_review_date",
+        ),
+    )
+
+
 class SignalWatchCompletedArchive(Base):
     """
     M23 訊號追蹤期滿後封存表（retention = 30 個交易日）。

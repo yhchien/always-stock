@@ -15,7 +15,15 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.models import Base, SignalGenerationJob, SignalSnapshot, SignalWatchHit
+from app.models import (
+    Base,
+    DailyPrice,
+    SignalGenerationJob,
+    SignalObservation,
+    SignalObservationReview,
+    SignalSnapshot,
+    SignalWatchHit,
+)
 from app.signals import candidate_pool, classification, filters, global_selector, llm_caller
 from app.signals import market_snapshot
 from app.signals import pipeline as pipeline_mod
@@ -267,6 +275,155 @@ def test_pipeline_raises_value_error_when_candidate_pool_empty(session_factory, 
         assert rec.status == "failed"
         assert "no candidate" in rec.error_message.lower()
         assert rec.finished_at is not None
+
+
+def test_valid_trading_day_with_zero_p3_candidates_still_runs_p4(
+    session_factory,
+    monkeypatch,
+):
+    target_date = date(2026, 4, 25)
+    monkeypatch.setattr(
+        candidate_pool,
+        "ingest_data",
+        lambda db, td: {"target": td, "stocks_master": {}},
+    )
+    monkeypatch.setattr(
+        candidate_pool,
+        "compute_rankings",
+        lambda db, td, ing: {},
+    )
+    monkeypatch.setattr(
+        candidate_pool,
+        "build_candidate_pool",
+        lambda db, td, ing, rank, **kw: [],
+    )
+    monkeypatch.setattr(
+        pipeline_mod.momentum,
+        "compute_market_momentum_frame",
+        lambda *args, **kwargs: {},
+    )
+    tracking_calls = []
+
+    def fake_tracking_only(db, **kwargs):
+        tracking_calls.append(kwargs["target_date"])
+        pipeline_mod._mark_done(db, kwargs["job"])
+
+    monkeypatch.setattr(
+        pipeline_mod,
+        "_run_p4_tracking_only_day",
+        fake_tracking_only,
+    )
+    job_id = str(uuid.uuid4())
+    _seed_pending_job(session_factory, job_id, snapshot_date=target_date)
+    with session_factory() as db:
+        db.add(
+            DailyPrice(
+                stock_id="2330",
+                trade_date=target_date,
+                close_price=100,
+            )
+        )
+        db.commit()
+
+    run_signal_pipeline_sync(
+        job_id,
+        target_date,
+        session_factory=session_factory,
+    )
+
+    assert tracking_calls == [target_date]
+    with session_factory() as db:
+        assert db.get(SignalGenerationJob, job_id).status == "done"
+
+
+def test_tracking_only_day_persists_empty_p3_snapshot_and_p4_summary(
+    session_factory,
+    monkeypatch,
+):
+    target_date = date(2026, 4, 25)
+    job_id = str(uuid.uuid4())
+    _seed_pending_job(session_factory, job_id, snapshot_date=target_date)
+    monkeypatch.setattr(
+        pipeline_mod.market_regime,
+        "compute_market_regime",
+        lambda db, td: {
+            "regime": "BULL_TREND",
+            "regime_label": "多頭",
+            "reason": "test",
+        },
+    )
+    monkeypatch.setattr(
+        pipeline_mod.market_breadth,
+        "compute_breadth_from_frame",
+        lambda frame, masters: {"breadth_score": 60},
+    )
+    monkeypatch.setattr(
+        pipeline_mod.market_breadth,
+        "resolve_regime_detail",
+        lambda regime, score: "BROAD_BULL",
+    )
+    monkeypatch.setattr(
+        pipeline_mod,
+        "_build_pipeline_market_context",
+        lambda *args, **kwargs: {"market_regime": "BULL_TREND"},
+    )
+    monkeypatch.setattr(
+        pipeline_mod,
+        "_run_p4_tracking",
+        lambda *args, **kwargs: {
+            "tracking_summary": {
+                "review_date": target_date.isoformat(),
+                "active_before_review": 2,
+                "continue_count": 1,
+                "caution_count": 1,
+                "stopped_count": 0,
+                "review_failed_count": 0,
+                "conflict_count": 0,
+                "review_complete": True,
+            },
+            "reviews": [{}, {}],
+            "technical_failures": [],
+            "conflicts": [],
+        },
+    )
+    monkeypatch.setattr(
+        llm_caller,
+        "assemble_final_output",
+        lambda ctx, rows, *, candidate_pool_size: {
+            "market_context": ctx,
+            "watchlist": [],
+            "removed": [],
+            "summary": {},
+            "candidate_pool_size": candidate_pool_size,
+            "final_watchlist_size": 0,
+            "llm_model": "test",
+            "llm_total_tokens": 0,
+        },
+    )
+
+    with session_factory() as db:
+        job = db.get(SignalGenerationJob, job_id)
+        pipeline_mod._run_p4_tracking_only_day(
+            db,
+            job=job,
+            target_date=target_date,
+            ingestion={"stocks_master": {}},
+            momentum_frame={},
+            processing_summary={},
+            job_id=job_id,
+        )
+
+    with session_factory() as db:
+        job = db.get(SignalGenerationJob, job_id)
+        snapshot = (
+            db.query(SignalSnapshot)
+            .filter(SignalSnapshot.snapshot_date == target_date)
+            .one()
+        )
+        assert job.status == "done"
+        assert snapshot.watchlist == []
+        assert snapshot.summary["tracking_summary"]["continue_count"] == 1
+        assert snapshot.summary["selection_summary"]["recommended_count"] == 0
 
 
 def test_pipeline_raises_when_job_not_found(session_factory):
@@ -841,6 +998,7 @@ def test_p3_pipeline_three_buckets_only_recommend_gets_reason_and_observation(
         job = db.get(SignalGenerationJob, job_id)
         snap = db.query(SignalSnapshot).filter_by(snapshot_date=target_date).one()
         hits = db.query(SignalWatchHit).filter_by(snapshot_date=target_date).all()
+        observations = db.query(SignalObservation).all()
         processing = snap.summary["processing_summary"]
 
         assert job.status == "done"
@@ -849,6 +1007,8 @@ def test_p3_pipeline_three_buckets_only_recommend_gets_reason_and_observation(
         assert len(snap.removed) == 5
         assert len(reason_stock_ids) == 10
         assert len(hits) == 10
+        assert len(observations) == 10
+        assert db.query(SignalObservationReview).count() == 0
         assert {row.stock_id for row in hits} == {
             str(1000 + index) for index in range(10)
         }
@@ -926,4 +1086,5 @@ def test_p3_global_selection_failure_is_atomic_and_writes_no_observation(
             "GLOBAL_SELECTION_MISSING_STOCK"
         )
         assert db.query(SignalWatchHit).filter_by(snapshot_date=target_date).count() == 0
+        assert db.query(SignalObservation).count() == 0
         assert reason_calls == []

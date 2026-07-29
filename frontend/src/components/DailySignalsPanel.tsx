@@ -1443,6 +1443,12 @@ export default function DailySignalsPanel({
         </div>
         <div className="flex items-center gap-2">
           <Link
+            href="/signals/observations"
+            className="inline-flex items-center rounded border border-slate-600 bg-slate-800/50 px-3 py-1 text-xs font-medium text-slate-200 hover:bg-slate-700"
+          >
+            每日觀察
+          </Link>
+          <Link
             href="/signals/archive"
             className="inline-flex items-center rounded border border-slate-600 bg-slate-800/50 px-3 py-1 text-xs font-medium text-slate-200 hover:bg-slate-700"
           >

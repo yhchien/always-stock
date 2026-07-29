@@ -39,6 +39,7 @@ from app.models import (
 )
 from app.signals import archive as signal_archive
 from app.signals import expectation_price as expectation_price_service
+from app.signals import observation_lifecycle
 from app.signals.pipeline import run_signal_pipeline_sync
 
 logger = logging.getLogger(__name__)
@@ -447,6 +448,54 @@ def get_latest_job(db: Session = Depends(get_db)) -> Optional[JobResponse]:
     if job is None:
         return None
     return _serialize_job(job)
+
+
+@router.get("/observations")
+def get_observations(
+    observation_status: Optional[str] = Query(
+        default=None,
+        alias="status",
+        pattern="^(OBSERVING|CAUTION|STOPPED)$",
+    ),
+    limit: int = Query(default=500, ge=1, le=2000),
+    as_of_date: Optional[date] = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    """P4 observation episodes; separate from the legacy 30-day archive."""
+
+    return observation_lifecycle.list_observations(
+        db,
+        status=observation_status,
+        limit=limit,
+        as_of_date=as_of_date,
+    )
+
+
+@router.get("/observations/tracking-summary")
+def get_tracking_summary(
+    review_date: Optional[date] = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    return observation_lifecycle.get_daily_tracking_summary(
+        db,
+        review_date=review_date,
+    )
+
+
+@router.get("/observations/{observation_id}")
+def get_observation_detail(
+    observation_id: int,
+    as_of_date: Optional[date] = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    payload = observation_lifecycle.get_observation_detail(
+        db,
+        observation_id,
+        as_of_date=as_of_date,
+    )
+    if payload is None:
+        raise HTTPException(status_code=404, detail="Observation not found")
+    return payload
 
 
 @router.get("/archive", response_model=SignalArchiveSummaryResponse)

@@ -98,14 +98,21 @@ def main(argv: list) -> int:
     logger.info("Daily signals pipeline start: target_date=%s", target_date)
 
     try:
-        from app.database import SessionLocal
+        from app.database import SessionLocal, engine
         from app.models import SignalGenerationJob
+        from app.observation_schema import ensure_observation_tables
         from app.signals.pipeline import run_signal_pipeline_sync
     except Exception:
         logger.exception("Failed to import pipeline modules")
         return EXIT_DB_ERROR
 
     job_id = str(uuid.uuid4())
+
+    try:
+        ensure_observation_tables(engine)
+    except Exception:
+        logger.exception("Failed to ensure P4 observation lifecycle tables")
+        return EXIT_DB_ERROR
 
     # 建 SignalGenerationJob（triggered_by="cron"）
     try:

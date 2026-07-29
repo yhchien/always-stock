@@ -1432,6 +1432,8 @@ export interface SignalSummary {
     selection_rationale?: string
     status?: "COMPLETED" | "FAILED" | string
   } | null
+  /** P4 additive daily observation result; absent on historical snapshots. */
+  tracking_summary?: SignalTrackingSummary | null
 }
 
 export interface SignalProcessingSummary {
@@ -1465,6 +1467,11 @@ export interface SignalProcessingSummary {
   assessment_prompt_version?: string
   global_selector_version?: string
   reason_prompt_version?: string
+  tracking_prompt_version?: string
+  tracking_state_machine_version?: string
+  tracking_review_count?: number
+  tracking_review_failed_count?: number
+  tracking_conflict_count?: number
   selection_candidate_count?: number
   selection_serialized_bytes?: number
   selection_estimated_input_tokens?: number
@@ -1676,6 +1683,89 @@ export interface SignalArchiveReportItem {
 
 export interface SignalArchiveDetailResponse extends SignalArchiveSummaryItem {
   reports: SignalArchiveReportItem[]
+}
+
+// ── P4 Observation Lifecycle ───────────────────────────────────────────────
+
+export type SignalObservationStatus = "OBSERVING" | "CAUTION" | "STOPPED"
+export type SignalObservationDecision =
+  | "CONTINUE"
+  | "CAUTION"
+  | "STOP_OBSERVING"
+  | "REVIEW_FAILED"
+
+export interface SignalObservationItem {
+  id: number
+  stock: string
+  name: string
+  asset_type: string
+  episode_id: string
+  status: SignalObservationStatus
+  started_at: string
+  started_signal_date: string
+  last_review_date: string | null
+  latest_decision: SignalObservationDecision | null
+  consecutive_caution_count: number
+  latest_reason_codes: string[]
+  latest_reason: string | null
+  latest_review_technical_status: string | null
+  stopped_at: string | null
+  stop_reason_code: string | null
+  stop_reason: string | null
+  baseline_quality: string
+  selection_version: string | null
+  /** P3 formal recommendation today; intentionally separate from P4 status. */
+  recommended_today: boolean
+}
+
+export interface SignalObservationReview {
+  review_date: string
+  decision: SignalObservationDecision
+  reason_codes: string[]
+  reason: string | null
+  caution_dimensions: string[]
+  failed_dimensions: string[]
+  backend_evidence: Record<string, unknown>
+  external_assessment: Record<string, unknown> | null
+  market_context: Record<string, unknown>
+  persistence_warning: Record<string, unknown>
+  technical_status: string | null
+  tracking_prompt_version: string
+  tracking_state_machine_version: string
+}
+
+export interface SignalObservationListResponse {
+  as_of_date: string | null
+  observations: SignalObservationItem[]
+}
+
+export interface SignalObservationDetail extends SignalObservationItem {
+  as_of_date: string | null
+  initial_observation: Record<string, unknown>
+  latest_snapshot: Record<string, unknown>
+  review_timeline: SignalObservationReview[]
+  recommendation_history: Array<{
+    date: string
+    signal_type: string
+    prompt_version: string | null
+  }>
+}
+
+export interface SignalTrackingSummary {
+  review_date: string | null
+  active_before_review: number
+  continue_count: number
+  caution_count: number
+  stopped_count: number
+  review_failed_count: number
+  conflict_count: number
+  review_complete: boolean
+  tracking_prompt_version: string
+  tracking_state_machine_version: string
+}
+
+export interface SignalTrackingSummaryResponse {
+  tracking_summary: SignalTrackingSummary
 }
 
 // ============================================================================
@@ -1912,6 +2002,56 @@ export async function fetchSignalArchiveDetail(
   })
   if (res.status === 404) return null
   if (!res.ok) throw new Error(await buildErrorMessage(res, "訊號追蹤詳情載入失敗"))
+  return res.json()
+}
+
+export async function fetchSignalObservations(
+  params?: {
+    status?: SignalObservationStatus
+    limit?: number
+    asOfDate?: string
+  },
+  options?: FetchOptions,
+): Promise<SignalObservationListResponse> {
+  const qs = new URLSearchParams()
+  if (params?.status) qs.set("status", params.status)
+  if (params?.limit != null) qs.set("limit", String(params.limit))
+  if (params?.asOfDate) qs.set("as_of_date", params.asOfDate)
+  const url = `${API_BASE}/api/signals/observations${
+    qs.toString() ? `?${qs.toString()}` : ""
+  }`
+  const res = await apiFetch(url, { signal: options?.signal })
+  if (!res.ok)
+    throw new Error(await buildErrorMessage(res, "每日觀察清單載入失敗"))
+  return res.json()
+}
+
+export async function fetchSignalObservationDetail(
+  observationId: number,
+  options?: FetchOptions,
+): Promise<SignalObservationDetail | null> {
+  const res = await apiFetch(
+    `${API_BASE}/api/signals/observations/${observationId}`,
+    { signal: options?.signal },
+  )
+  if (res.status === 404) return null
+  if (!res.ok)
+    throw new Error(await buildErrorMessage(res, "每日觀察詳情載入失敗"))
+  return res.json()
+}
+
+export async function fetchSignalTrackingSummary(
+  reviewDate?: string,
+  options?: FetchOptions,
+): Promise<SignalTrackingSummaryResponse> {
+  const qs = new URLSearchParams()
+  if (reviewDate) qs.set("review_date", reviewDate)
+  const url = `${API_BASE}/api/signals/observations/tracking-summary${
+    qs.toString() ? `?${qs.toString()}` : ""
+  }`
+  const res = await apiFetch(url, { signal: options?.signal })
+  if (!res.ok)
+    throw new Error(await buildErrorMessage(res, "每日觀察摘要載入失敗"))
   return res.json()
 }
 

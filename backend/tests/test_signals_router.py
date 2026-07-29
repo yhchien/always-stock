@@ -19,6 +19,8 @@ from app.models import (
     DailyPrice,
     InstStockFlow,
     SignalGenerationJob,
+    SignalObservation,
+    SignalObservationReview,
     SignalSnapshot,
     SignalWatchCompletedArchive,
     SignalWatchHit,
@@ -117,6 +119,83 @@ def _seed_job(
     db.add(job)
     db.commit()
     return job
+
+
+def test_observation_list_detail_and_tracking_summary_contract(api):
+    client, db, _ = api
+    observation = SignalObservation(
+        stock_id="2330",
+        stock_name="台積電",
+        asset_type="COMMON_STOCK",
+        episode_id="p4-episode-2330",
+        status="CAUTION",
+        started_signal_date=date(2026, 7, 20),
+        last_review_date=date(2026, 7, 22),
+        latest_decision="CAUTION",
+        consecutive_caution_count=1,
+        baseline_quality="P3_COMPLETE",
+        initial_snapshot_json={
+            "recommendation_thesis": "AI 需求與法人參與同步",
+        },
+        latest_snapshot_json={"review_date": "2026-07-22"},
+    )
+    db.add(observation)
+    db.flush()
+    db.add(
+        SignalObservationReview(
+            observation_id=observation.id,
+            review_date=date(2026, 7, 22),
+            decision="CAUTION",
+            reason_codes=["MOMENTUM_STALE"],
+            reason="動能轉為 stale，原始 thesis 尚未失效。",
+            caution_dimensions=["MOMENTUM_STRUCTURE"],
+            failed_dimensions=[],
+            backend_evidence_json={"momentum_freshness": "STALE"},
+            external_assessment_json={"assessment": "THESIS_INTACT"},
+            market_context_json={"market_regime": "BULL_TREND"},
+            persistence_warning_json={"warning": False},
+            prompt_version="p4_tracking_v1",
+            state_machine_version="p4_state_v1",
+        )
+    )
+    db.commit()
+
+    list_response = client.get("/api/signals/observations?status=CAUTION")
+    assert list_response.status_code == 200
+    listed = list_response.json()["observations"]
+    assert len(listed) == 1
+    assert listed[0]["status"] == "CAUTION"
+    assert listed[0]["latest_reason_codes"] == ["MOMENTUM_STALE"]
+
+    detail_response = client.get(
+        f"/api/signals/observations/{observation.id}"
+    )
+    assert detail_response.status_code == 200
+    detail = detail_response.json()
+    assert detail["initial_observation"]["recommendation_thesis"].startswith(
+        "AI"
+    )
+    assert detail["review_timeline"][0]["technical_status"] is None
+    assert detail["review_timeline"][0]["backend_evidence"][
+        "momentum_freshness"
+    ] == "STALE"
+
+    summary_response = client.get(
+        "/api/signals/observations/tracking-summary"
+    )
+    assert summary_response.status_code == 200
+    summary = summary_response.json()["tracking_summary"]
+    assert summary["review_date"] == "2026-07-22"
+    assert summary["caution_count"] == 1
+    assert summary["review_complete"] is True
+
+
+def test_observation_detail_404_and_invalid_filter(api):
+    client, _, _ = api
+    assert client.get("/api/signals/observations/999").status_code == 404
+    assert (
+        client.get("/api/signals/observations?status=SELL").status_code == 422
+    )
 
 
 def _seed_trade_date(

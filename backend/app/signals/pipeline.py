@@ -31,9 +31,16 @@ from typing import Any, Callable, Dict, Optional
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
-from app.models import SignalGenerationJob, SignalSnapshot
+from app.models import DailyPrice, SignalGenerationJob, SignalSnapshot
 from app.signals import archive as signal_archive
-from app.signals import candidate_pool, classification, filters, global_selector, llm_caller
+from app.signals import (
+    candidate_pool,
+    classification,
+    filters,
+    global_selector,
+    llm_caller,
+    observation_lifecycle,
+)
 from app.signals import deterministic_signals as det_signals
 from app.signals import market_breadth, market_margin, market_regime, market_snapshot, momentum
 
@@ -48,6 +55,7 @@ STAGE_FILTER = "filter"
 STAGE_LLM_RESEARCH = "llm_research"
 STAGE_LLM_EXPLAIN = "llm_explain"
 STAGE_GLOBAL_SELECTION = "global_selection"
+STAGE_TRACKING = "tracking"
 STAGE_PERSIST = "persist"
 LLM_BATCH_CONCURRENCY = 2
 
@@ -272,6 +280,8 @@ def run_signal_pipeline_sync(
                 "assessment_prompt_version": global_selector.ASSESSMENT_VERSION,
                 "global_selector_version": global_selector.SELECTION_VERSION,
                 "reason_prompt_version": global_selector.REASON_VERSION,
+                "tracking_prompt_version": observation_lifecycle.TRACKING_PROMPT_VERSION,
+                "tracking_state_machine_version": observation_lifecycle.STATE_MACHINE_VERSION,
                 "research_batches": [],
                 "decision_batches": [],
                 "technical_failures": [],
@@ -281,14 +291,29 @@ def run_signal_pipeline_sync(
                 len(pool),
             )
 
-            # 短路：候選池空 → raise ValueError 讓 cron 分類為 exit 1 (no_data)
-            # 觸發情境：週末 / 假日跑、target_date DB 無交易資料、或當天市場太冷沒檔股票
-            # 通過篩選。沒短路會導致 LLM 跑空 batch、最後寫一筆全空的 snapshot 並 status=done，
-            # 看起來像「成功但 0 檔」很難跟「真的沒抓到」區分。
+            # 沒有任何交易資料仍是 no_data；但「交易日有行情、P3 候選為 0」
+            # 不得跳過 P4。Active observations 必須獨立於 A/B/C/D 每日檢查。
             if not pool:
-                raise ValueError(
-                    f"no candidate stocks for target_date={target_date}"
+                has_trade_data = (
+                    db.query(DailyPrice.id)
+                    .filter(DailyPrice.trade_date == target_date)
+                    .first()
+                    is not None
                 )
+                if not has_trade_data:
+                    raise ValueError(
+                        f"no candidate stocks or trade data for target_date={target_date}"
+                    )
+                _run_p4_tracking_only_day(
+                    db,
+                    job=job,
+                    target_date=target_date,
+                    ingestion=ingestion,
+                    momentum_frame=momentum_frame,
+                    processing_summary=processing_summary,
+                    job_id=job_id,
+                )
+                return
 
             # Step 4：deterministic filter（含預分類）
             _set_progress(
@@ -474,30 +499,11 @@ def run_signal_pipeline_sync(
                 pct=45,
                 label=f"LLM 上網查詢（共 {len(after_regime)} 檔）",
             )
-            db_market_snapshot = market_snapshot.build_db_market_snapshot(db, target_date)
-            market_context = llm_caller.assemble_market_context(db_market_snapshot)
-            # M27：把 deterministic regime 掛進 market_context（backend authoritative，全市場一個）。
-            # 攤平成 string + label + reason，避免 LLM 把巢狀 object 當每檔不同的 regime。
-            market_context["market_regime"] = regime_info["regime"]
-            market_context["market_regime_label"] = regime_info["regime_label"]
-            market_context["market_regime_reason"] = regime_info["reason"]
-            # v2.2 市場廣度（觀察欄位；LLM 契約的 market_regime 仍是 3 態）
-            market_context["breadth_score"] = regime_info.get("breadth_score")
-            market_context["market_regime_detail"] = regime_info.get("regime_detail")
-            # 2026-05-25：把大盤融資融券盤勢塞進 market_context，供 explanation /
-            # watch_reason 兩 stage 共用（cache 4h，多檔 batch 不重算）
-            try:
-                market_context["margin_climate"] = market_margin.compute_market_margin_snapshot(
-                    db, target_date
-                )
-            except Exception:
-                logger.exception("compute_market_margin_snapshot failed; continuing without it")
-                market_context["margin_climate"] = {
-                    "target_date": target_date.isoformat(),
-                    "data_available": False,
-                    "climate_label": "unknown",
-                    "climate_reason": "大盤融資融券資料聚合失敗。",
-                }
+            market_context = _build_pipeline_market_context(
+                db,
+                target_date=target_date,
+                regime_info=regime_info,
+            )
             research_batch_size = llm_caller.DEFAULT_RESEARCH_BATCH_SIZE
             research_batches = _build_batches(after_regime, research_batch_size)
             processing_summary["research_requested_count"] = len(after_regime)
@@ -696,6 +702,56 @@ def run_signal_pipeline_sync(
                     "error": selection_failure,
                 }
                 failed_summary["processing_summary"] = processing_summary
+                tracking_result = _run_p4_tracking(
+                    db,
+                    job=job,
+                    target_date=target_date,
+                    market_context=market_context,
+                    ingestion=ingestion,
+                    momentum_frame=momentum_frame,
+                    current_candidates=pool,
+                    watchlist=[],
+                    processing_summary=processing_summary,
+                )
+                tracking_failures = [
+                    *tracking_result.get("technical_failures", []),
+                    *tracking_result.get("conflicts", []),
+                ]
+                technical_failures.extend(tracking_failures)
+                processing_summary.update(
+                    {
+                        "technical_failures": technical_failures,
+                        "technical_failure_count": len(technical_failures),
+                        "tracking_review_count": len(
+                            tracking_result.get("reviews", [])
+                        ),
+                        "tracking_review_failed_count": (
+                            tracking_result.get("tracking_summary", {}).get(
+                                "review_failed_count", 0
+                            )
+                        ),
+                        "tracking_conflict_count": (
+                            tracking_result.get("tracking_summary", {}).get(
+                                "conflict_count", 0
+                            )
+                        ),
+                    }
+                )
+                failed_summary["technical_failures"] = technical_failures
+                failed_summary["selection_summary"][
+                    "technical_failure_count"
+                ] = len(technical_failures)
+                failed_summary["tracking_summary"] = tracking_result.get(
+                    "tracking_summary", {}
+                )
+                failed_summary["processing_summary"] = processing_summary
+                _set_progress(
+                    db,
+                    job,
+                    stage=STAGE_PERSIST,
+                    pct=98,
+                    label="保存 P3 與 P4 結果",
+                )
                 _persist_snapshot(db, target_date, failed_payload, job_id)
                 signal_archive.clear_signal_watch_hits_for_date(db, target_date)
                 _mark_partial_failure(
@@ -878,9 +934,85 @@ def run_signal_pipeline_sync(
                     ),
                     "initial_theme_validation": item.get("theme_validation"),
                     "initial_catalyst_summary": item.get("catalyst_summary"),
+                    "initial_research_confidence": item.get(
+                        "research_confidence"
+                    ),
+                    "initial_selection_version": item.get(
+                        "selection_version"
+                    ),
+                    "initial_prompt_versions": {
+                        "research_prompt_version": processing_summary.get(
+                            "research_prompt_version"
+                        ),
+                        "assessment_prompt_version": processing_summary.get(
+                            "assessment_prompt_version"
+                        ),
+                        "global_selector_version": processing_summary.get(
+                            "global_selector_version"
+                        ),
+                        "reason_prompt_version": processing_summary.get(
+                            "reason_prompt_version"
+                        ),
+                    },
                     "prompt_version": item.get("prompt_version"),
                     "momentum_score_version": momentum.current_momentum_score_version(),
                 }
+            tracking_result = _run_p4_tracking(
+                db,
+                job=job,
+                target_date=target_date,
+                market_context=market_context,
+                ingestion=ingestion,
+                momentum_frame=momentum_frame,
+                current_candidates=pool,
+                watchlist=final_payload.get("watchlist", []),
+                processing_summary=processing_summary,
+            )
+            tracking_failures = [
+                *tracking_result.get("technical_failures", []),
+                *tracking_result.get("conflicts", []),
+            ]
+            technical_failures.extend(tracking_failures)
+            failed_stock_ids.update(
+                str(item.get("stock") or item.get("stock_id") or "")
+                for item in tracking_failures
+                if item.get("stock") or item.get("stock_id")
+            )
+            processing_summary.update(
+                {
+                    "technical_failures": technical_failures,
+                    "technical_failure_count": len(technical_failures),
+                    "tracking_review_count": len(
+                        tracking_result.get("reviews", [])
+                    ),
+                    "tracking_review_failed_count": (
+                        tracking_result.get("tracking_summary", {}).get(
+                            "review_failed_count", 0
+                        )
+                    ),
+                    "tracking_conflict_count": (
+                        tracking_result.get("tracking_summary", {}).get(
+                            "conflict_count", 0
+                        )
+                    ),
+                    "is_complete": not technical_failures,
+                }
+            )
+            final_summary["technical_failures"] = technical_failures
+            final_summary["selection_summary"][
+                "technical_failure_count"
+            ] = len(technical_failures)
+            final_summary["tracking_summary"] = tracking_result.get(
+                "tracking_summary", {}
+            )
+            final_summary["processing_summary"] = processing_summary
+            _set_progress(
+                db,
+                job,
+                stage=STAGE_PERSIST,
+                pct=98,
+                label="保存 P3 與 P4 結果",
+            )
             _persist_snapshot(db, target_date, final_payload, job_id)
             signal_archive.persist_signal_watch_hits(db, target_date, final_payload, job_id)
 
@@ -891,7 +1023,11 @@ def run_signal_pipeline_sync(
                     (
                         f"{len(failed_stock_ids)} candidates were not fully processed; "
                         f"research_failed={len(research_failures)}, "
-                        f"decision_failed={len(decision_failures)}"
+                        f"decision_failed={len(decision_failures)}, "
+                        "tracking_failed="
+                        f"{processing_summary.get('tracking_review_failed_count', 0)}, "
+                        "tracking_conflicts="
+                        f"{processing_summary.get('tracking_conflict_count', 0)}"
                     ),
                 )
             else:
@@ -928,6 +1064,239 @@ def _set_progress(
     if label is not None:
         job.progress_label = label
     db.commit()
+
+
+def _build_pipeline_market_context(
+    db: Session,
+    *,
+    target_date: date,
+    regime_info: Dict[str, Any],
+) -> Dict[str, Any]:
+    market_context = llm_caller.assemble_market_context(
+        market_snapshot.build_db_market_snapshot(db, target_date)
+    )
+    market_context["market_regime"] = regime_info["regime"]
+    market_context["market_regime_label"] = regime_info["regime_label"]
+    market_context["market_regime_reason"] = regime_info["reason"]
+    market_context["breadth_score"] = regime_info.get("breadth_score")
+    market_context["market_regime_detail"] = regime_info.get("regime_detail")
+    try:
+        market_context["margin_climate"] = (
+            market_margin.compute_market_margin_snapshot(db, target_date)
+        )
+    except Exception:
+        logger.exception(
+            "compute_market_margin_snapshot failed; continuing without it"
+        )
+        market_context["margin_climate"] = {
+            "target_date": target_date.isoformat(),
+            "data_available": False,
+            "climate_label": "unknown",
+            "climate_reason": "大盤融資融券資料聚合失敗。",
+        }
+    return market_context
+
+
+def _run_p4_tracking_only_day(
+    db: Session,
+    *,
+    job: SignalGenerationJob,
+    target_date: date,
+    ingestion: Dict[str, Any],
+    momentum_frame: Dict[str, Dict[str, Any]],
+    processing_summary: Dict[str, Any],
+    job_id: str,
+) -> None:
+    """Finish a valid trading day with zero P3 candidates without skipping P4."""
+
+    regime_info = market_regime.compute_market_regime(db, target_date)
+    breadth = market_breadth.compute_breadth_from_frame(
+        momentum_frame,
+        ingestion.get("stocks_master") or {},
+    )
+    regime_detail = market_breadth.resolve_regime_detail(
+        regime_info["regime"],
+        breadth.get("breadth_score"),
+    )
+    regime_info = {
+        **regime_info,
+        "regime_detail": regime_detail,
+        "breadth_score": breadth.get("breadth_score"),
+    }
+    market_context = _build_pipeline_market_context(
+        db,
+        target_date=target_date,
+        regime_info=regime_info,
+    )
+    processing_summary.update(
+        {
+            "global_selection_status": "COMPLETED",
+            "selection_complete": True,
+            "global_selection_eligible_count": 0,
+            "global_selection_recommended_count": 0,
+            "global_selection_not_selected_count": 0,
+            "final_watch_count": 0,
+            "final_remove_count": 0,
+        }
+    )
+    tracking_result = _run_p4_tracking(
+        db,
+        job=job,
+        target_date=target_date,
+        market_context=market_context,
+        ingestion=ingestion,
+        momentum_frame=momentum_frame,
+        current_candidates=[],
+        watchlist=[],
+        processing_summary=processing_summary,
+    )
+    technical_failures = [
+        *tracking_result.get("technical_failures", []),
+        *tracking_result.get("conflicts", []),
+    ]
+    processing_summary.update(
+        {
+            "technical_failures": technical_failures,
+            "technical_failure_count": len(technical_failures),
+            "tracking_review_count": len(tracking_result.get("reviews", [])),
+            "tracking_review_failed_count": (
+                tracking_result.get("tracking_summary", {}).get(
+                    "review_failed_count", 0
+                )
+            ),
+            "tracking_conflict_count": (
+                tracking_result.get("tracking_summary", {}).get(
+                    "conflict_count", 0
+                )
+            ),
+            "is_complete": not technical_failures,
+        }
+    )
+    payload = llm_caller.assemble_final_output(
+        market_context,
+        [],
+        candidate_pool_size=0,
+    )
+    payload["watchlist"] = []
+    payload["not_selected"] = []
+    payload["removed"] = []
+    payload["final_watchlist_size"] = 0
+    summary = payload.setdefault("summary", {})
+    summary["technical_failures"] = technical_failures
+    summary["tracking_summary"] = tracking_result.get("tracking_summary", {})
+    summary["selection_summary"] = {
+        "phase2_eligible_count": 0,
+        "research_completed_count": 0,
+        "veto_removed_count": 0,
+        "global_eligible_count": 0,
+        "recommended_count": 0,
+        "not_selected_count": 0,
+        "technical_failure_count": len(technical_failures),
+        "selection_version": global_selector.SELECTION_VERSION,
+        "selection_complete": True,
+        "status": "COMPLETED",
+        "selection_rationale": "Valid trading day with no P3 candidates.",
+    }
+    summary["processing_summary"] = processing_summary
+    _set_progress(
+        db,
+        job,
+        stage=STAGE_PERSIST,
+        pct=98,
+        label="保存 P4 追蹤結果",
+    )
+    _persist_snapshot(db, target_date, payload, job_id)
+    signal_archive.clear_signal_watch_hits_for_date(db, target_date)
+    if technical_failures:
+        _mark_partial_failure(
+            db,
+            job,
+            f"P4 tracking had {len(technical_failures)} technical failures.",
+        )
+    else:
+        _mark_done(db, job)
+
+
+def _run_p4_tracking(
+    db: Session,
+    *,
+    job: SignalGenerationJob,
+    target_date: date,
+    market_context: Dict[str, Any],
+    ingestion: Dict[str, Any],
+    momentum_frame: Dict[str, Dict[str, Any]],
+    current_candidates: list[Dict[str, Any]],
+    watchlist: list[Dict[str, Any]],
+    processing_summary: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Run P4 after P3 without allowing tracking failure to erase P3 output."""
+
+    _set_progress(
+        db,
+        job,
+        stage=STAGE_TRACKING,
+        pct=96,
+        label="每日觀察生命週期檢查",
+    )
+    prompt_versions = {
+        key: processing_summary.get(key)
+        for key in (
+            "research_prompt_version",
+            "assessment_prompt_version",
+            "global_selector_version",
+            "reason_prompt_version",
+        )
+    }
+    try:
+        with db.begin_nested():
+            observation_lifecycle.sync_recommendations(
+                db,
+                signal_date=target_date,
+                watchlist=watchlist,
+                prompt_versions=prompt_versions,
+            )
+            return observation_lifecycle.run_daily_observation_reviews(
+                db,
+                review_date=target_date,
+                market_context=market_context,
+                p3_recommended_stock_ids=[
+                    str(item.get("stock") or "")
+                    for item in watchlist
+                    if item.get("stock")
+                ],
+                ingestion=ingestion,
+                momentum_frame=momentum_frame,
+                current_candidates=current_candidates,
+                persist=False,
+            )
+    except Exception as exc:
+        logger.exception("P4 daily observation lifecycle failed")
+        return {
+            "tracking_summary": {
+                "review_date": target_date.isoformat(),
+                "active_before_review": 0,
+                "continue_count": 0,
+                "caution_count": 0,
+                "stopped_count": 0,
+                "review_failed_count": 0,
+                "conflict_count": 0,
+                "review_complete": False,
+                "tracking_prompt_version": observation_lifecycle.TRACKING_PROMPT_VERSION,
+                "tracking_state_machine_version": observation_lifecycle.STATE_MACHINE_VERSION,
+            },
+            "reviews": [],
+            "technical_failures": [
+                {
+                    "stock": None,
+                    "stage": "TRACKING",
+                    "status": "TRACKING_BATCH_FAILED",
+                    "processing_status": "REVIEW_FAILED",
+                    "error_code": "TRACKING_BATCH_FAILED",
+                    "error_summary": str(exc)[:500],
+                }
+            ],
+            "conflicts": [],
+        }
 
 
 def _mark_done(db: Session, job: SignalGenerationJob) -> None:
