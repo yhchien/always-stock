@@ -6,8 +6,16 @@
 import json
 from typing import Any, Dict
 
+import pytest
+
 from app.signals import llm_caller
 from app.signals import pipeline as pipeline_mod
+
+
+@pytest.fixture(autouse=True)
+def _legacy_v6_family(monkeypatch):
+    """This module intentionally verifies the supported v6.1 rollback contract."""
+    monkeypatch.setenv("SIGNALS_PROMPT_FAMILY", "legacy_split")
 
 
 def _patch_openai(monkeypatch, response_text: str):

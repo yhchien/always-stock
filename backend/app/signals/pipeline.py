@@ -40,6 +40,7 @@ from app.signals import (
     global_selector,
     llm_caller,
     observation_lifecycle,
+    prompt_family,
 )
 from app.signals import deterministic_signals as det_signals
 from app.signals import market_breadth, market_margin, market_regime, market_snapshot, momentum
@@ -207,6 +208,9 @@ def run_signal_pipeline_sync(
             raise ValueError(f"SignalGenerationJob not found: {job_id}")
 
         try:
+            # Resolve once before any production stage. Unknown families fail closed
+            # and can never drift into a deprecated executable prompt.
+            family_metadata = prompt_family.prompt_metadata()
             # Step 1：DB ingest
             _set_progress(
                 db,
@@ -276,15 +280,11 @@ def run_signal_pipeline_sync(
                 "is_complete": True,
                 "momentum_score_version": momentum.current_momentum_score_version(),
                 "momentum_score_mode": momentum.resolve_momentum_score_mode(),
-                "research_prompt_version": llm_caller._resolve_prompt_version(None),
-                "assessment_prompt_version": global_selector.ASSESSMENT_VERSION,
-                "global_selector_version": global_selector.SELECTION_VERSION,
-                "reason_prompt_version": global_selector.REASON_VERSION,
-                "tracking_prompt_version": observation_lifecycle.TRACKING_PROMPT_VERSION,
-                "tracking_state_machine_version": observation_lifecycle.STATE_MACHINE_VERSION,
+                **family_metadata,
                 "research_batches": [],
                 "decision_batches": [],
                 "technical_failures": [],
+                "prompt_payload_metrics": {},
             }
             logger.info(
                 "Ordered %d raw candidates for Phase 2 processing; capacity truncation disabled",
@@ -531,6 +531,9 @@ def run_signal_pipeline_sync(
             processing_summary["research_batches"] = research_execution.batches
             processing_summary["research_completed_count"] = len(research_results)
             processing_summary["research_failed_count"] = len(research_failures)
+            processing_summary["prompt_payload_metrics"]["research"] = (
+                _collect_prompt_payload_metrics(research_execution.results)
+            )
             logger.info(
                 "Completed research for %d/%d candidates; %d research failures",
                 len(research_results),
@@ -608,6 +611,9 @@ def run_signal_pipeline_sync(
             processing_summary["decision_batches"] = decision_execution.batches
             processing_summary["decision_completed_count"] = len(explanation)
             processing_summary["decision_failed_count"] = len(decision_failures)
+            processing_summary["prompt_payload_metrics"]["assessment"] = (
+                _collect_prompt_payload_metrics(decision_execution.results)
+            )
             logger.info(
                 "Completed assessments for %d/%d candidates; %d assessment failures",
                 len(explanation),
@@ -651,6 +657,15 @@ def run_signal_pipeline_sync(
                 )
             except global_selector.GlobalSelectionError as exc:
                 selection_failure = exc.as_dict()
+                selection_failure_diagnostic = (
+                    selection_failure.get("diagnostic") or {}
+                )
+                if selection_failure_diagnostic.get("payload_metrics"):
+                    processing_summary["prompt_payload_metrics"][
+                        "global_selector"
+                    ] = [
+                        selection_failure_diagnostic["payload_metrics"]
+                    ]
                 technical_failures = [
                     *research_failures,
                     *decision_failures,
@@ -696,7 +711,9 @@ def run_signal_pipeline_sync(
                     "recommended_count": 0,
                     "not_selected_count": 0,
                     "technical_failure_count": len(technical_failures),
-                    "selection_version": global_selector.SELECTION_VERSION,
+                    "selection_version": prompt_family.stage_version(
+                        "global_selector"
+                    ),
                     "selection_complete": False,
                     "status": "FAILED",
                     "error": selection_failure,
@@ -736,6 +753,11 @@ def run_signal_pipeline_sync(
                             )
                         ),
                     }
+                )
+                processing_summary["prompt_payload_metrics"]["tracking"] = (
+                    tracking_result.get("tracking_summary", {}).get(
+                        "prompt_payload_metrics", []
+                    )
                 )
                 failed_summary["technical_failures"] = technical_failures
                 failed_summary["selection_summary"][
@@ -784,6 +806,11 @@ def run_signal_pipeline_sync(
                     "long_reason_requested_count": len(recommend_candidates),
                 }
             )
+            selection_diagnostic = selection_result.get("llm_diagnostic") or {}
+            if selection_diagnostic.get("payload_metrics"):
+                processing_summary["prompt_payload_metrics"][
+                    "global_selector"
+                ] = [selection_diagnostic["payload_metrics"]]
 
             # Step 6c：只有正式 RECOMMEND 產生長理由。
             total_for_watch_reason = max(len(recommend_candidates), 1)
@@ -813,6 +840,9 @@ def run_signal_pipeline_sync(
                 failure_status="REASON_GENERATION_FAILED",
             )
             processing_summary["long_reason_completed_count"] = len(enriched_watch)
+            processing_summary["prompt_payload_metrics"]["reason"] = (
+                _collect_prompt_payload_metrics(watch_reason_execution.results)
+            )
 
             if enriched_watch:
                 watch_by_id = {
@@ -941,6 +971,12 @@ def run_signal_pipeline_sync(
                         "selection_version"
                     ),
                     "initial_prompt_versions": {
+                        "prompt_family_version": processing_summary.get(
+                            "prompt_family_version"
+                        ),
+                        "shared_policy_version": processing_summary.get(
+                            "shared_policy_version"
+                        ),
                         "research_prompt_version": processing_summary.get(
                             "research_prompt_version"
                         ),
@@ -952,6 +988,15 @@ def run_signal_pipeline_sync(
                         ),
                         "reason_prompt_version": processing_summary.get(
                             "reason_prompt_version"
+                        ),
+                        "tracking_prompt_version": processing_summary.get(
+                            "tracking_prompt_version"
+                        ),
+                        "tracking_state_machine_version": processing_summary.get(
+                            "tracking_state_machine_version"
+                        ),
+                        "prompt_sha256": processing_summary.get(
+                            "prompt_sha256"
                         ),
                     },
                     "prompt_version": item.get("prompt_version"),
@@ -997,6 +1042,11 @@ def run_signal_pipeline_sync(
                     ),
                     "is_complete": not technical_failures,
                 }
+            )
+            processing_summary["prompt_payload_metrics"]["tracking"] = (
+                tracking_result.get("tracking_summary", {}).get(
+                    "prompt_payload_metrics", []
+                )
             )
             final_summary["technical_failures"] = technical_failures
             final_summary["selection_summary"][
@@ -1075,6 +1125,7 @@ def _build_pipeline_market_context(
     market_context = llm_caller.assemble_market_context(
         market_snapshot.build_db_market_snapshot(db, target_date)
     )
+    market_context["target_date"] = target_date.isoformat()
     market_context["market_regime"] = regime_info["regime"]
     market_context["market_regime_label"] = regime_info["regime_label"]
     market_context["market_regime_reason"] = regime_info["reason"]
@@ -1172,6 +1223,11 @@ def _run_p4_tracking_only_day(
             "is_complete": not technical_failures,
         }
     )
+    processing_summary.setdefault("prompt_payload_metrics", {})[
+        "tracking"
+    ] = tracking_result.get("tracking_summary", {}).get(
+        "prompt_payload_metrics", []
+    )
     payload = llm_caller.assemble_final_output(
         market_context,
         [],
@@ -1192,7 +1248,7 @@ def _run_p4_tracking_only_day(
         "recommended_count": 0,
         "not_selected_count": 0,
         "technical_failure_count": len(technical_failures),
-        "selection_version": global_selector.SELECTION_VERSION,
+        "selection_version": prompt_family.stage_version("global_selector"),
         "selection_complete": True,
         "status": "COMPLETED",
         "selection_rationale": "Valid trading day with no P3 candidates.",
@@ -1241,10 +1297,15 @@ def _run_p4_tracking(
     prompt_versions = {
         key: processing_summary.get(key)
         for key in (
+            "prompt_family_version",
+            "shared_policy_version",
             "research_prompt_version",
             "assessment_prompt_version",
             "global_selector_version",
             "reason_prompt_version",
+            "tracking_prompt_version",
+            "tracking_state_machine_version",
+            "prompt_sha256",
         )
     }
     try:
@@ -1281,7 +1342,9 @@ def _run_p4_tracking(
                 "review_failed_count": 0,
                 "conflict_count": 0,
                 "review_complete": False,
-                "tracking_prompt_version": observation_lifecycle.TRACKING_PROMPT_VERSION,
+                "tracking_prompt_version": (
+                    observation_lifecycle.current_tracking_prompt_version()
+                ),
                 "tracking_state_machine_version": observation_lifecycle.STATE_MACHINE_VERSION,
             },
             "reviews": [],
@@ -1543,6 +1606,29 @@ def _partition_stage_results(
             meta["error_summary"] = "; ".join(dict.fromkeys(errors))[:500]
 
     return successful, failures
+
+
+def _collect_prompt_payload_metrics(
+    items: list[Dict[str, Any]],
+) -> list[Dict[str, Any]]:
+    """Collect one bounded metrics record per LLM batch, never full payload text."""
+    output: list[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in items:
+        diagnostic = item.get("llm_diagnostic")
+        metrics = (
+            diagnostic.get("payload_metrics")
+            if isinstance(diagnostic, dict)
+            else None
+        )
+        if not isinstance(metrics, dict):
+            continue
+        key = repr(sorted(metrics.items()))
+        if key in seen:
+            continue
+        seen.add(key)
+        output.append(dict(metrics))
+    return output
 
 
 def _batch_index_for_stock(batch_runs: list[Dict[str, Any]], stock_id: str) -> Optional[int]:

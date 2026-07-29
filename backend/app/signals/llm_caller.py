@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Optional
 from openai import OpenAI
 
 from app.settings import get_openai_api_key
-from app.signals import market_cache
+from app.signals import market_cache, prompt_family
 
 logger = logging.getLogger(__name__)
 
@@ -239,6 +239,11 @@ def run_research_batch(
         return []
 
     market_context = market_context or {}
+    family = prompt_family.resolve_prompt_family()
+    if family == prompt_family.PROMPT_FAMILY_VERSION:
+        return _run_v7_research_batch(
+            stocks_batch, market_context, model=model
+        )
     version = _resolve_prompt_version(market_context.get("market_regime"))
     system_prompt = _load_system_prompt(stage="research", version=version)
     evidence_view = _to_evidence_view(stocks_batch)
@@ -387,6 +392,117 @@ def run_research_batch(
     return aligned
 
 
+def _stage_date(
+    market_context: Dict[str, Any], rows: List[Dict[str, Any]]
+) -> str:
+    for value in (
+        market_context.get("target_date"),
+        market_context.get("date"),
+        (market_context.get("margin_climate") or {}).get("target_date"),
+        rows[0].get("target_date") if rows else None,
+        rows[0].get("date") if rows else None,
+    ):
+        if value:
+            return value.isoformat() if hasattr(value, "isoformat") else str(value)
+    # Direct unit callers historically omitted the pipeline date.  The sentinel is
+    # explicit and cannot accidentally admit future evidence.
+    return "1970-01-01"
+
+
+def _run_v7_research_batch(
+    stocks_batch: List[Dict[str, Any]],
+    market_context: Dict[str, Any],
+    *,
+    model: str,
+) -> List[Dict[str, Any]]:
+    stage_date = _stage_date(market_context, stocks_batch)
+    system_prompt = prompt_family.build_stage_prompt("research")
+    user_payload = prompt_family.research_input(
+        stocks_batch,
+        research_date=stage_date,
+        market_context=market_context,
+    )
+    user_msg = json.dumps(user_payload, ensure_ascii=False, separators=(",", ":"))
+    metadata = prompt_family.prompt_metadata()
+    payload, diagnostic = _call_llm_json(
+        system_prompt,
+        user_msg,
+        model=model,
+        stage="research",
+        use_web_search=True,
+        prompt_cache_key="signals:v7:research",
+        candidate_count=len(stocks_batch),
+        prompt_metadata={
+            **metadata,
+            "stage_prompt_version": metadata["research_prompt_version"],
+            "assembled_prompt_sha256": metadata["prompt_sha256"]["research"],
+        },
+    )
+    if payload is None:
+        return [_research_fallback(row, diagnostic=diagnostic) for row in stocks_batch]
+    stocks = [str(row.get("stock_id") or row.get("stock") or "") for row in stocks_batch]
+    try:
+        validated = prompt_family.validate_research_output(
+            payload, expected_stocks=stocks, expected_date=stage_date
+        )
+    except prompt_family.PromptFamilyError as exc:
+        diagnostic = _with_status(
+            diagnostic,
+            status=_DIAG_STATUS_INVALID_JSON,
+            message=f"v7 research contract rejected: {exc}",
+        )
+        return [_research_fallback(row, diagnostic=diagnostic) for row in stocks_batch]
+
+    by_id = {str(item["stock"]): item for item in validated}
+    out: List[Dict[str, Any]] = []
+    for source in stocks_batch:
+        sid = str(source.get("stock_id") or source.get("stock") or "")
+        external = by_id[sid]
+        theme = external["theme"]
+        out.append({
+            **_serialize_dates(source),
+            **external,
+            "stock": sid,
+            "type": _normalize_prelim_type(source.get("prelim_type")),
+            "business_validation": external["instrument_validation"],
+            "business_summary": external["instrument_summary"],
+            "supply_chain_position": external.get("supply_chain_role") or "other",
+            "theme_fit": (
+                "HIGH" if external["theme_validation"] == "VERIFIED"
+                else "LOW" if external["theme_validation"] == "MISMATCH"
+                else "MEDIUM"
+            ),
+            "theme": {
+                "main_theme": theme.get("name"),
+                "theme_duration": theme.get("duration"),
+                "theme_maturity": theme.get("maturity"),
+                "theme_score": (
+                    3 if external["theme_validation"] == "VERIFIED"
+                    else 0 if external["theme_validation"] == "MISMATCH"
+                    else 1
+                ),
+                "theme_reason": theme.get("catalyst_summary"),
+                "catalyst_status": theme.get("catalyst_status"),
+                "catalyst_summary": theme.get("catalyst_summary"),
+            },
+            "group_info": {
+                "is_group_stock": bool(external.get("group_name")),
+                "group_name": external.get("group_name") or None,
+                "related_group_stocks": [],
+                "group_price_sync": "none",
+            },
+            "leader_check": {
+                "industry_leader": "",
+                "leader_price_trend": "flat",
+                "leader_supports_theme": (
+                    external["theme_validation"] == "VERIFIED"
+                ),
+            },
+            "llm_diagnostic": diagnostic,
+        })
+    return out
+
+
 def run_explanation_batch(
     research_results: List[Dict[str, Any]],
     market_context: Dict[str, Any],
@@ -473,8 +589,10 @@ def assemble_final_output(
         else watchlist_candidates
     )
 
-    # 依大盤 regime resolve 這次實際跑的 prompt 版本；v5 起所有 regime 預設同版。
-    prompt_version = _resolve_prompt_version(market_context.get("market_regime"))
+    # 舊單一欄位保留給歷史 consumer；v7 以 research stage version 作摘要，
+    # 完整 family/stage/SHA map 另存 processing_summary。
+    family = prompt_family.resolve_prompt_family()
+    prompt_version = prompt_family.stage_version("research", family)
 
     # 每筆蓋上 prompt 版本，往下流到 signal_snapshots / signal_watch_hits。
     for entry in watchlist:
@@ -678,6 +796,8 @@ def _call_llm_json(
     use_web_search: bool = False,
     prompt_cache_key: Optional[str] = None,
     max_output_tokens: int = _MAX_OUTPUT_TOKENS,
+    candidate_count: int = 0,
+    prompt_metadata: Optional[Dict[str, Any]] = None,
 ) -> tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
     """呼叫 OpenAI 並嘗試 parse JSON。
 
@@ -690,6 +810,15 @@ def _call_llm_json(
         use_web_search=use_web_search,
         prompt_cache_key=prompt_cache_key,
     )
+    diagnostic["payload_metrics"] = prompt_family.payload_metrics(
+        system_prompt=system_prompt,
+        user_payload=user_msg,
+        candidate_count=candidate_count,
+        estimated_output_reserve=max_output_tokens,
+        model_context_limit=114_688,
+    )
+    if prompt_metadata:
+        diagnostic["prompt_metadata"] = prompt_metadata
     api_key = get_openai_api_key()
     if not api_key:
         logger.warning(
@@ -795,6 +924,8 @@ def _run_decision_chunk(
     model: str,
 ) -> List[Dict[str, Any]]:
     """單個 chunk 的短 decision call。"""
+    if prompt_family.resolve_prompt_family() == prompt_family.PROMPT_FAMILY_VERSION:
+        return _run_v7_assessment_chunk(chunk, market_context, model=model)
     version = _resolve_prompt_version(market_context.get("market_regime"))
     system_prompt = _load_system_prompt(stage="decision", version=version)
 
@@ -984,6 +1115,78 @@ def _run_decision_chunk(
     return aligned
 
 
+def _run_v7_assessment_chunk(
+    chunk: List[Dict[str, Any]],
+    market_context: Dict[str, Any],
+    *,
+    model: str,
+) -> List[Dict[str, Any]]:
+    stage_date = _stage_date(market_context, chunk)
+    system_prompt = prompt_family.build_stage_prompt("assessment")
+    user_payload = prompt_family.assessment_input(chunk, assessment_date=stage_date)
+    metadata = prompt_family.prompt_metadata()
+    payload, diagnostic = _call_llm_json(
+        system_prompt,
+        json.dumps(user_payload, ensure_ascii=False, separators=(",", ":")),
+        model=model,
+        stage="decision",
+        prompt_cache_key="signals:v7:assessment",
+        candidate_count=len(chunk),
+        prompt_metadata={
+            **metadata,
+            "stage_prompt_version": metadata["assessment_prompt_version"],
+            "assembled_prompt_sha256": metadata["prompt_sha256"]["assessment"],
+        },
+    )
+    if payload is None:
+        return [_decision_fallback(row, diagnostic=diagnostic) for row in chunk]
+    stocks = [str(row.get("stock") or row.get("stock_id") or "") for row in chunk]
+    try:
+        validated = prompt_family.validate_assessment_output(
+            payload, expected_stocks=stocks, expected_date=stage_date
+        )
+    except prompt_family.PromptFamilyError as exc:
+        diagnostic = _with_status(
+            diagnostic,
+            status=_DIAG_STATUS_INVALID_JSON,
+            message=f"v7 assessment contract rejected: {exc}",
+        )
+        return [_decision_fallback(row, diagnostic=diagnostic) for row in chunk]
+
+    by_id = {str(item["stock"]): item for item in validated}
+    out = []
+    for source in chunk:
+        sid = str(source.get("stock") or source.get("stock_id") or "")
+        external = by_id[sid]
+        backend_max = (
+            (source.get("deterministic_signals") or {}).get("max_decision")
+            or source.get("backend_max_decision")
+        )
+        requested_remove = external["assessment"] == "REMOVE"
+        is_remove = str(backend_max or "").upper() == "REMOVE" or requested_remove
+        veto = external.get("veto_reason") if requested_remove else None
+        evidence = external.get("veto_evidence") or {}
+        out.append({
+            **source,
+            "backend_max_decision": backend_max,
+            "signals": _compose_v6_signals(source, None),
+            "quality_assessment": external["quality_assessment"],
+            "decision": "REMOVE" if is_remove else "WATCH",
+            "assessment_status": "REMOVE" if is_remove else "ELIGIBLE",
+            "veto_reason": (
+                veto or "BACKEND_MAX_REMOVE" if is_remove else None
+            ),
+            "veto_evidence": {
+                "summary": evidence.get("summary"),
+                "source_urls": evidence.get("urls") or [],
+                "published_dates": evidence.get("published_dates") or [],
+            },
+            "short_reason": external["assessment_reason"],
+            "llm_diagnostic": diagnostic,
+        })
+    return out
+
+
 def _normalize_validation(raw: Any) -> str:
     """LLM v6 §十九：research/decision 驗證欄位只能是 VERIFIED / UNCONFIRMED /
     MISMATCH 三態；未知或缺值保守視為 UNCONFIRMED（資料不足，不是矛盾證據，
@@ -1005,6 +1208,8 @@ def _run_watch_reason_chunk(
     輸出 schema 從單一 `reason` 字串 → 5 段 string[]
     對應前端 5 個 TradingPlanPanel 編號 panel：題材 / 資金 / 籌碼 / 融券 / 技術。
     """
+    if prompt_family.resolve_prompt_family() == prompt_family.PROMPT_FAMILY_VERSION:
+        return _run_v7_reason_chunk(chunk, market_context, model=model)
     version = _resolve_prompt_version(market_context.get("market_regime"))
     system_prompt = _load_system_prompt(stage="watch_reason", version=version)
     user_msg = (
@@ -1136,6 +1341,80 @@ def _run_watch_reason_chunk(
             merged.update(_watch_reason_fallback(watch, diagnostic=diagnostic))
         aligned.append(merged)
     return aligned
+
+
+def _run_v7_reason_chunk(
+    chunk: List[Dict[str, Any]],
+    market_context: Dict[str, Any],
+    *,
+    model: str,
+) -> List[Dict[str, Any]]:
+    stage_date = _stage_date(market_context, chunk)
+    system_prompt = prompt_family.build_stage_prompt("reason")
+    user_payload = prompt_family.reason_input(chunk, reason_date=stage_date)
+    metadata = prompt_family.prompt_metadata()
+    payload, diagnostic = _call_llm_json(
+        system_prompt,
+        json.dumps(user_payload, ensure_ascii=False, separators=(",", ":")),
+        model=model,
+        stage="watch_reason",
+        prompt_cache_key="signals:v7:reason",
+        candidate_count=len(chunk),
+        prompt_metadata={
+            **metadata,
+            "stage_prompt_version": metadata["reason_prompt_version"],
+            "assembled_prompt_sha256": metadata["prompt_sha256"]["reason"],
+        },
+    )
+    if payload is None:
+        return [_watch_reason_fallback(row, diagnostic=diagnostic) for row in chunk]
+    stocks = [str(row.get("stock") or row.get("stock_id") or "") for row in chunk]
+    try:
+        validated = prompt_family.validate_reason_output(
+            payload, expected_stocks=stocks, expected_date=stage_date
+        )
+    except prompt_family.PromptFamilyError as exc:
+        diagnostic = _with_status(
+            diagnostic,
+            status=_DIAG_STATUS_INVALID_JSON,
+            message=f"v7 reason contract rejected: {exc}",
+        )
+        return [_watch_reason_fallback(row, diagnostic=diagnostic) for row in chunk]
+
+    by_id = {str(item["stock"]): item for item in validated}
+    out = []
+    for source in chunk:
+        sid = str(source.get("stock") or source.get("stock_id") or "")
+        external = by_id[sid]
+        sections = {
+            key: external[key]
+            for key in (
+                "theme_reason", "capital_reason", "chip_reason",
+                "margin_reason", "technical_reason",
+            )
+        }
+        momentum_source = source.get("momentum_signals")
+        if not isinstance(momentum_source, dict):
+            momentum_source = _momentum_signals_view(source)
+        out.append({
+            **source,
+            **sections,
+            "reason": _join_reason_sections_to_markdown(sections),
+            "momentum": {
+                **momentum_source,
+                "momentum_reason": external["momentum_reason"],
+            },
+            "margin_analysis": _coerce_margin_analysis(
+                external.get("margin_analysis"),
+                evidence=(
+                    source.get("evidence")
+                    if isinstance(source.get("evidence"), dict)
+                    else None
+                ),
+            ),
+            "llm_diagnostic": diagnostic,
+        })
+    return out
 
 
 def _coerce_margin_analysis(
@@ -1293,6 +1572,10 @@ def _format_watch_entry(item: Dict[str, Any]) -> Dict[str, Any]:
         or ((item.get("theme") or {}).get("main_theme") if isinstance(item.get("theme"), dict) else None),
         "catalyst_summary": item.get("catalyst_summary")
         or item.get("instrument_summary"),
+        "research_confidence": item.get("research_confidence"),
+        "research_summary": item.get("research_summary"),
+        "material_contradictions": item.get("material_contradictions") or [],
+        "sources": item.get("sources") or [],
     }
     momentum = item.get("momentum")
     entry["momentum"] = momentum if isinstance(momentum, dict) else None

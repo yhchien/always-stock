@@ -18,8 +18,9 @@ from app.signals import llm_caller, market_cache
 
 
 @pytest.fixture(autouse=True)
-def _reset_market_cache():
-    """A3：每個測試前後清空 in-process market_context cache，避免跨測試命中。"""
+def _reset_market_cache(monkeypatch):
+    """Legacy caller regressions stay on the supported P2-P4 rollback family."""
+    monkeypatch.setenv("SIGNALS_PROMPT_FAMILY", "legacy_split")
     market_cache._reset_for_tests()
     yield
     market_cache._reset_for_tests()

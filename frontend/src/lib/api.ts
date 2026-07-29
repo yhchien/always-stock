@@ -1463,6 +1463,12 @@ export interface SignalProcessingSummary {
   capacity_truncated_count?: number
   momentum_score_version?: string
   momentum_score_mode?: string
+  prompt_family_version?: string
+  shared_policy_version?: string | null
+  prompt_sha256?: Partial<Record<
+    "research" | "assessment" | "global_selector" | "reason" | "tracking",
+    string
+  >>
   research_prompt_version?: string
   assessment_prompt_version?: string
   global_selector_version?: string
@@ -1732,6 +1738,9 @@ export interface SignalObservationReview {
   technical_status: string | null
   tracking_prompt_version: string
   tracking_state_machine_version: string
+  prompt_family_version?: string | null
+  shared_policy_version?: string | null
+  assembled_prompt_sha256?: string | null
 }
 
 export interface SignalObservationListResponse {

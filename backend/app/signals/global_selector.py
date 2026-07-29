@@ -14,12 +14,12 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Union
 
-from app.signals import llm_caller
+from app.signals import llm_caller, prompt_family
 
 
-SELECTION_VERSION = "p3_global_v1"
-ASSESSMENT_VERSION = "p3_assessment_v1"
-REASON_VERSION = "p3_reason_v1"
+SELECTION_VERSION = "v7_global_selector"
+ASSESSMENT_VERSION = "v7_assessment"
+REASON_VERSION = "v7_reason"
 DEFAULT_GLOBAL_SELECTION_MODEL = os.getenv(
     "OPENAI_SIGNALS_GLOBAL_SELECTION_MODEL",
     llm_caller.DEFAULT_DECISION_MODEL,
@@ -351,6 +351,8 @@ def run_global_selection(
     model: str = DEFAULT_GLOBAL_SELECTION_MODEL,
 ) -> Dict[str, Any]:
     """Run and validate the one-shot selector.  There is intentionally no fallback."""
+    family = prompt_family.resolve_prompt_family()
+    expected_version = prompt_family.stage_version("global_selector", family)
     date_text = selection_date.isoformat() if hasattr(selection_date, "isoformat") else str(selection_date)
     capacity = estimate_selection_capacity(cards)
     if not capacity.within_limit:
@@ -361,7 +363,7 @@ def run_global_selection(
         )
     if not cards:
         return {
-            "selection_version": SELECTION_VERSION,
+            "selection_version": expected_version,
             "date": date_text,
             "selection_complete": True,
             "items": [],
@@ -369,30 +371,47 @@ def run_global_selection(
                 "eligible_count": 0,
                 "recommend_count": 0,
                 "not_selected_count": 0,
-                "selection_rationale": "No eligible candidates.",
+                "selection_rationale": "目前沒有可進入全體比較的候選股票。",
             },
             "capacity": capacity.as_dict(),
             "llm_diagnostic": {"status": "not_called_empty_input"},
         }
-    if not _PROMPT_PATH.exists():
+    try:
+        system_prompt = prompt_family.build_stage_prompt(
+            "global_selector", family
+        )
+    except (OSError, prompt_family.PromptFamilyError) as exc:
         raise GlobalSelectionError(
             "GLOBAL_SELECTION_PROMPT_MISSING",
-            f"Global selector prompt is missing: {_PROMPT_PATH.name}",
-        )
-
-    user_msg = (
-        f"[selection_date]\n{date_text}\n\n"
-        f"[market_context]\n{json.dumps(market_context, ensure_ascii=False, separators=(',', ':'))}\n\n"
-        f"[compact_selection_cards]\n{_serialize_cards(cards)}\n"
+            f"Global selector prompt could not be loaded: {exc}",
+        ) from exc
+    user_msg = json.dumps(
+        {
+            "selection_version": expected_version,
+            "date": date_text,
+            "compact_selection_cards": cards,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+        default=str,
     )
+    metadata = prompt_family.prompt_metadata(family)
     payload, diagnostic = llm_caller._call_llm_json(
-        _PROMPT_PATH.read_text(encoding="utf-8"),
+        system_prompt,
         user_msg,
         model=model,
         stage="global_selection",
         use_web_search=False,
-        prompt_cache_key=_CACHE_KEY,
+        prompt_cache_key=f"signals:{family}:global-selector",
         max_output_tokens=capacity.output_token_reserve,
+        candidate_count=len(cards),
+        prompt_metadata={
+            **metadata,
+            "stage_prompt_version": expected_version,
+            "assembled_prompt_sha256": metadata["prompt_sha256"][
+                "global_selector"
+            ],
+        },
     )
     if payload is None:
         raise GlobalSelectionError(
@@ -400,7 +419,12 @@ def run_global_selection(
             "The global selector did not return valid JSON.",
             diagnostic=diagnostic,
         )
-    validated = validate_global_selection(payload, cards, selection_date=date_text)
+    validated = validate_global_selection(
+        payload,
+        cards,
+        selection_date=date_text,
+        expected_version=expected_version,
+    )
     validated["capacity"] = capacity.as_dict()
     validated["llm_diagnostic"] = diagnostic
     return validated
@@ -411,10 +435,12 @@ def validate_global_selection(
     cards: List[Dict[str, Any]],
     *,
     selection_date: Union[date, str],
+    expected_version: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Validate complete one-to-one alignment and every decision invariant in O(n)."""
     date_text = selection_date.isoformat() if hasattr(selection_date, "isoformat") else str(selection_date)
-    if payload.get("selection_version") != SELECTION_VERSION:
+    version = expected_version or prompt_family.stage_version("global_selector")
+    if payload.get("selection_version") != version:
         _invalid("GLOBAL_SELECTION_VERSION_MISMATCH", "selection_version mismatch")
     if str(payload.get("date") or "") != date_text:
         _invalid("GLOBAL_SELECTION_DATE_MISMATCH", "date mismatch")
@@ -459,6 +485,16 @@ def validate_global_selection(
                 _invalid("GLOBAL_SELECTION_RANK_INVALID", f"invalid rank for {sid}")
             if not _nonempty(raw.get("recommendation_thesis")) or not _nonempty(raw.get("relative_advantage")):
                 _invalid("GLOBAL_SELECTION_RECOMMEND_REASON_MISSING", f"missing thesis/advantage for {sid}")
+            _require_traditional_text(
+                raw.get("recommendation_thesis"),
+                "GLOBAL_SELECTION_RECOMMEND_REASON_MISSING",
+                f"recommendation thesis must be Traditional Chinese for {sid}",
+            )
+            _require_traditional_text(
+                raw.get("relative_advantage"),
+                "GLOBAL_SELECTION_RECOMMEND_REASON_MISSING",
+                f"relative advantage must be Traditional Chinese for {sid}",
+            )
             basis = raw.get("recommendation_basis")
             if not isinstance(basis, list) or not any(_nonempty(value) for value in basis):
                 _invalid("GLOBAL_SELECTION_RECOMMEND_REASON_MISSING", f"missing basis for {sid}")
@@ -468,6 +504,11 @@ def validate_global_selection(
                 _invalid("GLOBAL_SELECTION_SCHEMA_INVALID", f"RECOMMEND has not-selected fields: {sid}")
             if not _nonempty(raw.get("selection_reason")):
                 _invalid("GLOBAL_SELECTION_RECOMMEND_REASON_MISSING", f"missing selection reason for {sid}")
+            _require_traditional_text(
+                raw.get("selection_reason"),
+                "GLOBAL_SELECTION_RECOMMEND_REASON_MISSING",
+                f"selection reason must be Traditional Chinese for {sid}",
+            )
             if raw.get("distinct_thesis") is not True:
                 _invalid("GLOBAL_SELECTION_RECOMMEND_REASON_MISSING", f"distinct_thesis must be true for {sid}")
             recommend_ranks.append(recommendation_rank)
@@ -479,6 +520,11 @@ def validate_global_selection(
                 _invalid("GLOBAL_SELECTION_REASON_CODE_INVALID", f"invalid reason code for {sid}")
             if not _nonempty(raw.get("selection_reason")):
                 _invalid("GLOBAL_SELECTION_REASON_MISSING", f"missing reason for {sid}")
+            _require_traditional_text(
+                raw.get("selection_reason"),
+                "GLOBAL_SELECTION_REASON_MISSING",
+                f"selection reason must be Traditional Chinese for {sid}",
+            )
             if raw.get("veto_reason") is not None:
                 _invalid("GLOBAL_SELECTION_SCHEMA_INVALID", f"NOT_SELECTED cannot have veto_reason: {sid}")
             if reason_code == "THESIS_OVERLAP":
@@ -489,6 +535,11 @@ def validate_global_selection(
                     or not _nonempty(raw.get("overlap_reason"))
                 ):
                     _invalid("GLOBAL_SELECTION_OVERLAP_INVALID", f"invalid overlap evidence for {sid}")
+                _require_traditional_text(
+                    raw.get("overlap_reason"),
+                    "GLOBAL_SELECTION_OVERLAP_INVALID",
+                    f"overlap reason must be Traditional Chinese for {sid}",
+                )
             not_selected_backend_ranks.append(backend_rank)
         if "theme_cluster" not in raw or not isinstance(raw.get("distinct_thesis"), bool):
             _invalid("GLOBAL_SELECTION_SCHEMA_INVALID", f"missing cluster/thesis flag for {sid}")
@@ -518,6 +569,11 @@ def validate_global_selection(
                         "GLOBAL_SELECTION_RANK_OVERRIDE_MISSING",
                         f"rank override evidence missing for {item['stock']}",
                     )
+                _require_traditional_text(
+                    item.get("rank_override_reason"),
+                    "GLOBAL_SELECTION_RANK_OVERRIDE_MISSING",
+                    f"rank override reason must be Traditional Chinese for {item['stock']}",
+                )
 
     recommended_count = len(recommend_ranks)
     raw_summary = payload.get("summary")
@@ -533,8 +589,13 @@ def validate_global_selection(
             _invalid("GLOBAL_SELECTION_SUMMARY_INVALID", f"summary {key} mismatch")
     if not _nonempty(raw_summary.get("selection_rationale")):
         _invalid("GLOBAL_SELECTION_SUMMARY_INVALID", "selection_rationale is required")
+    _require_traditional_text(
+        raw_summary.get("selection_rationale"),
+        "GLOBAL_SELECTION_SUMMARY_INVALID",
+        "selection_rationale must be Traditional Chinese",
+    )
     return {
-        "selection_version": SELECTION_VERSION,
+        "selection_version": version,
         "date": date_text,
         "selection_complete": True,
         "items": normalized,
@@ -635,6 +696,11 @@ def _trim(value: Any, max_chars: int) -> Optional[str]:
 
 def _nonempty(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+def _require_traditional_text(value: Any, code: str, message: str) -> None:
+    if not prompt_family.is_traditional_chinese_text(value):
+        _invalid(code, message)
 
 
 def _invalid(code: str, message: str) -> None:

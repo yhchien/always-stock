@@ -46,6 +46,21 @@ export function SignalProcessingCounts({
   return (
     <>
       <span className="text-slate-500">Pipeline</span>
+      {summary.prompt_family_version && (
+        <span
+          className="rounded border border-slate-700 bg-slate-900/70 px-1.5 py-0.5 text-slate-300"
+          title={[
+            `Shared ${summary.shared_policy_version ?? "legacy"}`,
+            `Research ${summary.research_prompt_version ?? "—"}`,
+            `Assessment ${summary.assessment_prompt_version ?? "—"}`,
+            `Selector ${summary.global_selector_version ?? "—"}`,
+            `Reason ${summary.reason_prompt_version ?? "—"}`,
+            `Tracking ${summary.tracking_prompt_version ?? "—"}`,
+          ].join(" · ")}
+        >
+          Prompt {summary.prompt_family_version}
+        </span>
+      )}
       <span className="text-slate-300">Raw {summary.raw_union_count ?? "—"}</span>
       <span className="text-slate-300">
         Phase 2 {summary.regime_survivor_count ?? "—"}

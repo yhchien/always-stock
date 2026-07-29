@@ -28,6 +28,13 @@ describe("SignalProcessingSummary", () => {
           incomplete={false}
           summary={{
             raw_union_count: 180,
+            prompt_family_version: "v7",
+            shared_policy_version: "v7",
+            research_prompt_version: "v7_research",
+            assessment_prompt_version: "v7_assessment",
+            global_selector_version: "v7_global_selector",
+            reason_prompt_version: "v7_reason",
+            tracking_prompt_version: "v7_tracking",
             regime_survivor_count: 73,
             research_completed_count: 73,
             decision_completed_count: 73,
@@ -43,6 +50,10 @@ describe("SignalProcessingSummary", () => {
     )
 
     expect(screen.getByText("Raw 180")).toBeInTheDocument()
+    expect(screen.getByText("Prompt v7")).toHaveAttribute(
+      "title",
+      expect.stringContaining("Selector v7_global_selector"),
+    )
     expect(screen.getByText("Phase 2 73")).toBeInTheDocument()
     expect(screen.getByText("Research 73")).toBeInTheDocument()
     expect(screen.getByText("Assessment 73")).toBeInTheDocument()

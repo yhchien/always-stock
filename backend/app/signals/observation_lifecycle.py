@@ -35,6 +35,7 @@ from app.signals import (
     market_regime,
     market_snapshot,
     momentum,
+    prompt_family,
 )
 from app.signals.phase2 import entry_state
 from app.signals.phase2 import momentum_freshness
@@ -43,7 +44,7 @@ from app.signals.phase2 import tracking_state
 from app.signals.phase2 import watch_quality
 
 
-TRACKING_PROMPT_VERSION = "p4_tracking_v1"
+TRACKING_PROMPT_VERSION = "v7_tracking"
 STATE_MACHINE_VERSION = "p4_state_v1"
 EPISODE_GAP_TRADE_DAYS = candidate_pool.EPISODE_NEW_GAP_TRADE_DAYS
 DEFAULT_TRACKING_BATCH_SIZE = 12
@@ -90,6 +91,10 @@ _PROMPT_PATH = (
     Path(__file__).resolve().parents[1] / "prompts" / "tracking-review-v1.md"
 )
 _PROMPT_CACHE_KEY = "signals:p4:tracking-review:v1"
+
+
+def current_tracking_prompt_version(family: Optional[str] = None) -> str:
+    return prompt_family.stage_version("tracking", family)
 
 
 @dataclass(frozen=True)
@@ -544,14 +549,17 @@ def run_tracking_assessments(
     )
     successful: Dict[str, Dict[str, Any]] = {}
     failures: List[Dict[str, Any]] = []
-    prompt = _PROMPT_PATH.read_text(encoding="utf-8")
+    family = prompt_family.resolve_prompt_family()
+    prompt = prompt_family.build_stage_prompt("tracking", family)
+    metadata = prompt_family.prompt_metadata(family)
+    tracking_version = metadata["tracking_prompt_version"]
     for offset in range(0, len(payloads), size):
         batch = list(payloads[offset : offset + size])
         review_date = str(batch[0].get("date") or "")
-        user_msg = (
-            f"[review_date]\n{review_date}\n\n"
-            "[tracking_inputs]\n"
-            f"{json.dumps(batch, ensure_ascii=False, separators=(',', ':'))}\n"
+        user_msg = json.dumps(
+            {"review_date": review_date, "items": batch},
+            ensure_ascii=False,
+            separators=(",", ":"),
         )
         expected = {
             str(item.get("stock") or "") for item in batch if item.get("stock")
@@ -563,7 +571,15 @@ def run_tracking_assessments(
                 model=model,
                 stage="tracking_review",
                 use_web_search=True,
-                prompt_cache_key=_PROMPT_CACHE_KEY,
+                prompt_cache_key=f"signals:{family}:tracking-review",
+                candidate_count=len(batch),
+                prompt_metadata={
+                    **metadata,
+                    "stage_prompt_version": tracking_version,
+                    "assembled_prompt_sha256": metadata["prompt_sha256"][
+                        "tracking"
+                    ],
+                },
             )
         except Exception as exc:
             for sid in sorted(expected):
@@ -578,6 +594,9 @@ def run_tracking_assessments(
         diagnostic = diagnostic or {}
         if not isinstance(response, dict) or not isinstance(
             response.get("items"), list
+        ) or (
+            family == prompt_family.PROMPT_FAMILY_VERSION
+            and response.get("review_date") != review_date
         ):
             for sid in sorted(expected):
                 failures.append(
@@ -606,10 +625,19 @@ def run_tracking_assessments(
                 continue
             seen.add(sid)
             try:
-                successful[sid] = _validate_external_assessment(
+                validated = _validate_external_assessment(
                     raw,
                     review_date=date.fromisoformat(review_date),
                 )
+                validated["_prompt_metadata"] = {
+                    **metadata,
+                    "stage_prompt_version": tracking_version,
+                    "assembled_prompt_sha256": metadata["prompt_sha256"][
+                        "tracking"
+                    ],
+                }
+                validated["_llm_diagnostic"] = diagnostic
+                successful[sid] = validated
             except ValueError as exc:
                 failures.append(
                     _review_failure(
@@ -898,6 +926,32 @@ def run_daily_observation_reviews(
         )
 
     external_by_stock, failures = assessment_runner(prompt_payloads)
+    tracking_payload_metrics: List[Dict[str, Any]] = []
+    seen_tracking_metrics: set[str] = set()
+    for external in external_by_stock.values():
+        diagnostic = external.get("_llm_diagnostic")
+        metrics = (
+            diagnostic.get("payload_metrics")
+            if isinstance(diagnostic, dict)
+            else None
+        )
+        if isinstance(metrics, dict):
+            key = repr(sorted(metrics.items()))
+            if key not in seen_tracking_metrics:
+                seen_tracking_metrics.add(key)
+                tracking_payload_metrics.append(dict(metrics))
+    for failure in failures:
+        diagnostic = failure.get("diagnostic")
+        metrics = (
+            diagnostic.get("payload_metrics")
+            if isinstance(diagnostic, dict)
+            else None
+        )
+        if isinstance(metrics, dict):
+            key = repr(sorted(metrics.items()))
+            if key not in seen_tracking_metrics:
+                seen_tracking_metrics.add(key)
+                tracking_payload_metrics.append(dict(metrics))
     failure_by_stock = {
         str(item.get("stock") or item.get("stock_id") or ""): item
         for item in failures
@@ -1006,8 +1060,9 @@ def run_daily_observation_reviews(
         "review_failed_count": counts[DECISION_FAILED],
         "conflict_count": len(conflicts),
         "review_complete": counts[DECISION_FAILED] == 0,
-        "tracking_prompt_version": TRACKING_PROMPT_VERSION,
+        "tracking_prompt_version": current_tracking_prompt_version(),
         "tracking_state_machine_version": STATE_MACHINE_VERSION,
+        "prompt_payload_metrics": tracking_payload_metrics,
     }
     if persist:
         db.commit()
@@ -1139,7 +1194,7 @@ def get_daily_tracking_summary(
                 "review_failed_count": 0,
                 "conflict_count": 0,
                 "review_complete": True,
-                "tracking_prompt_version": TRACKING_PROMPT_VERSION,
+                "tracking_prompt_version": current_tracking_prompt_version(),
                 "tracking_state_machine_version": STATE_MACHINE_VERSION,
             }
         }
@@ -1180,7 +1235,7 @@ def get_daily_tracking_summary(
             "review_failed_count": counts[DECISION_FAILED],
             "conflict_count": conflict_count,
             "review_complete": counts[DECISION_FAILED] == 0,
-            "tracking_prompt_version": TRACKING_PROMPT_VERSION,
+            "tracking_prompt_version": current_tracking_prompt_version(),
             "tracking_state_machine_version": STATE_MACHINE_VERSION,
         }
     }
@@ -1217,7 +1272,7 @@ def replay_observation_lifecycle(
         return {
             "start_date": start_date.isoformat(),
             "end_date": end_date.isoformat(),
-            "tracking_prompt_version": TRACKING_PROMPT_VERSION,
+            "tracking_prompt_version": current_tracking_prompt_version(),
             "tracking_state_machine_version": STATE_MACHINE_VERSION,
             "rows": [],
             "technical_failures": [],
@@ -1378,7 +1433,7 @@ def replay_observation_lifecycle(
                         "stop_reason_code": state[observation.id][
                             "stop_reason_code"
                         ],
-                        "tracking_prompt_version": TRACKING_PROMPT_VERSION,
+                        "tracking_prompt_version": current_tracking_prompt_version(),
                         "tracking_state_machine_version": STATE_MACHINE_VERSION,
                     }
                 )
@@ -1386,7 +1441,7 @@ def replay_observation_lifecycle(
     return {
         "start_date": start_date.isoformat(),
         "end_date": end_date.isoformat(),
-        "tracking_prompt_version": TRACKING_PROMPT_VERSION,
+        "tracking_prompt_version": current_tracking_prompt_version(),
         "tracking_state_machine_version": STATE_MACHINE_VERSION,
         "rows": output_rows,
         "technical_failures": technical_failures,
@@ -1446,14 +1501,48 @@ def _tracking_prompt_input(
     evidence: Dict[str, Any],
     latest_review: Optional[Dict[str, Any]],
 ) -> Dict[str, Any]:
+    initial = observation.initial_snapshot_json or {}
+    external_initial = {
+        key: initial.get(key)
+        for key in (
+            "recommendation_date",
+            "recommendation_thesis",
+            "relative_advantage",
+            "instrument_validation",
+            "theme_validation",
+            "theme_cluster",
+            "catalyst_summary",
+            "research_confidence",
+        )
+    }
+    backend_summary = {
+        key: evidence.get(key)
+        for key in (
+            "tracking_state",
+            "entry_state",
+            "momentum_freshness",
+            "watch_quality_state",
+            "market_regime",
+            "data_quality",
+        )
+    }
     return {
         "date": review_date.isoformat(),
         "stock": observation.stock_id,
         "name": observation.stock_name,
         "asset_type": observation.asset_type,
-        "initial_observation": observation.initial_snapshot_json or {},
-        "current_backend_evidence": evidence,
-        "latest_valid_review": latest_review,
+        "initial_thesis": external_initial,
+        "current_backend_evidence_summary": backend_summary,
+        "latest_valid_review": (
+            {
+                key: latest_review.get(key)
+                for key in (
+                    "date", "decision", "reason_codes", "caution_dimensions"
+                )
+            }
+            if isinstance(latest_review, dict)
+            else None
+        ),
     }
 
 
@@ -1508,6 +1597,8 @@ def _validate_external_assessment(
         raise ValueError("Invalid catalyst_status.")
     normalized["catalyst_status"] = catalyst_status
     normalized["thesis_dimensions"] = dimensions
+    if not prompt_family.is_traditional_chinese_text(raw.get("assessment_reason")):
+        raise ValueError("assessment_reason must contain Traditional Chinese text.")
     reason_code = str(raw.get("invalidation_reason_code") or "").upper() or None
     if assessment == "THESIS_INVALIDATED":
         if reason_code not in EXTERNAL_INVALIDATION_REASONS:
@@ -1730,7 +1821,7 @@ def _upsert_review(
             reason="",
             caution_dimensions=[],
             failed_dimensions=[],
-            prompt_version=TRACKING_PROMPT_VERSION,
+            prompt_version=current_tracking_prompt_version(),
             state_machine_version=STATE_MACHINE_VERSION,
         )
         db.add(row)
@@ -1739,12 +1830,14 @@ def _upsert_review(
     row.reason = decision.reason
     row.caution_dimensions = decision.caution_dimensions
     row.failed_dimensions = decision.failed_dimensions
-    row.backend_evidence_json = backend_evidence
+    evidence_with_prompt = dict(backend_evidence)
+    evidence_with_prompt["_prompt_metadata"] = prompt_family.prompt_metadata()
+    row.backend_evidence_json = evidence_with_prompt
     row.external_assessment_json = external_assessment
     row.market_context_json = market_context
     row.persistence_warning_json = backend_evidence.get("persistence_warning") or {}
     row.technical_status = decision.technical_status
-    row.prompt_version = TRACKING_PROMPT_VERSION
+    row.prompt_version = current_tracking_prompt_version()
     row.state_machine_version = STATE_MACHINE_VERSION
     row.updated_at = datetime.utcnow()
     return row
@@ -1896,6 +1989,12 @@ def _serialize_observation(
 
 
 def _serialize_review(row: SignalObservationReview) -> Dict[str, Any]:
+    backend_evidence = row.backend_evidence_json or {}
+    metadata = (
+        backend_evidence.get("_prompt_metadata")
+        if isinstance(backend_evidence, dict)
+        else None
+    ) or {}
     return {
         "review_date": row.review_date,
         "decision": row.decision,
@@ -1903,13 +2002,19 @@ def _serialize_review(row: SignalObservationReview) -> Dict[str, Any]:
         "reason": row.reason,
         "caution_dimensions": row.caution_dimensions or [],
         "failed_dimensions": row.failed_dimensions or [],
-        "backend_evidence": row.backend_evidence_json or {},
+        "backend_evidence": backend_evidence,
         "external_assessment": row.external_assessment_json,
         "market_context": row.market_context_json or {},
         "persistence_warning": row.persistence_warning_json or {},
         "technical_status": row.technical_status,
         "tracking_prompt_version": row.prompt_version,
         "tracking_state_machine_version": row.state_machine_version,
+        "prompt_family_version": metadata.get("prompt_family_version"),
+        "shared_policy_version": metadata.get("shared_policy_version"),
+        "assembled_prompt_sha256": (
+            (metadata.get("prompt_sha256") or {}).get("tracking")
+            or metadata.get("assembled_prompt_sha256")
+        ),
     }
 
 

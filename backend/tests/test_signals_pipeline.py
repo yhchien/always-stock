@@ -1019,7 +1019,7 @@ def test_p3_pipeline_three_buckets_only_recommend_gets_reason_and_observation(
         assert first_metrics["initial_recommendation_rank"] == 1
         assert first_metrics["initial_backend_priority_rank"] == 1
         assert first_metrics["initial_recommendation_thesis"] == "正向 thesis"
-        assert first_metrics["selection_version"] == "p3_global_v1"
+        assert first_metrics["selection_version"] == "v7_global_selector"
         assert processing["global_selection_eligible_count"] == 30
         assert processing["global_selection_recommended_count"] == 10
         assert processing["global_selection_not_selected_count"] == 20

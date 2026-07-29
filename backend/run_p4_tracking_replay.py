@@ -16,9 +16,11 @@ from __future__ import annotations
 import argparse
 from datetime import date
 import json
+import os
 from pathlib import Path
 
 from app.database import SessionLocal
+from app.signals import prompt_family
 from app.signals.observation_lifecycle import replay_observation_lifecycle
 
 
@@ -40,11 +42,19 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Optional JSON output path. Defaults to stdout.",
     )
+    parser.add_argument(
+        "--prompt-family",
+        choices=("v7", "legacy_split"),
+        default="v7",
+        help="Prompt family used by the date-bounded tracking assessment.",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = _parse_args()
+    family = prompt_family.resolve_prompt_family(args.prompt_family)
+    os.environ["SIGNALS_PROMPT_FAMILY"] = family
     with SessionLocal() as db:
         payload = replay_observation_lifecycle(
             db,
@@ -52,6 +62,7 @@ def main() -> int:
             end_date=args.end_date,
             observation_ids=args.observation_ids,
         )
+    payload.update(prompt_family.prompt_metadata(family))
     serialized = json.dumps(payload, ensure_ascii=False, indent=2)
     if args.out:
         output_path = Path(args.out).expanduser().resolve()

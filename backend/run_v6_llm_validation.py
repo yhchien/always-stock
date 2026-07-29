@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import date, datetime
+from typing import Optional
 
 from app.database import SessionLocal
-from app.signals import candidate_pool, global_selector, llm_caller, market_breadth, market_regime, market_snapshot, momentum
+from app.signals import candidate_pool, global_selector, llm_caller, market_breadth, market_regime, market_snapshot, momentum, prompt_family
 from app.signals import pipeline as pipeline_mod
 from app.signals.phase2 import pipeline_v2
 
@@ -40,7 +42,15 @@ def _rebuild_shared_inputs(db, target_date: date):
     return pool, regime_info
 
 
-def run_validation(target_date: date, out_path: str) -> dict:
+def run_validation(
+    target_date: date,
+    out_path: str,
+    *,
+    prompt_family_name: Optional[str] = None,
+) -> dict:
+    family = prompt_family.resolve_prompt_family(prompt_family_name)
+    previous_family = os.environ.get("SIGNALS_PROMPT_FAMILY")
+    os.environ["SIGNALS_PROMPT_FAMILY"] = family
     db = SessionLocal()
     try:
         pool, regime_info = _rebuild_shared_inputs(db, target_date)
@@ -72,6 +82,7 @@ def run_validation(target_date: date, out_path: str) -> dict:
         market_context["market_regime"] = regime_info["regime"]
         market_context["market_regime_label"] = regime_info["regime_label"]
         market_context["market_regime_reason"] = regime_info["reason"]
+        market_context["target_date"] = target_date.isoformat()
 
         print("  → 呼叫 OpenAI research batch...")
         research_batches = [
@@ -91,7 +102,7 @@ def run_validation(target_date: date, out_path: str) -> dict:
         )
         print(
             f"  → 全體 selector 一次比較 {len(cards)} 檔 "
-            f"(selection_version={global_selector.SELECTION_VERSION})..."
+            f"(selection_version={prompt_family.stage_version('global_selector', family)})..."
         )
         selection = global_selector.run_global_selection(
             cards,
@@ -137,7 +148,7 @@ def run_validation(target_date: date, out_path: str) -> dict:
             f"  最終 RECOMMEND={len(final_payload['watchlist'])} "
             f"NOT_SELECTED={len(final_payload['not_selected'])} REMOVE={len(final_payload['removed'])} "
             f"research_prompt={final_payload['prompt_version']} "
-            f"selection_version={global_selector.SELECTION_VERSION}"
+            f"selection_version={prompt_family.stage_version('global_selector', family)}"
         )
         for item in final_payload["watchlist"]:
             print(
@@ -154,10 +165,7 @@ def run_validation(target_date: date, out_path: str) -> dict:
                     "raw_pool_size": len(pool),
                     "phase2_survivor_count": len(survivors),
                     "llm_input_count": len(after_regime),
-                    "research_prompt_version": final_payload["prompt_version"],
-                    "assessment_prompt_version": global_selector.ASSESSMENT_VERSION,
-                    "global_selector_version": global_selector.SELECTION_VERSION,
-                    "reason_prompt_version": global_selector.REASON_VERSION,
+                    **prompt_family.prompt_metadata(family),
                     "outcome_used_in_decision": False,
                     "backend_remove_but_llm_watch_count": len(backend_remove_but_llm_watch),
                     "veto_breakdown": veto_breakdown,
@@ -175,16 +183,29 @@ def run_validation(target_date: date, out_path: str) -> dict:
         return final_payload
     finally:
         db.close()
+        if previous_family is None:
+            os.environ.pop("SIGNALS_PROMPT_FAMILY", None)
+        else:
+            os.environ["SIGNALS_PROMPT_FAMILY"] = previous_family
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("target_date", type=str)
     parser.add_argument("--out", type=str, default=None)
+    parser.add_argument(
+        "--prompt-family",
+        choices=("v7", "legacy_split"),
+        default="v7",
+    )
     args = parser.parse_args()
     target_date = datetime.strptime(args.target_date, "%Y-%m-%d").date()
     out_path = args.out or f"/tmp/v6_validation_{args.target_date}.json"
-    run_validation(target_date, out_path)
+    run_validation(
+        target_date,
+        out_path,
+        prompt_family_name=args.prompt_family,
+    )
     return 0
 
 
