@@ -1,0 +1,180 @@
+{
+  "daily_cohort_contract": {
+    "baseline_predicate": "selected_top120 == true",
+    "bull_regime_enum": "BULL_TREND",
+    "candidate_source_fields": [
+      "source_A",
+      "source_B",
+      "source_C",
+      "source_D"
+    ],
+    "original_candidate_order_field": "raw_union_rank",
+    "outcome_field_loaded_only_in_step_b": "forward_return_10d",
+    "sector_field": null,
+    "sector_missing_policy": "null; source snapshot has no sector field",
+    "source_snapshot": "/tmp/phase3d_candidate_union_all.json",
+    "stock_id_field": "stock_id",
+    "trade_date_field": "evaluation_date",
+    "unit": "daily_candidate_event_no_stock_deduplication"
+  },
+  "eligible_evidence": [
+    {
+      "allowed_usage": [
+        "RANK"
+      ],
+      "experiment_id": "P3D_MOMENTUM_RANK_GRADIENT",
+      "status": "PASS",
+      "tested_rule": "Existing momentum_score order; Top120 vs 121-200 and adjacent rank buckets"
+    }
+  ],
+  "fixed_outcome_definition": {
+    "BIG_LOSER": "day10_return <= -10.0",
+    "NEUTRAL": "-10.0 < day10_return < 10.0",
+    "WINNER": "day10_return >= 10.0"
+  },
+  "forbidden_adaptations": [
+    "new feature",
+    "new weighted score",
+    "threshold search",
+    "fixed Top-K without PASS evidence",
+    "stock-specific exception",
+    "outcome-driven strategy modification"
+  ],
+  "frozen_from_commit": "8129305f8b2378aa6fb2a45214fee4a58440f89c",
+  "frozen_on": "2026-07-29",
+  "holdout_gates": [
+    {
+      "metric": "winner_retention_rate",
+      "operator": ">=",
+      "threshold": 0.95
+    },
+    {
+      "metric": "mean_return_delta_percentage_point",
+      "operator": ">=",
+      "threshold": -0.1
+    },
+    {
+      "metric": "big_loser_removal_rate",
+      "operator": ">=",
+      "threshold": 0.25
+    },
+    {
+      "metric": "compression_rate",
+      "operator": ">=",
+      "threshold": 0.15
+    }
+  ],
+  "ledger_sha256": "479ab678b38a85d09a5af17ef884ec551db9e8b32a39b6e943f109f8b3572616",
+  "manifest_version": "phase4a_strategy_freeze_v1",
+  "outcome_access_during_freeze": false,
+  "research_scope": "BULL_MARKET_DAILY_CANDIDATE_COMPRESSION",
+  "selection_gates": [
+    {
+      "gate": 1,
+      "metric": "winner_retention_rate",
+      "operator": ">=",
+      "threshold": 0.95
+    },
+    {
+      "additional_rule": "trading-date bootstrap 95% CI must not be clearly negative",
+      "gate": 2,
+      "metric": "mean_return_delta_percentage_point",
+      "operator": ">=",
+      "threshold": -0.1
+    },
+    {
+      "gate": 3,
+      "metric": "big_loser_removal_rate",
+      "operator": ">=",
+      "threshold": 0.3
+    },
+    {
+      "gate": 4,
+      "metric": "compression_rate",
+      "operator": ">=",
+      "threshold": 0.2
+    }
+  ],
+  "source_report_sha256": {
+    "docs/plans/phase3a_persistence_actionability_report.md": "eb96e6cd83be5a26894ec71ce50a61c8ad1bcac9ab22711c15e78c50ba9f97f5",
+    "docs/plans/phase3b_candidate_admission_report.md": "d63806f68af6446989ccdb6f681b7bdc47a4a521eb4834bcd9ce83faa08bd8a6",
+    "docs/plans/phase3c_riskoff_survival_report.md": "e838e7d80b81b27df6df0f04546bb795df1fe7f55e219664b73926bbf5d2be17",
+    "docs/plans/phase3d_candidate_discovery_report.md": "62642bec2289ee73aadf4cf9fa7049e715144b810e822a4aa1797f355a530b89",
+    "docs/plans/phase3e_downtrend_report.md": "ee63bdbcd9cb2036ff3970205ae6f6a9f9a1255d993afe8cf02334a4de6bfa17",
+    "docs/plans/phase3f_v2/phase3f_v2_report.md": "804ebb451df8f85caf597f6375cd65f3c6399f404955f3cccfb8085576cf7ae8",
+    "docs/plans/phase3g/phase3g_report.md": "89ae3f14cb8224583ce231736242c4fd5b427f03b60de4f8634046302f6b82eb",
+    "docs/plans/phase3h/phase3h_report.md": "d65ecf36a0b38a2f0acf1657110595104e99651725c27faa5066c15c2fd6b0a4",
+    "docs/plans/phase3i/phase3i_final_decision.md": "3b0b9f5e5835a33c273b520c993eec206ab3d08c6f33d2279e0525b47ddd4863"
+  },
+  "step_a_allowed_inputs": [
+    "Phase 3A-3I reports",
+    "prior experiment conclusions",
+    "feature definitions",
+    "production candidate schema"
+  ],
+  "step_a_prohibited_inputs": [
+    "Phase 4 Day10 return",
+    "Phase 4 outcome label",
+    "Phase 4 future MFE/MAE",
+    "any Phase 4 future outcome"
+  ],
+  "strategies": [
+    {
+      "availability": "AVAILABLE",
+      "exact_rule_order": [],
+      "exact_rules": [
+        "keep every baseline daily candidate event"
+      ],
+      "natural_compression_only": true,
+      "ordering": [
+        "original_candidate_order ascending",
+        "stock_id ascending"
+      ],
+      "required_features": [],
+      "strategy_name": "S0_BASELINE",
+      "strategy_role": "BASELINE"
+    },
+    {
+      "availability": "NOT_AVAILABLE",
+      "exact_rule_order": [],
+      "exact_rules": [],
+      "natural_compression_only": true,
+      "required_features": [],
+      "strategy_name": "S1_VALIDATED_CONSERVATIVE",
+      "strategy_role": "CHALLENGER",
+      "unavailable_reason": "No PASS, bull-eligible evidence permits FILTER usage."
+    },
+    {
+      "availability": "AVAILABLE",
+      "evidence_ids": [
+        "P3D_MOMENTUM_RANK_GRADIENT"
+      ],
+      "exact_rule_order": [
+        "original_candidate_order ascending",
+        "stock_id ascending"
+      ],
+      "exact_rules": [
+        "keep every baseline daily candidate event",
+        "rank by the existing production/replay candidate order",
+        "do not apply a fixed Top-K because no fixed K is PASS evidence"
+      ],
+      "expected_mechanical_effect": "ordering_only_no_forced_removal",
+      "natural_compression_only": true,
+      "required_features": [
+        "original_candidate_order"
+      ],
+      "strategy_name": "S2_VALIDATED_RANKING",
+      "strategy_role": "CHALLENGER"
+    },
+    {
+      "availability": "NOT_AVAILABLE",
+      "exact_rule_order": [],
+      "exact_rules": [],
+      "natural_compression_only": true,
+      "required_features": [],
+      "strategy_name": "S3_VALIDATED_HYBRID",
+      "strategy_role": "CHALLENGER",
+      "unavailable_reason": "S1 is unavailable; hybrid requires both S1 and S2."
+    }
+  ]
+}

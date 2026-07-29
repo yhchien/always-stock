@@ -1,0 +1,162 @@
+{
+  "all_observed_dates_and_regimes": [
+    {
+      "market_regime": "BULL_TREND",
+      "trade_date": "2026-04-13"
+    },
+    {
+      "market_regime": "BULL_TREND",
+      "trade_date": "2026-04-17"
+    },
+    {
+      "market_regime": "BULL_TREND",
+      "trade_date": "2026-04-23"
+    },
+    {
+      "market_regime": "BULL_TREND",
+      "trade_date": "2026-04-29"
+    },
+    {
+      "market_regime": "BULL_TREND",
+      "trade_date": "2026-05-06"
+    },
+    {
+      "market_regime": "BULL_TREND",
+      "trade_date": "2026-05-12"
+    },
+    {
+      "market_regime": "VOLATILE_RANGE",
+      "trade_date": "2026-05-18"
+    },
+    {
+      "market_regime": "RISK_OFF",
+      "trade_date": "2026-05-19"
+    },
+    {
+      "market_regime": "RISK_OFF",
+      "trade_date": "2026-05-20"
+    },
+    {
+      "market_regime": "BULL_TREND",
+      "trade_date": "2026-05-26"
+    },
+    {
+      "market_regime": "VOLATILE_RANGE",
+      "trade_date": "2026-06-01"
+    },
+    {
+      "market_regime": "BULL_TREND",
+      "trade_date": "2026-06-05"
+    },
+    {
+      "market_regime": "RISK_OFF",
+      "trade_date": "2026-06-10"
+    },
+    {
+      "market_regime": "RISK_OFF",
+      "trade_date": "2026-06-11"
+    },
+    {
+      "market_regime": "VOLATILE_RANGE",
+      "trade_date": "2026-06-15"
+    },
+    {
+      "market_regime": "BULL_TREND",
+      "trade_date": "2026-06-22"
+    },
+    {
+      "market_regime": "RISK_OFF",
+      "trade_date": "2026-06-26"
+    },
+    {
+      "market_regime": "RISK_OFF",
+      "trade_date": "2026-06-29"
+    },
+    {
+      "market_regime": "VOLATILE_RANGE",
+      "trade_date": "2026-06-30"
+    },
+    {
+      "market_regime": "VOLATILE_RANGE",
+      "trade_date": "2026-07-06"
+    }
+  ],
+  "bull_episodes": [
+    {
+      "candidate_event_count": 720,
+      "date_count": 6,
+      "dates": [
+        "2026-04-13",
+        "2026-04-17",
+        "2026-04-23",
+        "2026-04-29",
+        "2026-05-06",
+        "2026-05-12"
+      ],
+      "episode_id": 1
+    },
+    {
+      "candidate_event_count": 120,
+      "date_count": 1,
+      "dates": [
+        "2026-05-26"
+      ],
+      "episode_id": 2
+    },
+    {
+      "candidate_event_count": 120,
+      "date_count": 1,
+      "dates": [
+        "2026-06-05"
+      ],
+      "episode_id": 3
+    },
+    {
+      "candidate_event_count": 120,
+      "date_count": 1,
+      "dates": [
+        "2026-06-22"
+      ],
+      "episode_id": 4
+    }
+  ],
+  "candidate_count_by_bull_date": {
+    "2026-04-13": 120,
+    "2026-04-17": 120,
+    "2026-04-23": 120,
+    "2026-04-29": 120,
+    "2026-05-06": 120,
+    "2026-05-12": 120,
+    "2026-05-26": 120,
+    "2026-06-05": 120,
+    "2026-06-22": 120
+  },
+  "development_candidate_event_count": 960,
+  "development_date_count": 8,
+  "development_dates": [
+    "2026-04-13",
+    "2026-04-17",
+    "2026-04-23",
+    "2026-04-29",
+    "2026-05-06",
+    "2026-05-12",
+    "2026-05-26",
+    "2026-06-05"
+  ],
+  "episode_boundary_rule": "Consecutive BULL_TREND observations form an observed replay episode; an observed non-BULL_TREND date closes the episode.",
+  "frozen_on": "2026-07-29",
+  "holdout_candidate_event_count": 120,
+  "holdout_date_count": 1,
+  "holdout_dates": [
+    "2026-06-22"
+  ],
+  "outcome_access_during_split": false,
+  "random_split": false,
+  "regime_enum": "BULL_TREND",
+  "source_scope": "Phase 3D replay sample dates; daily candidate events are not stock-deduplicated. This is a replay-date cohort, not a claim of continuous production snapshots.",
+  "source_snapshot": "/tmp/phase3d_candidate_union_all.json",
+  "source_snapshot_sha256": "f3a3e606d930bb48e5267d0d58e348af8c777d6ded9becb147f47d3bf9758efe",
+  "split_method": "EARLIER_OBSERVED_BULL_EPISODES_DEVELOPMENT_LATEST_EPISODE_HOLDOUT",
+  "split_version": "phase4_bull_time_split_v1",
+  "strategy_manifest_sha256": "383d2249dd4f342821458d9abaa7322fec32927126d9dff877b77ebf3e69422d"
+}
