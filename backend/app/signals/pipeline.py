@@ -33,7 +33,7 @@ from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.models import SignalGenerationJob, SignalSnapshot
 from app.signals import archive as signal_archive
-from app.signals import candidate_pool, classification, filters, llm_caller
+from app.signals import candidate_pool, classification, filters, global_selector, llm_caller
 from app.signals import deterministic_signals as det_signals
 from app.signals import market_breadth, market_margin, market_regime, market_snapshot, momentum
 
@@ -47,6 +47,7 @@ STAGE_CANDIDATE = "candidate"
 STAGE_FILTER = "filter"
 STAGE_LLM_RESEARCH = "llm_research"
 STAGE_LLM_EXPLAIN = "llm_explain"
+STAGE_GLOBAL_SELECTION = "global_selection"
 STAGE_PERSIST = "persist"
 LLM_BATCH_CONCURRENCY = 2
 
@@ -252,13 +253,25 @@ def run_signal_pipeline_sync(
                 "decision_requested_count": 0,
                 "decision_completed_count": 0,
                 "decision_failed_count": 0,
+                "global_selection_eligible_count": 0,
+                "global_selection_recommended_count": 0,
+                "global_selection_not_selected_count": 0,
+                "global_selection_status": "NOT_STARTED",
+                "selection_complete": False,
+                "long_reason_requested_count": 0,
+                "long_reason_completed_count": 0,
                 "final_watch_count": 0,
                 "final_remove_count": 0,
                 "unprocessed_count": 0,
+                "technical_failure_count": 0,
                 "capacity_truncated_count": 0,
                 "is_complete": True,
                 "momentum_score_version": momentum.current_momentum_score_version(),
                 "momentum_score_mode": momentum.resolve_momentum_score_mode(),
+                "research_prompt_version": llm_caller._resolve_prompt_version(None),
+                "assessment_prompt_version": global_selector.ASSESSMENT_VERSION,
+                "global_selector_version": global_selector.SELECTION_VERSION,
+                "reason_prompt_version": global_selector.REASON_VERSION,
                 "research_batches": [],
                 "decision_batches": [],
                 "technical_failures": [],
@@ -519,18 +532,44 @@ def run_signal_pipeline_sync(
                 len(research_failures),
             )
 
-            # Step 6a：LLM 短 decision（全候選）
-            total_for_explain = max(len(research_results), 1)
+            # Step 6a：逐檔 assessment（eligibility / true veto；不是正式推薦）
+            backend_pre_removed = []
+            assessment_inputs = []
+            for research_item in research_results:
+                backend_max = str(
+                    (
+                        research_item.get("deterministic_signals") or {}
+                    ).get("max_decision")
+                    or ""
+                ).upper()
+                if backend_max == "REMOVE":
+                    backend_pre_removed.append(
+                        {
+                            **research_item,
+                            "backend_max_decision": "REMOVE",
+                            "assessment_status": "REMOVE",
+                            "decision": "REMOVE",
+                            "veto_reason": "BACKEND_MAX_REMOVE",
+                            "short_reason": "Backend deterministic max decision is REMOVE.",
+                        }
+                    )
+                else:
+                    assessment_inputs.append(research_item)
+
+            total_for_explain = max(len(assessment_inputs), 1)
             explain_batch_size = llm_caller.DEFAULT_EXPLANATION_BATCH_SIZE
             _set_progress(
                 db,
                 job,
                 stage=STAGE_LLM_EXPLAIN,
                 pct=75,
-                label=f"LLM 初判（共 {len(research_results)} 檔）",
+                label=f"逐檔驗證（共 {len(research_results)} 檔）",
             )
-            explain_batches = _build_batches(research_results, explain_batch_size)
+            explain_batches = _build_batches(assessment_inputs, explain_batch_size)
             processing_summary["decision_requested_count"] = len(research_results)
+            processing_summary["backend_pre_removed_count"] = len(
+                backend_pre_removed
+            )
             decision_execution = _run_parallel_batches(
                 explain_batches,
                 lambda chunk: llm_caller.run_explanation_batch(chunk, market_context),
@@ -541,64 +580,199 @@ def run_signal_pipeline_sync(
                     job,
                     stage=STAGE_LLM_EXPLAIN,
                     pct=75 + int(10 * done_count / total_for_explain),
-                    label=f"初判第 {done_count} / {len(research_results)} 檔",
+                    label=f"驗證第 {done_count} / {len(assessment_inputs)} 檔",
                 ),
             )
-            explanation, decision_failures = _partition_stage_results(
+            assessed_items, decision_failures = _partition_stage_results(
                 decision_execution, failure_status="DECISION_FAILED"
             )
+            assessed_by_id = {
+                _candidate_id(item): item for item in assessed_items
+            }
+            backend_removed_by_id = {
+                _candidate_id(item): item for item in backend_pre_removed
+            }
+            explanation = []
+            for research_item in research_results:
+                sid = _candidate_id(research_item)
+                if sid in backend_removed_by_id:
+                    explanation.append(backend_removed_by_id[sid])
+                elif sid in assessed_by_id:
+                    explanation.append(assessed_by_id[sid])
             processing_summary["decision_batches"] = decision_execution.batches
             processing_summary["decision_completed_count"] = len(explanation)
             processing_summary["decision_failed_count"] = len(decision_failures)
             logger.info(
-                "Completed decisions for %d/%d candidates; %d decision failures",
+                "Completed assessments for %d/%d candidates; %d assessment failures",
                 len(explanation),
                 len(research_results),
                 len(decision_failures),
             )
 
-            # Step 6b：只對 WATCH 名單補長理由
-            watch_candidates = [
-                item for item in explanation
-                if str(item.get("decision") or "").upper() == "WATCH"
+            # Step 6b：P3 全體比較。真實 REMOVE 在 selector 前分離；其餘候選
+            # 以同 schema compact cards 一次送入，禁止 chunk/tournament/Top-K。
+            selection_eligible, removed_assessments = global_selector.partition_assessments(
+                explanation
+            )
+            selection_cards = global_selector.build_compact_selection_cards(
+                selection_eligible,
+                selection_date=target_date,
+            )
+            capacity = global_selector.estimate_selection_capacity(selection_cards)
+            processing_summary.update(
+                {
+                    "global_selection_eligible_count": len(selection_eligible),
+                    "global_selection_status": "RUNNING",
+                    "selection_candidate_count": capacity.candidate_count,
+                    "selection_serialized_bytes": capacity.serialized_bytes,
+                    "selection_estimated_input_tokens": capacity.estimated_input_tokens,
+                    "selection_output_token_reserve": capacity.output_token_reserve,
+                    "selection_model_context_limit_tokens": capacity.model_context_limit_tokens,
+                }
+            )
+            _set_progress(
+                db,
+                job,
+                stage=STAGE_GLOBAL_SELECTION,
+                pct=86,
+                label=f"全體候選比較（共 {len(selection_eligible)} 檔）",
+            )
+            try:
+                selection_result = global_selector.run_global_selection(
+                    selection_cards,
+                    market_context,
+                    selection_date=target_date,
+                )
+            except global_selector.GlobalSelectionError as exc:
+                selection_failure = exc.as_dict()
+                technical_failures = [
+                    *research_failures,
+                    *decision_failures,
+                    selection_failure,
+                ]
+                processing_summary.update(
+                    {
+                        "global_selection_status": "FAILED",
+                        "selection_complete": False,
+                        "global_selection_error": selection_failure,
+                        "final_watch_count": 0,
+                        "final_remove_count": len(removed_assessments),
+                        "unprocessed_count": (
+                            len(selection_eligible)
+                            + len(research_failures)
+                            + len(decision_failures)
+                        ),
+                        "technical_failures": technical_failures,
+                        "technical_failure_count": len(technical_failures),
+                        "is_complete": False,
+                    }
+                )
+                failed_payload = llm_caller.assemble_final_output(
+                    market_context,
+                    removed_assessments,
+                    candidate_pool_size=len(pool),
+                )
+                failed_payload["watchlist"] = []
+                failed_payload["not_selected"] = []
+                failed_payload["final_watchlist_size"] = 0
+                failed_summary = failed_payload.setdefault("summary", {})
+                failed_summary["not_selected"] = []
+                failed_summary["technical_failures"] = technical_failures
+                failed_summary["research_results"] = research_results
+                failed_summary["compact_selection_cards"] = selection_cards
+                failed_summary["selection_summary"] = {
+                    "phase2_eligible_count": processing_summary.get(
+                        "llm_eligible_count", 0
+                    ),
+                    "research_completed_count": len(research_results),
+                    "veto_removed_count": len(removed_assessments),
+                    "global_eligible_count": len(selection_eligible),
+                    "recommended_count": 0,
+                    "not_selected_count": 0,
+                    "technical_failure_count": len(technical_failures),
+                    "selection_version": global_selector.SELECTION_VERSION,
+                    "selection_complete": False,
+                    "status": "FAILED",
+                    "error": selection_failure,
+                }
+                failed_summary["processing_summary"] = processing_summary
+                _persist_snapshot(db, target_date, failed_payload, job_id)
+                signal_archive.clear_signal_watch_hits_for_date(db, target_date)
+                _mark_partial_failure(
+                    db,
+                    job,
+                    (
+                        "Global recommendation selection failed atomically; "
+                        f"{len(selection_eligible)} eligible candidates were not selected."
+                    ),
+                )
+                return
+
+            selected_items = global_selector.merge_selection_items(
+                selection_eligible,
+                selection_result,
+            )
+            recommend_candidates = [
+                item
+                for item in selected_items
+                if str(item.get("decision") or "").upper() == "RECOMMEND"
             ]
-            total_for_watch_reason = max(len(watch_candidates), 1)
+            processing_summary.update(
+                {
+                    "global_selection_status": "COMPLETED",
+                    "selection_complete": True,
+                    "global_selection_recommended_count": len(recommend_candidates),
+                    "global_selection_not_selected_count": (
+                        len(selected_items) - len(recommend_candidates)
+                    ),
+                    "long_reason_requested_count": len(recommend_candidates),
+                }
+            )
+
+            # Step 6c：只有正式 RECOMMEND 產生長理由。
+            total_for_watch_reason = max(len(recommend_candidates), 1)
             _set_progress(
                 db,
                 job,
                 stage=STAGE_LLM_EXPLAIN,
-                pct=86,
-                label=f"補長理由（共 {len(watch_candidates)} 檔）",
+                pct=90,
+                label=f"推薦理由（共 {len(recommend_candidates)} 檔）",
             )
-            watch_batches = _build_batches(watch_candidates, explain_batch_size)
+            watch_batches = _build_batches(recommend_candidates, explain_batch_size)
             watch_reason_execution = _run_parallel_batches(
                 watch_batches,
                 lambda chunk: llm_caller.run_watch_reason_batch(chunk, market_context),
-                stage="watch_reason",
+                stage="reason_generation",
                 concurrency=LLM_BATCH_CONCURRENCY,
                 on_batch_done=lambda done_count: _set_progress(
                     db,
                     job,
                     stage=STAGE_LLM_EXPLAIN,
-                    pct=86 + int(9 * done_count / total_for_watch_reason),
-                    label=f"長理由第 {done_count} / {len(watch_candidates)} 檔",
+                    pct=90 + int(5 * done_count / total_for_watch_reason),
+                    label=f"推薦理由第 {done_count} / {len(recommend_candidates)} 檔",
                 ),
             )
-            enriched_watch = watch_reason_execution.results
+            enriched_watch, watch_reason_failures = _partition_stage_results(
+                watch_reason_execution,
+                failure_status="REASON_GENERATION_FAILED",
+            )
+            processing_summary["long_reason_completed_count"] = len(enriched_watch)
 
             if enriched_watch:
                 watch_by_id = {
                     str(item.get("stock") or item.get("stock_id") or ""): item
                     for item in enriched_watch
                 }
-                merged_explanation: list = []
-                for item in explanation:
+                merged_selected: list = []
+                for item in selected_items:
                     sid = str(item.get("stock") or item.get("stock_id") or "")
                     if sid and sid in watch_by_id:
-                        merged_explanation.append({**item, **watch_by_id[sid]})
+                        merged_selected.append({**item, **watch_by_id[sid]})
                     else:
-                        merged_explanation.append(item)
-                explanation = merged_explanation
+                        merged_selected.append(item)
+                selected_items = merged_selected
+
+            explanation = [*selected_items, *removed_assessments]
 
             # Step 7：Persist Snapshot
             _set_progress(
@@ -614,7 +788,7 @@ def run_signal_pipeline_sync(
             technical_failures = [
                 *research_failures,
                 *decision_failures,
-                *watch_reason_execution.failures,
+                *watch_reason_failures,
             ]
             failed_stock_ids = {
                 str(item.get("stock_id") or "")
@@ -624,17 +798,37 @@ def run_signal_pipeline_sync(
             processing_summary.update(
                 {
                     "final_watch_count": len(final_payload.get("watchlist", [])),
-                    "final_remove_count": sum(
-                        1
-                        for item in explanation
-                        if str(item.get("decision") or "").upper() == "REMOVE"
-                    ),
+                    "final_remove_count": len(final_payload.get("removed", [])),
                     "unprocessed_count": len(failed_stock_ids),
                     "technical_failures": technical_failures,
+                    "technical_failure_count": len(technical_failures),
                     "is_complete": not technical_failures,
                 }
             )
-            final_payload.setdefault("summary", {})["processing_summary"] = processing_summary
+            final_summary = final_payload.setdefault("summary", {})
+            final_summary["not_selected"] = final_payload.get("not_selected", [])
+            final_summary["technical_failures"] = technical_failures
+            final_summary["selection_summary"] = {
+                "phase2_eligible_count": processing_summary.get(
+                    "llm_eligible_count", 0
+                ),
+                "research_completed_count": len(research_results),
+                "veto_removed_count": len(removed_assessments),
+                "global_eligible_count": len(selection_eligible),
+                "recommended_count": len(final_payload.get("watchlist", [])),
+                "not_selected_count": len(final_payload.get("not_selected", [])),
+                "technical_failure_count": len(technical_failures),
+                "selection_rationale": (
+                    selection_result.get("summary", {}).get(
+                        "selection_rationale", ""
+                    )
+                ),
+                "selection_version": selection_result.get("selection_version"),
+                "selection_complete": True,
+                "status": "COMPLETED",
+                "capacity": selection_result.get("capacity"),
+            }
+            final_summary["processing_summary"] = processing_summary
             # M27：把 deterministic conviction / watch_intensity 蓋回每筆 watchlist item
             # （不依賴 LLM；regime 為全市場一致）
             for item in final_payload.get("watchlist", []):
@@ -646,7 +840,47 @@ def run_signal_pipeline_sync(
                     regime_info["regime"], conv
                 )
                 # v2.1：動能特徵 deterministic 蓋回（不依賴 LLM 回傳）
-                item["signal_metrics"] = signal_metrics_by_stock.get(sid)
+                item["signal_metrics"] = {
+                    **(signal_metrics_by_stock.get(sid) or {}),
+                    "selection_status": "RECOMMEND",
+                    "selection_version": item.get("selection_version"),
+                    "recommendation_rank": item.get("recommendation_rank"),
+                    "backend_priority_rank": item.get("backend_priority_rank"),
+                    "backend_priority_total": item.get("backend_priority_total"),
+                    "backend_priority_percentile": item.get(
+                        "backend_priority_percentile"
+                    ),
+                    "initial_recommendation_date": target_date.isoformat(),
+                    "initial_recommendation_rank": item.get(
+                        "recommendation_rank"
+                    ),
+                    "initial_backend_priority_rank": item.get(
+                        "backend_priority_rank"
+                    ),
+                    "initial_phase2_role": item.get("phase2_role"),
+                    "initial_entry_state": item.get("phase2_entry_state"),
+                    "initial_momentum_freshness": item.get(
+                        "phase2_momentum_freshness"
+                    ),
+                    "initial_watch_quality_state": item.get(
+                        "phase2_watch_quality_state"
+                    ),
+                    "initial_quality_evidence": item.get("quality_evidence"),
+                    "initial_theme_cluster": item.get("theme_cluster"),
+                    "initial_recommendation_thesis": item.get(
+                        "recommendation_thesis"
+                    ),
+                    "initial_relative_advantage": item.get(
+                        "relative_advantage"
+                    ),
+                    "initial_instrument_validation": item.get(
+                        "business_validation"
+                    ),
+                    "initial_theme_validation": item.get("theme_validation"),
+                    "initial_catalyst_summary": item.get("catalyst_summary"),
+                    "prompt_version": item.get("prompt_version"),
+                    "momentum_score_version": momentum.current_momentum_score_version(),
+                }
             _persist_snapshot(db, target_date, final_payload, job_id)
             signal_archive.persist_signal_watch_hits(db, target_date, final_payload, job_id)
 
@@ -815,6 +1049,9 @@ def _run_parallel_batches(
             failures.append(
                 {
                     "stock_id": _candidate_id(item),
+                    "stock": _candidate_id(item),
+                    "stage": stage.upper(),
+                    "status": failure_status,
                     "processing_status": failure_status,
                     "batch_index": idx + 1,
                     "error_summary": error_summary,
@@ -911,6 +1148,9 @@ def _partition_stage_results(
                 failures.append(
                     {
                         "stock_id": stock_id,
+                        "stock": stock_id,
+                        "stage": failure_status.rsplit("_FAILED", 1)[0],
+                        "status": failure_status,
                         "processing_status": failure_status,
                         "batch_index": _batch_index_for_stock(execution.batches, stock_id),
                         "error_summary": str(error_summary)[:500],

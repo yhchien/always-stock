@@ -1,7 +1,7 @@
-"""LLM v6 contract 小規模驗證 replay（2026-07-22）。
+"""P3 point-in-time research + global recommendation replay.
 
 對指定歷史交易日重建候選池（deterministic，跟 `run_phase2_replay.py` 相同手法），
-**真的呼叫 OpenAI**（v6 prompt，因為預設版本已經是 v6），但只把結果寫進本機
+**真的呼叫 OpenAI**（research v6.1 + P3 selector），但只把結果寫進本機
 scratch 檔案，**完全不寫入** `signal_snapshots` / `signal_watch_hits` 等 production
 表——用來驗證 v6 prompt 是否真的照 spec 運作，不會產生任何 production 副作用。
 
@@ -16,7 +16,7 @@ import sys
 from datetime import date, datetime
 
 from app.database import SessionLocal
-from app.signals import candidate_pool, llm_caller, market_breadth, market_regime, market_snapshot, momentum
+from app.signals import candidate_pool, global_selector, llm_caller, market_breadth, market_regime, market_snapshot, momentum
 from app.signals import pipeline as pipeline_mod
 from app.signals.phase2 import pipeline_v2
 
@@ -82,19 +82,38 @@ def run_validation(target_date: date, out_path: str) -> dict:
         for batch in research_batches:
             research_results.extend(llm_caller.run_research_batch(batch, market_context))
 
-        print("  → 呼叫 OpenAI decision batch...")
-        explanation = llm_caller.run_explanation_batch(research_results, market_context)
-
-        watch_items = [it for it in explanation if str(it.get("decision") or "").upper() == "WATCH"]
-        print(f"  → WATCH 名單 {len(watch_items)} 檔，呼叫 OpenAI watch_reason batch...")
-        enriched_watch = llm_caller.run_watch_reason_batch(watch_items, market_context)
+        print("  → 呼叫 OpenAI eligibility/veto assessment batch...")
+        assessments = llm_caller.run_explanation_batch(research_results, market_context)
+        eligible, removed = global_selector.partition_assessments(assessments)
+        cards = global_selector.build_compact_selection_cards(
+            eligible,
+            selection_date=target_date,
+        )
+        print(
+            f"  → 全體 selector 一次比較 {len(cards)} 檔 "
+            f"(selection_version={global_selector.SELECTION_VERSION})..."
+        )
+        selection = global_selector.run_global_selection(
+            cards,
+            market_context,
+            selection_date=target_date,
+        )
+        selected = global_selector.merge_selection_items(eligible, selection)
+        recommend_items = [
+            item for item in selected
+            if str(item.get("decision") or "").upper() == "RECOMMEND"
+        ]
+        print(f"  → RECOMMEND {len(recommend_items)} 檔，呼叫 OpenAI reason batch...")
+        enriched_watch = llm_caller.run_watch_reason_batch(recommend_items, market_context)
         if enriched_watch:
             watch_by_id = {str(item.get("stock") or ""): item for item in enriched_watch}
             merged = []
-            for item in explanation:
+            for item in selected:
                 sid = str(item.get("stock") or "")
                 merged.append({**item, **watch_by_id[sid]} if sid in watch_by_id else item)
-            explanation = merged
+            selected = merged
+
+        explanation = [*selected, *removed]
 
         final_payload = llm_caller.assemble_final_output(
             market_context, explanation, candidate_pool_size=len(pool)
@@ -102,19 +121,24 @@ def run_validation(target_date: date, out_path: str) -> dict:
 
         # v6 contract 驗證重點摘要（不影響任何 production 表，純印出/存檔）
         backend_remove_but_llm_watch = [
-            e for e in explanation
+            e for e in assessments
             if e.get("backend_max_decision") == "REMOVE" and str(e.get("decision")).upper() == "WATCH"
         ]
         print(f"  ⚠️ backend_max_decision=REMOVE 但最終仍是 WATCH 的筆數（應該永遠是 0）: {len(backend_remove_but_llm_watch)}")
 
         veto_breakdown: dict = {}
-        for e in explanation:
+        for e in removed:
             if str(e.get("decision") or "").upper() == "REMOVE":
                 reason = e.get("veto_reason") or "(none)"
                 veto_breakdown[reason] = veto_breakdown.get(reason, 0) + 1
         print(f"  REMOVE veto_reason 分布: {veto_breakdown}")
 
-        print(f"  最終 watchlist: {final_payload['final_watchlist_size']} 檔，prompt_version={final_payload['prompt_version']}")
+        print(
+            f"  最終 RECOMMEND={len(final_payload['watchlist'])} "
+            f"NOT_SELECTED={len(final_payload['not_selected'])} REMOVE={len(final_payload['removed'])} "
+            f"research_prompt={final_payload['prompt_version']} "
+            f"selection_version={global_selector.SELECTION_VERSION}"
+        )
         for item in final_payload["watchlist"]:
             print(
                 f"    {item['stock']} {item.get('name')} | type={item['type']} asset_type={item.get('asset_type')} "
@@ -130,10 +154,17 @@ def run_validation(target_date: date, out_path: str) -> dict:
                     "raw_pool_size": len(pool),
                     "phase2_survivor_count": len(survivors),
                     "llm_input_count": len(after_regime),
+                    "research_prompt_version": final_payload["prompt_version"],
+                    "assessment_prompt_version": global_selector.ASSESSMENT_VERSION,
+                    "global_selector_version": global_selector.SELECTION_VERSION,
+                    "reason_prompt_version": global_selector.REASON_VERSION,
+                    "outcome_used_in_decision": False,
                     "backend_remove_but_llm_watch_count": len(backend_remove_but_llm_watch),
                     "veto_breakdown": veto_breakdown,
+                    "compact_selection_cards": cards,
+                    "selection": selection,
                     "final_payload": final_payload,
-                    "explanation_all": explanation,
+                    "assessment_all": assessments,
                 },
                 f,
                 ensure_ascii=False,

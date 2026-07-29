@@ -176,7 +176,10 @@ def persist_signal_watch_hits(
                 group_info=item.get("group_info") or {},
                 leader_check=item.get("leader_check") or {},
                 signals=item.get("signals") or {},
-                signal_metrics=item.get("signal_metrics"),  # v2.1 動能特徵（spec §9.2）
+                signal_metrics=_carry_initial_selection_metrics(
+                    item.get("signal_metrics"),
+                    prior.get("signal_metrics"),
+                ),
                 prompt_version=str(item.get("prompt_version") or "v1"),
                 baseline_trade_date=prior.get("baseline_trade_date"),
                 baseline_price=prior.get("baseline_price"),
@@ -194,6 +197,21 @@ def persist_signal_watch_hits(
 
     _prune_signal_watch_hits(db)
     db.commit()
+
+
+def clear_signal_watch_hits_for_date(db: Session, target_date: date) -> int:
+    """Remove stale same-day hits when a rerun's global selection fails atomically.
+
+    Earlier-date hits are intentionally untouched, so an existing tracking cycle is
+    not archived, stopped, or reset by P3.
+    """
+    deleted = (
+        db.query(SignalWatchHit)
+        .filter(SignalWatchHit.snapshot_date == target_date)
+        .delete(synchronize_session=False)
+    )
+    db.commit()
+    return int(deleted or 0)
 
 
 def _load_expectation_prices_map(
@@ -599,8 +617,27 @@ def _load_latest_return_state_by_stock(
             "max_positive_return_trade_date": row.max_positive_return_trade_date,
             "max_negative_return_pct": row.max_negative_return_pct,
             "max_negative_return_trade_date": row.max_negative_return_trade_date,
+            "signal_metrics": row.signal_metrics,
         }
     return state_by_stock
+
+
+def _carry_initial_selection_metrics(
+    current: Any,
+    prior: Any,
+) -> Optional[Dict[str, Any]]:
+    """Keep a tracking cycle's first P3 recommendation snapshot immutable.
+
+    Current-day selection fields remain current.  Only ``initial_*`` keys are
+    inherited from the previous active hit, so a repeat RECOMMEND does not reset
+    the original recommendation date/rank/thesis.
+    """
+    current_metrics = dict(current) if isinstance(current, dict) else {}
+    if isinstance(prior, dict):
+        for key, value in prior.items():
+            if key.startswith("initial_"):
+                current_metrics[key] = value
+    return current_metrics or None
 
 
 def _build_completed_archive_item(

@@ -192,6 +192,60 @@ def test_latest_returns_most_recent_snapshot(api):
     assert body["data"]["final_watchlist_size"] == 1
 
 
+def test_latest_exposes_p3_buckets_without_reclassifying_failures(api):
+    client, db, _ = api
+    snap = _seed_snapshot(db, date(2026, 7, 29))
+    snap.watchlist = [
+        {
+            "stock": "2330",
+            "name": "台積電",
+            "decision": "RECOMMEND",
+            "selection_status": "RECOMMEND",
+        }
+    ]
+    snap.removed = [
+        {
+            "stock": "9999",
+            "name": "事實不符",
+            "decision": "REMOVE",
+            "veto_reason": "BUSINESS_MISMATCH",
+        }
+    ]
+    snap.summary = {
+        "not_selected": [
+            {
+                "stock": "2454",
+                "name": "聯發科",
+                "decision": "NOT_SELECTED",
+                "selection_reason_code": "LOWER_RELATIVE_PRIORITY",
+                "selection_reason": "候選有效但今日相對優勢較低。",
+            }
+        ],
+        "technical_failures": [
+            {
+                "stock_id": "3008",
+                "processing_status": "RESEARCH_FAILED",
+                "error_summary": "timeout",
+            }
+        ],
+        "selection_summary": {
+            "selection_version": "p3_global_v1",
+            "selection_complete": True,
+        },
+    }
+    db.commit()
+
+    res = client.get("/api/signals/latest")
+    assert res.status_code == 200
+    data = res.json()["data"]
+    assert [item["stock"] for item in data["watchlist"]] == ["2330"]
+    assert [item["stock"] for item in data["not_selected"]] == ["2454"]
+    assert [item["stock"] for item in data["removed"]] == ["9999"]
+    assert data["technical_failures"][0]["processing_status"] == "RESEARCH_FAILED"
+    assert "not_selected" not in data["summary"]
+    assert data["summary"]["selection_summary"]["selection_complete"] is True
+
+
 # ---------------------------------------------------------------------------
 # /snapshot/{date}
 # ---------------------------------------------------------------------------

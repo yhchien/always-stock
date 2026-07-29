@@ -393,10 +393,10 @@ def run_explanation_batch(
     *,
     model: str = DEFAULT_DECISION_MODEL,
 ) -> List[Dict[str, Any]]:
-    """Step 8a：先對全候選產出短 decision。
+    """P3 assessment：對全候選做逐檔研究驗證與真實 veto 檢查。
 
-    只產出 `signals` / `decision` / 1-2 句 short_reason，避免先替所有候選寫長文。
-    長理由只留給最後的 WATCH 清單。
+    這裡的 ELIGIBLE（legacy alias 為 WATCH）不是正式推薦；所有非 REMOVE 候選
+    後續都必須進入一次全體 global selection。長理由只留給 RECOMMEND。
     """
     if not research_results:
         return []
@@ -414,9 +414,9 @@ def run_watch_reason_batch(
     *,
     model: str = DEFAULT_WATCH_REASON_MODEL,
 ) -> List[Dict[str, Any]]:
-    """Step 8b：只對 WATCH 名單補長理由。
+    """Reason stage：只對 P3 RECOMMEND 名單補長理由。
 
-    這一層避免把 REMOVE 候選也花成本產生長文，直接降低整體 latency。
+    函式名保留給既有 caller；NOT_SELECTED / REMOVE 永遠不進這一層。
     """
     if not watch_items:
         return []
@@ -443,15 +443,35 @@ def assemble_final_output(
       candidate_pool_size / final_watchlist_size / llm_model / llm_total_tokens
     """
     watchlist_candidates: List[Dict[str, Any]] = []
+    not_selected: List[Dict[str, Any]] = []
+    removed: List[Dict[str, Any]] = []
 
     for item in explanation:
         decision = str(item.get("decision") or "REMOVE").upper()
-        if decision == "WATCH":
+        if decision in {"WATCH", "RECOMMEND"}:
             watchlist_candidates.append(_format_watch_entry(item))
+        elif decision == "NOT_SELECTED":
+            not_selected.append(_format_selection_audit_entry(item))
+        elif decision == "REMOVE":
+            removed.append(_format_selection_audit_entry(item))
 
     # P0/P1 selection policy：final WATCH 不套固定 Top-K；raw union 與 LLM input
     # 也不做總量截斷，保留逐檔決定與 deterministic processing order。
-    watchlist = watchlist_candidates
+    watchlist = (
+        sorted(
+            watchlist_candidates,
+            key=lambda entry: (
+                entry.get("recommendation_rank")
+                if isinstance(entry.get("recommendation_rank"), int)
+                else 10**9
+            ),
+        )
+        if any(
+            isinstance(entry.get("recommendation_rank"), int)
+            for entry in watchlist_candidates
+        )
+        else watchlist_candidates
+    )
 
     # 依大盤 regime resolve 這次實際跑的 prompt 版本；v5 起所有 regime 預設同版。
     prompt_version = _resolve_prompt_version(market_context.get("market_regime"))
@@ -483,6 +503,8 @@ def assemble_final_output(
     return {
         "market_context": market_context,
         "watchlist": watchlist,
+        "not_selected": not_selected,
+        "removed": removed,
         "summary": summary,
         "candidate_pool_size": candidate_pool_size,
         "final_watchlist_size": len(watchlist),
@@ -655,6 +677,7 @@ def _call_llm_json(
     stage: str,
     use_web_search: bool = False,
     prompt_cache_key: Optional[str] = None,
+    max_output_tokens: int = _MAX_OUTPUT_TOKENS,
 ) -> tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
     """呼叫 OpenAI 並嘗試 parse JSON。
 
@@ -687,7 +710,7 @@ def _call_llm_json(
             "model": model,
             "instructions": system_prompt,
             "input": user_msg,
-            "max_output_tokens": _MAX_OUTPUT_TOKENS,
+            "max_output_tokens": max_output_tokens,
             "prompt_cache_retention": _PROMPT_CACHE_RETENTION,
         }
         if prompt_cache_key:
@@ -776,13 +799,13 @@ def _run_decision_chunk(
     system_prompt = _load_system_prompt(stage="decision", version=version)
 
     if version in {PROMPT_VERSION_V6, PROMPT_VERSION_PARITY}:
-        # LLM v6（2026-07-22）：backend_max_decision 是天花板（程式碼也會強制驗證，
-        # 這裡只是先讓 LLM 自己對齊）；LLM 不再跑第二套 momentum/regime 數字門檻，
-        # 只能因外部驗證失敗（veto_reason）把 WATCH 降級為 REMOVE。
+        # P3：此 stage 只做逐檔 eligibility / true-veto assessment。ELIGIBLE 不是
+        # 正式推薦，後續仍需送進一次全體 global selector。
         user_msg = (
             "[執行 STEP 5 / STEP 6 / STEP 6.5 / STEP 7：檢查 backend_max_decision + 外部否決驗證 + "
-            "quality_assessment + 短 decision]\n"
-            "你現在只需要判斷 WATCH / REMOVE，並給 1-2 句短理由。"
+            "quality_assessment + eligibility assessment]\n"
+            "你現在只需要判斷 ELIGIBLE / REMOVE，並給 1-2 句短理由。"
+            "ELIGIBLE 只代表可進入稍後的全體比較，不代表正式推薦；你不可在此做跨股票相對精選。"
             "backend 已經完成候選資格、動能門檻、regime 篩選、Momentum Freshness、Final Watch Quality "
             "（`phase2_watch_quality_state` = READY/SETUP 才會出現在這個池子裡）；你不可再用自己的數字"
             "門檻或自己重算 freshness 來 REMOVE。\n"
@@ -798,10 +821,13 @@ def _run_decision_chunk(
             "[硬規則]\n"
             "1. `display_type` 由 research_results 帶入，**不可修改**（後端 deterministic 決定，僅供 UI 相容）。\n"
             "2. `backend_max_decision = REMOVE` 時你必須輸出 REMOVE；反過來 `backend_max_decision = WATCH` "
-            "   不代表你必須 WATCH，仍需要有外部驗證支持才 WATCH，也可以因為 (b)/(c) 而 REMOVE。\n"
-            "3. short_reason 必須說明是動能證據支持 WATCH，還是哪一種外部矛盾/品質不足造成 REMOVE，"
+            "   代表天花板允許 ELIGIBLE，仍可因為 (b)/(c) 的真實 veto 而 REMOVE。\n"
+            "3. short_reason 必須說明是哪些證據支持進入全體比較，還是哪一種外部矛盾/品質不足造成 REMOVE，"
             "   不可只寫「動能不足」（那是 backend 的權責，不是你可以用的理由）。\n"
             "4. 若你判斷 REMOVE，`veto_reason` 必填其中一個 enum 值。\n"
+            "   若 veto_reason 是 MATERIAL_NEGATIVE_EVENT 或 DATA_CONTRADICTION，另須提供 "
+            "`veto_evidence.summary` 與至少一個可追溯的 `veto_evidence.source_urls`；"
+            "沒有來源時不可用這兩個理由 REMOVE。\n"
             "5. `phase2_momentum_freshness` / `phase2_watch_quality_state` 只能讀取，不可自己重新計算；"
             "   若這兩個欄位為 null（legacy 候選或 backend 尚未提供），不可使用 (c) 類 quality veto reason。\n"
             "6. `quality_assessment` 四個欄位中，`momentum_quality` / `participation_quality` 必須反映 "
@@ -832,8 +858,9 @@ def _run_decision_chunk(
             '      "theme_validation": "VERIFIED | UNCONFIRMED | MISMATCH",\n'
             '      "supply_chain_validation": "VERIFIED | UNCONFIRMED | MISMATCH",\n'
             '      "quality_assessment": { "momentum_quality": "HIGH | MEDIUM | LOW", "participation_quality": "HIGH | MEDIUM | LOW", "catalyst_quality": "HIGH | MEDIUM | LOW | UNCONFIRMED", "evidence_coherence": "STRONG | MODERATE | WEAK" },\n'
-            '      "decision": "WATCH | REMOVE",\n'
+            '      "assessment": "ELIGIBLE | REMOVE",\n'
             '      "veto_reason": "BACKEND_MAX_REMOVE | BUSINESS_MISMATCH | THEME_MISMATCH | FALSE_SUPPLY_CHAIN_LINK | MATERIAL_NEGATIVE_EVENT | DATA_CONTRADICTION | INSUFFICIENT_CONFIRMATION | MOMENTUM_NOT_FRESH | WEAK_PARTICIPATION | CATALYST_TOO_WEAK | EVIDENCE_NOT_COHERENT | null",\n'
+            '      "veto_evidence": { "summary": "矛盾或事件摘要", "source_urls": ["https://..."] } | null,\n'
             '      "short_reason": "1-2 句繁體中文，120 字內，說明保留或排除主因"\n'
             '    }\n'
             '  ]\n'
@@ -915,11 +942,20 @@ def _run_decision_chunk(
                 merged["quality_assessment"] = qa if isinstance(qa, dict) else None
             else:
                 merged["signals"] = ext.get("signals", _default_signals())
-            llm_decision = str(ext.get("decision") or "REMOVE").upper()
+            raw_assessment = ext.get("assessment")
+            if raw_assessment is None:
+                raw_assessment = ext.get("decision")
+            llm_decision = str(raw_assessment or "REMOVE").upper()
+            if llm_decision == "ELIGIBLE":
+                llm_decision = "WATCH"
             merged["business_validation"] = _normalize_validation(ext.get("business_validation"))
             merged["theme_validation"] = _normalize_validation(ext.get("theme_validation"))
             merged["supply_chain_validation"] = _normalize_validation(ext.get("supply_chain_validation"))
             veto_reason = ext.get("veto_reason")
+            veto_evidence = ext.get("veto_evidence")
+            merged["veto_evidence"] = (
+                veto_evidence if isinstance(veto_evidence, dict) else None
+            )
             # LLM v6 天花板（也回溯適用 v5，因為 v5 prompt STEP 7.5 早就宣稱這條
             # 規則，只是從未被程式碼驗證過）：backend_max_decision=REMOVE 時，
             # 最終決定必須是 REMOVE，LLM 只能維持或降級，不可把 REMOVE 升級為 WATCH。
@@ -930,9 +966,13 @@ def _run_decision_chunk(
                     sid,
                 )
                 merged["decision"] = "REMOVE"
+                merged["assessment_status"] = "REMOVE"
                 merged["veto_reason"] = veto_reason or "BACKEND_MAX_REMOVE"
             else:
                 merged["decision"] = llm_decision
+                merged["assessment_status"] = (
+                    "ELIGIBLE" if llm_decision == "WATCH" else llm_decision
+                )
                 merged["veto_reason"] = veto_reason if llm_decision == "REMOVE" else None
             merged["short_reason"] = ext.get("short_reason", "")
             merged["llm_diagnostic"] = diagnostic
@@ -1212,7 +1252,7 @@ def _format_watch_entry(item: Dict[str, Any]) -> Dict[str, Any]:
         "group_info": item.get("group_info", {}),
         "leader_check": item.get("leader_check", {}),
         "signals": item.get("signals", _default_signals()),
-        "decision": "WATCH",
+        "decision": "RECOMMEND",
         "reason": item.get("reason") or item.get("short_reason", ""),
         # LLM v6 contract：backend authoritative 天花板 + 外部驗證欄位（v1/v4/v5
         # 沒有這些欄位，會是 None，前端/資料庫多存幾個 null 欄位無害）
@@ -1234,6 +1274,25 @@ def _format_watch_entry(item: Dict[str, Any]) -> Dict[str, Any]:
         "phase2_momentum_freshness": item.get("momentum_freshness"),
         "phase2_watch_quality_state": item.get("watch_quality_state"),
         "quality_assessment": item.get("quality_assessment") if isinstance(item.get("quality_assessment"), dict) else None,
+        "quality_evidence": item.get("quality_evidence") if isinstance(item.get("quality_evidence"), dict) else None,
+        # P3 selection audit fields. Historical WATCH rows simply keep these null.
+        "selection_status": item.get("selection_status") or (
+            "RECOMMEND" if str(item.get("decision") or "").upper() == "RECOMMEND" else None
+        ),
+        "selection_version": item.get("selection_version"),
+        "recommendation_rank": item.get("recommendation_rank"),
+        "backend_priority_rank": item.get("backend_priority_rank"),
+        "backend_priority_total": item.get("backend_priority_total"),
+        "backend_priority_percentile": item.get("backend_priority_percentile"),
+        "recommendation_thesis": item.get("recommendation_thesis"),
+        "relative_advantage": item.get("relative_advantage"),
+        "recommendation_basis": item.get("recommendation_basis") or [],
+        "rank_override": item.get("rank_override"),
+        "rank_override_reason": item.get("rank_override_reason"),
+        "theme_cluster": item.get("theme_cluster")
+        or ((item.get("theme") or {}).get("main_theme") if isinstance(item.get("theme"), dict) else None),
+        "catalyst_summary": item.get("catalyst_summary")
+        or item.get("instrument_summary"),
     }
     momentum = item.get("momentum")
     entry["momentum"] = momentum if isinstance(momentum, dict) else None
@@ -1245,6 +1304,36 @@ def _format_watch_entry(item: Dict[str, Any]) -> Dict[str, Any]:
     margin = item.get("margin_analysis")
     entry["margin_analysis"] = margin if isinstance(margin, dict) else None
     return entry
+
+
+def _format_selection_audit_entry(item: Dict[str, Any]) -> Dict[str, Any]:
+    """Compact API/snapshot row for NOT_SELECTED or true REMOVE.
+
+    Long reason sections and margin analysis are intentionally omitted.
+    """
+    return {
+        "stock": item.get("stock") or item.get("stock_id"),
+        "name": item.get("name", ""),
+        "type": str(item.get("type") or "LAGGARD").upper(),
+        "asset_type": item.get("asset_type", "COMMON_STOCK"),
+        "industry": item.get("industry"),
+        "sub_industry": item.get("sub_industry"),
+        "decision": str(item.get("decision") or "").upper(),
+        "selection_status": item.get("selection_status")
+        or str(item.get("decision") or "").upper(),
+        "selection_version": item.get("selection_version"),
+        "backend_priority_rank": item.get("backend_priority_rank"),
+        "backend_priority_total": item.get("backend_priority_total"),
+        "backend_priority_percentile": item.get("backend_priority_percentile"),
+        "theme_cluster": item.get("theme_cluster")
+        or ((item.get("theme") or {}).get("main_theme") if isinstance(item.get("theme"), dict) else None),
+        "selection_reason_code": item.get("selection_reason_code"),
+        "selection_reason": item.get("selection_reason"),
+        "overlap_with": item.get("overlap_with") or [],
+        "overlap_reason": item.get("overlap_reason"),
+        "veto_reason": item.get("veto_reason"),
+        "short_reason": item.get("short_reason"),
+    }
 
 
 def _market_context_fallback(
@@ -1508,6 +1597,7 @@ def _decision_fallback(
         "signals": _default_signals(),
         # 技術失敗不是市場決策；pipeline 會保留失敗紀錄並標 partial_failure。
         "decision": None,
+        "assessment_status": None,
         "processing_status": "DECISION_FAILED",
         # 三個驗證欄位保守回 UNCONFIRMED（資料不足，不代表矛盾證據）。
         "business_validation": "UNCONFIRMED",
@@ -1535,6 +1625,9 @@ def _watch_reason_fallback(
     out: Dict[str, Any] = {
         **item,
         "reason": fallback_msg,
+        "_unavailable": True,
+        "_unavailable_reason": _stage_fallback_reason("watch_reason", diagnostic),
+        "processing_status": "REASON_GENERATION_FAILED",
         "llm_diagnostic": diagnostic,
     }
     for key in WATCH_REASON_SECTIONS:

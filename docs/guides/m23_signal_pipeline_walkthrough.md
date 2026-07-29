@@ -142,7 +142,7 @@ P1 起不再因 raw union 總量超過 150 而截成 120。
 
 ---
 
-## 6. LLM 三段判斷
+## 6. LLM 研究、驗證與全體精選
 
 ### Stage 7: assemble_market_context（上網查市場）
 - 模型：`gpt-4o-search-preview`（支援 web search tool）
@@ -157,16 +157,22 @@ P1 起不再因 raw union 總量超過 150 而截成 120。
 - 輸出：每檔的 `business_summary` / `supply_chain_position` / `theme_fit` / `group_info` / `leader_check`
 - **type 鎖死**：[backend 強制覆寫](../../backend/app/signals/llm_caller.py)，LLM 不能改 prelim_type
 
-### Stage 9: run_explanation_batch（短決策）
-- 模型：`gpt-4o-search-preview`（不 web search，純判斷）
+### Stage 9: run_explanation_batch（逐檔 assessment）
+- 模型：由 `OPENAI_SIGNALS_DECISION_MODEL` 控制
 - Batch size：4 檔一次
-- 任務：對每檔給 `WATCH` 或 `REMOVE` 二元決策 + 1-2 句 `short_reason`
-- 為什麼分這層：避免對 REMOVE 候選也花成本產生長理由
+- 任務：只判 `ELIGIBLE` 或有嚴格前提的真實 `REMOVE`；ELIGIBLE 不是正式推薦
 
-### Stage 10: run_watch_reason_batch（長理由）
-- 模型同上
+### Stage 10: Global Selector（全體比較）
+- Prompt/version：`global-recommendation-selector-v1.md` / `p3_global_v1`
+- 所有研究與 assessment 成功、且未真實 REMOVE 的候選各建立一張 compact card
+- 一次完整比較，不分 batch、不做 Top-K/ratio/source/asset/cluster cap
+- 輸出只有 `RECOMMEND` / `NOT_SELECTED`
+- missing/duplicate/unknown/rank/reason schema 錯誤會原子失敗，不 fallback
+
+### Stage 11: run_watch_reason_batch（長理由）
+- 模型由 `OPENAI_SIGNALS_REASON_MODEL` 控制
 - Batch size：4 檔
-- 任務：**只對 Stage 9 判 WATCH 的股票**寫 5 段 bullet：
+- 任務：**只對 Stage 10 的 RECOMMEND** 寫 5 段 bullet：
   - `theme_reason`（題材）
   - `capital_reason`（資金）← **若 tracking_status.is_tracked=true 且 days≥3 必須引用追蹤表現**
   - `chip_reason`（籌碼）
@@ -185,9 +191,12 @@ P1 起不再因 raw union 總量超過 150 而截成 120。
   "date": "2026-05-26",
   "market_context": { "market_state": "...", "margin_climate": {...} },
   "watchlist": [
-    { "stock": "...", "type": "LEADER", "decision": "WATCH", ... }
+    { "stock": "...", "decision": "RECOMMEND", "recommendation_rank": 1, ... }
   ],
-  "removed": [],
+  "not_selected": [
+    { "stock": "...", "decision": "NOT_SELECTED", "selection_reason_code": "...", ... }
+  ],
+  "removed": [{ "stock": "...", "decision": "REMOVE", "veto_reason": "..." }],
   "summary": { "leader_count": 3, "follower_count": 5, "laggard_count": 2, ... },
   "candidate_pool_size": 95,
   "final_watchlist_size": 10
@@ -196,7 +205,8 @@ P1 起不再因 raw union 總量超過 150 而截成 120。
 
 最後寫進 DB：
 - `signal_snapshots`：完整 JSON（一日一筆 UPSERT）
-- `signal_watch_hits`：watchlist 拆成多筆 row（每檔股一筆，後續 archive cron 算 baseline + max_pos/neg）
+- `signal_watch_hits`：只有 RECOMMEND 拆成多筆 row；NOT_SELECTED/REMOVE 不新增 hit，
+  也不停止較早日期既有 observation
 
 ---
 

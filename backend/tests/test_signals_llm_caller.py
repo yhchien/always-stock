@@ -590,6 +590,8 @@ def test_run_watch_reason_batch_fallback_fills_all_five_sections(monkeypatch):
         assert item[key][0] == "量價轉強"
     assert item["llm_diagnostic"]["stage"] == "watch_reason"
     assert item["llm_diagnostic"]["status"] == llm_caller._DIAG_STATUS_INVALID_JSON
+    assert item["processing_status"] == "REASON_GENERATION_FAILED"
+    assert item["_unavailable"] is True
 
 
 def test_coerce_reason_sections_handles_missing_sections():
@@ -698,7 +700,7 @@ def test_assemble_final_output_splits_watch_and_remove():
     market_context = {"market_state": "STRUCTURAL_BULL", "market_state_reason": "盤面健康"}
     out = llm_caller.assemble_final_output(market_context, explanation, candidate_pool_size=80)
     assert len(out["watchlist"]) == 2
-    assert "removed" not in out
+    assert [item["stock"] for item in out["removed"]] == ["2412"]
     assert out["candidate_pool_size"] == 80
     assert out["final_watchlist_size"] == 2
 

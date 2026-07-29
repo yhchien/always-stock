@@ -1283,6 +1283,25 @@ export interface SignalWatchlistItem {
   signal_metrics?: SignalMetrics | null
   /** 2026-07-21 Phase 1：canonical primary/sub sector，display-only、additive。 */
   canonical?: CanonicalClassification | null
+  /** P3: only RECOMMEND rows appear in the main watchlist. */
+  selection_status?: "RECOMMEND" | "NOT_SELECTED" | "REMOVE" | string | null
+  selection_version?: string | null
+  recommendation_rank?: number | null
+  backend_priority_rank?: number | null
+  backend_priority_total?: number | null
+  backend_priority_percentile?: number | null
+  recommendation_thesis?: string | null
+  relative_advantage?: string | null
+  recommendation_basis?: string[] | null
+  rank_override?: boolean | null
+  rank_override_reason?: string | null
+  theme_cluster?: string | null
+  selection_reason_code?: string | null
+  selection_reason?: string | null
+  overlap_with?: string[] | null
+  overlap_reason?: string | null
+  veto_reason?: string | null
+  short_reason?: string | null
 }
 
 export type SignalMomentumGrade = "A" | "B" | "C" | "D"
@@ -1337,6 +1356,26 @@ export interface SignalMetrics {
   score_before_penalty?: number | null
   risk_penalty_total?: number | null
   fundamental_applicability?: "AVAILABLE" | "MISSING" | "NOT_APPLICABLE" | string | null
+  selection_status?: "RECOMMEND" | string | null
+  selection_version?: string | null
+  recommendation_rank?: number | null
+  backend_priority_rank?: number | null
+  backend_priority_total?: number | null
+  backend_priority_percentile?: number | null
+  initial_recommendation_date?: string | null
+  initial_recommendation_rank?: number | null
+  initial_backend_priority_rank?: number | null
+  initial_phase2_role?: string | null
+  initial_entry_state?: string | null
+  initial_momentum_freshness?: string | null
+  initial_watch_quality_state?: string | null
+  initial_quality_evidence?: Record<string, boolean> | null
+  initial_theme_cluster?: string | null
+  initial_recommendation_thesis?: string | null
+  initial_relative_advantage?: string | null
+  initial_instrument_validation?: string | null
+  initial_theme_validation?: string | null
+  initial_catalyst_summary?: string | null
   momentum_score_detail?: {
     price?: number | null
     relative_strength?: number | null
@@ -1380,6 +1419,19 @@ export interface SignalSummary {
   risk_note?: string | null
   /** P1 optional pipeline audit metadata; absent on historical snapshots. */
   processing_summary?: SignalProcessingSummary | null
+  selection_summary?: {
+    phase2_eligible_count?: number
+    research_completed_count?: number
+    veto_removed_count?: number
+    global_eligible_count?: number
+    recommended_count?: number
+    not_selected_count?: number
+    technical_failure_count?: number
+    selection_complete?: boolean
+    selection_version?: string
+    selection_rationale?: string
+    status?: "COMPLETED" | "FAILED" | string
+  } | null
 }
 
 export interface SignalProcessingSummary {
@@ -1395,12 +1447,29 @@ export interface SignalProcessingSummary {
   decision_requested_count?: number
   decision_completed_count?: number
   decision_failed_count?: number
+  global_selection_eligible_count?: number
+  global_selection_recommended_count?: number
+  global_selection_not_selected_count?: number
+  global_selection_status?: "NOT_STARTED" | "RUNNING" | "COMPLETED" | "FAILED" | string
+  selection_complete?: boolean
+  long_reason_requested_count?: number
+  long_reason_completed_count?: number
   final_watch_count?: number
   final_remove_count?: number
   unprocessed_count?: number
+  technical_failure_count?: number
   capacity_truncated_count?: number
   momentum_score_version?: string
   momentum_score_mode?: string
+  research_prompt_version?: string
+  assessment_prompt_version?: string
+  global_selector_version?: string
+  reason_prompt_version?: string
+  selection_candidate_count?: number
+  selection_serialized_bytes?: number
+  selection_estimated_input_tokens?: number
+  selection_output_token_reserve?: number
+  selection_model_context_limit_tokens?: number
   is_complete?: boolean
 }
 
@@ -1455,6 +1524,20 @@ export interface SignalMarketContext {
 export interface SignalSnapshotData {
   market_context: SignalMarketContext
   watchlist: SignalWatchlistItem[]
+  /** P3 additive bucket; absent on historical snapshots. */
+  not_selected?: SignalWatchlistItem[]
+  /** True backend/validated vetoes only. */
+  removed?: SignalWatchlistItem[]
+  /** Research/assessment/global/reason technical failures, never market decisions. */
+  technical_failures?: Array<{
+    stock?: string | null
+    stock_id?: string | null
+    stage?: string | null
+    status?: string | null
+    processing_status?: string | null
+    error_code?: string | null
+    error_summary?: string | null
+  }>
   summary: SignalSummary
   candidate_pool_size: number | null
   final_watchlist_size: number | null

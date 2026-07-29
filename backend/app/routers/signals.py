@@ -267,14 +267,23 @@ def _serialize_snapshot(snap: SignalSnapshot, db: Optional[Session] = None) -> S
     """SignalSnapshot ORM → spec §10.3 schema（meta + data 包裹）。"""
     watchlist = snap.watchlist or []
     removed = snap.removed or []
+    summary = dict(snap.summary or {})
+    # P3 stores additive buckets inside the existing JSON summary column so no
+    # destructive migration or historical backfill is required.  Lift them to
+    # first-class API keys while keeping old snapshots safely empty.
+    not_selected = summary.pop("not_selected", []) or []
+    technical_failures = summary.pop("technical_failures", []) or []
     if db is not None:
         watchlist = _attach_canonical_classification(db, watchlist)
         removed = _attach_canonical_classification(db, removed)
+        not_selected = _attach_canonical_classification(db, not_selected)
     data: Dict[str, Any] = {
         "market_context": snap.market_context or {},
         "watchlist": watchlist,
+        "not_selected": not_selected,
         "removed": removed,
-        "summary": snap.summary or {},
+        "technical_failures": technical_failures,
+        "summary": summary,
         "candidate_pool_size": snap.candidate_pool_size,
         "final_watchlist_size": snap.final_watchlist_size,
     }

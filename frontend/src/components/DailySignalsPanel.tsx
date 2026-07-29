@@ -31,6 +31,8 @@ import { Dialog } from "@base-ui/react/dialog"
 import { CanonicalSectorTag } from "@/components/CanonicalSectorTag"
 import SignalAssetBadge from "@/components/SignalAssetBadge"
 import SignalEmotionCard, { type EmotionTone } from "@/components/SignalEmotionCard"
+import SignalNotSelectedSection from "@/components/SignalNotSelectedSection"
+import SignalRemovedSection from "@/components/SignalRemovedSection"
 import {
   isSignalProcessingIncomplete,
   SignalIncompleteWarning,
@@ -1339,6 +1341,11 @@ export default function DailySignalsPanel({
   }, [loadRegenerateQuota])
 
   const watchlist = useMemo(() => snapshot?.data.watchlist ?? [], [snapshot])
+  const notSelected = useMemo(
+    () => snapshot?.data.not_selected ?? [],
+    [snapshot],
+  )
+  const removed = useMemo(() => snapshot?.data.removed ?? [], [snapshot])
   const summary = snapshot?.data.summary
   const processingSummary = summary?.processing_summary
   const leaderCount = summary?.leader_count ?? watchlist.filter((w) => w.type === "LEADER").length
@@ -1372,12 +1379,20 @@ export default function DailySignalsPanel({
     regenerateDisabled = true
   }
 
-  // 不分頁：領漲 → 跟漲 → 補漲 順序合併成單一清單
+  // P3 snapshot 以 recommendation_rank 為正式順序；歷史 snapshot 沒 rank
+  // 時維持既有領漲 → 跟漲 → 補漲順序。
   const allSignals = useMemo(() => {
     const order: Record<string, number> = { LEADER: 0, FOLLOWER: 1, LAGGARD: 2 }
-    return [...watchlist].sort(
-      (a, b) => (order[a.type ?? ""] ?? 99) - (order[b.type ?? ""] ?? 99),
-    )
+    return [...watchlist].sort((a, b) => {
+      const aRank = a.recommendation_rank
+      const bRank = b.recommendation_rank
+      if (typeof aRank === "number" && typeof bRank === "number") {
+        return aRank - bRank
+      }
+      if (typeof aRank === "number") return -1
+      if (typeof bRank === "number") return 1
+      return (order[a.type ?? ""] ?? 99) - (order[b.type ?? ""] ?? 99)
+    })
   }, [watchlist])
 
   // 收集所有 SignalCard 顯示的股票 ID，一次抓 batch realtime quote。
@@ -1518,6 +1533,8 @@ export default function DailySignalsPanel({
                 expectationByStock={expectationByStock}
                 emptyText="本日無訊號。"
               />
+              <SignalNotSelectedSection items={notSelected} />
+              <SignalRemovedSection items={removed} />
             </div>
           )}
         </div>

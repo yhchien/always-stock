@@ -16,7 +16,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.models import Base, SignalGenerationJob, SignalSnapshot, SignalWatchHit
-from app.signals import candidate_pool, classification, filters, llm_caller
+from app.signals import candidate_pool, classification, filters, global_selector, llm_caller
 from app.signals import market_snapshot
 from app.signals import pipeline as pipeline_mod
 from app.signals.pipeline import (
@@ -107,6 +107,67 @@ def _stub_all_stages_noop(monkeypatch):
             "llm_total_tokens": 1234,
         },
     )
+
+
+def _stub_p3_candidates(monkeypatch, candidates):
+    """Configure the deterministic stages so P3 pipeline tests reach LLM wiring."""
+    real_assemble = llm_caller.assemble_final_output
+    _stub_all_stages_noop(monkeypatch)
+    monkeypatch.setattr(pipeline_mod, "SIGNALS_PIPELINE_MODE", "legacy")
+    monkeypatch.setattr(classification, "classify_stocks", lambda db, td, pool: list(candidates))
+    monkeypatch.setattr(filters, "apply_hard_exclusions", lambda db, td, rows: list(rows))
+    monkeypatch.setattr(filters, "apply_soft_filters", lambda db, td, rows: list(rows))
+    monkeypatch.setattr(
+        pipeline_mod.det_signals,
+        "attach_deterministic_signals",
+        lambda rows: list(rows),
+    )
+    monkeypatch.setattr(
+        pipeline_mod.market_regime,
+        "compute_market_regime",
+        lambda db, td: {
+            "regime": "BULL_TREND",
+            "regime_label": "多頭",
+            "reason": "test",
+            "metrics": {},
+        },
+    )
+    monkeypatch.setattr(
+        pipeline_mod.market_breadth,
+        "compute_breadth_from_frame",
+        lambda frame, masters: {"breadth_score": 60},
+    )
+    monkeypatch.setattr(
+        pipeline_mod.market_breadth,
+        "resolve_regime_detail",
+        lambda regime, score: "BROAD_BULL",
+    )
+    monkeypatch.setattr(filters, "apply_regime_gate", lambda rows, *args, **kwargs: list(rows))
+    monkeypatch.setattr(
+        llm_caller,
+        "run_research_batch",
+        lambda batch, ctx: [
+            {
+                **item,
+                "stock": item["stock_id"],
+                "type": "LEADER",
+                "business_validation": "VERIFIED",
+                "theme_validation": "VERIFIED",
+                "supply_chain_validation": "VERIFIED",
+                "theme": {"main_theme": "AI", "theme_reason": "延續"},
+                "quality_evidence": {"price": True},
+                "momentum_freshness": "FRESH",
+                "quality_assessment": {
+                    "momentum_quality": "HIGH",
+                    "participation_quality": "HIGH",
+                    "catalyst_quality": "HIGH",
+                    "evidence_coherence": "STRONG",
+                },
+            }
+            for item in batch
+        ],
+    )
+    monkeypatch.setattr(llm_caller, "assemble_final_output", real_assemble)
 
 
 # ---------- failure paths ----------
@@ -648,3 +709,221 @@ def test_parallel_batch_failure_isolated_and_not_mapped_to_remove():
     assert [batch["status"] for batch in execution.batches] == [
         "COMPLETED", "FAILED", "COMPLETED"
     ]
+
+
+def test_p3_pipeline_three_buckets_only_recommend_gets_reason_and_observation(
+    session_factory,
+    monkeypatch,
+):
+    candidates = [
+        {
+            "stock_id": str(1000 + index),
+            "prelim_type": "LEADER",
+            "momentum_score": 90 - index,
+        }
+        for index in range(35)
+    ]
+    _stub_p3_candidates(monkeypatch, candidates)
+
+    def assess(batch, ctx):
+        output = []
+        for item in batch:
+            index = int(item["stock"]) - 1000
+            if index >= 30:
+                output.append(
+                    {
+                        **item,
+                        "assessment_status": "REMOVE",
+                        "decision": "REMOVE",
+                        "veto_reason": "BUSINESS_MISMATCH",
+                        "business_validation": "MISMATCH",
+                        "short_reason": "業務事實不符。",
+                    }
+                )
+            else:
+                output.append(
+                    {
+                        **item,
+                        "assessment_status": "ELIGIBLE",
+                        "decision": "WATCH",
+                        "veto_reason": None,
+                        "short_reason": "可進全體比較。",
+                    }
+                )
+        return output
+
+    monkeypatch.setattr(llm_caller, "run_explanation_batch", assess)
+
+    def select(cards, ctx, *, selection_date, **kwargs):
+        items = []
+        for index, card in enumerate(cards):
+            if index < 10:
+                items.append(
+                    {
+                        "stock": card["stock"],
+                        "decision": "RECOMMEND",
+                        "recommendation_rank": index + 1,
+                        "recommendation_thesis": "正向 thesis",
+                        "relative_advantage": "同日相對優勢明確",
+                        "recommendation_basis": ["MOMENTUM", "CATALYST"],
+                        "rank_override": False,
+                        "rank_override_reason": None,
+                        "selection_reason_code": None,
+                        "selection_reason": "列入今日正式推薦。",
+                        "theme_cluster": "AI",
+                        "distinct_thesis": True,
+                        "overlap_with": [],
+                        "overlap_reason": None,
+                    }
+                )
+            else:
+                items.append(
+                    {
+                        "stock": card["stock"],
+                        "decision": "NOT_SELECTED",
+                        "recommendation_rank": None,
+                        "recommendation_thesis": None,
+                        "relative_advantage": None,
+                        "recommendation_basis": [],
+                        "rank_override": False,
+                        "rank_override_reason": None,
+                        "selection_reason_code": "LOWER_RELATIVE_PRIORITY",
+                        "selection_reason": "有效但今日相對優勢較低。",
+                        "theme_cluster": "AI",
+                        "distinct_thesis": False,
+                        "overlap_with": [],
+                        "overlap_reason": None,
+                    }
+                )
+        return global_selector.validate_global_selection(
+            {
+                "selection_version": global_selector.SELECTION_VERSION,
+                "date": selection_date.isoformat(),
+                "selection_complete": True,
+                "items": items,
+                "summary": {
+                    "eligible_count": len(cards),
+                    "recommend_count": 10,
+                    "not_selected_count": len(cards) - 10,
+                    "selection_rationale": "完整比較。",
+                },
+            },
+            cards,
+            selection_date=selection_date,
+        )
+
+    monkeypatch.setattr(global_selector, "run_global_selection", select)
+    reason_stock_ids = []
+
+    def add_reasons(batch, ctx):
+        reason_stock_ids.extend(item["stock"] for item in batch)
+        return [
+            {
+                **item,
+                "reason": "正式推薦長理由",
+                "theme_reason": ["題材"],
+                "capital_reason": ["資金"],
+                "chip_reason": ["籌碼"],
+                "margin_reason": ["融券"],
+                "technical_reason": ["技術"],
+            }
+            for item in batch
+        ]
+
+    monkeypatch.setattr(llm_caller, "run_watch_reason_batch", add_reasons)
+
+    job_id = str(uuid.uuid4())
+    target_date = date(2026, 7, 29)
+    _seed_pending_job(session_factory, job_id, snapshot_date=target_date)
+    run_signal_pipeline_sync(job_id, target_date, session_factory=session_factory)
+
+    with session_factory() as db:
+        job = db.get(SignalGenerationJob, job_id)
+        snap = db.query(SignalSnapshot).filter_by(snapshot_date=target_date).one()
+        hits = db.query(SignalWatchHit).filter_by(snapshot_date=target_date).all()
+        processing = snap.summary["processing_summary"]
+
+        assert job.status == "done"
+        assert len(snap.watchlist) == 10
+        assert len(snap.summary["not_selected"]) == 20
+        assert len(snap.removed) == 5
+        assert len(reason_stock_ids) == 10
+        assert len(hits) == 10
+        assert {row.stock_id for row in hits} == {
+            str(1000 + index) for index in range(10)
+        }
+        first_metrics = next(
+            row.signal_metrics for row in hits if row.stock_id == "1000"
+        )
+        assert first_metrics["initial_recommendation_date"] == "2026-07-29"
+        assert first_metrics["initial_recommendation_rank"] == 1
+        assert first_metrics["initial_backend_priority_rank"] == 1
+        assert first_metrics["initial_recommendation_thesis"] == "正向 thesis"
+        assert first_metrics["selection_version"] == "p3_global_v1"
+        assert processing["global_selection_eligible_count"] == 30
+        assert processing["global_selection_recommended_count"] == 10
+        assert processing["global_selection_not_selected_count"] == 20
+        assert processing["long_reason_requested_count"] == 10
+        assert processing["selection_complete"] is True
+
+
+def test_p3_global_selection_failure_is_atomic_and_writes_no_observation(
+    session_factory,
+    monkeypatch,
+):
+    candidates = [
+        {"stock_id": "2330", "prelim_type": "LEADER", "momentum_score": 90},
+        {"stock_id": "2454", "prelim_type": "FOLLOWER", "momentum_score": 85},
+    ]
+    _stub_p3_candidates(monkeypatch, candidates)
+    monkeypatch.setattr(
+        llm_caller,
+        "run_explanation_batch",
+        lambda batch, ctx: [
+            {
+                **item,
+                "assessment_status": "ELIGIBLE",
+                "decision": "WATCH",
+                "short_reason": "可進全體比較。",
+            }
+            for item in batch
+        ],
+    )
+
+    def fail_selection(*args, **kwargs):
+        raise global_selector.GlobalSelectionError(
+            "GLOBAL_SELECTION_MISSING_STOCK",
+            "selector omitted one eligible candidate",
+        )
+
+    monkeypatch.setattr(global_selector, "run_global_selection", fail_selection)
+    reason_calls = []
+    monkeypatch.setattr(
+        llm_caller,
+        "run_watch_reason_batch",
+        lambda batch, ctx: reason_calls.append(list(batch)) or list(batch),
+    )
+
+    job_id = str(uuid.uuid4())
+    target_date = date(2026, 7, 29)
+    _seed_pending_job(session_factory, job_id, snapshot_date=target_date)
+    run_signal_pipeline_sync(job_id, target_date, session_factory=session_factory)
+
+    with session_factory() as db:
+        job = db.get(SignalGenerationJob, job_id)
+        snap = db.query(SignalSnapshot).filter_by(snapshot_date=target_date).one()
+        processing = snap.summary["processing_summary"]
+
+        assert job.status == "partial_failure"
+        assert snap.watchlist == []
+        assert snap.final_watchlist_size == 0
+        assert snap.summary["not_selected"] == []
+        assert len(snap.summary["research_results"]) == 2
+        assert len(snap.summary["compact_selection_cards"]) == 2
+        assert processing["global_selection_status"] == "FAILED"
+        assert processing["selection_complete"] is False
+        assert processing["global_selection_error"]["error_code"] == (
+            "GLOBAL_SELECTION_MISSING_STOCK"
+        )
+        assert db.query(SignalWatchHit).filter_by(snapshot_date=target_date).count() == 0
+        assert reason_calls == []

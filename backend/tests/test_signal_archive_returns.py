@@ -1248,3 +1248,69 @@ def test_persist_signal_watch_hits_stores_signal_metrics():
         assert by_id["2330"].signal_metrics["momentum_score"] == 76.5
         assert by_id["2330"].signal_metrics["rs_market_percentile_20d"] == 91.0
         assert by_id["2454"].signal_metrics is None
+
+
+def test_carry_initial_selection_metrics_does_not_reset_tracking_origin():
+    prior = {
+        "initial_recommendation_date": "2026-07-20",
+        "initial_recommendation_rank": 3,
+        "initial_recommendation_thesis": "首次論點",
+        "recommendation_rank": 3,
+    }
+    current = {
+        "initial_recommendation_date": "2026-07-29",
+        "initial_recommendation_rank": 1,
+        "initial_recommendation_thesis": "今日論點",
+        "recommendation_rank": 1,
+    }
+
+    merged = archive._carry_initial_selection_metrics(current, prior)
+
+    assert merged["initial_recommendation_date"] == "2026-07-20"
+    assert merged["initial_recommendation_rank"] == 3
+    assert merged["initial_recommendation_thesis"] == "首次論點"
+    assert merged["recommendation_rank"] == 1
+
+
+def test_not_selected_or_remove_day_does_not_stop_existing_observation():
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+
+    with Session() as db:
+        first_date = date(2026, 7, 28)
+        first_job = _seed_job_and_snapshot(db, first_date)
+        archive.persist_signal_watch_hits(
+            db,
+            first_date,
+            {
+                "watchlist": [
+                    {
+                        "stock": "2330",
+                        "name": "台積電",
+                        "type": "LEADER",
+                        "reason": "首次推薦",
+                    }
+                ]
+            },
+            first_job,
+        )
+
+        second_date = date(2026, 7, 29)
+        second_job = _seed_job_and_snapshot(db, second_date)
+        # P3 NOT_SELECTED / REMOVE are snapshot buckets, never passed as watchlist.
+        archive.persist_signal_watch_hits(
+            db,
+            second_date,
+            {"watchlist": []},
+            second_job,
+        )
+
+        rows = db.query(SignalWatchHit).filter_by(stock_id="2330").all()
+        assert len(rows) == 1
+        assert rows[0].snapshot_date == first_date
+        assert archive.clear_signal_watch_hits_for_date(db, second_date) == 0
+        assert archive.clear_signal_watch_hits_for_date(db, first_date) == 1
