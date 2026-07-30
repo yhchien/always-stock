@@ -67,6 +67,104 @@ _OUTPUT_TOKEN_RESERVE = 16_000
 _DEFAULT_CONTEXT_LIMIT_TOKENS = 114_688
 
 
+def global_selection_output_schema(
+    *, expected_version: str, selection_date: str, expected_stocks: Iterable[str]
+) -> Dict[str, Any]:
+    """Strict Responses API schema for the atomic global selector."""
+    stock_ids = [str(stock) for stock in expected_stocks]
+    nullable_string = {"type": ["string", "null"]}
+    item = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "stock": {"type": "string", "enum": stock_ids},
+            "decision": {
+                "type": "string",
+                "enum": ["RECOMMEND", "NOT_SELECTED"],
+            },
+            "recommendation_rank": {"type": ["integer", "null"]},
+            "selection_reason_code": {
+                "type": ["string", "null"],
+                "enum": [None, *sorted(NOT_SELECTED_REASON_CODES)],
+            },
+            "selection_reason": {"type": "string"},
+            "recommendation_thesis": nullable_string,
+            "relative_advantage": nullable_string,
+            "theme_cluster": nullable_string,
+            "distinct_thesis": {"type": "boolean"},
+            "overlap_with": {
+                "type": "array",
+                "items": {"type": "string", "enum": stock_ids},
+            },
+            "overlap_reason": nullable_string,
+            "rank_override": {"type": "boolean"},
+            "rank_override_reason": nullable_string,
+            "recommendation_basis": {
+                "type": "array",
+                "items": {
+                    "type": "string",
+                    "enum": sorted(RECOMMENDATION_BASIS_CODES),
+                },
+            },
+        },
+        "required": [
+            "stock",
+            "decision",
+            "recommendation_rank",
+            "selection_reason_code",
+            "selection_reason",
+            "recommendation_thesis",
+            "relative_advantage",
+            "theme_cluster",
+            "distinct_thesis",
+            "overlap_with",
+            "overlap_reason",
+            "rank_override",
+            "rank_override_reason",
+            "recommendation_basis",
+        ],
+    }
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "selection_version": {
+                "type": "string",
+                "enum": [expected_version],
+            },
+            "date": {"type": "string", "enum": [selection_date]},
+            "selection_complete": {"type": "boolean", "enum": [True]},
+            "items": {"type": "array", "items": item},
+            # eligible/recommend/not_selected counts are intentionally not
+            # part of this contract.  They are 100% derivable from `items`
+            # and `cards`, which the backend already recomputes for the
+            # returned summary regardless of what the model reports (see
+            # `validate_global_selection`).  Requiring the model to also
+            # echo a matching count across ~25+ cards added an arithmetic
+            # failure mode with no correctness benefit: production replay
+            # showed the model miscounting on both the initial attempt and
+            # its one contract-retry, wasting the retry and forcing an
+            # atomic GLOBAL_SELECTION_FAILED even though every item-level
+            # decision was valid.
+            "summary": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "selection_rationale": {"type": "string"},
+                },
+                "required": ["selection_rationale"],
+            },
+        },
+        "required": [
+            "selection_version",
+            "date",
+            "selection_complete",
+            "items",
+            "summary",
+        ],
+    }
+
+
 @dataclass(frozen=True)
 class SelectionCapacity:
     candidate_count: int
@@ -350,7 +448,13 @@ def run_global_selection(
     selection_date: Union[date, str],
     model: str = DEFAULT_GLOBAL_SELECTION_MODEL,
 ) -> Dict[str, Any]:
-    """Run and validate the one-shot selector.  There is intentionally no fallback."""
+    """Run and validate the one-shot selector.  There is intentionally no fallback.
+
+    A single full-set contract-correction retry is allowed for a semantically
+    invalid model response.  The invalid response is never adopted, and the
+    retry compares the complete card set again, so atomicity and the ban on
+    tournament/partial selection remain intact.
+    """
     family = prompt_family.resolve_prompt_family()
     expected_version = prompt_family.stage_version("global_selector", family)
     date_text = selection_date.isoformat() if hasattr(selection_date, "isoformat") else str(selection_date)
@@ -385,49 +489,231 @@ def run_global_selection(
             "GLOBAL_SELECTION_PROMPT_MISSING",
             f"Global selector prompt could not be loaded: {exc}",
         ) from exc
-    user_msg = json.dumps(
-        {
-            "selection_version": expected_version,
-            "date": date_text,
-            "compact_selection_cards": cards,
-        },
-        ensure_ascii=False,
-        separators=(",", ":"),
-        default=str,
-    )
+    request_payload = {
+        "selection_version": expected_version,
+        "date": date_text,
+        "compact_selection_cards": cards,
+    }
     metadata = prompt_family.prompt_metadata(family)
-    payload, diagnostic = llm_caller._call_llm_json(
-        system_prompt,
-        user_msg,
-        model=model,
-        stage="global_selection",
-        use_web_search=False,
-        prompt_cache_key=f"signals:{family}:global-selector",
-        max_output_tokens=capacity.output_token_reserve,
-        candidate_count=len(cards),
-        prompt_metadata={
-            **metadata,
-            "stage_prompt_version": expected_version,
-            "assembled_prompt_sha256": metadata["prompt_sha256"][
-                "global_selector"
-            ],
-        },
-    )
-    if payload is None:
-        raise GlobalSelectionError(
-            "GLOBAL_SELECTION_LLM_FAILED",
-            "The global selector did not return valid JSON.",
-            diagnostic=diagnostic,
+    response_schema = (
+        global_selection_output_schema(
+            expected_version=expected_version,
+            selection_date=date_text,
+            expected_stocks=[str(card.get("stock") or "") for card in cards],
         )
-    validated = validate_global_selection(
-        payload,
-        cards,
-        selection_date=date_text,
-        expected_version=expected_version,
+        if family == prompt_family.PROMPT_FAMILY_VERSION
+        else None
     )
-    validated["capacity"] = capacity.as_dict()
-    validated["llm_diagnostic"] = diagnostic
-    return validated
+    retry_enabled = (
+        family == prompt_family.PROMPT_FAMILY_VERSION
+        and os.getenv(
+            "SIGNALS_GLOBAL_SELECTION_CONTRACT_RETRY", "true"
+        ).strip().lower() not in {"0", "false", "no", "off"}
+    )
+    previous_error: Optional[GlobalSelectionError] = None
+    for attempt in range(2 if retry_enabled else 1):
+        call_payload = dict(request_payload)
+        if previous_error is not None:
+            call_payload["contract_retry"] = {
+                "previous_error_code": previous_error.code,
+                "previous_rejection": str(previous_error)[:1000],
+                "required_correction": (
+                    "重新比較完整 compact_selection_cards 並輸出完整一對一結果；"
+                    "不可沿用部分結果。若任何較高 backend_priority_rank 候選為 "
+                    "NOT_SELECTED，而較低順位候選為 RECOMMEND，該較低順位候選必須設 "
+                    "rank_override=true，並以繁體中文提供非空 "
+                    "rank_override_reason 與 relative_advantage。"
+                ),
+            }
+        user_msg = json.dumps(
+            call_payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            default=str,
+        )
+        payload, diagnostic = llm_caller._call_llm_json(
+            system_prompt,
+            user_msg,
+            model=model,
+            stage="global_selection",
+            use_web_search=False,
+            prompt_cache_key=f"signals:{family}:global-selector",
+            max_output_tokens=capacity.output_token_reserve,
+            candidate_count=len(cards),
+            prompt_metadata={
+                **metadata,
+                "stage_prompt_version": expected_version,
+                "assembled_prompt_sha256": metadata["prompt_sha256"][
+                    "global_selector"
+                ],
+                "contract_retry_attempt": attempt,
+            },
+            response_schema=response_schema,
+            response_format_name=(
+                "fishtail_v7_global_selector"
+                if family == prompt_family.PROMPT_FAMILY_VERSION
+                else None
+            ),
+        )
+        if payload is None:
+            raise GlobalSelectionError(
+                "GLOBAL_SELECTION_LLM_FAILED",
+                "The global selector did not return valid JSON.",
+                diagnostic=diagnostic,
+            )
+        payload, normalized_recommendation_ranks = (
+            _normalize_recommendation_ranks(payload, cards)
+        )
+        payload, derived_rank_overrides = _derive_rank_override_annotations(
+            payload,
+            cards,
+        )
+        try:
+            validated = validate_global_selection(
+                payload,
+                cards,
+                selection_date=date_text,
+                expected_version=expected_version,
+            )
+        except GlobalSelectionError as exc:
+            if attempt == 0 and retry_enabled:
+                previous_error = exc
+                continue
+            if diagnostic and not exc.diagnostic:
+                exc.diagnostic = diagnostic
+            raise
+        validated["capacity"] = capacity.as_dict()
+        validated["llm_diagnostic"] = {
+            **(diagnostic or {}),
+            "contract_retry_attempt": attempt,
+            "previous_contract_error": (
+                previous_error.code if previous_error is not None else None
+            ),
+            "backend_derived_rank_overrides": derived_rank_overrides,
+            "backend_normalized_recommendation_ranks": (
+                normalized_recommendation_ranks
+            ),
+        }
+        return validated
+    raise AssertionError("unreachable global-selection retry state")
+
+
+def _normalize_recommendation_ranks(
+    payload: Any,
+    cards: List[Dict[str, Any]],
+) -> tuple[Any, List[Dict[str, Any]]]:
+    """Normalize the selected set's display rank without changing membership.
+
+    Valid model ranks retain their ordering.  Duplicate, missing, or invalid
+    ranks are resolved by the existing backend priority backbone and original
+    item order, then rewritten as the required continuous 1..N sequence.
+    """
+
+    if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+        return payload, []
+    rank_by_stock = {
+        str(card.get("stock") or ""): card.get("backend_priority_rank")
+        for card in cards
+    }
+    normalized_items = [
+        dict(item) if isinstance(item, dict) else item
+        for item in payload["items"]
+    ]
+    recommended: List[tuple[int, Dict[str, Any]]] = [
+        (index, item)
+        for index, item in enumerate(normalized_items)
+        if isinstance(item, dict)
+        and str(item.get("decision") or "").upper() == "RECOMMEND"
+    ]
+
+    def order_key(entry: tuple[int, Dict[str, Any]]) -> tuple[int, int, int]:
+        index, item = entry
+        model_rank = item.get("recommendation_rank")
+        valid_model_rank = (
+            model_rank
+            if isinstance(model_rank, int) and model_rank >= 1
+            else 10**9
+        )
+        backend_rank = rank_by_stock.get(str(item.get("stock") or ""))
+        valid_backend_rank = (
+            backend_rank if isinstance(backend_rank, int) else 10**9
+        )
+        return valid_model_rank, valid_backend_rank, index
+
+    changes: List[Dict[str, Any]] = []
+    for new_rank, (_, item) in enumerate(
+        sorted(recommended, key=order_key),
+        start=1,
+    ):
+        old_rank = item.get("recommendation_rank")
+        if old_rank != new_rank:
+            changes.append(
+                {
+                    "stock": str(item.get("stock") or ""),
+                    "from": old_rank,
+                    "to": new_rank,
+                }
+            )
+            item["recommendation_rank"] = new_rank
+    return {**payload, "items": normalized_items}, changes
+
+
+def _derive_rank_override_annotations(
+    payload: Any,
+    cards: List[Dict[str, Any]],
+) -> tuple[Any, List[str]]:
+    """Derive redundant rank-override annotations without changing decisions.
+
+    The selector remains the sole source of RECOMMEND/NOT_SELECTED and of each
+    candidate's relative advantage.  Backend rank crossing is an objective
+    property of that complete decision set, so the backend derives the boolean
+    and, when omitted, reuses the model-authored relative advantage as the
+    explanation.  No decision, rank, thesis, or relative advantage is invented.
+    """
+
+    if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+        return payload, []
+    rank_by_stock = {
+        str(card.get("stock") or ""): card.get("backend_priority_rank")
+        for card in cards
+    }
+    excluded_ranks = [
+        rank_by_stock.get(str(item.get("stock") or ""))
+        for item in payload["items"]
+        if isinstance(item, dict)
+        and str(item.get("decision") or "").upper() == "NOT_SELECTED"
+        and isinstance(
+            rank_by_stock.get(str(item.get("stock") or "")),
+            int,
+        )
+    ]
+    if not excluded_ranks:
+        return payload, []
+    highest_excluded_rank = min(excluded_ranks)
+    normalized_items: List[Any] = []
+    derived: List[str] = []
+    for raw in payload["items"]:
+        if not isinstance(raw, dict):
+            normalized_items.append(raw)
+            continue
+        item = dict(raw)
+        stock_id = str(item.get("stock") or "")
+        backend_rank = rank_by_stock.get(stock_id)
+        if (
+            str(item.get("decision") or "").upper() == "RECOMMEND"
+            and isinstance(backend_rank, int)
+            and backend_rank > highest_excluded_rank
+        ):
+            item["rank_override"] = True
+            if not _nonempty(item.get("rank_override_reason")):
+                relative_advantage = item.get("relative_advantage")
+                if _nonempty(relative_advantage):
+                    item["rank_override_reason"] = (
+                        "跨越較高後端順位的依據為：" + str(relative_advantage)
+                    )
+            derived.append(stock_id)
+        normalized_items.append(item)
+    return {**payload, "items": normalized_items}, derived
 
 
 def validate_global_selection(
@@ -579,14 +865,10 @@ def validate_global_selection(
     raw_summary = payload.get("summary")
     if not isinstance(raw_summary, dict):
         _invalid("GLOBAL_SELECTION_SCHEMA_INVALID", "summary must be an object")
-    expected_summary_counts = {
-        "eligible_count": len(cards),
-        "recommend_count": recommended_count,
-        "not_selected_count": len(cards) - recommended_count,
-    }
-    for key, value in expected_summary_counts.items():
-        if raw_summary.get(key) != value:
-            _invalid("GLOBAL_SELECTION_SUMMARY_INVALID", f"summary {key} mismatch")
+    # eligible/recommend/not_selected counts are derived below from `items`
+    # and `cards`, not taken from the model's self-report -- they are fully
+    # mechanical and the model re-counting them across the whole card set
+    # added a pure arithmetic failure mode with no correctness benefit.
     if not _nonempty(raw_summary.get("selection_rationale")):
         _invalid("GLOBAL_SELECTION_SUMMARY_INVALID", "selection_rationale is required")
     _require_traditional_text(

@@ -33,6 +33,10 @@ class _FakeResponsesResponse:
     def __init__(self, content: str) -> None:
         self.output_text = content
         self.output = []
+        self.id = "resp_test"
+        self.status = "completed"
+        self.incomplete_details = None
+        self.usage = None
 
 class _FakeResponsesAPI:
     def __init__(self, content: str, *, raise_exc: Optional[Exception] = None) -> None:
@@ -110,6 +114,35 @@ def test_extract_json_handles_empty_string():
 def test_extract_json_handles_none_like_input():
     # 防禦性：呼叫端有時會傳 ""；只要不爆就行
     assert llm_caller._extract_json("   ") is None
+
+
+def test_call_llm_json_passes_responses_structured_output(monkeypatch):
+    fake_client = _patch_openai(monkeypatch, '{"ok": true}')
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {"ok": {"type": "boolean"}},
+        "required": ["ok"],
+    }
+    payload, diagnostic = llm_caller._call_llm_json(
+        "system",
+        "{}",
+        model="test-model",
+        stage="research",
+        response_schema=schema,
+        response_format_name="test_schema",
+    )
+    assert payload == {"ok": True}
+    assert diagnostic["structured_output"] is True
+    assert diagnostic["response_status"] == "completed"
+    text_format = fake_client._responses_api.calls[0]["text"]["format"]
+    assert text_format == {
+        "type": "json_schema",
+        "name": "test_schema",
+        "description": "Machine-readable output for the fishtail signal pipeline.",
+        "strict": True,
+        "schema": schema,
+    }
 
 
 # ---------- assemble_market_context ----------

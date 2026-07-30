@@ -132,6 +132,41 @@ def test_no_fixed_count_all_or_none_is_valid(recommended_count):
     assert result["summary"]["not_selected_count"] == 8 - recommended_count
 
 
+def test_model_self_reported_summary_counts_are_ignored_and_backend_derived():
+    """Live probing (2026-07-20 replay) showed the model repeatedly miscounting
+    its own recommend/eligible/not_selected totals across ~25 cards -- even
+    after using its one contract-correction retry -- which used to raise
+    GLOBAL_SELECTION_SUMMARY_INVALID and fail the whole atomic selection even
+    though every item-level decision was valid.  Those counts are fully
+    derivable from `items`/`cards`, so the model's self-report (if present at
+    all) must be ignored entirely and never gate validation."""
+    cards = _cards(2)
+    items = [_recommend("1000", 1), _not_selected("1001")]
+    payload = _payload(items)
+    payload["summary"]["eligible_count"] = 999
+    payload["summary"]["recommend_count"] = -1
+    payload["summary"]["not_selected_count"] = 42
+    result = global_selector.validate_global_selection(
+        payload,
+        cards,
+        selection_date=SELECTION_DATE,
+    )
+    assert result["summary"]["eligible_count"] == 2
+    assert result["summary"]["recommend_count"] == 1
+    assert result["summary"]["not_selected_count"] == 1
+
+
+def test_global_selection_schema_does_not_require_model_reported_counts():
+    schema = global_selector.global_selection_output_schema(
+        expected_version=global_selector.SELECTION_VERSION,
+        selection_date=SELECTION_DATE.isoformat(),
+        expected_stocks=["1000", "1001"],
+    )
+    summary_schema = schema["properties"]["summary"]
+    assert summary_schema["required"] == ["selection_rationale"]
+    assert set(summary_schema["properties"]) == {"selection_rationale"}
+
+
 def test_mixed_selection_requires_explicit_rank_override():
     cards = _cards(4)
     items = [
@@ -385,6 +420,107 @@ def test_global_call_has_no_silent_fallback(monkeypatch):
             selection_date=SELECTION_DATE,
         )
     assert exc.value.code == "GLOBAL_SELECTION_LLM_FAILED"
+
+
+def test_global_rank_override_is_derived_without_changing_decision(monkeypatch):
+    cards = _cards(2)
+    invalid = _payload([
+        _not_selected("1000"),
+        _recommend("1001", 1),
+    ])
+    request_payloads = []
+
+    def fake_call(_system, user_msg, **kwargs):
+        request_payloads.append(json.loads(user_msg))
+        return invalid, {"status": "ok"}
+
+    monkeypatch.setattr(
+        global_selector.llm_caller,
+        "_call_llm_json",
+        fake_call,
+    )
+    result = global_selector.run_global_selection(
+        cards,
+        {},
+        selection_date=SELECTION_DATE,
+    )
+
+    assert len(request_payloads) == 1
+    assert "contract_retry" not in request_payloads[0]
+    assert result["summary"]["recommend_count"] == 1
+    recommended = next(
+        item for item in result["items"] if item["decision"] == "RECOMMEND"
+    )
+    assert recommended["stock"] == "1001"
+    assert recommended["rank_override"] is True
+    assert "1001 有獨立的相對優勢" in recommended["rank_override_reason"]
+    assert result["llm_diagnostic"]["contract_retry_attempt"] == 0
+    assert result["llm_diagnostic"]["backend_derived_rank_overrides"] == [
+        "1001"
+    ]
+
+
+def test_global_duplicate_ranks_are_normalized_without_changing_membership(
+    monkeypatch,
+):
+    cards = _cards(3)
+    payload = _payload([
+        _recommend("1000", 1),
+        _recommend("1001", 1),
+        _not_selected("1002"),
+    ])
+
+    monkeypatch.setattr(
+        global_selector.llm_caller,
+        "_call_llm_json",
+        lambda *args, **kwargs: (payload, {"status": "ok"}),
+    )
+    result = global_selector.run_global_selection(
+        cards,
+        {},
+        selection_date=SELECTION_DATE,
+    )
+
+    recommended = [
+        item for item in result["items"] if item["decision"] == "RECOMMEND"
+    ]
+    assert [item["stock"] for item in recommended] == ["1000", "1001"]
+    assert [item["recommendation_rank"] for item in recommended] == [1, 2]
+    assert result["summary"]["recommend_count"] == 2
+    assert result["llm_diagnostic"][
+        "backend_normalized_recommendation_ranks"
+    ] == [{"stock": "1001", "from": 1, "to": 2}]
+
+
+def test_global_other_semantic_error_retries_complete_card_set_once(monkeypatch):
+    cards = _cards(2)
+    invalid = _payload([_recommend("1000", 1), _not_selected("1001")])
+    invalid["summary"]["selection_rationale"] = ""
+    corrected = _payload([_recommend("1000", 1), _not_selected("1001")])
+    request_payloads = []
+    responses = iter([invalid, corrected])
+
+    def fake_call(_system, user_msg, **kwargs):
+        request_payloads.append(json.loads(user_msg))
+        return next(responses), {"status": "ok"}
+
+    monkeypatch.setattr(
+        global_selector.llm_caller,
+        "_call_llm_json",
+        fake_call,
+    )
+    result = global_selector.run_global_selection(
+        cards,
+        {},
+        selection_date=SELECTION_DATE,
+    )
+
+    assert len(request_payloads) == 2
+    retry = request_payloads[1]["contract_retry"]
+    assert retry["previous_error_code"] == "GLOBAL_SELECTION_SUMMARY_INVALID"
+    assert len(request_payloads[1]["compact_selection_cards"]) == 2
+    assert result["summary"]["eligible_count"] == 2
+    assert result["llm_diagnostic"]["contract_retry_attempt"] == 1
 
 
 @pytest.mark.parametrize("candidate_count", [25, 50, 100, 200])

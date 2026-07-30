@@ -53,6 +53,13 @@ def test_default_and_legacy_routing_are_explicit(monkeypatch):
     versions = prompt_family.prompt_metadata()
     assert versions["research_prompt_version"] == "v7_research"
     assert versions["tracking_state_machine_version"] == "p4_state_v1"
+    assert versions["response_contract_versions"] == {
+        "research": "v7_research_json_schema_v1",
+        "assessment": "v7_assessment_json_schema_v1",
+        "global_selector": "v7_global_selector_json_schema_v1",
+        "reason": "v7_reason_json_schema_v1",
+        "tracking": "v7_tracking_json_schema_v1",
+    }
 
     monkeypatch.setenv("SIGNALS_PROMPT_FAMILY", "legacy_split")
     legacy = prompt_family.prompt_metadata()
@@ -61,6 +68,7 @@ def test_default_and_legacy_routing_are_explicit(monkeypatch):
     assert legacy["global_selector_version"] == "p3_global_v1"
     assert legacy["reason_prompt_version"] == "p3_reason_v1"
     assert legacy["tracking_prompt_version"] == "p4_tracking_v1"
+    assert legacy["response_contract_versions"] == {}
 
 
 def test_unknown_family_fails_closed(monkeypatch):
@@ -206,6 +214,73 @@ def test_research_validator_enforces_alignment_enum_url_and_date():
         )
 
 
+def test_research_validator_drops_unparseable_dates_instead_of_failing_the_item():
+    """Live probing against gpt-5.4-mini surfaced sources with a placeholder
+    day (e.g. "2026-02-??") when only the publish month is known.  That is a
+    formatting gap, not a future-info leak, so the offending evidence entry
+    must be dropped instead of nuking otherwise-VERIFIED research via
+    PromptFamilyError."""
+    item = _research_item()
+    item["sources"].append({
+        "title": "年報（僅知月份，無確切日期）",
+        "url": "https://example.com/annual-report",
+        "published_date": "2026-02-??",
+        "source_type": "COMPANY",
+    })
+    item["material_contradictions"] = [{
+        "type": "DATA_CONTRADICTION",
+        "summary": "資料衝突示例，發布日期不完整。",
+        "url": "https://example.com/bad-date-evidence",
+        "published_date": "2026-05-??",
+    }]
+    validated = prompt_family.validate_research_output(
+        {"date": STAGE_DATE, "items": [item]},
+        expected_stocks=["2330"],
+        expected_date=STAGE_DATE,
+    )
+    kept_dates = [s["published_date"] for s in validated[0]["sources"]]
+    assert "2026-02-??" not in kept_dates
+    assert "2026-07-20" in kept_dates
+    assert validated[0]["material_contradictions"] == []
+
+    # A parseable-but-future date must still hard-fail (real leak, not a
+    # formatting gap) -- unchanged from the existing cutoff enforcement.
+    future = _research_item()
+    future["sources"][0]["published_date"] = "2026-07-30"
+    with pytest.raises(prompt_family.PromptFamilyError, match="after"):
+        prompt_family.validate_research_output(
+            {"date": STAGE_DATE, "items": [future]},
+            expected_stocks=["2330"],
+            expected_date=STAGE_DATE,
+        )
+
+
+def test_assessment_validator_drops_unparseable_veto_evidence_dates():
+    item = {
+        "stock": "2330",
+        "assessment": "REMOVE",
+        "veto_reason": "MATERIAL_NEGATIVE_EVENT",
+        "assessment_reason": "重大負面事件證據不足以精確標註日期。",
+        "quality_assessment": {
+            "momentum_quality": "LOW",
+            "participation_quality": "LOW",
+            "catalyst_quality": "UNCONFIRMED",
+            "evidence_coherence": "WEAK",
+        },
+        "veto_evidence": {
+            "summary": "負面事件摘要",
+            "urls": ["https://example.com/negative-event"],
+            "published_dates": ["2026-02-??", "2026-07-16"],
+        },
+    }
+    validated = prompt_family.validate_assessment_output(
+        {"date": STAGE_DATE, "items": [item]},
+        expected_stocks=["2330"],
+        expected_date=STAGE_DATE,
+    )
+    assert validated[0]["veto_evidence"]["published_dates"] == ["2026-07-16"]
+
+
 def test_assessment_validator_has_strict_two_state_contract():
     item = {
         "stock": "2330",
@@ -259,6 +334,34 @@ def test_reason_validator_rejects_empty_or_cross_contract_output():
         )
 
 
+def test_assessment_reason_and_tracking_schemas_are_strict():
+    schemas = [
+        prompt_family.assessment_output_schema(
+            expected_stocks=["2330"], expected_date=STAGE_DATE
+        ),
+        prompt_family.reason_output_schema(
+            expected_stocks=["2330"], expected_date=STAGE_DATE
+        ),
+        prompt_family.tracking_output_schema(
+            expected_stocks=["2330"], review_date=STAGE_DATE
+        ),
+    ]
+    assert all(schema["additionalProperties"] is False for schema in schemas)
+    assert all(
+        schema["properties"]["items"]["items"]["properties"]["stock"]["enum"]
+        == ["2330"]
+        for schema in schemas
+    )
+    assessment_veto = schemas[0]["properties"]["items"]["items"]["properties"][
+        "veto_reason"
+    ]["enum"]
+    assert "DATA_CONTRADICTION" in assessment_veto
+    tracking_reason = schemas[2]["properties"]["items"]["items"]["properties"][
+        "invalidation_reason_code"
+    ]["enum"]
+    assert "MATERIAL_NEGATIVE_EVENT" in tracking_reason
+
+
 def test_v7_research_caller_adapts_contract_without_changing_backend_type(monkeypatch):
     response = {"date": STAGE_DATE, "items": [_research_item()]}
 
@@ -278,6 +381,153 @@ def test_v7_research_caller_adapts_contract_without_changing_backend_type(monkey
     assert output[0]["type"] == "FOLLOWER"
     assert output[0]["business_validation"] == "VERIFIED"
     assert output[0]["research_confidence"] == "HIGH"
+
+
+def test_v7_research_uses_strict_structured_output_schema(monkeypatch):
+    captured = {}
+
+    def fake_call(*args, **kwargs):
+        captured.update(kwargs)
+        return {
+            "date": STAGE_DATE,
+            "items": [_research_item()],
+        }, {"status": "ok"}
+
+    monkeypatch.setattr(llm_caller, "_call_llm_json", fake_call)
+    output = llm_caller.run_research_batch(
+        [{"stock_id": "2330", "name": "台積電", "prelim_type": "LEADER"}],
+        {"target_date": STAGE_DATE},
+    )
+    assert output[0]["stock"] == "2330"
+    assert captured["response_format_name"] == "fishtail_v7_research"
+    schema = captured["response_schema"]
+    assert schema["additionalProperties"] is False
+    stock_schema = schema["properties"]["items"]["items"]["properties"]["stock"]
+    assert stock_schema["enum"] == ["2330"]
+
+
+def test_v7_research_contract_failure_binary_retries(monkeypatch):
+    candidate_counts = []
+    retry_payloads = []
+
+    def fake_call(_system, user_msg, **kwargs):
+        payload = json.loads(user_msg)
+        stocks = [item["stock"] for item in payload["items"]]
+        candidate_counts.append(len(stocks))
+        retry_payloads.append(payload.get("contract_retry"))
+        assert kwargs["response_schema"]
+        if len(stocks) > 1:
+            return None, {
+                "status": llm_caller._DIAG_STATUS_INVALID_JSON,
+                "message": "malformed batch",
+            }
+        return {
+            "date": STAGE_DATE,
+            "items": [_research_item(stocks[0])],
+        }, {"status": "ok"}
+
+    monkeypatch.setattr(llm_caller, "_call_llm_json", fake_call)
+    output = llm_caller.run_research_batch(
+        [
+            {"stock_id": "2330", "name": "台積電", "prelim_type": "LEADER"},
+            {"stock_id": "2454", "name": "聯發科", "prelim_type": "FOLLOWER"},
+        ],
+        {"target_date": STAGE_DATE},
+    )
+    assert candidate_counts == [2, 1, 1]
+    assert retry_payloads[0] is None
+    assert all(
+        payload["previous_rejection"] == "malformed batch"
+        for payload in retry_payloads[1:]
+    )
+    assert all("不可使用未來資訊" in payload["required_correction"] for payload in retry_payloads[1:])
+    assert [item["stock"] for item in output] == ["2330", "2454"]
+    assert all(not item.get("_unavailable") for item in output)
+    assert all(
+        item["llm_diagnostic"]["contract_retry_depth"] == 1
+        for item in output
+    )
+
+
+def test_v7_research_split_singleton_gets_its_own_correction_retry(monkeypatch):
+    calls = []
+
+    def fake_call(_system, user_msg, **kwargs):
+        payload = json.loads(user_msg)
+        stocks = [item["stock"] for item in payload["items"]]
+        calls.append((stocks, payload.get("contract_retry")))
+        if len(stocks) > 1 or sum(ids == ["2330"] for ids, _ in calls) == 1:
+            return None, {
+                "status": llm_caller._DIAG_STATUS_INVALID_JSON,
+                "message": f"contract failed for {','.join(stocks)}",
+            }
+        return {
+            "date": STAGE_DATE,
+            "items": [_research_item(stocks[0])],
+        }, {"status": "ok"}
+
+    monkeypatch.setattr(llm_caller, "_call_llm_json", fake_call)
+    output = llm_caller.run_research_batch(
+        [
+            {"stock_id": "2330", "name": "台積電", "prelim_type": "LEADER"},
+            {"stock_id": "2454", "name": "聯發科", "prelim_type": "FOLLOWER"},
+        ],
+        {"target_date": STAGE_DATE},
+    )
+
+    assert [ids for ids, _ in calls] == [
+        ["2330", "2454"],
+        ["2330"],
+        ["2330"],
+        ["2454"],
+    ]
+    assert "contract failed for 2330" in calls[2][1]["previous_rejection"]
+    assert all(not item.get("_unavailable") for item in output)
+
+
+def test_v7_research_future_evidence_becomes_conservative_unconfirmed(monkeypatch):
+    calls = []
+    future_item = _research_item("2330")
+    future_item["sources"][0]["published_date"] = "2026-07-30"
+    future_item["instrument_summary"] = "這裡包含分析日之後才知道的未來內容。"
+    future_item["research_summary"] = "未來事件已經發生。"
+
+    def fake_call(_system, user_msg, **kwargs):
+        calls.append(json.loads(user_msg))
+        return {
+            "date": STAGE_DATE,
+            "items": [future_item],
+        }, {"status": "ok"}
+
+    monkeypatch.setattr(llm_caller, "_call_llm_json", fake_call)
+    output = llm_caller.run_research_batch(
+        [{
+            "stock_id": "2330",
+            "name": "台積電",
+            "prelim_type": "LEADER",
+            "asset_type": "COMMON_STOCK",
+            "theme_cluster": "人工智慧",
+        }],
+        {"target_date": STAGE_DATE},
+    )
+
+    assert len(calls) == 2
+    assert output[0]["instrument_validation"] == "UNCONFIRMED"
+    assert output[0]["theme_validation"] == "UNCONFIRMED"
+    assert output[0]["supply_chain_validation"] == "UNCONFIRMED"
+    assert output[0]["research_confidence"] == "LOW"
+    assert output[0]["sources"] == []
+    assert output[0]["material_contradictions"] == []
+    assert "未來事件已經發生" not in json.dumps(output[0], ensure_ascii=False)
+    assert output[0]["llm_diagnostic"]["cutoff_sanitized"] is True
+    assert output[0]["llm_diagnostic"]["cutoff_sanitized_stocks"] == ["2330"]
+    assert not output[0].get("_unavailable")
+
+
+def test_v7_research_batch_size_is_smaller_without_changing_legacy(monkeypatch):
+    assert llm_caller.current_research_batch_size() == 4
+    monkeypatch.setenv("SIGNALS_PROMPT_FAMILY", "legacy_split")
+    assert llm_caller.current_research_batch_size() == 8
 
 
 def test_v7_payload_scale_is_linear_and_bounded():
@@ -354,13 +604,22 @@ def test_global_selector_uses_v7_version_and_keeps_zero_to_all_contract(monkeypa
         },
     }
 
-    monkeypatch.setattr(
-        llm_caller,
-        "_call_llm_json",
-        lambda *args, **kwargs: (response, {"status": "ok"}),
-    )
+    captured = {}
+
+    def fake_call(*args, **kwargs):
+        captured.update(kwargs)
+        return response, {"status": "ok"}
+
+    monkeypatch.setattr(llm_caller, "_call_llm_json", fake_call)
     selected = global_selector.run_global_selection(
         cards, {}, selection_date=STAGE_DATE
     )
     assert selected["selection_version"] == "v7_global_selector"
     assert selected["summary"]["recommend_count"] == 0
+    assert captured["response_format_name"] == "fishtail_v7_global_selector"
+    basis_schema = (
+        captured["response_schema"]["properties"]["items"]["items"]["properties"][
+            "recommendation_basis"
+        ]["items"]
+    )
+    assert set(basis_schema["enum"]) == global_selector.RECOMMENDATION_BASIS_CODES

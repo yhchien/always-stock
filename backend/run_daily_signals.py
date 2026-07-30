@@ -16,6 +16,7 @@ Exit code（spec §11.6）：
     1 = no_data（DB 無候選資料 / target date 無交易資料）
     2 = llm_error（OpenAI 失敗、prompt 缺檔等）
     3 = db_error（DB 連線 / commit 失敗等其他例外）
+    4 = partial_failure（snapshot 已保存，但部分候選或必要 stage 未完成）
 """
 
 from __future__ import annotations
@@ -39,6 +40,7 @@ EXIT_OK = 0
 EXIT_NO_DATA = 1
 EXIT_LLM_ERROR = 2
 EXIT_DB_ERROR = 3
+EXIT_PARTIAL_FAILURE = 4
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 SIGNALS_SAME_DAY_READY_TIME = time(hour=19, minute=0)
 
@@ -80,6 +82,20 @@ def _classify_exit_code(exc: BaseException) -> int:
         return EXIT_NO_DATA
     if any(keyword in msg for keyword in ("openai", "llm", "prompt")):
         return EXIT_LLM_ERROR
+    return EXIT_DB_ERROR
+
+
+def _terminal_job_exit_code(status: str, error_message: str | None = None) -> int:
+    """Map the persisted job terminal state to the cron process exit code."""
+    normalized = str(status or "").strip().lower()
+    if normalized == "done":
+        return EXIT_OK
+    if normalized == "partial_failure":
+        return EXIT_PARTIAL_FAILURE
+    if normalized == "failed":
+        return _classify_exit_code(
+            RuntimeError(error_message or "signal generation job failed")
+        )
     return EXIT_DB_ERROR
 
 
@@ -142,6 +158,25 @@ def main(argv: list) -> int:
         run_signal_pipeline_sync(job_id=job_id, target_date=target_date)
         with SessionLocal() as db:
             refresh_incremental_outcomes(db)
+            terminal_job = db.get(SignalGenerationJob, job_id)
+            if terminal_job is None:
+                logger.error("SignalGenerationJob disappeared after pipeline: %s", job_id)
+                return EXIT_DB_ERROR
+            terminal_exit = _terminal_job_exit_code(
+                terminal_job.status,
+                terminal_job.error_message,
+            )
+            if terminal_exit != EXIT_OK:
+                logger.error(
+                    "Daily signals pipeline incomplete: job_id=%s target=%s "
+                    "status=%s exit_code=%s error=%s",
+                    job_id,
+                    target_date,
+                    terminal_job.status,
+                    terminal_exit,
+                    terminal_job.error_message,
+                )
+                return terminal_exit
     except Exception as exc:
         code = _classify_exit_code(exc)
         logger.error(

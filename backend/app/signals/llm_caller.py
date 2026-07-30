@@ -18,6 +18,7 @@ Slice 6（2026-04-26）：實作完成。
 """
 from __future__ import annotations
 
+from datetime import date
 import json
 import logging
 import os
@@ -32,9 +33,10 @@ from app.signals import market_cache, prompt_family
 logger = logging.getLogger(__name__)
 
 
-# Spec §5 Step 7：「一次 prompt 處理 5~10 檔（batch）」；research 保持 8，
-# explanation 降到 4 以降低單次 payload。
+# Legacy research 保持 8；v7 research schema 較完整，預設 4 檔並可在契約
+# 失敗時二分重試。Explanation 維持 4。
 DEFAULT_RESEARCH_BATCH_SIZE = 8
+DEFAULT_V7_RESEARCH_BATCH_SIZE = 4
 DEFAULT_EXPLANATION_BATCH_SIZE = 4
 
 # Spec §3.2：第一版模型 fallback；workflow / Render env 可由 OPENAI_MODEL 覆寫。
@@ -124,7 +126,38 @@ _DIAG_STATUS_OK = "ok"
 _DIAG_STATUS_API_KEY_MISSING = "api_key_missing"
 _DIAG_STATUS_OPENAI_EXCEPTION = "openai_exception"
 _DIAG_STATUS_EMPTY_OUTPUT = "empty_output"
+_DIAG_STATUS_INCOMPLETE_OUTPUT = "incomplete_output"
 _DIAG_STATUS_INVALID_JSON = "invalid_json"
+
+_RESEARCH_CONTRACT_RETRY_STATUSES = {
+    _DIAG_STATUS_EMPTY_OUTPUT,
+    _DIAG_STATUS_INCOMPLETE_OUTPUT,
+    _DIAG_STATUS_INVALID_JSON,
+}
+
+
+def current_research_batch_size() -> int:
+    """Return the active research batch size without changing legacy replay.
+
+    v7 output is materially richer than the legacy research payload.  Four
+    candidates keeps structured web research comfortably below the output
+    budget, while failed v7 contracts are isolated further by binary retry.
+    """
+    if prompt_family.resolve_prompt_family() == prompt_family.PROMPT_FAMILY_VERSION:
+        raw = os.getenv(
+            "SIGNALS_V7_RESEARCH_BATCH_SIZE",
+            str(DEFAULT_V7_RESEARCH_BATCH_SIZE),
+        )
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            logger.warning(
+                "Invalid SIGNALS_V7_RESEARCH_BATCH_SIZE=%r; using %d",
+                raw,
+                DEFAULT_V7_RESEARCH_BATCH_SIZE,
+            )
+            return DEFAULT_V7_RESEARCH_BATCH_SIZE
+    return DEFAULT_RESEARCH_BATCH_SIZE
 
 
 def assemble_market_context(
@@ -241,8 +274,10 @@ def run_research_batch(
     market_context = market_context or {}
     family = prompt_family.resolve_prompt_family()
     if family == prompt_family.PROMPT_FAMILY_VERSION:
-        return _run_v7_research_batch(
-            stocks_batch, market_context, model=model
+        return _run_v7_research_with_contract_retry(
+            stocks_batch,
+            market_context,
+            model=model,
         )
     version = _resolve_prompt_version(market_context.get("market_regime"))
     system_prompt = _load_system_prompt(stage="research", version=version)
@@ -409,11 +444,123 @@ def _stage_date(
     return "1970-01-01"
 
 
+def _run_v7_research_with_contract_retry(
+    stocks_batch: List[Dict[str, Any]],
+    market_context: Dict[str, Any],
+    *,
+    model: str,
+    retry_depth: int = 0,
+    retry_correction: Optional[str] = None,
+    singleton_retry_used: bool = False,
+) -> List[Dict[str, Any]]:
+    """Run v7 research and isolate malformed contracts by binary retry.
+
+    A malformed batch must never silently remove otherwise valid candidates.
+    Structured Outputs prevents most formatting errors; this retry path handles
+    incomplete generations and semantic contract failures such as stock/date
+    misalignment.  Missing credentials are intentionally not retried.
+    """
+    result = _run_v7_research_batch(
+        stocks_batch,
+        market_context,
+        model=model,
+        retry_correction=retry_correction,
+        allow_cutoff_sanitization=singleton_retry_used,
+    )
+    if not result:
+        return result
+
+    retry_enabled = os.getenv(
+        "SIGNALS_V7_RESEARCH_CONTRACT_RETRY", "true"
+    ).strip().lower() not in {"0", "false", "no", "off"}
+    if not retry_enabled:
+        return result
+
+    source_by_id = {
+        str(row.get("stock_id") or row.get("stock") or ""): row
+        for row in stocks_batch
+    }
+    retry_ids = []
+    for item in result:
+        diagnostic = item.get("llm_diagnostic") or {}
+        if (
+            item.get("_unavailable")
+            and diagnostic.get("status") in _RESEARCH_CONTRACT_RETRY_STATUSES
+        ):
+            retry_ids.append(str(item.get("stock") or item.get("stock_id") or ""))
+    retry_sources = [
+        source_by_id[stock_id]
+        for stock_id in retry_ids
+        if stock_id in source_by_id
+    ]
+    if not retry_sources:
+        return result
+
+    retry_messages = [
+        str((item.get("llm_diagnostic") or {}).get("message") or "")
+        for item in result
+        if str(item.get("stock") or item.get("stock_id") or "") in retry_ids
+    ]
+    correction = "; ".join(dict.fromkeys(filter(None, retry_messages)))[:1000]
+
+    # A singleton gets one correction retry after its own exact validation
+    # error is known.  This also applies to singletons produced by a split:
+    # their first isolated attempt should not be mistaken for the correction
+    # attempt.
+    if len(retry_sources) == 1:
+        if singleton_retry_used:
+            return result
+        retry_groups = [retry_sources]
+    else:
+        midpoint = len(retry_sources) // 2
+        retry_groups = [retry_sources[:midpoint], retry_sources[midpoint:]]
+
+    logger.warning(
+        "Retrying %d v7 research candidates after contract failure "
+        "(depth=%d groups=%s)",
+        len(retry_sources),
+        retry_depth,
+        [len(group) for group in retry_groups],
+    )
+    retried: List[Dict[str, Any]] = []
+    for group in retry_groups:
+        retried.extend(
+            _run_v7_research_with_contract_retry(
+                group,
+                market_context,
+                model=model,
+                retry_depth=retry_depth + 1,
+                retry_correction=correction,
+                singleton_retry_used=len(retry_sources) == 1,
+            )
+        )
+
+    replacement = {
+        str(item.get("stock") or item.get("stock_id") or ""): item
+        for item in retried
+    }
+    merged: List[Dict[str, Any]] = []
+    for item in result:
+        stock_id = str(item.get("stock") or item.get("stock_id") or "")
+        chosen = replacement.get(stock_id, item)
+        diagnostic = dict(chosen.get("llm_diagnostic") or {})
+        diagnostic["contract_retry_depth"] = max(
+            int(diagnostic.get("contract_retry_depth") or 0),
+            retry_depth + 1,
+        )
+        diagnostic["contract_retry_origin_size"] = len(stocks_batch)
+        chosen = {**chosen, "llm_diagnostic": diagnostic}
+        merged.append(chosen)
+    return merged
+
+
 def _run_v7_research_batch(
     stocks_batch: List[Dict[str, Any]],
     market_context: Dict[str, Any],
     *,
     model: str,
+    retry_correction: Optional[str] = None,
+    allow_cutoff_sanitization: bool = False,
 ) -> List[Dict[str, Any]]:
     stage_date = _stage_date(market_context, stocks_batch)
     system_prompt = prompt_family.build_stage_prompt("research")
@@ -422,6 +569,16 @@ def _run_v7_research_batch(
         research_date=stage_date,
         market_context=market_context,
     )
+    if retry_correction:
+        user_payload["contract_retry"] = {
+            "previous_rejection": retry_correction,
+            "required_correction": (
+                "修正上一輪所有契約錯誤。特別是 sources 與 "
+                "material_contradictions 的 published_date 必須不晚於輸入 date；"
+                "較晚來源必須完全捨棄。若捨棄後沒有足夠證據，請輸出 "
+                "UNCONFIRMED、空 sources／material_contradictions，不可使用未來資訊。"
+            ),
+        }
     user_msg = json.dumps(user_payload, ensure_ascii=False, separators=(",", ":"))
     metadata = prompt_family.prompt_metadata()
     payload, diagnostic = _call_llm_json(
@@ -437,6 +594,14 @@ def _run_v7_research_batch(
             "stage_prompt_version": metadata["research_prompt_version"],
             "assembled_prompt_sha256": metadata["prompt_sha256"]["research"],
         },
+        response_schema=prompt_family.research_output_schema(
+            expected_stocks=[
+                str(row.get("stock_id") or row.get("stock") or "")
+                for row in stocks_batch
+            ],
+            expected_date=stage_date,
+        ),
+        response_format_name="fishtail_v7_research",
     )
     if payload is None:
         return [_research_fallback(row, diagnostic=diagnostic) for row in stocks_batch]
@@ -446,12 +611,43 @@ def _run_v7_research_batch(
             payload, expected_stocks=stocks, expected_date=stage_date
         )
     except prompt_family.PromptFamilyError as exc:
-        diagnostic = _with_status(
-            diagnostic,
-            status=_DIAG_STATUS_INVALID_JSON,
-            message=f"v7 research contract rejected: {exc}",
-        )
-        return [_research_fallback(row, diagnostic=diagnostic) for row in stocks_batch]
+        if (
+            allow_cutoff_sanitization
+            and "after the stage cutoff" in str(exc)
+        ):
+            payload, sanitized_stocks = _sanitize_future_research_evidence(
+                payload,
+                stocks_batch=stocks_batch,
+                stage_date=stage_date,
+            )
+            try:
+                validated = prompt_family.validate_research_output(
+                    payload,
+                    expected_stocks=stocks,
+                    expected_date=stage_date,
+                )
+            except prompt_family.PromptFamilyError:
+                pass
+            else:
+                diagnostic = {
+                    **(diagnostic or {}),
+                    "cutoff_sanitized": True,
+                    "cutoff_sanitized_stocks": sanitized_stocks,
+                    "message": (
+                        "Future-dated research evidence was discarded; "
+                        "affected research fields were downgraded to UNCONFIRMED."
+                    ),
+                }
+                exc = None
+        if exc is None:
+            pass
+        else:
+            diagnostic = _with_status(
+                diagnostic,
+                status=_DIAG_STATUS_INVALID_JSON,
+                message=f"v7 research contract rejected: {exc}",
+            )
+            return [_research_fallback(row, diagnostic=diagnostic) for row in stocks_batch]
 
     by_id = {str(item["stock"]): item for item in validated}
     out: List[Dict[str, Any]] = []
@@ -501,6 +697,109 @@ def _run_v7_research_batch(
             "llm_diagnostic": diagnostic,
         })
     return out
+
+
+def _sanitize_future_research_evidence(
+    payload: Any,
+    *,
+    stocks_batch: List[Dict[str, Any]],
+    stage_date: str,
+) -> tuple[Any, List[str]]:
+    """Discard future-tainted research without admitting any derived prose.
+
+    This is only used after a singleton has already received a contract
+    correction retry.  If any evidence date is after the stage cutoff, the
+    entire model-authored research narrative for that stock is replaced with a
+    conservative, backend-authored UNCONFIRMED record.  That prevents future
+    facts from surviving in summaries while preserving P3's policy that missing
+    confirmation is not itself a removal.
+    """
+
+    if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+        return payload, []
+    try:
+        boundary = date.fromisoformat(stage_date)
+    except ValueError:
+        return payload, []
+    source_by_stock = {
+        str(row.get("stock_id") or row.get("stock") or ""): row
+        for row in stocks_batch
+    }
+    sanitized: List[str] = []
+    output_items: List[Any] = []
+    for item in payload["items"]:
+        if not isinstance(item, dict):
+            output_items.append(item)
+            continue
+        stock_id = str(item.get("stock") or "")
+        has_future = False
+        for evidence in [
+            *(item.get("sources") or []),
+            *(item.get("material_contradictions") or []),
+        ]:
+            if not isinstance(evidence, dict):
+                continue
+            try:
+                published = date.fromisoformat(
+                    str(evidence.get("published_date") or "")
+                )
+            except ValueError:
+                continue
+            if published > boundary:
+                has_future = True
+                break
+        if not has_future:
+            output_items.append(item)
+            continue
+
+        source = source_by_stock.get(stock_id) or {}
+        asset_type = str(source.get("asset_type") or "COMMON_STOCK").upper()
+        is_etf = asset_type == "ETF"
+        safe_theme = (
+            source.get("theme_cluster")
+            or source.get("industry")
+            or "資料未確認"
+        )
+        output_items.append(
+            {
+                "stock": stock_id,
+                "instrument_validation": "UNCONFIRMED",
+                "theme_validation": "UNCONFIRMED",
+                "supply_chain_validation": (
+                    "NOT_APPLICABLE" if is_etf else "UNCONFIRMED"
+                ),
+                "instrument_summary": (
+                    f"截至 {stage_date} 的可用來源不足，商品或業務內容尚未確認。"
+                ),
+                "theme": {
+                    "name": str(safe_theme),
+                    "duration": "unclear",
+                    "maturity": "unclear",
+                    "catalyst_status": "UNCONFIRMED",
+                    "catalyst_summary": (
+                        f"截至 {stage_date} 的題材與催化劑證據尚未確認。"
+                    ),
+                },
+                "supply_chain_role": (
+                    "NOT_APPLICABLE" if is_etf else "other"
+                ),
+                "group_name": None,
+                "theme_cluster": (
+                    str(source.get("theme_cluster"))
+                    if source.get("theme_cluster")
+                    else None
+                ),
+                "material_contradictions": [],
+                "sources": [],
+                "research_confidence": "LOW",
+                "research_summary": (
+                    f"已剔除晚於 {stage_date} 的來源；本檔外部研究維持未確認，"
+                    "不得據此形成正面或負面事實判斷。"
+                ),
+            }
+        )
+        sanitized.append(stock_id)
+    return {**payload, "items": output_items}, sanitized
 
 
 def run_explanation_batch(
@@ -798,11 +1097,15 @@ def _call_llm_json(
     max_output_tokens: int = _MAX_OUTPUT_TOKENS,
     candidate_count: int = 0,
     prompt_metadata: Optional[Dict[str, Any]] = None,
+    response_schema: Optional[Dict[str, Any]] = None,
+    response_format_name: Optional[str] = None,
 ) -> tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
     """呼叫 OpenAI 並嘗試 parse JSON。
 
     這裡走 Responses API，只送基本 instruction / input / tools / max_output_tokens。
-    解析失敗 / API key 缺失 / 例外 → 回 `(None, diagnostic)`（caller 負責 fallback）。
+    解析失敗 / incomplete response / API key 缺失 / 例外 → 回
+    `(None, diagnostic)`（caller 負責 fallback）。v7 stage 可傳入 JSON Schema，
+    由 Responses API Structured Outputs 先約束傳輸格式，再由 backend 驗證語意。
     """
     diagnostic = _base_diagnostic(
         stage=stage,
@@ -819,6 +1122,7 @@ def _call_llm_json(
     )
     if prompt_metadata:
         diagnostic["prompt_metadata"] = prompt_metadata
+    diagnostic["structured_output"] = response_schema is not None
     api_key = get_openai_api_key()
     if not api_key:
         logger.warning(
@@ -847,7 +1151,49 @@ def _call_llm_json(
         if use_web_search:
             kwargs["tools"] = [_WEB_SEARCH_TOOL]
             kwargs["tool_choice"] = "auto"
+        if response_schema is not None:
+            kwargs["text"] = {
+                "format": {
+                    "type": "json_schema",
+                    "name": response_format_name or f"fishtail_{stage}",
+                    "description": (
+                        "Machine-readable output for the fishtail signal pipeline."
+                    ),
+                    "strict": True,
+                    "schema": response_schema,
+                }
+            }
         response = client.responses.create(**kwargs)
+        diagnostic["response_id"] = getattr(response, "id", None)
+        diagnostic["response_status"] = getattr(response, "status", None)
+        incomplete_details = getattr(response, "incomplete_details", None)
+        if incomplete_details is not None:
+            if hasattr(incomplete_details, "model_dump"):
+                incomplete_details = incomplete_details.model_dump()
+            elif not isinstance(incomplete_details, (dict, str, int, float, bool)):
+                incomplete_details = str(incomplete_details)
+            diagnostic["incomplete_details"] = incomplete_details
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            if hasattr(usage, "model_dump"):
+                usage = usage.model_dump()
+            elif not isinstance(usage, (dict, str, int, float, bool)):
+                usage = str(usage)
+            diagnostic["usage"] = usage
+        response_status = diagnostic.get("response_status")
+        if response_status and response_status != "completed":
+            diagnostic["status"] = _DIAG_STATUS_INCOMPLETE_OUTPUT
+            diagnostic["message"] = (
+                f"OpenAI response status was {response_status!r}, not 'completed'."
+            )
+            logger.warning(
+                "M23 LLM response incomplete (stage=%s model=%s status=%s details=%s)",
+                stage,
+                model,
+                response_status,
+                diagnostic.get("incomplete_details"),
+            )
+            return None, diagnostic
         raw = _extract_responses_output_text(response)
         if not raw.strip():
             diagnostic["status"] = _DIAG_STATUS_EMPTY_OUTPUT
@@ -1137,6 +1483,14 @@ def _run_v7_assessment_chunk(
             "stage_prompt_version": metadata["assessment_prompt_version"],
             "assembled_prompt_sha256": metadata["prompt_sha256"]["assessment"],
         },
+        response_schema=prompt_family.assessment_output_schema(
+            expected_stocks=[
+                str(row.get("stock") or row.get("stock_id") or "")
+                for row in chunk
+            ],
+            expected_date=stage_date,
+        ),
+        response_format_name="fishtail_v7_assessment",
     )
     if payload is None:
         return [_decision_fallback(row, diagnostic=diagnostic) for row in chunk]
@@ -1365,6 +1719,14 @@ def _run_v7_reason_chunk(
             "stage_prompt_version": metadata["reason_prompt_version"],
             "assembled_prompt_sha256": metadata["prompt_sha256"]["reason"],
         },
+        response_schema=prompt_family.reason_output_schema(
+            expected_stocks=[
+                str(row.get("stock") or row.get("stock_id") or "")
+                for row in chunk
+            ],
+            expected_date=stage_date,
+        ),
+        response_format_name="fishtail_v7_reason",
     )
     if payload is None:
         return [_watch_reason_fallback(row, diagnostic=diagnostic) for row in chunk]
@@ -1971,6 +2333,7 @@ def _stage_fallback_reason(stage: str, diagnostic: Dict[str, Any]) -> str:
         _DIAG_STATUS_API_KEY_MISSING: "未設定 OPENAI_API_KEY",
         _DIAG_STATUS_OPENAI_EXCEPTION: _exception_reason(diagnostic),
         _DIAG_STATUS_EMPTY_OUTPUT: "OpenAI 回傳空內容",
+        _DIAG_STATUS_INCOMPLETE_OUTPUT: "OpenAI 回傳未完整完成",
         _DIAG_STATUS_INVALID_JSON: "OpenAI 回傳格式不是合法 JSON",
     }.get(status, "LLM 回應不可用")
     return f"{stage_label}失敗（{reason}）。"

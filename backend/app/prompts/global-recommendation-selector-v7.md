@@ -31,12 +31,13 @@ rank override reason。Candidate Source 只作描述；UNCONFIRMED 可推薦或�
     "recommendation_basis": []
   }],
   "summary": {
-    "eligible_count": 0,
-    "recommend_count": 0,
-    "not_selected_count": 0,
     "selection_rationale": "繁體中文"
   }
 }
+
+`summary` 只需要 `selection_rationale`。不要輸出 `eligible_count` /
+`recommend_count` / `not_selected_count`——這些是 backend 從 `items` 機械計算，
+你回報的任何數字都不會被採用；只是徒增算錯的風險。
 
 NOT_SELECTED reason code 只能是：
 LOWER_RELATIVE_PRIORITY、POSITIVE_CASE_INCOMPLETE、CATALYST_UNCONFIRMED、

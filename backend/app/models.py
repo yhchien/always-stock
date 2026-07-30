@@ -440,6 +440,11 @@ class SignalObservation(Base):
     last_review_date = Column(Date, nullable=True, index=True)
     latest_decision = Column(String(32), nullable=True)
     consecutive_caution_count = Column(Integer, nullable=False, default=0)
+    # Consecutive STOP_OBSERVING confirmations while status==STOPPED (day of
+    # first stop counts as 1). Resets to 0 on any CONTINUE/CAUTION decision.
+    # Reaching STOP_CONFIRM_THRESHOLD (3) finalizes a SignalObservationArchive
+    # row; the observation row itself is never deleted or altered further.
+    stop_confirm_count = Column(Integer, nullable=False, default=0)
     baseline_quality = Column(String(32), nullable=False, default="P3_COMPLETE")
     initial_snapshot_json = Column(JSON, nullable=False)
     latest_snapshot_json = Column(JSON, nullable=True)
@@ -454,6 +459,49 @@ class SignalObservation(Base):
             name="uq_signal_observation_stock_start",
         ),
     )
+
+
+class SignalObservationArchive(Base):
+    """P4 lifecycle final archive.
+
+    An observation lands here only after P4 confirms STOP_OBSERVING on
+    ``STOP_CONFIRM_THRESHOLD`` (3) consecutive review days with no CONTINUE/
+    CAUTION recovery in between. Purely additive: the source
+    ``signal_observations`` row is never deleted, so existing P6 outcome
+    joins against it are unaffected.
+
+    ``exit_price``/``return_pct`` are filled in a day late by design: the
+    archive row is written the moment the 3rd confirmation lands, but the
+    "next trading day's (open+close)/2" exit price does not exist yet at
+    that moment. A settlement pass backfills it once that day's
+    ``daily_price`` row is available (see
+    ``_settle_pending_archive_exits`` in observation_lifecycle.py).
+    """
+
+    __tablename__ = "signal_observation_archives"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    observation_id = Column(
+        Integer,
+        ForeignKey("signal_observations.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    episode_id = Column(String(36), nullable=False, index=True)
+    stock_id = Column(String, nullable=False, index=True)
+    stock_name = Column(String, nullable=False)
+    started_signal_date = Column(Date, nullable=False)
+    first_stop_date = Column(Date, nullable=False)
+    archived_date = Column(Date, nullable=False, index=True)
+    stop_reason_code = Column(String(64), nullable=True)
+    stop_reason = Column(Text, nullable=True)
+    entry_price = Column(Float, nullable=True)
+    exit_trade_date = Column(Date, nullable=True)
+    exit_price = Column(Float, nullable=True)
+    return_pct = Column(Float, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
 class SignalObservationReview(Base):

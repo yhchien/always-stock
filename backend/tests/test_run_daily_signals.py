@@ -82,3 +82,41 @@ def test_classify_exit_code_db_error_default(runner_module):
 def test_classify_exit_code_value_error_unrelated_falls_back_to_db(runner_module):
     """ValueError 但訊息不含 no_data 關鍵字 → 走 db_error fallback。"""
     assert runner_module._classify_exit_code(ValueError("invalid input shape")) == 3
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("done", 0),
+        ("partial_failure", 4),
+        ("running", 3),
+        ("pending", 3),
+    ],
+)
+def test_terminal_job_status_maps_to_process_exit(runner_module, status, expected):
+    assert runner_module._terminal_job_exit_code(status) == expected
+
+
+def test_terminal_failed_job_reuses_error_classification(runner_module):
+    assert (
+        runner_module._terminal_job_exit_code(
+            "failed", "OpenAI research batch failed"
+        )
+        == 2
+    )
+    assert (
+        runner_module._terminal_job_exit_code(
+            "failed", "database connection refused"
+        )
+        == 3
+    )
+
+
+def test_daily_signals_workflow_runs_daily_and_fails_partial_results():
+    repo_root = Path(__file__).resolve().parents[2]
+    workflow = (repo_root / ".github/workflows/daily_signals.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "- cron: '23 11 * * *'" in workflow
+    assert "SIGNALS_PIPELINE_MODE: phase2" in workflow
+    assert "4) echo \"Status: partial_failure (FAIL; snapshot is incomplete)\"" in workflow

@@ -10,6 +10,7 @@ import pytest
 from app.models import (
     DailyPrice,
     SignalObservation,
+    SignalObservationArchive,
     SignalObservationReview,
     SignalWatchHit,
 )
@@ -461,6 +462,72 @@ def test_tracking_batch_exception_becomes_per_stock_review_failure(monkeypatch):
     assert all(item["processing_status"] == "REVIEW_FAILED" for item in failures)
 
 
+def test_v7_tracking_call_uses_strict_output_schema(monkeypatch):
+    captured = {}
+
+    def fake_call(*args, **kwargs):
+        captured.update(kwargs)
+        return {
+            "review_date": DAY_1.isoformat(),
+            "items": [_external()],
+        }, {"status": "ok"}
+
+    monkeypatch.setattr(lifecycle.llm_caller, "_call_llm_json", fake_call)
+    successful, failures = lifecycle.run_tracking_assessments(
+        [{"date": DAY_1.isoformat(), "stock": "2330"}],
+        batch_size=1,
+    )
+    assert failures == []
+    assert successful["2330"]["assessment"] == "THESIS_INTACT"
+    assert captured["response_format_name"] == "fishtail_v7_tracking"
+    stock_schema = captured["response_schema"]["properties"]["items"]["items"][
+        "properties"
+    ]["stock"]
+    assert stock_schema["enum"] == ["2330"]
+
+
+def test_v7_tracking_semantic_contract_retries_single_stock(monkeypatch):
+    invalid = _external(assessment="THESIS_INVALIDATED")
+    invalid.update(
+        {
+            "invalidation_reason_code": "MATERIAL_NEGATIVE_EVENT",
+            "thesis_dimensions": {
+                "business_or_exposure": "INTACT",
+                "theme": "INVALIDATED",
+                "catalyst": "INVALIDATED",
+            },
+            "material_evidence": [],
+        }
+    )
+    calls = []
+
+    def fake_call(_system, user_msg, **kwargs):
+        payload = json.loads(user_msg)
+        calls.append(payload)
+        item = invalid if len(calls) == 1 else _external()
+        return {
+            "review_date": DAY_1.isoformat(),
+            "items": [item],
+        }, {"status": "ok"}
+
+    monkeypatch.setattr(lifecycle.llm_caller, "_call_llm_json", fake_call)
+    successful, failures = lifecycle.run_tracking_assessments(
+        [{"date": DAY_1.isoformat(), "stock": "2330"}],
+        batch_size=1,
+    )
+
+    assert failures == []
+    assert successful["2330"]["assessment"] == "THESIS_INTACT"
+    assert len(calls) == 2
+    retry = calls[1]["contract_retry"]
+    assert "traceable evidence" in retry["previous_rejection"]
+    assert "不可捏造來源" in retry["required_correction"]
+    assert (
+        successful["2330"]["_llm_diagnostic"]["contract_retry_attempt"]
+        == 1
+    )
+
+
 def test_same_date_rerun_is_idempotent(db, monkeypatch):
     observation = _observation(db)
     evidence = _healthy_evidence()
@@ -749,3 +816,178 @@ def test_tracking_scale_state_persistence_and_api_serialization(
     assert len(serialized.encode()) > 0
     assert duration < 2
     assert peak < 32 * 1024 * 1024
+
+
+def _hard_excluded_evidence(reason: str = "STRUCTURE_DAMAGED"):
+    evidence = _healthy_evidence()
+    evidence["hard_exclusion"] = {"excluded": True, "reason": reason}
+    return evidence
+
+
+def test_first_stop_sets_confirm_count_to_one_without_archiving(db, monkeypatch):
+    observation = _observation(db)
+    _patch_evidence(monkeypatch, {observation.id: _hard_excluded_evidence()})
+
+    result = lifecycle.run_daily_observation_reviews(
+        db,
+        review_date=DAY_1,
+        market_context={},
+        assessment_runner=_runner_for({}),
+        persist=True,
+    )
+
+    row = db.get(SignalObservation, observation.id)
+    assert row.status == "STOPPED"
+    assert row.stop_confirm_count == 1
+    assert result["tracking_summary"]["stopped_count"] == 1
+    assert db.query(SignalObservationArchive).count() == 0
+
+
+def test_three_consecutive_stop_confirmations_archive_on_the_third_day(
+    db, monkeypatch
+):
+    observation = _observation(db)
+    db.add(
+        DailyPrice(stock_id="2330", trade_date=DAY_0, close_price=100.0)
+    )
+    db.commit()
+    _patch_evidence(monkeypatch, {observation.id: _hard_excluded_evidence()})
+
+    for review_date in (DAY_1, DAY_2, DAY_2 + timedelta(days=1)):
+        lifecycle.run_daily_observation_reviews(
+            db,
+            review_date=review_date,
+            market_context={},
+            assessment_runner=_runner_for({}),
+            persist=True,
+        )
+
+    row = db.get(SignalObservation, observation.id)
+    assert row.status == "STOPPED"
+    assert row.stop_confirm_count == 3
+    archive = db.query(SignalObservationArchive).one()
+    assert archive.observation_id == observation.id
+    assert archive.first_stop_date == DAY_1
+    assert archive.archived_date == DAY_2 + timedelta(days=1)
+    assert archive.entry_price == 100.0
+    assert archive.exit_price is None
+    assert archive.return_pct is None
+
+    # Once archived, the observation drops out of daily review entirely --
+    # a 4th call must not touch it, error, or create a duplicate archive row.
+    lifecycle.run_daily_observation_reviews(
+        db,
+        review_date=DAY_2 + timedelta(days=2),
+        market_context={},
+        assessment_runner=_runner_for({}),
+        persist=True,
+    )
+    assert db.query(SignalObservationArchive).count() == 1
+    assert db.get(SignalObservation, observation.id).stop_confirm_count == 3
+
+
+def test_recovery_during_pending_window_cancels_archive_and_reactivates(
+    db, monkeypatch
+):
+    observation = _observation(db)
+
+    _patch_evidence(monkeypatch, {observation.id: _hard_excluded_evidence()})
+    lifecycle.run_daily_observation_reviews(
+        db,
+        review_date=DAY_1,
+        market_context={},
+        assessment_runner=_runner_for({}),
+        persist=True,
+    )
+    assert db.get(SignalObservation, observation.id).stop_confirm_count == 1
+
+    _patch_evidence(monkeypatch, {observation.id: _healthy_evidence()})
+    lifecycle.run_daily_observation_reviews(
+        db,
+        review_date=DAY_2,
+        market_context={},
+        assessment_runner=_runner_for({"2330": _external()}),
+        persist=True,
+    )
+    row = db.get(SignalObservation, observation.id)
+    assert row.status == "OBSERVING"
+    assert row.stop_confirm_count == 0
+    assert row.stopped_at is None
+    assert row.stop_reason_code is None
+    assert db.query(SignalObservationArchive).count() == 0
+
+    # A later, independent stop must start a fresh count from 1, not resume.
+    _patch_evidence(monkeypatch, {observation.id: _hard_excluded_evidence()})
+    lifecycle.run_daily_observation_reviews(
+        db,
+        review_date=DAY_2 + timedelta(days=1),
+        market_context={},
+        assessment_runner=_runner_for({}),
+        persist=True,
+    )
+    assert db.get(SignalObservation, observation.id).stop_confirm_count == 1
+
+
+def test_settle_pending_archive_exits_uses_next_available_open_close_average(db):
+    observation = _observation(db)
+    archive = SignalObservationArchive(
+        observation_id=observation.id,
+        episode_id=observation.episode_id,
+        stock_id="2330",
+        stock_name="Stock-2330",
+        started_signal_date=DAY_0,
+        first_stop_date=DAY_1,
+        archived_date=DAY_1,
+        stop_reason_code="STRUCTURE_DAMAGED",
+        stop_reason="test",
+        entry_price=100.0,
+    )
+    db.add(archive)
+    db.commit()
+
+    # No daily_price for DAY_2 yet -- must stay pending, not raise.
+    settled = lifecycle._settle_pending_archive_exits(db, review_date=DAY_2)
+    assert settled == 0
+    db.flush()
+    db.refresh(archive)
+    assert archive.exit_price is None
+
+    # A day is skipped in the price feed; settlement self-heals on whichever
+    # later day first has a usable daily_price row.
+    later = DAY_2 + timedelta(days=2)
+    db.add(
+        DailyPrice(
+            stock_id="2330", trade_date=later, open_price=108.0, close_price=112.0
+        )
+    )
+    db.commit()
+    settled = lifecycle._settle_pending_archive_exits(db, review_date=later)
+    assert settled == 1
+    db.flush()
+    db.refresh(archive)
+    assert archive.exit_trade_date == later
+    assert archive.exit_price == 110.0
+    assert archive.return_pct == pytest.approx(10.0)
+
+
+def test_ensure_observation_tables_backfills_stop_confirm_count_column(db):
+    from sqlalchemy import inspect, text
+
+    from app.observation_schema import ensure_observation_tables
+
+    engine = db.get_bind()
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE signal_observations DROP COLUMN stop_confirm_count"))
+    inspector = inspect(engine)
+    assert "stop_confirm_count" not in {
+        col["name"] for col in inspector.get_columns("signal_observations")
+    }
+
+    ensure_observation_tables(engine)
+
+    inspector = inspect(engine)
+    assert "stop_confirm_count" in {
+        col["name"] for col in inspector.get_columns("signal_observations")
+    }
+    # Idempotent second call must not raise (column already present).
+    ensure_observation_tables(engine)

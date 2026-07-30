@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from app.models import (
     DailyPrice,
     SignalObservation,
+    SignalObservationArchive,
     SignalObservationReview,
     SignalSnapshot,
     SignalWatchHit,
@@ -56,6 +57,12 @@ DEFAULT_TRACKING_MODEL = os.getenv(
 STATUS_OBSERVING = "OBSERVING"
 STATUS_CAUTION = "CAUTION"
 STATUS_STOPPED = "STOPPED"
+
+# STOPPED observations keep being reviewed daily until STOP_OBSERVING has been
+# confirmed on this many consecutive review days (the first stop counts as 1).
+# Any CONTINUE/CAUTION decision in between resets the counter and reactivates
+# the observation -- a single-day STOP is never enough to archive on its own.
+STOP_CONFIRM_THRESHOLD = 3
 
 DECISION_CONTINUE = "CONTINUE"
 DECISION_CAUTION = "CAUTION"
@@ -553,34 +560,79 @@ def run_tracking_assessments(
     prompt = prompt_family.build_stage_prompt("tracking", family)
     metadata = prompt_family.prompt_metadata(family)
     tracking_version = metadata["tracking_prompt_version"]
+    retry_enabled = (
+        family == prompt_family.PROMPT_FAMILY_VERSION
+        and os.getenv(
+            "SIGNALS_TRACKING_CONTRACT_RETRY", "true"
+        ).strip().lower() not in {"0", "false", "no", "off"}
+    )
+
+    def call_tracking(
+        call_batch: Sequence[Dict[str, Any]],
+        *,
+        contract_retry: Optional[Dict[str, str]] = None,
+    ) -> tuple[Optional[Dict[str, Any]], Dict[str, Any], set[str]]:
+        call_date = str(call_batch[0].get("date") or "")
+        call_expected = {
+            str(item.get("stock") or "")
+            for item in call_batch
+            if item.get("stock")
+        }
+        body: Dict[str, Any] = {
+            "review_date": call_date,
+            "items": list(call_batch),
+        }
+        if contract_retry:
+            body["contract_retry"] = contract_retry
+        call_response, call_diagnostic = llm_caller._call_llm_json(
+            prompt,
+            json.dumps(
+                body,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+            model=model,
+            stage="tracking_review",
+            use_web_search=True,
+            prompt_cache_key=f"signals:{family}:tracking-review",
+            candidate_count=len(call_batch),
+            prompt_metadata={
+                **metadata,
+                "stage_prompt_version": tracking_version,
+                "assembled_prompt_sha256": metadata["prompt_sha256"][
+                    "tracking"
+                ],
+                "contract_retry_attempt": 1 if contract_retry else 0,
+            },
+            response_schema=(
+                prompt_family.tracking_output_schema(
+                    expected_stocks=sorted(call_expected),
+                    review_date=call_date,
+                )
+                if family == prompt_family.PROMPT_FAMILY_VERSION
+                else None
+            ),
+            response_format_name=(
+                "fishtail_v7_tracking"
+                if family == prompt_family.PROMPT_FAMILY_VERSION
+                else None
+            ),
+        )
+        return call_response, call_diagnostic or {}, call_expected
+
     for offset in range(0, len(payloads), size):
         batch = list(payloads[offset : offset + size])
         review_date = str(batch[0].get("date") or "")
-        user_msg = json.dumps(
-            {"review_date": review_date, "items": batch},
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
         expected = {
             str(item.get("stock") or "") for item in batch if item.get("stock")
         }
+        source_by_stock = {
+            str(item.get("stock") or ""): item
+            for item in batch
+            if item.get("stock")
+        }
         try:
-            response, diagnostic = llm_caller._call_llm_json(
-                prompt,
-                user_msg,
-                model=model,
-                stage="tracking_review",
-                use_web_search=True,
-                prompt_cache_key=f"signals:{family}:tracking-review",
-                candidate_count=len(batch),
-                prompt_metadata={
-                    **metadata,
-                    "stage_prompt_version": tracking_version,
-                    "assembled_prompt_sha256": metadata["prompt_sha256"][
-                        "tracking"
-                    ],
-                },
-            )
+            response, diagnostic, _ = call_tracking(batch)
         except Exception as exc:
             for sid in sorted(expected):
                 failures.append(
@@ -639,11 +691,72 @@ def run_tracking_assessments(
                 validated["_llm_diagnostic"] = diagnostic
                 successful[sid] = validated
             except ValueError as exc:
+                retry_diagnostic: Dict[str, Any] = diagnostic
+                if retry_enabled and sid in source_by_stock:
+                    try:
+                        retry_response, retry_diagnostic, _ = call_tracking(
+                            [source_by_stock[sid]],
+                            contract_retry={
+                                "previous_rejection": str(exc)[:1000],
+                                "required_correction": (
+                                    "只重做這一檔並修正契約錯誤。若要使用 "
+                                    "MATERIAL_NEGATIVE_EVENT 或 DATA_CONTRADICTION "
+                                    "判定 THESIS_INVALIDATED，material_evidence 必須有"
+                                    "截至 review_date 可追溯的 summary、URL、"
+                                    "published_date；否則不得宣告失效，應依證據改為 "
+                                    "THESIS_WEAKENING 或 RESEARCH_UNAVAILABLE，且 "
+                                    "invalidation_reason_code 必須為 null。不可捏造來源。"
+                                ),
+                            },
+                        )
+                        retry_items = (
+                            retry_response.get("items")
+                            if isinstance(retry_response, dict)
+                            and retry_response.get("review_date") == review_date
+                            else None
+                        )
+                        retry_raw = (
+                            retry_items[0]
+                            if isinstance(retry_items, list)
+                            and len(retry_items) == 1
+                            and isinstance(retry_items[0], dict)
+                            and str(retry_items[0].get("stock") or "") == sid
+                            else None
+                        )
+                        if retry_raw is not None:
+                            validated = _validate_external_assessment(
+                                retry_raw,
+                                review_date=date.fromisoformat(review_date),
+                            )
+                            validated["_prompt_metadata"] = {
+                                **metadata,
+                                "stage_prompt_version": tracking_version,
+                                "assembled_prompt_sha256": metadata[
+                                    "prompt_sha256"
+                                ]["tracking"],
+                            }
+                            validated["_llm_diagnostic"] = {
+                                **retry_diagnostic,
+                                "contract_retry_attempt": 1,
+                                "previous_contract_error": str(exc)[:500],
+                            }
+                            successful[sid] = validated
+                            continue
+                    except Exception as retry_exc:
+                        retry_diagnostic = {
+                            **retry_diagnostic,
+                            "retry_exception": str(retry_exc)[:500],
+                        }
                 failures.append(
                     _review_failure(
                         sid,
                         "TRACKING_OUTPUT_INVALID",
                         str(exc),
+                        diagnostic=(
+                            retry_diagnostic
+                            if retry_enabled
+                            else diagnostic
+                        ),
                     )
                 )
         for sid in sorted(expected - seen):
@@ -836,8 +949,14 @@ def run_daily_observation_reviews(
                 )
             )
             | (
+                # STOPPED observations keep being reviewed daily until
+                # STOP_OBSERVING has been confirmed on STOP_CONFIRM_THRESHOLD
+                # consecutive days (or recovers, which resets the counter to
+                # 0 and flips status away from STOPPED). This also covers a
+                # same-day idempotent re-run of an observation that was only
+                # just stopped today, since a fresh stop always starts at 1.
                 (SignalObservation.status == STATUS_STOPPED)
-                & (SignalObservation.last_review_date == review_date)
+                & (SignalObservation.stop_confirm_count < STOP_CONFIRM_THRESHOLD)
             )
         )
         .order_by(SignalObservation.id.asc())
@@ -999,10 +1118,14 @@ def run_daily_observation_reviews(
         if decision.decision == DECISION_FAILED:
             pass
         elif decision.decision == DECISION_CAUTION:
+            # Any non-STOP decision breaks a pending-archive streak, even if
+            # this observation was STOPPED going into today's review -- only
+            # STOP_CONFIRM_THRESHOLD *consecutive* STOP confirmations archive.
             observation.status = STATUS_CAUTION
             observation.consecutive_caution_count = previous_caution_count + 1
             observation.latest_decision = DECISION_CAUTION
             observation.last_review_date = review_date
+            observation.stop_confirm_count = 0
         elif decision.decision == DECISION_CONTINUE:
             observation.status = STATUS_OBSERVING
             observation.consecutive_caution_count = 0
@@ -1011,26 +1134,47 @@ def run_daily_observation_reviews(
             observation.stopped_at = None
             observation.stop_reason_code = None
             observation.stop_reason = None
+            observation.stop_confirm_count = 0
         else:
+            was_already_stopped = observation.status == STATUS_STOPPED
             observation.status = STATUS_STOPPED
             observation.latest_decision = DECISION_STOP
             observation.last_review_date = review_date
-            observation.stopped_at = datetime.utcnow()
             observation.stop_reason_code = decision.reason_codes[0]
             observation.stop_reason = decision.reason
-            if sid in p3_recommended:
-                conflicts.append(
-                    {
-                        "stock": sid,
-                        "status": "TRACKING_SELECTION_CONFLICT",
-                        "stage": "TRACKING",
-                        "error_code": "TRACKING_SELECTION_CONFLICT",
-                        "error_summary": (
-                            "P3 recommended the stock on the same date that P4 "
-                            "stopped its active observation."
-                        ),
-                        "observation_id": observation.id,
-                    }
+            if was_already_stopped:
+                # Re-confirmation: keep the original stop timestamp so the
+                # eventual archive row records the day STOP first fired, not
+                # the day it was finalized.
+                observation.stop_confirm_count += 1
+            else:
+                # Anchor to review_date (the logical trading day), not real
+                # wall-clock time -- P6's outcome metrics module and
+                # _finalize_observation_archive both derive "which trading
+                # day did STOP first happen" from stopped_at.date(), and
+                # that must hold under replay/backfill where review_date
+                # differs from the actual moment this code executes.
+                observation.stopped_at = datetime.combine(
+                    review_date, datetime.utcnow().time()
+                )
+                observation.stop_confirm_count = 1
+                if sid in p3_recommended:
+                    conflicts.append(
+                        {
+                            "stock": sid,
+                            "status": "TRACKING_SELECTION_CONFLICT",
+                            "stage": "TRACKING",
+                            "error_code": "TRACKING_SELECTION_CONFLICT",
+                            "error_summary": (
+                                "P3 recommended the stock on the same date "
+                                "that P4 stopped its active observation."
+                            ),
+                            "observation_id": observation.id,
+                        }
+                    )
+            if observation.stop_confirm_count >= STOP_CONFIRM_THRESHOLD:
+                _finalize_observation_archive(
+                    db, observation=observation, archived_date=review_date
                 )
         observation.latest_snapshot_json = {
             "review_date": review_date.isoformat(),
@@ -1049,6 +1193,8 @@ def run_daily_observation_reviews(
             }
         )
     db.flush()
+    settled_exit_count = _settle_pending_archive_exits(db, review_date=review_date)
+    db.flush()
 
     summary = {
         "review_date": review_date.isoformat(),
@@ -1063,6 +1209,7 @@ def run_daily_observation_reviews(
         "tracking_prompt_version": current_tracking_prompt_version(),
         "tracking_state_machine_version": STATE_MACHINE_VERSION,
         "prompt_payload_metrics": tracking_payload_metrics,
+        "archived_exit_settled_count": settled_exit_count,
     }
     if persist:
         db.commit()
@@ -1072,6 +1219,96 @@ def run_daily_observation_reviews(
         "technical_failures": failures,
         "conflicts": conflicts,
     }
+
+
+def _finalize_observation_archive(
+    db: Session, *, observation: SignalObservation, archived_date: date
+) -> SignalObservationArchive:
+    """Write the final P4 archive record once STOP_OBSERVING has been
+    confirmed on STOP_CONFIRM_THRESHOLD consecutive review days.
+
+    ``exit_price``/``return_pct`` are intentionally left null here -- the
+    "next trading day's (open+close)/2" price does not exist yet on the day
+    this fires. ``_settle_pending_archive_exits`` backfills them once that
+    day's daily_price row is available.
+    """
+    entry_price = (
+        db.query(DailyPrice.close_price)
+        .filter(
+            DailyPrice.stock_id == observation.stock_id,
+            DailyPrice.trade_date == observation.started_signal_date,
+        )
+        .scalar()
+    )
+    first_stop_date = (
+        observation.stopped_at.date()
+        if observation.stopped_at is not None
+        else archived_date
+    )
+    archive = SignalObservationArchive(
+        observation_id=observation.id,
+        episode_id=observation.episode_id,
+        stock_id=observation.stock_id,
+        stock_name=observation.stock_name,
+        started_signal_date=observation.started_signal_date,
+        first_stop_date=first_stop_date,
+        archived_date=archived_date,
+        stop_reason_code=observation.stop_reason_code,
+        stop_reason=observation.stop_reason,
+        entry_price=float(entry_price) if entry_price is not None else None,
+    )
+    db.add(archive)
+    return archive
+
+
+def _settle_pending_archive_exits(db: Session, *, review_date: date) -> int:
+    """Backfill exit_price/return_pct for archives whose exit day has now
+    arrived. Self-healing: if a trading day is skipped, the next call simply
+    uses whatever daily_price row is first available after archived_date."""
+    pending = (
+        db.query(SignalObservationArchive)
+        .filter(
+            SignalObservationArchive.exit_price.is_(None),
+            SignalObservationArchive.archived_date < review_date,
+        )
+        .all()
+    )
+    if not pending:
+        return 0
+    stock_ids = {row.stock_id for row in pending}
+    price_row_by_stock = {
+        stock_id: (open_price, close_price)
+        for stock_id, open_price, close_price in (
+            db.query(
+                DailyPrice.stock_id,
+                DailyPrice.open_price,
+                DailyPrice.close_price,
+            )
+            .filter(
+                DailyPrice.stock_id.in_(stock_ids),
+                DailyPrice.trade_date == review_date,
+            )
+            .all()
+        )
+    }
+    settled = 0
+    for archive in pending:
+        prices = price_row_by_stock.get(archive.stock_id)
+        if prices is None:
+            continue
+        open_price, close_price = prices
+        if open_price is None or close_price is None:
+            continue
+        exit_price = (float(open_price) + float(close_price)) / 2.0
+        archive.exit_trade_date = review_date
+        archive.exit_price = exit_price
+        if archive.entry_price not in (None, 0):
+            archive.return_pct = (
+                (exit_price - archive.entry_price) / archive.entry_price * 100.0
+            )
+        archive.updated_at = datetime.utcnow()
+        settled += 1
+    return settled
 
 
 def list_observations(

@@ -504,7 +504,7 @@ def run_signal_pipeline_sync(
                 target_date=target_date,
                 regime_info=regime_info,
             )
-            research_batch_size = llm_caller.DEFAULT_RESEARCH_BATCH_SIZE
+            research_batch_size = llm_caller.current_research_batch_size()
             research_batches = _build_batches(after_regime, research_batch_size)
             processing_summary["research_requested_count"] = len(after_regime)
             logger.info(
@@ -1510,6 +1510,18 @@ def _run_parallel_batches(
                 results_by_index[idx] = batch_result
                 meta["status"] = "COMPLETED"
                 meta["finished_at"] = datetime.utcnow().isoformat()
+                logger.info(
+                    "%s batch %d/%d completed: candidates=%d unavailable=%d",
+                    stage,
+                    idx + 1,
+                    total_batches,
+                    len(batch),
+                    sum(
+                        bool(item.get("_unavailable"))
+                        for item in batch_result
+                        if isinstance(item, dict)
+                    ),
+                )
             except Exception as exc:
                 record_failure(idx, batch, exc)
             done_count += len(batch)
@@ -1533,6 +1545,18 @@ def _run_parallel_batches(
                     results_by_index[idx] = batch_result
                     meta["status"] = "COMPLETED"
                     meta["finished_at"] = datetime.utcnow().isoformat()
+                    logger.info(
+                        "%s batch %d/%d completed: candidates=%d unavailable=%d",
+                        stage,
+                        idx + 1,
+                        total_batches,
+                        len(batch),
+                        sum(
+                            bool(item.get("_unavailable"))
+                            for item in batch_result
+                            if isinstance(item, dict)
+                        ),
+                    )
                 except Exception as exc:
                     record_failure(idx, batch, exc)
                 done_count += len(batch)
@@ -1572,9 +1596,9 @@ def _partition_stage_results(
             if stock_id not in failed_ids:
                 diagnostic = item.get("llm_diagnostic") or {}
                 error_summary = (
-                    item.get("_unavailable_reason")
+                    diagnostic.get("message")
+                    or item.get("_unavailable_reason")
                     or item.get("short_reason")
-                    or diagnostic.get("message")
                     or failure_status
                 )
                 failures.append(
@@ -1586,6 +1610,7 @@ def _partition_stage_results(
                         "processing_status": failure_status,
                         "batch_index": _batch_index_for_stock(execution.batches, stock_id),
                         "error_summary": str(error_summary)[:500],
+                        "diagnostic": diagnostic,
                     }
                 )
                 failed_ids.add(stock_id)

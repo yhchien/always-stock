@@ -2,9 +2,9 @@ name: Daily Signals Generation
 
 on:
   schedule:
-    # 台北 19:23（週一到週五）= UTC 11:23（刻意錯開整點，降低 GitHub schedule 被丟棄的機率）
-    # GitHub Actions 無法直接指定 Asia/Taipei；若遇國定假日，pipeline 會因當日無交易資料而 no_data pass。
-    - cron: '23 11 * * 1-5'
+    # 台北每天 19:23 = UTC 11:23。每天檢查才能涵蓋週末補班開盤；
+    # 國定假日／一般週末因當日無交易資料而 no_data pass，不呼叫選股 LLM。
+    - cron: '23 11 * * *'
   workflow_dispatch:
     inputs:
       target_date:
@@ -19,11 +19,18 @@ on:
           - v7
           - legacy_split
 
+permissions:
+  contents: read
+
+concurrency:
+  group: daily-signals-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   run_signals:
     runs-on: ubuntu-latest
-    # LLM batch 60~120 檔 × 平均 ~20s/檔 ≈ 30~60 min；保留 90 min buffer
-    timeout-minutes: 90
+    # v7 structured research 失敗時會二分重試，保留額外修復時間。
+    timeout-minutes: 120
 
     env:
       TZ: Asia/Taipei
@@ -73,6 +80,7 @@ jobs:
           OPENAI_SIGNALS_DECISION_MODEL: ${{ secrets.OPENAI_SIGNALS_DECISION_MODEL || 'gpt-5.4' }}
           OPENAI_SIGNALS_REASON_MODEL: ${{ secrets.OPENAI_SIGNALS_REASON_MODEL || 'gpt-5.4-mini' }}
           SIGNALS_PROMPT_FAMILY: ${{ github.event.inputs.prompt_family || 'v7' }}
+          SIGNALS_PIPELINE_MODE: phase2
         run: |
           set +e
           python3 run_daily_signals.py ${{ steps.resolve.outputs.target_date }}
@@ -92,14 +100,16 @@ jobs:
           #   1 = no_data（候選池為空 / 無交易日）→ workflow pass，當天無訊號是合理結果
           #   2 = llm_error（OpenAI / prompt 失敗）→ workflow fail，需重跑
           #   3 = db_error（DB 連線 / pipeline crash）→ workflow fail
+          #   4 = partial_failure（snapshot 已保存但結果不完整）→ workflow fail，需重跑
           case "$FINAL_EXIT" in
             0) echo "Status: ok" ;;
             1) echo "Status: no_data (no candidate stocks; non-trading day or quiet market)" ;;
             2) echo "Status: llm_error (FAIL)" ;;
             3) echo "Status: db_error (FAIL)" ;;
+            4) echo "Status: partial_failure (FAIL; snapshot is incomplete)" ;;
             *) echo "Status: unknown (exit=$FINAL_EXIT)" ;;
           esac
-          # 0 / 1 → pass；2 / 3 → fail
+          # 0 / 1 → pass；2 / 3 / 4 → fail
           case "$FINAL_EXIT" in
             0|1) exit 0 ;;
             *) exit 1 ;;

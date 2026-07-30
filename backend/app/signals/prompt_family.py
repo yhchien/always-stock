@@ -19,6 +19,13 @@ PROMPT_FAMILY_VERSION = "v7"
 LEGACY_PROMPT_FAMILY = "legacy_split"
 SHARED_POLICY_VERSION = "v7"
 TRACKING_STATE_MACHINE_VERSION = "p4_state_v1"
+RESPONSE_CONTRACT_VERSIONS = {
+    "research": "v7_research_json_schema_v1",
+    "assessment": "v7_assessment_json_schema_v1",
+    "global_selector": "v7_global_selector_json_schema_v1",
+    "reason": "v7_reason_json_schema_v1",
+    "tracking": "v7_tracking_json_schema_v1",
+}
 
 STAGE_VERSIONS: Dict[str, Dict[str, str]] = {
     PROMPT_FAMILY_VERSION: {
@@ -136,6 +143,11 @@ def prompt_metadata(family: Optional[str] = None) -> Dict[str, Any]:
         "reason_prompt_version": versions["reason"],
         "tracking_prompt_version": versions["tracking"],
         "tracking_state_machine_version": TRACKING_STATE_MACHINE_VERSION,
+        "response_contract_versions": (
+            RESPONSE_CONTRACT_VERSIONS
+            if resolved == PROMPT_FAMILY_VERSION
+            else {}
+        ),
         "prompt_sha256": sha,
     }
 
@@ -282,6 +294,418 @@ def reason_input(
     return {"date": reason_date, "items": items}
 
 
+def research_output_schema(
+    *, expected_stocks: Iterable[str], expected_date: str
+) -> Dict[str, Any]:
+    """Strict Responses API schema for the v7 research stage.
+
+    Backend validators remain authoritative for one-to-one alignment, date
+    boundaries and Traditional Chinese requirements.  This schema prevents the
+    common transport-level failures first: truncated prose, markdown fences,
+    missing containers and free-form enum values.
+    """
+    stock_ids = [str(stock) for stock in expected_stocks]
+    nullable_string = {"type": ["string", "null"]}
+    contradiction = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "type": {
+                "type": "string",
+                "enum": [
+                    "BUSINESS_MISMATCH",
+                    "THEME_MISMATCH",
+                    "FALSE_SUPPLY_CHAIN_LINK",
+                    "MATERIAL_NEGATIVE_EVENT",
+                    "DATA_CONTRADICTION",
+                ],
+            },
+            "summary": {"type": "string"},
+            "url": {"type": "string"},
+            "published_date": {"type": "string"},
+        },
+        "required": ["type", "summary", "url", "published_date"],
+    }
+    source = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "title": {"type": "string"},
+            "url": {"type": "string"},
+            "published_date": {"type": "string"},
+            "source_type": {
+                "type": "string",
+                "enum": [
+                    "COMPANY",
+                    "EXCHANGE",
+                    "ETF_ISSUER",
+                    "NEWS",
+                    "GOVERNMENT",
+                    "OTHER",
+                ],
+            },
+        },
+        "required": ["title", "url", "published_date", "source_type"],
+    }
+    item = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "stock": {"type": "string", "enum": stock_ids},
+            "instrument_validation": {
+                "type": "string",
+                "enum": ["VERIFIED", "UNCONFIRMED", "MISMATCH"],
+            },
+            "theme_validation": {
+                "type": "string",
+                "enum": ["VERIFIED", "UNCONFIRMED", "MISMATCH"],
+            },
+            "supply_chain_validation": {
+                "type": "string",
+                "enum": [
+                    "VERIFIED",
+                    "UNCONFIRMED",
+                    "MISMATCH",
+                    "NOT_APPLICABLE",
+                ],
+            },
+            "instrument_summary": {"type": "string"},
+            "theme": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "name": {"type": "string"},
+                    "duration": {
+                        "type": "string",
+                        "enum": ["short", "1Q", "2Q_plus", "unclear"],
+                    },
+                    "maturity": {
+                        "type": "string",
+                        "enum": ["early", "mid", "late", "post_event", "unclear"],
+                    },
+                    "catalyst_status": {
+                        "type": "string",
+                        "enum": ["ACTIVE", "WEAKENING", "EXPIRED", "UNCONFIRMED"],
+                    },
+                    "catalyst_summary": {"type": "string"},
+                },
+                "required": [
+                    "name",
+                    "duration",
+                    "maturity",
+                    "catalyst_status",
+                    "catalyst_summary",
+                ],
+            },
+            "supply_chain_role": {"type": "string"},
+            "group_name": nullable_string,
+            "theme_cluster": nullable_string,
+            "material_contradictions": {
+                "type": "array",
+                "items": contradiction,
+            },
+            "sources": {"type": "array", "items": source},
+            "research_confidence": {
+                "type": "string",
+                "enum": ["HIGH", "MEDIUM", "LOW"],
+            },
+            "research_summary": {"type": "string"},
+        },
+        "required": [
+            "stock",
+            "instrument_validation",
+            "theme_validation",
+            "supply_chain_validation",
+            "instrument_summary",
+            "theme",
+            "supply_chain_role",
+            "group_name",
+            "theme_cluster",
+            "material_contradictions",
+            "sources",
+            "research_confidence",
+            "research_summary",
+        ],
+    }
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "date": {"type": "string", "enum": [expected_date]},
+            "items": {"type": "array", "items": item},
+        },
+        "required": ["date", "items"],
+    }
+
+
+def assessment_output_schema(
+    *, expected_stocks: Iterable[str], expected_date: str
+) -> Dict[str, Any]:
+    stock_ids = [str(stock) for stock in expected_stocks]
+    veto_reasons = [
+        "BACKEND_MAX_REMOVE",
+        "BUSINESS_MISMATCH",
+        "THEME_MISMATCH",
+        "FALSE_SUPPLY_CHAIN_LINK",
+        "MATERIAL_NEGATIVE_EVENT",
+        "DATA_CONTRADICTION",
+        "INSUFFICIENT_CONFIRMATION",
+        "MOMENTUM_NOT_FRESH",
+        "WEAK_PARTICIPATION",
+        "CATALYST_TOO_WEAK",
+        "EVIDENCE_NOT_COHERENT",
+    ]
+    item = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "stock": {"type": "string", "enum": stock_ids},
+            "assessment": {
+                "type": "string",
+                "enum": ["ELIGIBLE_FOR_GLOBAL_SELECTION", "REMOVE"],
+            },
+            "veto_reason": {
+                "type": ["string", "null"],
+                "enum": [None, *veto_reasons],
+            },
+            "assessment_reason": {"type": "string"},
+            "quality_assessment": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "momentum_quality": {
+                        "type": "string",
+                        "enum": ["HIGH", "MEDIUM", "LOW"],
+                    },
+                    "participation_quality": {
+                        "type": "string",
+                        "enum": ["HIGH", "MEDIUM", "LOW"],
+                    },
+                    "catalyst_quality": {
+                        "type": "string",
+                        "enum": ["HIGH", "MEDIUM", "LOW", "UNCONFIRMED"],
+                    },
+                    "evidence_coherence": {
+                        "type": "string",
+                        "enum": ["STRONG", "MODERATE", "WEAK"],
+                    },
+                },
+                "required": [
+                    "momentum_quality",
+                    "participation_quality",
+                    "catalyst_quality",
+                    "evidence_coherence",
+                ],
+            },
+            "veto_evidence": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "summary": {"type": ["string", "null"]},
+                    "urls": {"type": "array", "items": {"type": "string"}},
+                    "published_dates": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                },
+                "required": ["summary", "urls", "published_dates"],
+            },
+        },
+        "required": [
+            "stock",
+            "assessment",
+            "veto_reason",
+            "assessment_reason",
+            "quality_assessment",
+            "veto_evidence",
+        ],
+    }
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "date": {"type": "string", "enum": [expected_date]},
+            "items": {"type": "array", "items": item},
+        },
+        "required": ["date", "items"],
+    }
+
+
+def reason_output_schema(
+    *, expected_stocks: Iterable[str], expected_date: str
+) -> Dict[str, Any]:
+    stock_ids = [str(stock) for stock in expected_stocks]
+    bullets = {"type": "array", "items": {"type": "string"}}
+    nullable_number = {"type": ["number", "null"]}
+    item = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "stock": {"type": "string", "enum": stock_ids},
+            "theme_reason": bullets,
+            "capital_reason": bullets,
+            "chip_reason": bullets,
+            "margin_reason": bullets,
+            "technical_reason": bullets,
+            "momentum_reason": bullets,
+            "margin_analysis": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "stock_table": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "close_price": nullable_number,
+                            "margin_balance_shares": nullable_number,
+                            "margin_change_shares": nullable_number,
+                            "short_balance_shares": nullable_number,
+                            "short_change_shares": nullable_number,
+                            "margin_short_ratio_pct": nullable_number,
+                        },
+                        "required": [
+                            "close_price",
+                            "margin_balance_shares",
+                            "margin_change_shares",
+                            "short_balance_shares",
+                            "short_change_shares",
+                            "margin_short_ratio_pct",
+                        ],
+                    },
+                    "stock_interpretation": {"type": "string"},
+                    "stock_conclusion": {"type": "string"},
+                    "market_summary": {"type": "string"},
+                    "risk_note": {"type": "string"},
+                    "weight_ratio": {"type": "string"},
+                },
+                "required": [
+                    "stock_table",
+                    "stock_interpretation",
+                    "stock_conclusion",
+                    "market_summary",
+                    "risk_note",
+                    "weight_ratio",
+                ],
+            },
+        },
+        "required": [
+            "stock",
+            "theme_reason",
+            "capital_reason",
+            "chip_reason",
+            "margin_reason",
+            "technical_reason",
+            "momentum_reason",
+            "margin_analysis",
+        ],
+    }
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "date": {"type": "string", "enum": [expected_date]},
+            "items": {"type": "array", "items": item},
+        },
+        "required": ["date", "items"],
+    }
+
+
+def tracking_output_schema(
+    *, expected_stocks: Iterable[str], review_date: str
+) -> Dict[str, Any]:
+    stock_ids = [str(stock) for stock in expected_stocks]
+    validation = ["VERIFIED", "UNCONFIRMED", "MISMATCH"]
+    dimension = ["INTACT", "WEAKENING", "INVALIDATED", "UNKNOWN"]
+    invalidation_reasons = [
+        "BUSINESS_MISMATCH",
+        "THEME_MISMATCH",
+        "FALSE_SUPPLY_CHAIN_LINK",
+        "MATERIAL_NEGATIVE_EVENT",
+        "DATA_CONTRADICTION",
+    ]
+    item = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "stock": {"type": "string", "enum": stock_ids},
+            "assessment": {
+                "type": "string",
+                "enum": [
+                    "THESIS_INTACT",
+                    "THESIS_WEAKENING",
+                    "THESIS_INVALIDATED",
+                    "RESEARCH_UNAVAILABLE",
+                ],
+            },
+            "instrument_validation": {"type": "string", "enum": validation},
+            "theme_validation": {"type": "string", "enum": validation},
+            "supply_chain_validation": {
+                "type": "string",
+                "enum": [*validation, "NOT_APPLICABLE"],
+            },
+            "catalyst_status": {
+                "type": "string",
+                "enum": [
+                    "ACTIVE",
+                    "WEAKENING",
+                    "EXPIRED",
+                    "REPLACED",
+                    "UNCONFIRMED",
+                ],
+            },
+            "thesis_dimensions": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "business_or_exposure": {"type": "string", "enum": dimension},
+                    "theme": {"type": "string", "enum": dimension},
+                    "catalyst": {"type": "string", "enum": dimension},
+                },
+                "required": ["business_or_exposure", "theme", "catalyst"],
+            },
+            "invalidation_reason_code": {
+                "type": ["string", "null"],
+                "enum": [None, *invalidation_reasons],
+            },
+            "assessment_reason": {"type": "string"},
+            "material_evidence": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "summary": {"type": "string"},
+                        "url": {"type": "string"},
+                        "published_date": {"type": "string"},
+                    },
+                    "required": ["summary", "url", "published_date"],
+                },
+            },
+        },
+        "required": [
+            "stock",
+            "assessment",
+            "instrument_validation",
+            "theme_validation",
+            "supply_chain_validation",
+            "catalyst_status",
+            "thesis_dimensions",
+            "invalidation_reason_code",
+            "assessment_reason",
+            "material_evidence",
+        ],
+    }
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "review_date": {"type": "string", "enum": [review_date]},
+            "items": {"type": "array", "items": item},
+        },
+        "required": ["review_date", "items"],
+    }
+
+
 def validate_research_output(
     payload: Any, *, expected_stocks: Iterable[str], expected_date: str
 ) -> List[Dict[str, Any]]:
@@ -300,7 +724,9 @@ def validate_research_output(
         _enum(theme, "maturity", {"early", "mid", "late", "post_event", "unclear"})
         _enum(theme, "catalyst_status", {"ACTIVE", "WEAKENING", "EXPIRED", "UNCONFIRMED"})
         _traditional_text(theme, "catalyst_summary")
-        _evidence_rows(item.get("sources"), expected_date, require_summary=False)
+        item["sources"] = _evidence_rows(
+            item.get("sources"), expected_date, require_summary=False
+        )
         for source in item["sources"]:
             _human_text(source, "title")
             _enum(source, "source_type", {
@@ -310,6 +736,7 @@ def validate_research_output(
         contradictions = item.get("material_contradictions")
         if not isinstance(contradictions, list):
             raise PromptFamilyError("Research material_contradictions must be a list.")
+        kept_contradictions: List[Dict[str, Any]] = []
         for evidence in contradictions:
             if not isinstance(evidence, dict):
                 raise PromptFamilyError("Research contradiction must be an object.")
@@ -319,7 +746,10 @@ def validate_research_output(
             })
             _traditional_text(evidence, "summary")
             _valid_url(evidence.get("url"))
-            _valid_published_date(evidence.get("published_date"), expected_date)
+            if not _valid_published_date(evidence.get("published_date"), expected_date):
+                continue
+            kept_contradictions.append(evidence)
+        item["material_contradictions"] = kept_contradictions
     return rows
 
 
@@ -354,8 +784,9 @@ def validate_assessment_output(
             raise PromptFamilyError("Assessment veto evidence lists are required.")
         for value in urls:
             _valid_url(value)
-        for value in published:
-            _valid_published_date(value, expected_date)
+        veto["published_dates"] = [
+            value for value in published if _valid_published_date(value, expected_date)
+        ]
         if assessment == "REMOVE" and not item.get("veto_reason"):
             raise PromptFamilyError("REMOVE requires veto_reason.")
     return rows
@@ -458,23 +889,38 @@ def _valid_url(value: Any) -> None:
         raise PromptFamilyError(f"Invalid evidence URL: {value!r}.")
 
 
-def _valid_published_date(value: Any, cutoff: str) -> None:
+def _valid_published_date(value: Any, cutoff: str) -> bool:
+    """Return True when ``value`` is a real ISO date at/before ``cutoff``.
+
+    An unparseable value (for example the model writing "2026-07-??" when it
+    only knows the month) is not a leak risk -- there is no confirmed date to
+    check -- so callers drop that single evidence entry instead of failing
+    the whole item.  A value that *does* parse and *is* after cutoff remains
+    a hard contract violation, since that is an actual future-info leak.
+    """
     try:
         published = date.fromisoformat(str(value))
-        boundary = date.fromisoformat(cutoff)
-    except ValueError as exc:
-        raise PromptFamilyError(f"Invalid published date: {value!r}.") from exc
+    except ValueError:
+        return False
+    boundary = date.fromisoformat(cutoff)
     if published > boundary:
         raise PromptFamilyError("Evidence published date is after the stage cutoff.")
+    return True
 
 
-def _evidence_rows(value: Any, cutoff: str, *, require_summary: bool) -> None:
+def _evidence_rows(
+    value: Any, cutoff: str, *, require_summary: bool
+) -> List[Dict[str, Any]]:
     if not isinstance(value, list):
         raise PromptFamilyError("Evidence sources must be a list.")
+    kept: List[Dict[str, Any]] = []
     for evidence in value:
         if not isinstance(evidence, dict):
             raise PromptFamilyError("Evidence source must be an object.")
         if require_summary:
             _human_text(evidence, "summary")
         _valid_url(evidence.get("url"))
-        _valid_published_date(evidence.get("published_date"), cutoff)
+        if not _valid_published_date(evidence.get("published_date"), cutoff):
+            continue
+        kept.append(evidence)
+    return kept
