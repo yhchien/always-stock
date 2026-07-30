@@ -1151,6 +1151,12 @@ def get_observation_detail(
         .order_by(SignalWatchHit.snapshot_date.desc())
         .all()
     )
+    stock_episodes = (
+        db.query(SignalObservation)
+        .filter(SignalObservation.stock_id == observation.stock_id)
+        .order_by(SignalObservation.started_signal_date.asc())
+        .all()
+    )
     payload = _serialize_observation(
         observation,
         latest_review=reviews[0] if reviews else None,
@@ -1161,7 +1167,7 @@ def get_observation_detail(
             "as_of_date": recommendation_date,
             "initial_observation": observation.initial_snapshot_json or {},
             "latest_snapshot": observation.latest_snapshot_json or {},
-            "review_timeline": [_serialize_review(row) for row in reviews],
+            "review_timeline": _serialize_review_timeline(reviews),
             "recommendation_history": [
                 {
                     "date": row.snapshot_date,
@@ -1170,9 +1176,45 @@ def get_observation_detail(
                 }
                 for row in recommendation_history
             ],
+            "episode_history": [
+                {
+                    "id": row.id,
+                    "episode_id": row.episode_id,
+                    "status": row.status,
+                    "started_signal_date": row.started_signal_date,
+                    "stopped_at": row.stopped_at,
+                    "initial_thesis": (
+                        row.initial_snapshot_json or {}
+                    ).get("recommendation_thesis"),
+                    "stop_reason_code": row.stop_reason_code,
+                    "stop_reason": row.stop_reason,
+                    "is_current": row.id == observation.id,
+                }
+                for row in stock_episodes
+            ],
         }
     )
     return payload
+
+
+def _serialize_review_timeline(
+    reviews_desc: Sequence[SignalObservationReview],
+) -> List[Dict[str, Any]]:
+    """Add the prior lifecycle state without changing persisted P4 decisions."""
+
+    previous_status = STATUS_OBSERVING
+    serialized_asc: List[Dict[str, Any]] = []
+    for review in reversed(list(reviews_desc)):
+        item = _serialize_review(review)
+        item["previous_status"] = previous_status
+        if review.decision == DECISION_CONTINUE:
+            previous_status = STATUS_OBSERVING
+        elif review.decision == DECISION_CAUTION:
+            previous_status = STATUS_CAUTION
+        elif review.decision == DECISION_STOP:
+            previous_status = STATUS_STOPPED
+        serialized_asc.append(item)
+    return list(reversed(serialized_asc))
 
 
 def get_daily_tracking_summary(

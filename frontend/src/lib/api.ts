@@ -1726,6 +1726,7 @@ export interface SignalObservationItem {
 
 export interface SignalObservationReview {
   review_date: string
+  previous_status?: SignalObservationStatus | null
   decision: SignalObservationDecision
   reason_codes: string[]
   reason: string | null
@@ -1758,6 +1759,17 @@ export interface SignalObservationDetail extends SignalObservationItem {
     signal_type: string
     prompt_version: string | null
   }>
+  episode_history?: Array<{
+    id: number
+    episode_id: string
+    status: SignalObservationStatus
+    started_signal_date: string
+    stopped_at: string | null
+    initial_thesis: string | null
+    stop_reason_code: string | null
+    stop_reason: string | null
+    is_current: boolean
+  }>
 }
 
 export interface SignalTrackingSummary {
@@ -1775,6 +1787,188 @@ export interface SignalTrackingSummary {
 
 export interface SignalTrackingSummaryResponse {
   tracking_summary: SignalTrackingSummary
+}
+
+// ── P6 Product UI / Outcome Analytics ─────────────────────────────────────
+
+export interface SignalRecommendationResponse extends SignalSnapshotResponse {
+  navigation: {
+    previous_date: string | null
+    next_date: string | null
+    latest_date: string
+  }
+}
+
+export type SignalOutcomeLabel =
+  | "WINNER"
+  | "NEUTRAL"
+  | "BIG_LOSER"
+  | "IMMATURE"
+  | "OUTCOME_DATA_MISSING"
+
+export interface SignalOutcomeSummary {
+  date_range: {
+    requested_start: string | null
+    requested_end: string | null
+    actual_start: string | null
+    actual_end: string | null
+  }
+  sample: {
+    total: number
+    matured: number
+    immature: number
+    missing: number
+  }
+  recommendation: {
+    winner_count: number
+    neutral_count: number
+    big_loser_count: number
+    winner_rate: number
+    neutral_rate: number
+    big_loser_rate: number
+    acceptable_rate: number
+    acceptable_target_met: boolean
+    winner_greater_than_neutral: boolean
+    average_recommend_count: number
+  }
+  selection: {
+    winner_recall: number
+    not_selected_winner_count: number
+    not_selected_winner_rate: number
+    not_selected_winner_by_reason: Record<string, number>
+    average_compression_rate: number
+    average_phase2_eligible_count: number
+    average_global_eligible_count: number
+    average_recommended_count: number
+    rank_override_count: number
+    rank_override_big_loser_count: number
+    backend_rank_distribution: Record<string, Record<string, number>>
+  }
+  observation: {
+    caution_recovery_rate: number
+    caution_event_recovery_rate: number
+    caution_episode_recovery_rate: number
+    premature_stop_candidate_count: number
+    stop_before_big_loss_rate: number
+    average_trading_days_to_stop: number
+    rerecommended_episode_count: number
+  }
+  versions: Record<string, string[]>
+  definitions: Record<string, string>
+}
+
+export interface SignalOutcomeTimeseriesItem {
+  date: string
+  eligible: number
+  phase2_eligible: number
+  recommended: number
+  not_selected: number
+  removed: number
+  technical_failure: number
+  winner: number
+  neutral: number
+  big_loser: number
+  matured_sample: number
+  acceptable_rate: number
+  winner_recall: number
+}
+
+export interface SignalOutcomeTimeseriesResponse {
+  outcome_definition_version: string
+  items: SignalOutcomeTimeseriesItem[]
+}
+
+export interface SignalOutcomeItem {
+  id: number
+  signal_date: string
+  stock: string
+  name: string
+  asset_type: string
+  backend_priority_rank: number | null
+  recommendation_rank: number | null
+  p3_decision: "RECOMMEND" | "NOT_SELECTED"
+  selection_reason_code: string | null
+  selection_reason: string | null
+  theme_cluster: string | null
+  observation_status: SignalObservationStatus | null
+  stop_date: string | null
+  stop_reason: string | null
+  day10_return: number | null
+  outcome_label: SignalOutcomeLabel
+  entry_trade_date: string | null
+  entry_price: number | null
+  exit_trade_date: string | null
+  exit_price: number | null
+  selection_version: string | null
+  prompt_family_version: string | null
+  momentum_score_version: string | null
+  research_prompt_version: string | null
+  assessment_prompt_version: string | null
+  global_selector_version: string | null
+  reason_prompt_version: string | null
+  tracking_prompt_version: string | null
+  tracking_state_machine_version: string | null
+  outcome_definition_version: string
+  rank_override: boolean
+  rank_override_reason: string | null
+  metadata: Record<string, unknown>
+}
+
+export interface SignalOutcomeItemsResponse {
+  page: number
+  page_size: number
+  total: number
+  pages: number
+  items: SignalOutcomeItem[]
+}
+
+export interface SignalObservationAnalyticsResponse {
+  summary: SignalOutcomeSummary["observation"]
+  definitions: Record<string, string>
+  premature_stop_candidates: Array<Record<string, unknown>>
+  stopped_before_big_loss: Record<string, unknown>
+  average_days_to_stop: Record<string, number>
+  rerecommended_episodes: Array<Record<string, unknown>>
+}
+
+export interface SignalOutcomeReviewItem {
+  id: number
+  source_type: string
+  category: string
+  stock: string
+  signal_date: string | null
+  observation_id: number | null
+  review_status: "UNREVIEWED" | "REVIEWED"
+  review_note: string | null
+  reviewed_at: string | null
+  reviewed_by: string | null
+}
+
+export interface SignalOutcomeReviewQueueResponse {
+  page: number
+  page_size: number
+  total: number
+  items: SignalOutcomeReviewItem[]
+}
+
+export interface SignalOutcomeFilters {
+  start_date?: string
+  end_date?: string
+  prompt_family?: string
+  selection_version?: string
+  asset_type?: string
+  theme_cluster?: string
+  outcome_label?: SignalOutcomeLabel
+  p3_decision?: "RECOMMEND" | "NOT_SELECTED"
+  selection_reason_code?: string
+  observation_status?: SignalObservationStatus
+  momentum_score_version?: string
+  research_prompt_version?: string
+  assessment_prompt_version?: string
+  global_selector_version?: string
+  reason_prompt_version?: string
+  tracking_prompt_version?: string
+  tracking_state_machine_version?: string
 }
 
 // ============================================================================
@@ -1964,6 +2158,31 @@ export async function fetchSignalSnapshotByDate(
   return res.json()
 }
 
+function appendDefinedParams<T extends object>(
+  qs: URLSearchParams,
+  params?: T,
+): void {
+  Object.entries(params ?? {}).forEach(([key, value]) => {
+    if (value !== undefined && value !== "") qs.set(key, String(value))
+  })
+}
+
+export async function fetchSignalRecommendations(
+  snapshotDate?: string,
+  options?: FetchOptions,
+): Promise<SignalRecommendationResponse | null> {
+  const qs = new URLSearchParams()
+  if (snapshotDate) qs.set("date", snapshotDate)
+  const res = await apiFetch(
+    `${API_BASE}/api/signals/recommendations${qs.size ? `?${qs}` : ""}`,
+    { signal: options?.signal },
+  )
+  if (res.status === 404) return null
+  if (!res.ok)
+    throw new Error(await buildErrorMessage(res, "正式推薦快照載入失敗"))
+  return res.json()
+}
+
 export async function fetchLatestSignalJob(
   options?: FetchOptions,
 ): Promise<SignalJobResponse | null> {
@@ -2061,6 +2280,110 @@ export async function fetchSignalTrackingSummary(
   const res = await apiFetch(url, { signal: options?.signal })
   if (!res.ok)
     throw new Error(await buildErrorMessage(res, "每日觀察摘要載入失敗"))
+  return res.json()
+}
+
+export async function fetchSignalOutcomeSummary(
+  filters?: SignalOutcomeFilters,
+  options?: FetchOptions,
+): Promise<SignalOutcomeSummary> {
+  const qs = new URLSearchParams()
+  appendDefinedParams(qs, filters)
+  const res = await apiFetch(
+    `${API_BASE}/api/signals/outcomes/summary${qs.size ? `?${qs}` : ""}`,
+    { signal: options?.signal },
+  )
+  if (!res.ok)
+    throw new Error(await buildErrorMessage(res, "結果分析載入失敗"))
+  return res.json()
+}
+
+export async function fetchSignalOutcomeTimeseries(
+  filters?: SignalOutcomeFilters,
+  options?: FetchOptions,
+): Promise<SignalOutcomeTimeseriesResponse> {
+  const qs = new URLSearchParams()
+  appendDefinedParams(qs, filters)
+  const res = await apiFetch(
+    `${API_BASE}/api/signals/outcomes/timeseries${qs.size ? `?${qs}` : ""}`,
+    { signal: options?.signal },
+  )
+  if (!res.ok)
+    throw new Error(await buildErrorMessage(res, "結果趨勢載入失敗"))
+  return res.json()
+}
+
+export async function fetchSignalOutcomeItems(
+  params?: SignalOutcomeFilters & {
+    page?: number
+    page_size?: number
+    sort?: string
+    direction?: "asc" | "desc"
+  },
+  options?: FetchOptions,
+): Promise<SignalOutcomeItemsResponse> {
+  const qs = new URLSearchParams()
+  appendDefinedParams(qs, params)
+  const res = await apiFetch(
+    `${API_BASE}/api/signals/outcomes/items${qs.size ? `?${qs}` : ""}`,
+    { signal: options?.signal },
+  )
+  if (!res.ok)
+    throw new Error(await buildErrorMessage(res, "結果明細載入失敗"))
+  return res.json()
+}
+
+export function signalOutcomeCsvUrl(filters?: SignalOutcomeFilters): string {
+  const qs = new URLSearchParams({ export: "csv" })
+  appendDefinedParams(qs, filters)
+  return `${API_BASE}/api/signals/outcomes/items?${qs}`
+}
+
+export async function fetchSignalObservationAnalytics(
+  options?: FetchOptions,
+): Promise<SignalObservationAnalyticsResponse> {
+  const res = await apiFetch(`${API_BASE}/api/signals/outcomes/observations`, {
+    signal: options?.signal,
+  })
+  if (!res.ok)
+    throw new Error(await buildErrorMessage(res, "觀察結果分析載入失敗"))
+  return res.json()
+}
+
+export async function fetchSignalOutcomeReviewQueue(
+  params?: {
+    review_status?: "UNREVIEWED" | "REVIEWED"
+    category?: string
+    page?: number
+    page_size?: number
+  },
+  options?: FetchOptions,
+): Promise<SignalOutcomeReviewQueueResponse> {
+  const qs = new URLSearchParams()
+  appendDefinedParams(qs, params)
+  const res = await apiFetch(
+    `${API_BASE}/api/signals/outcomes/review-queue${qs.size ? `?${qs}` : ""}`,
+    { signal: options?.signal },
+  )
+  if (!res.ok)
+    throw new Error(await buildErrorMessage(res, "人工檢查清單載入失敗"))
+  return res.json()
+}
+
+export async function updateSignalOutcomeReview(
+  id: number,
+  payload: { review_status: "UNREVIEWED" | "REVIEWED"; review_note?: string },
+): Promise<SignalOutcomeReviewItem> {
+  const res = await apiFetch(
+    `${API_BASE}/api/signals/outcomes/review-queue/${id}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+  )
+  if (!res.ok)
+    throw new Error(await buildErrorMessage(res, "人工檢查註記更新失敗"))
   return res.json()
 }
 

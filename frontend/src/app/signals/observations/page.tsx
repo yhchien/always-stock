@@ -8,6 +8,7 @@ import ObservationStatusBadge, {
   observationDecisionLabel,
 } from "@/components/ObservationStatusBadge"
 import SignalAssetBadge from "@/components/SignalAssetBadge"
+import SignalProductNav from "@/components/SignalProductNav"
 import {
   fetchSignalObservationDetail,
   fetchSignalObservations,
@@ -59,6 +60,9 @@ function EvidenceBlock({
 
 export default function SignalObservationsPage() {
   const [filter, setFilter] = useState<StatusFilter>("ALL")
+  const [search, setSearch] = useState("")
+  const [assetType, setAssetType] = useState("")
+  const [episodeSearch, setEpisodeSearch] = useState("")
   const [items, setItems] = useState<SignalObservationItem[]>([])
   const [summary, setSummary] = useState<SignalTrackingSummary | null>(null)
   const [selectedId, setSelectedId] = useState<number | null>(null)
@@ -66,6 +70,17 @@ export default function SignalObservationsPage() {
   const [loading, setLoading] = useState(true)
   const [detailLoading, setDetailLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const visibleItems = items.filter((item) => {
+    const normalizedSearch = search.trim().toLowerCase()
+    return (
+      (!normalizedSearch ||
+        item.stock.toLowerCase().includes(normalizedSearch) ||
+        item.name.toLowerCase().includes(normalizedSearch)) &&
+      (!assetType || item.asset_type === assetType) &&
+      (!episodeSearch ||
+        item.episode_id.toLowerCase().includes(episodeSearch.trim().toLowerCase()))
+    )
+  })
 
   useEffect(() => {
     const controller = new AbortController()
@@ -112,6 +127,7 @@ export default function SignalObservationsPage() {
 
   return (
     <main className="mx-auto min-h-screen max-w-6xl px-4 py-6 text-slate-100">
+      <SignalProductNav />
       <header className="mb-5 flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="text-xs uppercase tracking-[0.2em] text-sky-300/80">
@@ -123,10 +139,10 @@ export default function SignalObservationsPage() {
           </p>
         </div>
         <Link
-          href="/"
+          href="/signals/recommendations"
           className="rounded border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:border-slate-500"
         >
-          今日推薦
+          正式推薦
         </Link>
       </header>
 
@@ -154,6 +170,12 @@ export default function SignalObservationsPage() {
       {summary && !summary.review_complete && (
         <p className="mb-4 rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-100">
           本次追蹤檢查未完整完成；失敗股票維持上一個有效狀態。
+        </p>
+      )}
+      {summary && summary.conflict_count > 0 && (
+        <p className="mb-4 rounded border border-violet-500/30 bg-violet-500/10 px-3 py-2 text-sm text-violet-100">
+          今日有 {summary.conflict_count} 筆 TRACKING_SELECTION_CONFLICT：P3
+          正式推薦與 P4 停止觀察證據同日並存，兩筆紀錄皆保留，需人工檢查。
         </p>
       )}
       {error && (
@@ -184,17 +206,42 @@ export default function SignalObservationsPage() {
             {option.label}
           </button>
         ))}
+        <input
+          aria-label="搜尋股票"
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          placeholder="股票代碼／名稱"
+          className="ml-auto rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs"
+        />
+        <select
+          aria-label="Asset Type"
+          value={assetType}
+          onChange={(event) => setAssetType(event.target.value)}
+          className="rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs"
+        >
+          <option value="">全部商品類型</option>
+          <option value="COMMON_STOCK">普通股</option>
+          <option value="FINANCIAL">金融股</option>
+          <option value="ETF">ETF</option>
+        </select>
+        <input
+          aria-label="Episode ID"
+          value={episodeSearch}
+          onChange={(event) => setEpisodeSearch(event.target.value)}
+          placeholder="Episode ID"
+          className="rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs"
+        />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
         <section className="space-y-2">
           {loading && <p className="text-sm text-slate-500">載入觀察清單…</p>}
-          {!loading && items.length === 0 && (
+          {!loading && visibleItems.length === 0 && (
             <p className="rounded border border-slate-800 p-4 text-sm text-slate-500">
               目前沒有符合此狀態的 observation。
             </p>
           )}
-          {items.map((item) => (
+          {visibleItems.map((item) => (
             <button
               key={item.id}
               type="button"
@@ -318,6 +365,11 @@ export default function SignalObservationsPage() {
                         <span className="text-slate-200">
                           {observationDecisionLabel(review.decision)}
                         </span>
+                        {review.previous_status && (
+                          <span className="text-slate-600">
+                            前態 {review.previous_status}
+                          </span>
+                        )}
                       </div>
                       {review.technical_status ? (
                         <p className="mt-1 text-xs text-amber-200">
@@ -336,12 +388,57 @@ export default function SignalObservationsPage() {
                                 .join("、")}
                             </p>
                           )}
+                          {review.failed_dimensions.length > 0 && (
+                            <p className="mt-1 text-[11px] text-slate-500">
+                              失效維度：
+                              {review.failed_dimensions
+                                .map((value) => DIMENSION_LABELS[value] ?? value)
+                                .join("、")}
+                            </p>
+                          )}
+                          <p className="mt-1 text-[10px] text-slate-600">
+                            {review.tracking_prompt_version}・
+                            {review.tracking_state_machine_version}
+                          </p>
                         </>
                       )}
                     </li>
                   ))}
                 </ol>
               </section>
+              {(detail.episode_history?.length ?? 0) > 0 && (
+                <section>
+                  <h3 className="mb-2 text-xs font-semibold text-slate-300">
+                    Episode History
+                  </h3>
+                  <div className="space-y-2">
+                    {detail.episode_history?.map((episode, index) => (
+                      <article
+                        key={episode.episode_id}
+                        className={`rounded-lg border p-3 text-xs ${
+                          episode.is_current
+                            ? "border-sky-500/40 bg-sky-500/5"
+                            : "border-slate-800"
+                        }`}
+                      >
+                        <p className="text-slate-300">
+                          Episode {index + 1}・{episode.status}・
+                          {episode.started_signal_date} →{" "}
+                          {episode.stopped_at?.slice(0, 10) ?? "進行中"}
+                        </p>
+                        <p className="mt-1 text-slate-500">
+                          {episode.initial_thesis ?? "歷史 episode 未保存完整 thesis"}
+                        </p>
+                        {episode.stop_reason && (
+                          <p className="mt-1 text-slate-600">
+                            {episode.stop_reason_code}・{episode.stop_reason}
+                          </p>
+                        )}
+                      </article>
+                    ))}
+                  </div>
+                </section>
+              )}
             </div>
           )}
         </section>

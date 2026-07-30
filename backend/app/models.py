@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, BigInteger, Float, Date, DateTime, Boolean, Text, JSON, UniqueConstraint, ForeignKey
+from sqlalchemy import Column, String, Integer, BigInteger, Float, Date, DateTime, Boolean, Text, JSON, UniqueConstraint, ForeignKey, Index
 from datetime import datetime
 from .database import Base
 
@@ -490,6 +490,139 @@ class SignalObservationReview(Base):
             "review_date",
             name="uq_signal_observation_review_date",
         ),
+    )
+
+
+class SignalOutcomeMetric(Base):
+    """P6 read-only Day10 materialized outcome for one P3 global-eligible item."""
+
+    __tablename__ = "signal_outcome_metrics"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    signal_date = Column(Date, nullable=False, index=True)
+    stock_id = Column(String, nullable=False, index=True)
+    stock_name = Column(String, nullable=False)
+    asset_type = Column(String(24), nullable=False, default="COMMON_STOCK")
+    p3_decision = Column(String(24), nullable=False, index=True)
+    global_eligible = Column(Boolean, nullable=False, default=True)
+    recommendation_rank = Column(Integer, nullable=True, index=True)
+    backend_priority_rank = Column(Integer, nullable=True, index=True)
+    rank_override = Column(Boolean, nullable=False, default=False)
+    rank_override_reason = Column(Text, nullable=True)
+    selection_reason_code = Column(String(64), nullable=True, index=True)
+    selection_reason = Column(Text, nullable=True)
+    theme_cluster = Column(String(128), nullable=True, index=True)
+    observation_status = Column(String(16), nullable=True, index=True)
+    stop_date = Column(Date, nullable=True)
+    stop_reason = Column(Text, nullable=True)
+    entry_trade_date = Column(Date, nullable=True)
+    entry_price = Column(Float, nullable=True)
+    exit_trade_date = Column(Date, nullable=True)
+    exit_price = Column(Float, nullable=True)
+    outcome_return_pct = Column(Float, nullable=True)
+    outcome_label = Column(String(32), nullable=False, index=True)
+    matured_at = Column(Date, nullable=True, index=True)
+    outcome_horizon = Column(String(16), nullable=False, default="DAY10")
+    outcome_definition_version = Column(
+        String(32), nullable=False, default="day10_v1", index=True
+    )
+    entry_price_definition = Column(
+        String(64), nullable=False, default="signal_date_close"
+    )
+    exit_price_definition = Column(
+        String(64), nullable=False, default="tenth_subsequent_market_trade_date_close"
+    )
+    selection_version = Column(String(64), nullable=True, index=True)
+    prompt_family_version = Column(String(32), nullable=True, index=True)
+    research_prompt_version = Column(String(64), nullable=True, index=True)
+    assessment_prompt_version = Column(String(64), nullable=True, index=True)
+    global_selector_version = Column(String(64), nullable=True, index=True)
+    reason_prompt_version = Column(String(64), nullable=True, index=True)
+    tracking_prompt_version = Column(String(64), nullable=True, index=True)
+    tracking_state_machine_version = Column(String(64), nullable=True, index=True)
+    momentum_score_version = Column(String(64), nullable=True, index=True)
+    metadata_json = Column(JSON, nullable=False, default=dict)
+    calculated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "signal_date",
+            "stock_id",
+            "outcome_horizon",
+            "outcome_definition_version",
+            name="uq_signal_outcome_metric",
+        ),
+        Index(
+            "ix_signal_outcome_decision_label_date",
+            "p3_decision",
+            "outcome_label",
+            "signal_date",
+        ),
+    )
+
+
+class SignalObservationOutcomeMetric(Base):
+    """P6 post-stop and lifecycle analytics cache; never read by P4."""
+
+    __tablename__ = "signal_observation_outcome_metrics"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    observation_id = Column(
+        Integer,
+        ForeignKey("signal_observations.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    episode_id = Column(String(36), nullable=False, index=True)
+    stock_id = Column(String, nullable=False, index=True)
+    started_signal_date = Column(Date, nullable=False)
+    stop_date = Column(Date, nullable=True, index=True)
+    stop_reason_code = Column(String(64), nullable=True)
+    stop_category = Column(String(32), nullable=True)
+    trading_days_to_stop = Column(Integer, nullable=True)
+    post_stop_day10_return_pct = Column(Float, nullable=True)
+    premature_stop_candidate = Column(Boolean, nullable=False, default=False)
+    hit_minus10_date = Column(Date, nullable=True)
+    stopped_before_minus10 = Column(Boolean, nullable=True)
+    trading_days_before_minus10 = Column(Integer, nullable=True)
+    next_episode_id = Column(String(36), nullable=True)
+    trading_days_to_rerecommend = Column(Integer, nullable=True)
+    definition_version = Column(
+        String(64),
+        nullable=False,
+        default="p6_observation_outcome_v1",
+        index=True,
+    )
+    premature_stop_definition_version = Column(
+        String(64),
+        nullable=False,
+        default="stop_day10_plus10_v1",
+    )
+    calculated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class SignalOutcomeReviewQueue(Base):
+    """Human-only P6 review notes; deliberately detached from production decisions."""
+
+    __tablename__ = "signal_outcome_review_queue"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    source_type = Column(String(32), nullable=False)
+    source_key = Column(String(160), nullable=False)
+    category = Column(String(64), nullable=False, index=True)
+    stock_id = Column(String, nullable=False, index=True)
+    signal_date = Column(Date, nullable=True, index=True)
+    observation_id = Column(Integer, nullable=True, index=True)
+    review_status = Column(String(16), nullable=False, default="UNREVIEWED", index=True)
+    review_note = Column(Text, nullable=True)
+    reviewed_at = Column(DateTime, nullable=True)
+    reviewed_by = Column(String(128), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("source_type", "source_key", "category", name="uq_outcome_review_source"),
     )
 
 

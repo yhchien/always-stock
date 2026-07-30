@@ -23,7 +23,8 @@ from datetime import date, datetime, time, timedelta
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -40,6 +41,7 @@ from app.models import (
 from app.signals import archive as signal_archive
 from app.signals import expectation_price as expectation_price_service
 from app.signals import observation_lifecycle
+from app.signals import outcome_metrics
 from app.signals.pipeline import run_signal_pipeline_sync
 
 logger = logging.getLogger(__name__)
@@ -229,6 +231,11 @@ class ExpectationQuotaResponse(BaseModel):
     disabled: bool
 
 
+class OutcomeReviewUpdateRequest(BaseModel):
+    review_status: str
+    review_note: Optional[str] = None
+
+
 class SignalArchiveReportResponse(BaseModel):
     snapshot_date: date
     signal_type: str
@@ -390,6 +397,9 @@ def _run_pipeline_safely(job_id: str, target_date: date) -> None:
                 db,
                 as_of_trade_date=target_date,
             )
+            # P6 is a one-way post-decision consumer.  This refresh happens only
+            # after the production pipeline and archive update are complete.
+            outcome_metrics.refresh_incremental_outcomes(db)
         finally:
             db.close()
     except Exception:
@@ -418,6 +428,46 @@ def get_latest_signal(db: Session = Depends(get_db)) -> SnapshotResponse:
     return _serialize_snapshot(snap, db)
 
 
+@router.get("/recommendations")
+def get_recommendations(
+    snapshot_date: Optional[date] = Query(default=None, alias="date"),
+    db: Session = Depends(get_db),
+):
+    """P6 date-aware recommendation snapshot with deterministic navigation."""
+
+    dates = [
+        row[0]
+        for row in (
+            db.query(SignalSnapshot.snapshot_date)
+            .order_by(SignalSnapshot.snapshot_date.asc())
+            .all()
+        )
+    ]
+    if not dates:
+        raise HTTPException(status_code=404, detail="No snapshot yet")
+    selected = snapshot_date or dates[-1]
+    snap = (
+        db.query(SignalSnapshot)
+        .filter(SignalSnapshot.snapshot_date == selected)
+        .one_or_none()
+    )
+    if snap is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No snapshot for {selected.isoformat()}",
+        )
+    index = dates.index(selected)
+    serialized = _serialize_snapshot(snap, db).model_dump()
+    return {
+        **serialized,
+        "navigation": {
+            "previous_date": dates[index - 1] if index > 0 else None,
+            "next_date": dates[index + 1] if index + 1 < len(dates) else None,
+            "latest_date": dates[-1],
+        },
+    }
+
+
 @router.get("/snapshot/{snapshot_date}", response_model=SnapshotResponse)
 def get_snapshot_by_date(
     snapshot_date: date,
@@ -435,6 +485,249 @@ def get_snapshot_by_date(
             detail=f"No snapshot for {snapshot_date.isoformat()}",
         )
     return _serialize_snapshot(snap, db)
+
+
+def _outcome_filter_args(
+    *,
+    start_date: Optional[date],
+    end_date: Optional[date],
+    prompt_family: Optional[str],
+    selection_version: Optional[str],
+    asset_type: Optional[str],
+    theme_cluster: Optional[str],
+    outcome_label: Optional[str] = None,
+    p3_decision: Optional[str] = None,
+    selection_reason_code: Optional[str] = None,
+    observation_status: Optional[str] = None,
+    momentum_score_version: Optional[str] = None,
+    research_prompt_version: Optional[str] = None,
+    assessment_prompt_version: Optional[str] = None,
+    global_selector_version: Optional[str] = None,
+    reason_prompt_version: Optional[str] = None,
+    tracking_prompt_version: Optional[str] = None,
+    tracking_state_machine_version: Optional[str] = None,
+    backend_rank_min: Optional[int] = None,
+    backend_rank_max: Optional[int] = None,
+    recommendation_rank_min: Optional[int] = None,
+    recommendation_rank_max: Optional[int] = None,
+) -> Dict[str, Any]:
+    if start_date and end_date and start_date > end_date:
+        raise HTTPException(
+            status_code=422,
+            detail="start_date cannot be later than end_date",
+        )
+    return {
+        "start_date": start_date,
+        "end_date": end_date,
+        "prompt_family": prompt_family,
+        "selection_version": selection_version,
+        "asset_type": asset_type,
+        "theme_cluster": theme_cluster,
+        "outcome_label": outcome_label,
+        "p3_decision": p3_decision,
+        "selection_reason_code": selection_reason_code,
+        "observation_status": observation_status,
+        "momentum_score_version": momentum_score_version,
+        "research_prompt_version": research_prompt_version,
+        "assessment_prompt_version": assessment_prompt_version,
+        "global_selector_version": global_selector_version,
+        "reason_prompt_version": reason_prompt_version,
+        "tracking_prompt_version": tracking_prompt_version,
+        "tracking_state_machine_version": tracking_state_machine_version,
+        "backend_rank_min": backend_rank_min,
+        "backend_rank_max": backend_rank_max,
+        "recommendation_rank_min": recommendation_rank_min,
+        "recommendation_rank_max": recommendation_rank_max,
+    }
+
+
+@router.get("/outcomes/summary")
+def get_signal_outcome_summary(
+    start_date: Optional[date] = Query(default=None),
+    end_date: Optional[date] = Query(default=None),
+    prompt_family: Optional[str] = Query(default=None),
+    selection_version: Optional[str] = Query(default=None),
+    asset_type: Optional[str] = Query(default=None),
+    theme_cluster: Optional[str] = Query(default=None),
+    research_prompt_version: Optional[str] = Query(default=None),
+    assessment_prompt_version: Optional[str] = Query(default=None),
+    global_selector_version: Optional[str] = Query(default=None),
+    reason_prompt_version: Optional[str] = Query(default=None),
+    tracking_prompt_version: Optional[str] = Query(default=None),
+    tracking_state_machine_version: Optional[str] = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    return outcome_metrics.get_outcome_summary(
+        db,
+        **_outcome_filter_args(
+            start_date=start_date,
+            end_date=end_date,
+            prompt_family=prompt_family,
+            selection_version=selection_version,
+            asset_type=asset_type,
+            theme_cluster=theme_cluster,
+            research_prompt_version=research_prompt_version,
+            assessment_prompt_version=assessment_prompt_version,
+            global_selector_version=global_selector_version,
+            reason_prompt_version=reason_prompt_version,
+            tracking_prompt_version=tracking_prompt_version,
+            tracking_state_machine_version=tracking_state_machine_version,
+        ),
+    )
+
+
+@router.get("/outcomes/timeseries")
+def get_signal_outcome_timeseries(
+    start_date: Optional[date] = Query(default=None),
+    end_date: Optional[date] = Query(default=None),
+    prompt_family: Optional[str] = Query(default=None),
+    selection_version: Optional[str] = Query(default=None),
+    asset_type: Optional[str] = Query(default=None),
+    theme_cluster: Optional[str] = Query(default=None),
+    research_prompt_version: Optional[str] = Query(default=None),
+    assessment_prompt_version: Optional[str] = Query(default=None),
+    global_selector_version: Optional[str] = Query(default=None),
+    reason_prompt_version: Optional[str] = Query(default=None),
+    tracking_prompt_version: Optional[str] = Query(default=None),
+    tracking_state_machine_version: Optional[str] = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    return outcome_metrics.get_outcome_timeseries(
+        db,
+        **_outcome_filter_args(
+            start_date=start_date,
+            end_date=end_date,
+            prompt_family=prompt_family,
+            selection_version=selection_version,
+            asset_type=asset_type,
+            theme_cluster=theme_cluster,
+            research_prompt_version=research_prompt_version,
+            assessment_prompt_version=assessment_prompt_version,
+            global_selector_version=global_selector_version,
+            reason_prompt_version=reason_prompt_version,
+            tracking_prompt_version=tracking_prompt_version,
+            tracking_state_machine_version=tracking_state_machine_version,
+        ),
+    )
+
+
+@router.get("/outcomes/items")
+def get_signal_outcome_items(
+    start_date: Optional[date] = Query(default=None),
+    end_date: Optional[date] = Query(default=None),
+    prompt_family: Optional[str] = Query(default=None),
+    selection_version: Optional[str] = Query(default=None),
+    asset_type: Optional[str] = Query(default=None),
+    theme_cluster: Optional[str] = Query(default=None),
+    outcome_label: Optional[str] = Query(default=None),
+    p3_decision: Optional[str] = Query(default=None),
+    selection_reason_code: Optional[str] = Query(default=None),
+    observation_status: Optional[str] = Query(default=None),
+    momentum_score_version: Optional[str] = Query(default=None),
+    research_prompt_version: Optional[str] = Query(default=None),
+    assessment_prompt_version: Optional[str] = Query(default=None),
+    global_selector_version: Optional[str] = Query(default=None),
+    reason_prompt_version: Optional[str] = Query(default=None),
+    tracking_prompt_version: Optional[str] = Query(default=None),
+    tracking_state_machine_version: Optional[str] = Query(default=None),
+    backend_rank_min: Optional[int] = Query(default=None, ge=1),
+    backend_rank_max: Optional[int] = Query(default=None, ge=1),
+    recommendation_rank_min: Optional[int] = Query(default=None, ge=1),
+    recommendation_rank_max: Optional[int] = Query(default=None, ge=1),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=500),
+    sort: str = Query(default="signal_date"),
+    direction: str = Query(default="desc", pattern="^(asc|desc)$"),
+    export: Optional[str] = Query(default=None, pattern="^csv$"),
+    db: Session = Depends(get_db),
+):
+    filters = _outcome_filter_args(
+        start_date=start_date,
+        end_date=end_date,
+        prompt_family=prompt_family,
+        selection_version=selection_version,
+        asset_type=asset_type,
+        theme_cluster=theme_cluster,
+        outcome_label=outcome_label,
+        p3_decision=p3_decision,
+        selection_reason_code=selection_reason_code,
+        observation_status=observation_status,
+        momentum_score_version=momentum_score_version,
+        research_prompt_version=research_prompt_version,
+        assessment_prompt_version=assessment_prompt_version,
+        global_selector_version=global_selector_version,
+        reason_prompt_version=reason_prompt_version,
+        tracking_prompt_version=tracking_prompt_version,
+        tracking_state_machine_version=tracking_state_machine_version,
+        backend_rank_min=backend_rank_min,
+        backend_rank_max=backend_rank_max,
+        recommendation_rank_min=recommendation_rank_min,
+        recommendation_rank_max=recommendation_rank_max,
+    )
+    if export == "csv":
+        return StreamingResponse(
+            outcome_metrics.iter_outcome_items_csv(db, **filters),
+            media_type="text/csv; charset=utf-8",
+            headers={
+                "Content-Disposition": (
+                    'attachment; filename="signal-outcomes-day10.csv"'
+                )
+            },
+        )
+    return outcome_metrics.get_outcome_items(
+        db,
+        page=page,
+        page_size=page_size,
+        sort=sort,
+        direction=direction,
+        **filters,
+    )
+
+
+@router.get("/outcomes/observations")
+def get_signal_observation_analytics(db: Session = Depends(get_db)):
+    return outcome_metrics.get_observation_analytics(db)
+
+
+@router.get("/outcomes/review-queue")
+def get_signal_outcome_review_queue(
+    review_status: Optional[str] = Query(
+        default=None, pattern="^(UNREVIEWED|REVIEWED)$"
+    ),
+    category: Optional[str] = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=500),
+    db: Session = Depends(get_db),
+):
+    return outcome_metrics.get_review_queue(
+        db,
+        review_status=review_status,
+        category=category,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@router.patch("/outcomes/review-queue/{queue_id}")
+def patch_signal_outcome_review_queue(
+    queue_id: int,
+    request: OutcomeReviewUpdateRequest,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        payload = outcome_metrics.update_review_queue_item(
+            db,
+            queue_id,
+            review_status=request.review_status,
+            review_note=request.review_note,
+            reviewed_by=user.email,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if payload is None:
+        raise HTTPException(status_code=404, detail="Review queue item not found")
+    return payload
 
 
 @router.get("/jobs/latest", response_model=Optional[JobResponse])

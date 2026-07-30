@@ -101,6 +101,8 @@ def main(argv: list) -> int:
         from app.database import SessionLocal, engine
         from app.models import SignalGenerationJob
         from app.observation_schema import ensure_observation_tables
+        from app.outcome_schema import ensure_outcome_tables
+        from app.signals.outcome_metrics import refresh_incremental_outcomes
         from app.signals.pipeline import run_signal_pipeline_sync
     except Exception:
         logger.exception("Failed to import pipeline modules")
@@ -110,8 +112,9 @@ def main(argv: list) -> int:
 
     try:
         ensure_observation_tables(engine)
+        ensure_outcome_tables(engine)
     except Exception:
-        logger.exception("Failed to ensure P4 observation lifecycle tables")
+        logger.exception("Failed to ensure P4/P6 additive signal tables")
         return EXIT_DB_ERROR
 
     # 建 SignalGenerationJob（triggered_by="cron"）
@@ -137,6 +140,8 @@ def main(argv: list) -> int:
     # Inline 跑 pipeline（cron 環境不需要 BackgroundTasks）
     try:
         run_signal_pipeline_sync(job_id=job_id, target_date=target_date)
+        with SessionLocal() as db:
+            refresh_incremental_outcomes(db)
     except Exception as exc:
         code = _classify_exit_code(exc)
         logger.error(

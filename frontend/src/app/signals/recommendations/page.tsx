@@ -1,0 +1,279 @@
+"use client"
+
+import { useEffect, useMemo, useState } from "react"
+
+import ObservationStatusBadge from "@/components/ObservationStatusBadge"
+import SelectionReasonBadge from "@/components/SelectionReasonBadge"
+import SignalAssetBadge from "@/components/SignalAssetBadge"
+import SignalFunnel from "@/components/SignalFunnel"
+import SignalProductNav from "@/components/SignalProductNav"
+import {
+  fetchSignalObservations,
+  fetchSignalRecommendations,
+  type SignalObservationItem,
+  type SignalRecommendationResponse,
+  type SignalWatchlistItem,
+} from "@/lib/api"
+import { selectionCompleteness } from "@/lib/signalP6Presentation"
+
+const REASON_SECTIONS: Array<[keyof SignalWatchlistItem, string]> = [
+  ["theme_reason", "題材"],
+  ["capital_reason", "資金"],
+  ["chip_reason", "籌碼"],
+  ["margin_reason", "融券"],
+  ["technical_reason", "技術"],
+]
+
+function RecommendationDetail({ item }: { item: SignalWatchlistItem }) {
+  return (
+    <details className="mt-3 border-t border-slate-800 pt-3">
+      <summary className="cursor-pointer text-xs text-sky-300">查看完整推薦依據與版本</summary>
+      <div className="mt-3 grid gap-3 md:grid-cols-2">
+        <section className="rounded-lg border border-slate-800 p-3 md:col-span-2">
+          <h4 className="text-xs font-semibold text-slate-300">推薦論點／同日相對優勢</h4>
+          <p className="mt-2 text-sm leading-6 text-slate-400">
+            {item.recommendation_thesis ?? "歷史快照未保存推薦論點"}
+          </p>
+          <p className="mt-2 text-xs leading-5 text-slate-500">
+            {item.relative_advantage ?? "歷史快照未保存同日相對優勢"}
+          </p>
+        </section>
+        {REASON_SECTIONS.map(([key, label]) => {
+          const bullets = item[key] as string[] | null | undefined
+          return (
+            <section key={String(key)} className="rounded-lg border border-slate-800 p-3">
+              <h4 className="text-xs font-semibold text-slate-300">{label}</h4>
+              {bullets?.length ? (
+                <ul className="mt-2 space-y-1 text-xs leading-5 text-slate-400">
+                  {bullets.map((bullet, index) => <li key={index}>• {bullet}</li>)}
+                </ul>
+              ) : (
+                <p className="mt-2 text-xs text-slate-600">此快照無結構化段落。</p>
+              )}
+            </section>
+          )
+        })}
+        <p className="text-[11px] text-slate-600 md:col-span-2">
+          Selection {item.selection_version ?? "—"}・Prompt {item.prompt_version ?? "—"}・
+          Score {item.signal_metrics?.momentum_score_version ?? "—"}
+        </p>
+      </div>
+    </details>
+  )
+}
+
+function TechnicalFailures({ items }: { items: SignalRecommendationResponse["data"]["technical_failures"] }) {
+  if (!items?.length) return null
+  return (
+    <section className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4">
+      <h2 className="text-sm font-semibold text-amber-100">技術失敗</h2>
+      <p className="mt-1 text-xs text-amber-200/70">
+        這是研究或處理階段未完成，不是市場風險判斷，也不是 REMOVE。
+      </p>
+      <ul className="mt-3 space-y-2">
+        {items.map((item, index) => (
+          <li key={`${item.stock ?? item.stock_id}-${index}`} className="text-xs text-slate-400">
+            <span className="font-mono text-slate-300">{item.stock ?? item.stock_id ?? "—"}</span>
+            {" · "}{item.stage ?? item.processing_status ?? item.status ?? "UNKNOWN_STAGE"}
+            {" · "}{item.error_code ?? item.error_summary ?? "可於資料修復後重跑"}
+          </li>
+        ))}
+      </ul>
+    </section>
+  )
+}
+
+export default function SignalRecommendationsPage() {
+  const [snapshot, setSnapshot] = useState<SignalRecommendationResponse | null>(null)
+  const [observations, setObservations] = useState<SignalObservationItem[]>([])
+  const [date, setDate] = useState("")
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    const queryDate =
+      typeof window === "undefined" ? "" : new URLSearchParams(window.location.search).get("date") ?? ""
+    const requested = date || queryDate || undefined
+    const controller = new AbortController()
+    fetchSignalRecommendations(requested, { signal: controller.signal })
+      .then(async (payload) => {
+        setSnapshot(payload)
+        if (payload) {
+          const list = await fetchSignalObservations(
+            { asOfDate: payload.snapshot_date, limit: 2000 },
+            { signal: controller.signal },
+          )
+          setObservations(list.observations)
+          setDate(payload.snapshot_date)
+        }
+      })
+      .catch((reason: unknown) => {
+        if (!controller.signal.aborted)
+          setError(reason instanceof Error ? reason.message : "正式推薦快照載入失敗")
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false)
+      })
+    return () => controller.abort()
+  }, [date])
+
+  const observationByStock = useMemo(
+    () => {
+      const latest = new Map<string, SignalObservationItem>()
+      observations.forEach((item) => {
+        if (!latest.has(item.stock)) latest.set(item.stock, item)
+      })
+      return latest
+    },
+    [observations],
+  )
+  const processing = snapshot?.data.summary.processing_summary
+  const selection = snapshot?.data.summary.selection_summary
+  const completeness = selectionCompleteness(
+    processing?.global_selection_status,
+    selection?.selection_complete,
+  )
+  const recommendations = [...(snapshot?.data.watchlist ?? [])]
+    .filter(
+      (item) =>
+        item.selection_status === "RECOMMEND" ||
+        item.decision === "RECOMMEND",
+    )
+    .sort(
+      (a, b) =>
+        (a.recommendation_rank ?? Number.MAX_SAFE_INTEGER) -
+        (b.recommendation_rank ?? Number.MAX_SAFE_INTEGER),
+    )
+  const notSelected = snapshot?.data.not_selected ?? []
+  const removed = snapshot?.data.removed ?? []
+  const funnel = [
+    ["raw", "Raw Union", processing?.raw_union_count ?? snapshot?.data.candidate_pool_size ?? 0, "A/B/C/D 原始聯集"],
+    ["p2", "Phase 2 Eligible", processing?.llm_eligible_count ?? selection?.phase2_eligible_count ?? 0, "通過 P2 eligibility"],
+    ["research", "Research", processing?.research_completed_count ?? selection?.research_completed_count ?? 0, "研究成功"],
+    ["assessment", "Assessment Eligible", processing?.global_selection_eligible_count ?? selection?.global_eligible_count ?? 0, "assessment 後可比較"],
+    ["removed", "True Removed", selection?.veto_removed_count ?? removed.length, "具真實 veto 的明確移除"],
+    ["global", "Global Eligible", selection?.global_eligible_count ?? notSelected.length + recommendations.length, "進入一次完整全體比較"],
+    ["recommended", "Recommended", recommendations.length, "今日正式推薦"],
+    ["not-selected", "Not Selected", notSelected.length, "候選有效但未列入今日推薦"],
+    ["technical", "Technical", snapshot?.data.technical_failures?.length ?? 0, "技術處理失敗"],
+    ["unprocessed", "Unprocessed", processing?.unprocessed_count ?? 0, "尚未完成處理"],
+  ].map(([key, label, value, help]) => ({ key: String(key), label: String(label), value: Number(value), help: String(help) }))
+
+  function changeDate(next: string | null) {
+    if (!next || next === date) return
+    window.history.replaceState(null, "", `/signals/recommendations?date=${next}`)
+    setLoading(true)
+    setError(null)
+    setDate(next)
+  }
+
+  return (
+    <main className="mx-auto min-h-screen max-w-7xl px-4 py-6 text-slate-100">
+      <SignalProductNav />
+      <header className="mb-5 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <p className="text-xs uppercase tracking-[0.2em] text-sky-300/80">P3 Formal Recommendations</p>
+          <h1 className="mt-1 text-2xl font-semibold">正式推薦與候選比較</h1>
+          <p className="mt-1 text-sm text-slate-400">主清單只顯示 RECOMMEND；P3 今日決策與 P4 既有觀察狀態分開。</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={() => changeDate(snapshot?.navigation.previous_date ?? null)} disabled={!snapshot?.navigation.previous_date} className="rounded border border-slate-700 px-3 py-1.5 text-xs disabled:opacity-30">前一交易日</button>
+          <input aria-label="訊號日期" type="date" value={date} onChange={(event) => changeDate(event.target.value)} className="rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs" />
+          <button type="button" onClick={() => changeDate(snapshot?.navigation.next_date ?? null)} disabled={!snapshot?.navigation.next_date} className="rounded border border-slate-700 px-3 py-1.5 text-xs disabled:opacity-30">下一交易日</button>
+        </div>
+      </header>
+
+      {loading && <p className="text-sm text-slate-500">正在載入正式推薦與完整 Funnel…</p>}
+      {error && <p className="rounded border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-100">{error}</p>}
+      {!loading && !error && !snapshot && <p className="rounded border border-slate-800 p-4 text-sm text-slate-500">此日期沒有訊號快照。</p>}
+
+      {snapshot && (
+        <div className="space-y-5">
+          <section className="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              <h2 className="text-sm font-semibold">處理 Funnel</h2>
+              <span className="rounded-full border border-slate-700 px-2 py-0.5 text-[11px] text-slate-400">{completeness}</span>
+              <span className="text-[11px] text-slate-600">快照 {snapshot.snapshot_date}</span>
+            </div>
+            <SignalFunnel steps={funnel} />
+          </section>
+
+          {completeness === "GLOBAL_SELECTION_FAILED" && (
+            <p className="rounded border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-100">
+              本次研究已完成，但正式推薦選擇未完成；目前結果不可視為完整推薦名單。
+            </p>
+          )}
+
+          <section>
+            <h2 className="mb-3 text-base font-semibold">今日正式推薦（{recommendations.length}）</h2>
+            {!recommendations.length && completeness === "COMPLETE" && <p className="rounded border border-slate-800 p-4 text-sm text-slate-500">此日期沒有正式推薦；這是完整比較後的合法 0 推薦結果。</p>}
+            <div className="grid gap-3 lg:grid-cols-2">
+              {recommendations.map((item) => {
+                const observation = observationByStock.get(item.stock)
+                return (
+                  <article key={item.stock} className="rounded-xl border border-slate-700/60 bg-slate-900/55 p-4">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-mono text-lg text-sky-200">#{item.recommendation_rank ?? "—"}</span>
+                      <span className="font-mono text-sm text-slate-300">{item.stock}</span>
+                      <strong className="text-sm">{item.name}</strong>
+                      <SignalAssetBadge assetType={item.asset_type} />
+                      {observation && <ObservationStatusBadge status={observation.status} />}
+                    </div>
+                    <p className="mt-2 text-xs text-slate-500">
+                      {item.industry ?? "—"}・{item.sub_industry ?? "—"}・Theme {item.theme_cluster ?? "—"}・Backend Rank {item.backend_priority_rank ?? "—"}
+                    </p>
+                    <p className="mt-3 text-sm leading-6 text-slate-300">{item.recommendation_thesis ?? item.reason ?? "歷史快照未保存推薦論點"}</p>
+                    <p className="mt-2 text-xs leading-5 text-slate-500">同日相對優勢：{item.relative_advantage ?? "—"}</p>
+                    {observation && <p className="mt-2 text-xs text-slate-500">P4 Episode {observation.episode_id}・首次推薦 {observation.started_signal_date}</p>}
+                    <RecommendationDetail item={item} />
+                  </article>
+                )
+              })}
+            </div>
+          </section>
+
+          <section className="rounded-xl border border-slate-700/60 bg-slate-900/35 p-4">
+            <h2 className="text-sm font-semibold text-slate-200">未列入今日推薦（{notSelected.length}）</h2>
+            <p className="mt-1 text-xs text-slate-500">候選仍有效；這是中性的同日相對選擇，不代表永久負面或停止追蹤。</p>
+            <div className="mt-3 space-y-2">
+              {notSelected.map((item) => {
+                const observation = observationByStock.get(item.stock)
+                return (
+                  <article key={item.stock} className="rounded-lg border border-slate-800 bg-slate-950/35 p-3">
+                    <div className="flex flex-wrap items-center gap-2 text-sm">
+                      <span className="font-mono text-slate-300">{item.stock}</span>
+                      <span>{item.name}</span>
+                      <SignalAssetBadge assetType={item.asset_type} />
+                      <SelectionReasonBadge code={item.selection_reason_code} />
+                      <span className="text-xs text-slate-600">Backend Rank {item.backend_priority_rank ?? "—"}</span>
+                    </div>
+                    <p className="mt-2 text-xs leading-5 text-slate-400">{item.selection_reason ?? "歷史快照未保存未入選原因"}</p>
+                    {item.overlap_with?.length ? <p className="mt-1 text-[11px] text-slate-600">論點重疊：{item.overlap_with.join("、")}・{item.overlap_reason}</p> : null}
+                    {observation && <p className="mt-2 text-xs text-sky-200">今日未列入推薦，但既有觀察仍繼續（P4：{observation.status}）。</p>}
+                  </article>
+                )
+              })}
+            </div>
+          </section>
+
+          <section className="rounded-xl border border-slate-700/60 bg-slate-900/35 p-4">
+            <h2 className="text-sm font-semibold text-slate-200">明確移除（{removed.length}）</h2>
+            <p className="mt-1 text-xs text-slate-500">此區只顯示 backend 驗證成立的 true veto。</p>
+            <div className="mt-3 space-y-2">
+              {removed.map((item) => {
+                const observation = observationByStock.get(item.stock)
+                return (
+                  <article key={item.stock} className="rounded-lg border border-slate-800 p-3 text-xs text-slate-400">
+                    <span className="font-mono text-slate-300">{item.stock}</span> {item.name}・{item.veto_reason ?? "VALIDATED_VETO"}・{item.short_reason ?? item.reason}
+                    {observation && <p className="mt-2 text-sky-200">今日候選評估為 REMOVE；既有觀察是否停止，仍以 P4 Review 為準。</p>}
+                  </article>
+                )
+              })}
+            </div>
+          </section>
+          <TechnicalFailures items={snapshot.data.technical_failures} />
+        </div>
+      )}
+    </main>
+  )
+}
