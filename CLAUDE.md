@@ -3637,3 +3637,110 @@ function update(next) {
 - decision stage user_msg 的 JSON 模板**共用**（含 v4 新欄位）；跑 v1 時 LLM 仍被要求輸出那幾欄，缺了走 `_default_signals()`——不影響。要 v1 完全乾淨需另把 user_msg 模板做成版本感知
 - 重跑：`gh workflow run daily_signals.yml --ref main -f target_date=YYYY-MM-DD`（Actions runner checkout main 直接跑，不必等 Render deploy）
 - 測試：新增 3 個 routing case（llm_caller 54 pass）；`test_signals_router.py` 4 個 site-passwordless 登入測試仍 fail 為既有 baseline，與本改動無關
+
+## /signals 正式版／工程版 toggle + 追蹤紀錄與每日觀察合併成單一入口（2026-08-08 ~ 2026-08-10）
+
+跨多輪完成，起因是 `/signals/*` 系列頁面同時服務「一般使用者看推薦」與「工程稽核」兩種需求，
+擠在同一份 UI 上造成英文 enum、UUID、JSON dump、Funnel 等工程細節干擾一般使用者；後段發現
+魚尾 30 日追蹤（archive，M23-era）跟每日觀察（P4，`SignalObservation`）是兩套獨立計算的追蹤
+系統，並存讓使用者搞不清楚兩者關係，且 P4 有一批「假警戒」股票（`2618`/`6533` 等）因為
+`baseline_quality=LEGACY_INCOMPLETE` 卡在無限警戒，永遠不會 STOP。
+
+### 正式版／工程版 toggle
+- [signalsViewMode.tsx](frontend/src/lib/signalsViewMode.tsx)：`useSyncExternalStore` + module-level
+  pub-sub `Set<() => void>`（同 tab 內 reactivity；`localStorage` 原生 `storage` event 只有跨 tab
+  才會觸發，不能只靠它）。`SignalsViewModeProvider`／`useSignalsViewMode()` 比照既有
+  `WatchlistProvider` pattern
+- [(product)/layout.tsx](frontend/src/app/signals/(product)/layout.tsx)：route group（資料夾名不影響
+  URL）統一包 `<SignalsViewModeProvider><SignalProductNav />{children}</SignalsViewModeProvider>`；
+  `phase2/page.tsx` 刻意排除在外（既有決策，不受影響）
+- [SignalProductNav.tsx](frontend/src/components/SignalProductNav.tsx) 的 `ENGINEERING_ONLY_HREFS`：
+  正式版 nav 不顯示 Debug／結果分析／觀察生命週期連結，但直接輸入網址仍可進入（只是不曝光入口，
+  同 Debug 頁既有待遇）
+- prompt 修正：[recommendation-reason-v7.md](backend/app/prompts/recommendation-reason-v7.md) 加語言規則，
+  禁止 reason 文字出現英文欄位名／enum code（修「威強電推薦理由出現『後端為 ACTIVE_TREND』」類問題）
+
+### 結果分析頁（outcomes）全中文化 + 逐項可點擊下鑽
+- [outcomes/page.tsx](frontend/src/app/signals/(product)/outcomes/page.tsx)：每個區塊都加
+  `SectionExplainer` 白話說明＋具體數字範例；日期區間明確顯示；長條圖／Backend Rank 表格改
+  `onClick`／`onEvents` 可點擊下鑽到「逐筆明細」並自動 `scrollIntoView`
+- [OutcomeCharts.tsx](frontend/src/components/OutcomeCharts.tsx)：`OutcomeDistributionChart` 加
+  `onSelect` callback（echarts `onEvents={{ click }}`），X 軸標籤改中文
+- [signalP6Presentation.ts](frontend/src/lib/signalP6Presentation.ts)：`OUTCOME_LABELS`／
+  `REVIEW_CATEGORY_LABELS` 去英文化（如 `WINNER: "大漲達標"`）
+- 使用者確認這頁對他來說是「工程稽核用」沒有日常價值 → 最終收進 `engineeringOnly`，內容維持單一
+  版本不做 mode 判斷分支（比照 Debug 頁「內容不分版本，只是 nav 不連過去」）
+
+### 正式推薦卡片改魚尾風格
+- [recommendations/page.tsx](frontend/src/app/signals/(product)/recommendations/page.tsx)：拿掉
+  「追蹤中：自 X 起持續觀察」這行（不直覺），改用 `fetchSignalArchive()` 建
+  `Map<stock_id, archive item>`，卡片顯示「首次抓到 {date}（第 N 個交易日）」＋收盤價／當日漲跌幅
+  ＋報酬率＋保守價／夢想價（archive／expectation_price 資料本來就對 P3 RECOMMEND 股票存在，
+  同一次 pipeline 寫入，純前端接資料即可，後端零改動）
+  - **關鍵事實**：P4（`SignalObservation`）完全沒有 `return_pct`／price 欄位，P5/P6 的
+    `day10_return` 是滿 10 交易日後的一次性快照非即時報酬——這是為什麼要接 archive 資料而不是
+    在 P4 裡重造一套
+- 加排序選項（`rank`／`date_desc`／`return_desc`，仿魚尾）＋一般股 asset badge 只在
+  `asset_type !== "COMMON_STOCK"` 才顯示（call site 條件渲染，`SignalAssetBadge.tsx` 本身沒改）
+- 工程版卡片也補齊收盤價／報酬率／追蹤天數欄位
+
+### 追蹤紀錄與每日觀察合併成單一入口（2026-08-10）
+- **根因**：`bootstrap_legacy_observations()`（`observation_lifecycle.py`，P4 上線前從舊
+  `signal_watch_hits` 回填）寫入的觀察 `baseline_quality="LEGACY_INCOMPLETE"` 且
+  `selection_version` 永遠是 null（舊資料 `signal_metrics` 沒有這欄位）；
+  `decide_observation_action()` 的「持續警戒→STOP」判斷有 `not baseline_incomplete` 前置條件，
+  導致這批觀察連續警戒再多次也永遠不會自然 STOP（2618／6533 實測卡在連續 13 次警戒）
+  - **關鍵區分**：`selection_version IS NULL` 精準區分「真正舊的回填觀察」與「今天才被 v7
+    pipeline 推薦、只是敘事文字剛好缺一項」的正常觀察（後者的 `selection_version` 一定有值，
+    來自 `_initial_snapshot_from_recommendation()` 讀今天的即時 payload）——用這個條件避免誤停
+    活躍的 v7 推薦
+- 拿掉 `run_daily_observation_reviews` 開頭呼叫 `bootstrap_legacy_observations(db)`（函式保留不刪，
+  註解說明如何還原），停止繼續產生新的 LEGACY_INCOMPLETE 觀察
+- 新增一次性腳本 [stop_legacy_incomplete_observations.py](backend/stop_legacy_incomplete_observations.py)：
+  篩選 `status IN (OBSERVING, CAUTION) AND baseline_quality="LEGACY_INCOMPLETE" AND
+  selection_version IS NULL`，轉 `STOPPED` + 補建 `SignalObservationArchive`
+  （沿用既有 `_finalize_observation_archive`）；`--dry-run` 預設只印清單、`--execute` 才寫入。
+  Dry-run 對 production DB 執行結果：**命中 68 檔**（含 2618／6533），已交給使用者確認，
+  **`--execute` 尚未執行**
+- **前端合併採「archive 當唯一入口」而非後端資料模型合併**：archive（30 交易日 retention，短暫
+  重現可容忍）與 P4（5 交易日空窗即重置 episode）起始日／重置規則完全不同，後端真合併需要先
+  決定誰的規則當標準，工程量大；改用 archive 頁當「追蹤紀錄」正式入口，P4 狀態以徽章形式嵌入
+  archive 詳情 popup，兩套後端邏輯繼續各自獨立運作
+- [`(product)/archive/page.tsx`](<frontend/src/app/signals/(product)/archive/page.tsx>)（原
+  `archive/page.tsx` 搬進 route group，URL 不變，自動套上 toggle）：`StockDetailDialog` 額外
+  `fetchSignalObservations({ limit: 2000 })` 建 `Map<stock_id, observation>`，在既有 chip 列旁加
+  `<ObservationStatusBadge status={...} />`（重用既有元件）+「查看完整追蹤紀錄（推薦論點／每日
+  檢查）→」連到 `/signals/observations`；**列表卡片（極簡卡片）刻意不動**，沿用 2026-07-13
+  「只留代號+名稱/收盤/漲跌幅」的既有設計，P4 狀態只在詳情 popup 顯示
+- Nav／總覽：`SignalProductNav.tsx` `LINKS` 新增「追蹤紀錄」（正式版可見）；
+  `ENGINEERING_ONLY_HREFS` 新增 `/signals/observations`；`(product)/page.tsx` `NAV_CARDS`
+  同步——「追蹤紀錄」卡片取代原本「觀察生命週期」在正式版的曝光位置，後者改標
+  `engineeringOnly: true` 保留（不刪除）
+- GitHub Actions **不動**：`daily_signals.yml` 排程本來就不會跑 `legacy_split`（只有手動
+  `workflow_dispatch` 能選），使用者明確要求保留當 rollback 手段
+
+### Gotcha
+- **P3（`signal_snapshots`）沒有「離開推薦榜」規則**：每天從零重新評估全部候選，不是「連續
+  N 天才移除」；2618/6533 停留在推薦榜單純是每天重算後仍合格，跟 P4 的觀察/警戒狀態無關
+  （`sync_recommendations()` 只讀 P4 狀態決定要不要建立/延續 episode，從不反向 gate P3 的
+  RECOMMEND 決策）
+- **`STOP_CONFIRM_THRESHOLD=3` 不是「連續 3 次警戒觸發 STOP」**：那是相反方向——STOP 觸發*之後*
+  再連續觀察 3 天確認不會恢復，才由 `_finalize_observation_archive()` 永久封存。真正的
+  「持續警戒→STOP」判斷是 `prior_decision==CAUTION` 且非 recovery 且非 baseline_incomplete，且
+  MOMENTUM_STRUCTURE／PARTICIPATION 兩個核心維度在前一次與這一次都失敗（`decide_observation_action()`
+  893-913 行），本輪修正前這條路徑對 LEGACY_INCOMPLETE 觀察被結構性跳過
+  - **本輪過程中我曾對使用者說錯這個機制**（誤以為是「連續 3 次警戒觸發 STOP」），是基於更早一輪
+    Explore agent 過度簡化的摘要；重新讀 code 後已更正
+- `outcome_metrics.py::classify_day10_return()` 的 WINNER 門檛是「第 10 個交易日收盤價那個時間點」
+  的單一快照（`return_pct >= 10.0`），不是最高點也不是即時報酬——這是「為什麼我的股票已經漲超過
+  20% 卻沒被算進 Winner」的答案，即時報酬率要看正式推薦卡片／archive 的 `return_pct`，兩者是不同
+  指標，設計上刻意分開
+  - **與本次合併行動安全性相關**：確認過 stopping 一筆 P4 觀察不會動到 P3 或 archive 的任何
+    資料，三套系統的追蹤／持久化互相獨立，暫停行動的 blast radius 僅限於 P4 自己的
+    `SignalObservation`／`SignalObservationArchive`
+- **`git add path1 path2 badpath` 整批靜默失敗**：任一路徑不存在會讓整條指令連好的路徑都不 stage；
+  本輪起改成逐路徑個別 `git add` + `git diff --cached --stat` 驗證再 commit
+- **搬檔案進 route group 後必須跑 `npx jest`**：光 `tsc --noEmit`＋`eslint` 抓不到測試檔案的
+  import path 沒跟著更新（本輪較早一輪就踩過，3 個測試檔案的 import 壞了兩輪才被發現）；固定
+  流程改成 tsc → eslint（僅本輪改動檔案）→ 全套 `npx jest` 三段都跑，且跟已知 baseline（StockChart／
+  BacktestPanel／StockList 三個 pre-existing 失敗）比對，確認沒有新增失敗才算過
