@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import OutcomeMetricCard from "@/components/OutcomeMetricCard"
 import { OutcomeDistributionChart, OutcomeTimeseriesChart } from "@/components/OutcomeCharts"
 import SignalAssetBadge from "@/components/SignalAssetBadge"
+import StickyHorizontalScroll from "@/components/StickyHorizontalScroll"
 import {
   fetchSignalObservationAnalytics,
   fetchSignalOutcomeItems,
@@ -103,6 +104,9 @@ export default function SignalOutcomesPage() {
     const controller = new AbortController()
     setLoading(true)
     setError(null)
+    // 篩選條件（含分頁）一變就先清空逐筆明細，避免使用者看到上一次篩選殘留的舊資料，
+    // 誤以為新篩選已經跑完。
+    setItems(null)
     Promise.all([
       fetchSignalOutcomeSummary(filters, { signal: controller.signal }),
       fetchSignalOutcomeTimeseries(filters, { signal: controller.signal }),
@@ -468,33 +472,58 @@ export default function SignalOutcomesPage() {
                   )}
                 </p>
               </div>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  aria-label="逐筆明細：結果"
+                  value={outcomeLabel}
+                  onChange={(event) => { setPage(1); setOutcomeLabel(event.target.value) }}
+                  className="rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs"
+                >
+                  <option value="">全部結果</option>
+                  {Object.entries(OUTCOME_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                </select>
+                <select
+                  aria-label="逐筆明細：當日決策"
+                  value={decision}
+                  onChange={(event) => { setPage(1); setDecision(event.target.value) }}
+                  className="rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs"
+                >
+                  <option value="">全部決策</option>
+                  <option value="RECOMMEND">正式推薦</option>
+                  <option value="NOT_SELECTED">未列入今日推薦</option>
+                </select>
                 <button type="button" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))} className="rounded border border-slate-700 px-2 py-1 text-xs disabled:opacity-30">上一頁</button>
                 <button type="button" disabled={page >= (items?.pages ?? 1)} onClick={() => setPage((value) => value + 1)} className="rounded border border-slate-700 px-2 py-1 text-xs disabled:opacity-30">下一頁</button>
               </div>
             </div>
-            <div className="overflow-x-auto">
+            <StickyHorizontalScroll>
               <table className="min-w-full text-left text-xs">
                 <thead className="bg-slate-950/70 text-slate-500"><tr>{["日期", "股票", "資產", "當日決策", "後端排序／推薦排序", "原因／主題", "追蹤狀態", "10日報酬", "結果", "版本"].map((label) => <th key={label} className="whitespace-nowrap px-3 py-2">{label}</th>)}</tr></thead>
                 <tbody className="divide-y divide-slate-800">
-                  {(items?.items ?? []).map((item) => (
-                    <tr key={item.id} className="text-slate-400">
-                      <td className="whitespace-nowrap px-3 py-2 font-mono">{item.signal_date}</td>
-                      <td className="whitespace-nowrap px-3 py-2"><span className="font-mono text-slate-200">{item.stock}</span> {item.name}</td>
-                      <td className="px-3 py-2"><SignalAssetBadge assetType={item.asset_type} /></td>
-                      <td className="whitespace-nowrap px-3 py-2">{P3_DECISION_LABELS[item.p3_decision]}</td>
-                      <td className="whitespace-nowrap px-3 py-2">後端 {item.backend_priority_rank ?? "—"} / 推薦 {item.recommendation_rank ?? "—"}</td>
-                      <td className="max-w-56 px-3 py-2">{item.selection_reason_code ?? item.theme_cluster ?? "—"}</td>
-                      <td className="whitespace-nowrap px-3 py-2">{item.observation_status ?? "—"}</td>
-                      <td className="whitespace-nowrap px-3 py-2 font-mono">{formatPercent(item.day10_return)}</td>
-                      <td className="whitespace-nowrap px-3 py-2">{OUTCOME_LABELS[item.outcome_label]}</td>
-                      <td className="whitespace-nowrap px-3 py-2 text-[10px]">{item.prompt_family_version ?? "—"} / {item.selection_version ?? "—"} / {item.outcome_definition_version}</td>
+                  {loading ? (
+                    <tr>
+                      <td colSpan={10} className="px-3 py-6 text-center text-slate-500">正在載入符合篩選條件的明細…</td>
                     </tr>
-                  ))}
+                  ) : (
+                    (items?.items ?? []).map((item) => (
+                      <tr key={item.id} className="text-slate-400">
+                        <td className="whitespace-nowrap px-3 py-2 font-mono">{item.signal_date}</td>
+                        <td className="whitespace-nowrap px-3 py-2"><span className="font-mono text-slate-200">{item.stock}</span> {item.name}</td>
+                        <td className="px-3 py-2"><SignalAssetBadge assetType={item.asset_type} /></td>
+                        <td className="whitespace-nowrap px-3 py-2">{P3_DECISION_LABELS[item.p3_decision]}</td>
+                        <td className="whitespace-nowrap px-3 py-2">後端 {item.backend_priority_rank ?? "—"} / 推薦 {item.recommendation_rank ?? "—"}</td>
+                        <td className="max-w-56 px-3 py-2">{item.selection_reason_code ?? item.theme_cluster ?? "—"}</td>
+                        <td className="whitespace-nowrap px-3 py-2">{item.observation_status ?? "—"}</td>
+                        <td className="whitespace-nowrap px-3 py-2 font-mono">{formatPercent(item.day10_return)}</td>
+                        <td className="whitespace-nowrap px-3 py-2">{OUTCOME_LABELS[item.outcome_label]}</td>
+                        <td className="whitespace-nowrap px-3 py-2 text-[10px]">{item.prompt_family_version ?? "—"} / {item.selection_version ?? "—"} / {item.outcome_definition_version}</td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
-            </div>
-            {!items?.items.length && <p className="p-4 text-sm text-slate-500">此篩選區間沒有明細。</p>}
+            </StickyHorizontalScroll>
+            {!loading && !items?.items.length && <p className="p-4 text-sm text-slate-500">此篩選區間沒有明細。</p>}
             <div className="border-t border-slate-800 p-3">
               <SectionExplainer>
                 這是最原始的逐筆資料，每一列是「某一天、某一檔股票」的完整紀錄，給想自己核對數字
