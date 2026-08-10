@@ -36,7 +36,6 @@ import SignalRemovedSection from "@/components/SignalRemovedSection"
 import {
   isSignalProcessingIncomplete,
   SignalIncompleteWarning,
-  SignalProcessingCounts,
 } from "@/components/SignalProcessingSummary"
 import TradingPlanPanel, {
   PanelBulletList,
@@ -711,19 +710,8 @@ function SignalCard({
   const [detailOpen, setDetailOpen] = useState(false)
   const themeFit = item.theme_fit
   const promptVersion = item.prompt_version || "v1"
-  const subtitle =
-    item.industry != null || item.canonical || item.asset_type ? (
-      <span className="inline-flex flex-wrap items-center gap-1.5">
-        {item.industry != null && (
-          <span>
-            {item.industry}
-            {item.sub_industry ? <span className="text-slate-500"> · {item.sub_industry}</span> : null}
-          </span>
-        )}
-        <SignalAssetBadge assetType={item.asset_type} />
-        <CanonicalSectorTag canonical={item.canonical} compact />
-      </span>
-    ) : null
+  // 首頁卡片只留產業名稱；資產類型徽章、子產業、canonical 分類 tag 移到詳情 popup 顯示
+  const subtitle = item.industry != null ? <span>{item.industry}</span> : null
 
   // 偵測是否有任一段 bullet array 有內容（舊快照可能全 null/empty → 不顯示「看細節」按鈕）
   const hasReasonSections = REASON_PANELS.some((p) => {
@@ -743,36 +731,38 @@ function SignalCard({
         headerRight={<WatchlistAddButton stockId={item.stock} variant="compact" />}
       >
         <div className="space-y-2">
-          <div className="flex items-center justify-between gap-2">
-            <InlinePrice quote={quote} />
-            <div className="flex shrink-0 items-center gap-1.5">
-              <MomentumChip item={item} />
-              <ConvictionChip conviction={item.conviction} intensity={item.watch_intensity} />
-              {themeFit ? (
-                <span
-                  className={`inline-flex whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px] font-medium ${toneChipClass(signalValueTone("theme_fit", themeFit))}`}
-                >
-                  題材 {signalValueLabel(themeFit, "theme_fit")}
-                </span>
-              ) : null}
+          {/* 第一行：只留股價與漲跌幅 */}
+          <InlinePrice quote={quote} />
+
+          {/* 第二行：其他狀態 label */}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <MomentumChip item={item} />
+            <ConvictionChip conviction={item.conviction} intensity={item.watch_intensity} />
+            {themeFit ? (
               <span
-                className="inline-flex whitespace-nowrap rounded border border-slate-600 bg-slate-700/40 px-1.5 py-0.5 text-[11px] font-medium text-slate-300"
-                title="產生這檔的 prompt 版本"
+                className={`inline-flex whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px] font-medium ${toneChipClass(signalValueTone("theme_fit", themeFit))}`}
               >
-                {promptVersion}
+                題材 {signalValueLabel(themeFit, "theme_fit")}
               </span>
-            </div>
+            ) : null}
+            <span
+              className="inline-flex whitespace-nowrap rounded border border-slate-600 bg-slate-700/40 px-1.5 py-0.5 text-[11px] font-medium text-slate-300"
+              title="產生這檔的 prompt 版本"
+            >
+              {promptVersion}
+            </span>
           </div>
 
+          {/* 觀察維度：只留判定為「強」的綠色 label，弱/中性/未知一律不顯示 */}
           <div className="flex flex-wrap items-center gap-1.5">
-            <ChipWithLabel label="資金" kind="capital_flow" value={item.signals?.capital_flow} />
-            <ChipWithLabel label="籌碼" kind="chip_trend" value={item.signals?.chip_trend} />
-            <ChipWithLabel
+            <GreenOnlyChip label="資金" kind="capital_flow" value={item.signals?.capital_flow} />
+            <GreenOnlyChip label="籌碼" kind="chip_trend" value={item.signals?.chip_trend} />
+            <GreenOnlyChip
               label="融券"
               kind="margin_short_signal"
               value={item.signals?.margin_short_signal}
             />
-            <ChipWithLabel label="技術" kind="technical_status" value={item.signals?.technical_status} />
+            <GreenOnlyChip label="技術" kind="technical_status" value={item.signals?.technical_status} />
             {!hasReasonSections ? (
               <span className="ml-auto text-[11px] text-slate-500">細節資料待更新</span>
             ) : null}
@@ -1011,6 +1001,20 @@ function ChipWithLabel({
       <span>{signalValueLabel(value, kind)}</span>
     </span>
   )
+}
+
+/** 首頁卡片「觀察維度」用：只有判定為綠色（強）時才顯示，其餘一律不 render。 */
+function GreenOnlyChip({
+  label,
+  kind,
+  value,
+}: {
+  label: string
+  kind: string
+  value: string | null | undefined
+}) {
+  if (!value || signalValueTone(kind, value) !== "green") return null
+  return <ChipWithLabel label={label} kind={kind} value={value} />
 }
 
 // 2026-05-25：融資融券專屬結構化分析卡（比重 大盤 30% / 個股 70%）
@@ -1526,12 +1530,6 @@ export default function DailySignalsPanel({
                 <span className="inline-flex items-center rounded border border-sky-600/50 bg-sky-900/30 px-2 py-0.5 font-medium text-sky-100">
                   補漲 {laggardCount}
                 </span>
-                {processingSummary && (
-                  <SignalProcessingCounts
-                    summary={processingSummary}
-                    incomplete={isIncomplete}
-                  />
-                )}
               </div>
               <SignalCardGrid
                 items={allSignals}

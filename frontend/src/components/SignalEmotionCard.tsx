@@ -106,7 +106,8 @@ export default function SignalEmotionCard({
   className,
 }: SignalEmotionCardProps) {
   const styles = TONE_CLASSES[tone]
-  const sharedClassName = `group block rounded-xl border p-3 text-left transition-all hover:-translate-y-0.5 hover:shadow-lg hover:shadow-black/30 ${styles.base} ${className ?? ""}`
+  // overflow-hidden：card 內任何 label/chip 行寬度超過卡片時直接裁切，避免視覺上跑出圓角邊框外
+  const sharedClassName = `group block overflow-hidden rounded-xl border p-3 text-left transition-all hover:-translate-y-0.5 hover:shadow-lg hover:shadow-black/30 ${styles.base} ${className ?? ""}`
 
   const cardBody = (
     <>
