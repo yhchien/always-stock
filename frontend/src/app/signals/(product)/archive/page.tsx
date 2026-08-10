@@ -5,18 +5,21 @@ import { Suspense, useCallback, useEffect, useMemo, useState, type ReactNode } f
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { Dialog } from "@base-ui/react/dialog"
 
+import ObservationStatusBadge from "@/components/ObservationStatusBadge"
 import StockChartDialog from "@/components/StockChartDialog"
 
 import {
   fetchCompletedSignalArchive,
   fetchSignalArchive,
   fetchSignalArchiveDetail,
+  fetchSignalObservations,
   type SignalArchiveCompletedPeriod,
   type SignalArchiveCompletedResponse,
   type SignalArchiveDetailResponse,
   type SignalArchiveSummaryItem,
   type SignalArchiveSummaryResponse,
   type SignalClosureReason,
+  type SignalObservationItem,
 } from "@/lib/api"
 
 // 4 個互斥分類（radio 式 chip）：排序純前端計算，一次抓全部後 client-side sort
@@ -281,6 +284,7 @@ function StockDetailDialog({
   detail,
   detailLoading,
   detailError,
+  observation,
   onClose,
   onOpenChart,
 }: {
@@ -288,6 +292,8 @@ function StockDetailDialog({
   detail: SignalArchiveDetailResponse | null
   detailLoading: boolean
   detailError: string | null
+  /** P4 每日觀察狀態；沒有對應觀察（archive 抓到但 P4 沒建立）則為 undefined。 */
+  observation?: SignalObservationItem
   onClose: () => void
   /** K 線圖改 popup（StockChartDialog）：點擊時疊在本 popup 之上開啟 */
   onOpenChart: (stockId: string, stockName?: string | null) => void
@@ -325,7 +331,16 @@ function StockDetailDialog({
                     <VersionChip version={item.prompt_version} />
                     {hitPeak && <PeakMilestoneChip />}
                     {hitStopLoss && <StopLossWarnChip />}
+                    {observation && <ObservationStatusBadge status={observation.status} />}
                   </div>
+                  {observation && (
+                    <Link
+                      href="/signals/observations"
+                      className="mt-1 inline-block text-[11px] text-sky-300 hover:text-sky-200"
+                    >
+                      查看完整追蹤紀錄（推薦論點／每日檢查）→
+                    </Link>
+                  )}
                 </div>
                 <Dialog.Close className="rounded border border-slate-600 bg-slate-800/50 px-2 py-1 text-xs text-slate-300 hover:bg-slate-700">
                   關閉 ✕
@@ -639,6 +654,31 @@ function SignalArchiveContent() {
   useEffect(() => {
     void loadSummary()
   }, [loadSummary])
+
+  // 魚尾與每日觀察（P4）合併為單一入口：archive 卡片額外標示 P4 觀察狀態
+  // （觀察中/警戒/已停止觀察）。兩套後端邏輯仍各自獨立運作，這裡只是把 P4 的
+  // 狀態當一個徽章顯示；沒有對應觀察（archive 抓到但 P4 沒建立）就不顯示徽章。
+  const [observations, setObservations] = useState<SignalObservationItem[]>([])
+  useEffect(() => {
+    let cancelled = false
+    fetchSignalObservations({ limit: 2000 })
+      .then((data) => {
+        if (!cancelled) setObservations(data.observations)
+      })
+      .catch(() => {
+        // 靜默失敗：P4 狀態徽章是附加資訊，載入失敗不影響 archive 主要功能
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+  const observationByStock = useMemo(() => {
+    const latest = new Map<string, SignalObservationItem>()
+    observations.forEach((item) => {
+      if (!latest.has(item.stock)) latest.set(item.stock, item)
+    })
+    return latest
+  }, [observations])
 
   useEffect(() => {
     let cancelled = false
@@ -1078,6 +1118,7 @@ function SignalArchiveContent() {
         detail={detail}
         detailLoading={detailLoading}
         detailError={detailError}
+        observation={popupItem ? observationByStock.get(popupItem.stock_id) : undefined}
         onClose={() => setPopupStockId(null)}
         onOpenChart={(stockId, stockName) => setChartStock({ stockId, stockName })}
       />

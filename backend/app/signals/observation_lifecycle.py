@@ -957,7 +957,13 @@ def run_daily_observation_reviews(
 ) -> Dict[str, Any]:
     """Review every active observation, excluding episodes created today."""
 
-    bootstrap_legacy_observations(db)
+    # 2026-08-10：停用「從舊 M23 signal_watch_hits 回填 P4 觀察」。這個機制產生的
+    # LEGACY_INCOMPLETE 觀察（selection_version 為 null）會讓 decide_observation_action()
+    # 的「持續警戒→STOP」判斷整段被跳過（見該函式 baseline_incomplete 前置條件），
+    # 導致觀察卡在無限警戒。既有的 LEGACY_INCOMPLETE 觀察已用
+    # backend/stop_legacy_incomplete_observations.py 一次性停止；這裡拿掉呼叫避免
+    # 未來再產生新的一批。函式本身保留不刪，如需要還原只要恢復這行呼叫。
+    # bootstrap_legacy_observations(db)
     observations = (
         db.query(SignalObservation)
         .filter(

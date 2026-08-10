@@ -29,9 +29,15 @@ const NAV_CARDS: NavCard[] = [
     description: "查看今日推薦的股票與完整分析理由。",
   },
   {
+    href: "/signals/archive",
+    title: "追蹤紀錄",
+    description: "查看每檔股票的報酬率、預期價格與歷史追蹤紀錄。",
+  },
+  {
     href: "/signals/observations",
     title: "觀察生命週期",
-    description: "檢查既有推薦目前的追蹤狀態與每日檢查紀錄。",
+    description: "工程用：原始推薦論點、每日檢查 Review Timeline 與後端證據。",
+    engineeringOnly: true,
   },
   {
     href: "/signals/outcomes",
