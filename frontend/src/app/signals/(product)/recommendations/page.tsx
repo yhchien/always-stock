@@ -53,13 +53,18 @@ function PctText({ value, size = "sm" }: { value: number | null | undefined; siz
   )
 }
 
-/** 正式版專用：比照 /signals/archive 卡片語意的追蹤資訊（收盤價／報酬率／預期價格）。 */
+/** 比照 /signals/archive 卡片語意的追蹤資訊（首次抓到日期／收盤價／報酬率／預期價格）；正式版與工程版都顯示。 */
 function TrackingSummary({ archive }: { archive: SignalArchiveSummaryItem | undefined }) {
   if (!archive) {
-    return <p className="mt-2 text-xs text-slate-500">今日新入選，尚無追蹤數據（明天起顯示報酬率）。</p>
+    return <p className="mt-2 text-xs text-slate-500">今日新入選，尚無追蹤數據（明天起顯示抓到日期與報酬率）。</p>
   }
   return (
     <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2 text-xs">
+      <span className="flex items-baseline gap-1.5">
+        <span className="text-slate-500">首次抓到</span>
+        <span className="font-mono text-slate-200">{archive.first_seen_date}</span>
+        <span className="text-slate-600">（第 {archive.tracking_day_index} 個交易日）</span>
+      </span>
       <span className="flex items-baseline gap-1.5">
         <span className="text-slate-500">收盤</span>
         <span className="font-mono text-slate-200">{formatPrice(archive.latest_close_price)}</span>
@@ -68,7 +73,6 @@ function TrackingSummary({ archive }: { archive: SignalArchiveSummaryItem | unde
       <span className="flex items-baseline gap-1.5">
         <span className="text-slate-500">報酬率</span>
         <PctText value={archive.return_pct} size="xs" />
-        <span className="text-slate-600">（已追蹤 {archive.tracking_day_index} 個交易日）</span>
       </span>
       {(archive.conservative_price != null || archive.dream_price != null) && (
         <span className="flex items-baseline gap-1.5">
@@ -210,6 +214,13 @@ function TechnicalFailures({ items }: { items: SignalRecommendationResponse["dat
   )
 }
 
+const SORT_OPTIONS = [
+  { value: "rank", label: "推薦排序" },
+  { value: "date_desc", label: "抓到日期（近到遠）" },
+  { value: "return_desc", label: "報酬率（高到低）" },
+] as const
+type SortBy = (typeof SORT_OPTIONS)[number]["value"]
+
 export default function SignalRecommendationsPage() {
   const { isEngineering } = useSignalsViewMode()
   const [snapshot, setSnapshot] = useState<SignalRecommendationResponse | null>(null)
@@ -219,6 +230,7 @@ export default function SignalRecommendationsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [dialogItem, setDialogItem] = useState<SignalWatchlistItem | null>(null)
+  const [sortBy, setSortBy] = useState<SortBy>("rank")
 
   useEffect(() => {
     const queryDate =
@@ -279,11 +291,29 @@ export default function SignalRecommendationsPage() {
         item.selection_status === "RECOMMEND" ||
         item.decision === "RECOMMEND",
     )
-    .sort(
-      (a, b) =>
+    .sort((a, b) => {
+      if (sortBy === "date_desc") {
+        const dateA = archiveByStock.get(a.stock)?.first_seen_date ?? ""
+        const dateB = archiveByStock.get(b.stock)?.first_seen_date ?? ""
+        if (dateA !== dateB) return dateA < dateB ? 1 : -1
+      } else if (sortBy === "return_desc") {
+        const returnA = archiveByStock.get(a.stock)?.return_pct
+        const returnB = archiveByStock.get(b.stock)?.return_pct
+        if (returnA == null && returnB == null) {
+          // 都沒有報酬率資料時繼續往下比排序，不要 fall through 到相等判斷卡住
+        } else if (returnA == null) {
+          return 1
+        } else if (returnB == null) {
+          return -1
+        } else if (returnA !== returnB) {
+          return returnB - returnA
+        }
+      }
+      return (
         (a.recommendation_rank ?? Number.MAX_SAFE_INTEGER) -
-        (b.recommendation_rank ?? Number.MAX_SAFE_INTEGER),
-    )
+        (b.recommendation_rank ?? Number.MAX_SAFE_INTEGER)
+      )
+    })
   const notSelected = snapshot?.data.not_selected ?? []
   const removed = snapshot?.data.removed ?? []
   const funnel = [
@@ -352,7 +382,25 @@ export default function SignalRecommendationsPage() {
           )}
 
           <section>
-            <h2 className="mb-3 text-base font-semibold">今日正式推薦（{recommendations.length}）</h2>
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-base font-semibold">今日正式推薦（{recommendations.length}）</h2>
+              <div className="flex flex-wrap gap-1" aria-label="排序方式">
+                {SORT_OPTIONS.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => setSortBy(option.value)}
+                    className={`rounded border px-2.5 py-1 text-xs ${
+                      sortBy === option.value
+                        ? "border-sky-500/50 bg-sky-500/10 text-sky-100"
+                        : "border-slate-700 text-slate-400 hover:border-slate-500"
+                    }`}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </div>
             {!recommendations.length && completeness === "COMPLETE" && <p className="rounded border border-slate-800 p-4 text-sm text-slate-500">此日期沒有正式推薦；這是完整比較後的合法 0 推薦結果。</p>}
             <div className="grid gap-3 lg:grid-cols-2">
               {recommendations.map((item) => {
@@ -364,7 +412,9 @@ export default function SignalRecommendationsPage() {
                       <span className="font-mono text-lg text-sky-200">#{item.recommendation_rank ?? "—"}</span>
                       <span className="font-mono text-sm text-slate-300">{item.stock}</span>
                       <strong className="text-sm">{item.name}</strong>
-                      <SignalAssetBadge assetType={item.asset_type} />
+                      {item.asset_type !== "COMMON_STOCK" && (
+                        <SignalAssetBadge assetType={item.asset_type} />
+                      )}
                       {observation && <ObservationStatusBadge status={observation.status} />}
                     </div>
                     {isEngineering ? (
@@ -380,12 +430,9 @@ export default function SignalRecommendationsPage() {
                     {isEngineering && (
                       <p className="mt-2 text-xs leading-5 text-slate-500">同日相對優勢：{item.relative_advantage ?? "—"}</p>
                     )}
-                    {isEngineering ? (
-                      observation && (
-                        <p className="mt-2 text-xs text-slate-500">P4 Episode {observation.episode_id}・首次推薦 {observation.started_signal_date}</p>
-                      )
-                    ) : (
-                      <TrackingSummary archive={archive} />
+                    <TrackingSummary archive={archive} />
+                    {isEngineering && observation && (
+                      <p className="mt-2 text-xs text-slate-500">P4 Episode {observation.episode_id}・首次推薦 {observation.started_signal_date}</p>
                     )}
                     {isEngineering ? (
                       <RecommendationDetail item={item} />

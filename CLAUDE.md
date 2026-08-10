@@ -1,5 +1,58 @@
 # always-stock 專案記憶
 
+## 正式推薦卡片 4 項改動 + 發現 P4 「legacy 基線不完整」永久卡在 CAUTION 的落差（2026-08-10 第五輪）
+
+### UI 改動（`recommendations/page.tsx`）
+1. `TrackingSummary` 卡片內第一行改成「首次抓到 {first_seen_date}（第 N 個交易日）」，
+   不用點進 archive 才看得到是幾號抓到的
+2. 新增排序 chip：推薦排序（預設，沿用 `recommendation_rank`）／抓到日期（近到遠，用
+   `archiveByStock.get(stock)?.first_seen_date`）／報酬率（高到低，`return_pct` 為 null
+   的排最後，不讓 null 混進數字比較）
+3. `COMMON_STOCK`（一般股）不再顯示 `SignalAssetBadge`；`FINANCIAL`／`ETF` 維持顯示——
+   只在這個頁面的呼叫端加條件（`item.asset_type !== "COMMON_STOCK"`），**沒有動
+   `SignalAssetBadge.tsx` 共用元件本身**，因為它同時被 L0 `DailySignalsPanel`／
+   observations／outcomes／`SignalNotSelectedSection`／`SignalRemovedSection` 共用，
+   改共用元件會波及沒被要求的頁面
+4. `TrackingSummary` 從只在正式版顯示，改成正式版／工程版都顯示；工程版額外多顯示
+   `P4 Episode {uuid}・首次推薦 {date}` 那行（兩者疊加，不是二選一）
+
+### 查證使用者發現的疑問：2618／6533 追蹤超過 11 個交易日為何還在推薦榜
+**P3「今日正式推薦」跟 P4「觀察生命週期」是兩套完全獨立的機制，沒有交集**：
+- P3（Global Selector）**每天從零重新評估**候選池，不管一檔股票已經被推薦幾天，只要
+  今天的一次性全體比較它還是贏，就會再被選一次——archive 的 `tracking_day_index`
+  （21／11 個交易日）只是「這一輪追蹤窗口存在多久」，`hit_count`（4／9）才是「這期間
+  真的被 P3 選中幾次」，兩者本來就不必相等。**沒有「追蹤超過 N 天就該離開推薦榜」這條
+  規則**——這是設計上刻意的：P3 每天都是全新判斷，不是「一旦上榜就沿用舊決定」
+- P4（`SignalObservation`）才有「離開」概念（`OBSERVING/CAUTION → STOPPED`），但實際
+  查證 `decide_observation_action()`（`backend/app/signals/observation_lifecycle.py:791`）
+  發現使用者原本假設的「警戒 3 次就移出」**不準確**：真正觸發 STOP 的唯一「持續警戒」
+  路徑是 `prior_decision == CAUTION` 且**同一組核心維度（MOMENTUM_STRUCTURE／
+  PARTICIPATION 相關）連續兩次 review 都失效**（line 893-913），**且這條路徑被一個前置
+  條件整個擋住**：`not baseline_incomplete`——只要 `baseline_quality == "LEGACY_INCOMPLETE"`
+  （P4 系統上線前就存在、缺完整基線資料的舊觀察），這個 STOP 判斷**完全不會執行**
+- 實測 2618／6533 兩檔的 `baseline_quality` 都是 `LEGACY_INCOMPLETE`，`consecutive_
+  caution_count` 都已經連續 13 次（curl 直接查 production `/api/signals/observations`
+  證實），卻因為上述前置條件被跳過而完全無法透過「持續警戒」路徑 STOP——只剩 hard
+  exclusion／TRACKING_INVALIDATED／外部 THESIS_INVALIDATED 三條路徑能讓它們離開，這三
+  條都沒被目前的警戒原因觸發，所以會**無限期停在 CAUTION**
+- `STOP_CONFIRM_THRESHOLD=3`／`stop_confirm_count` 這組欄位**不是**「警戒 3 次觸發
+  STOP」——是反過來：**已經 STOP 之後**，還要連續 3 天重新 review 確認沒有恢復，才會
+  真正從每日 review 清單移除（`run_daily_observation_reviews` line 969-978 的查詢條件），
+  是「確認停止」不是「觸發停止」。上一輪（第三輪 CLAUDE.md 條目）的研究摘要把這兩個機制
+  混在一起講成「連續 3 天警戒觸發 STOP」，**是不準確的簡化，這次已釐清**
+- **這是一個真實的系統設計落差**（非本輪職權範圍內修改，已回報給使用者定奪）：
+  `LEGACY_INCOMPLETE` 基線的觀察會被「持續警戒」機制永久豁免，導致這類舊觀察即使警戒
+  訊號一直在累積也無法自然 STOP，只能等外部條件觸發
+
+### 「警戒後 STOP 是否該記錄進負報酬」的既有機制
+`SignalObservationArchive`（`models.py:464-504`）在 STOPPED 時**已經**會記
+`entry_price`/`exit_price`/`return_pct`（由 `_settle_pending_archive_exits` 晚一天補
+上），並回饋進 outcomes 頁「既有觀察的停止品質」區的 `stop_before_big_loss_rate`
+（真正大跌前有沒有提早 STOP）與 `premature_stop_candidate_count`（STOP 後又漲回來，
+疑似停太早）兩個彙總指標——**但目前只有彙總比例，沒有逐檔清單**可以直接看到「這幾檔是
+因為警戒 STOP、事後虧了多少」。算是部分做到，未完全滿足使用者想要的逐檔可見度，這輪
+沒有動這塊（屬於 outcomes 頁 P4 停止品質區塊的延伸功能，需要另外規劃）。
+
 ## 結果分析頁項導番（drill-down）+ 修復路由重構遺留的測試 regression（2026-08-10 第四輪）
 
 ### 背景
