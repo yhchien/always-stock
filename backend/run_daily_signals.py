@@ -115,7 +115,7 @@ def main(argv: list) -> int:
 
     try:
         from app.database import SessionLocal, engine
-        from app.models import SignalGenerationJob
+        from app.models import DailyPrice, SignalGenerationJob
         from app.observation_schema import ensure_observation_tables
         from app.outcome_schema import ensure_outcome_tables
         from app.signals.outcome_metrics import refresh_incremental_outcomes
@@ -123,6 +123,29 @@ def main(argv: list) -> int:
     except Exception:
         logger.exception("Failed to import pipeline modules")
         return EXIT_DB_ERROR
+
+    # target_date 必須是「確實有交易資料」的那一天才跑完整 pipeline；
+    # 候選池的 ingest_data 是用 `trade_date <= target_date` 抓「最近一個交易日」，
+    # 週末/國定假日若不在此攔下，會直接沿用上個交易日的資料重跑一次分析
+    # （白白多打一次 LLM，還多一次觸發下游驗證失敗的機會）。
+    try:
+        with SessionLocal() as db:
+            has_trade_data = (
+                db.query(DailyPrice.id)
+                .filter(DailyPrice.trade_date == target_date)
+                .first()
+                is not None
+            )
+    except Exception:
+        logger.exception("Failed to check trading day for target_date=%s", target_date)
+        return EXIT_DB_ERROR
+
+    if not has_trade_data:
+        logger.info(
+            "target_date=%s has no daily_price rows; treating as non-trading day, skip",
+            target_date,
+        )
+        return EXIT_NO_DATA
 
     job_id = str(uuid.uuid4())
 

@@ -511,7 +511,8 @@ def run_global_selection(
         ).strip().lower() not in {"0", "false", "no", "off"}
     )
     previous_error: Optional[GlobalSelectionError] = None
-    for attempt in range(2 if retry_enabled else 1):
+    max_attempts = 3 if retry_enabled else 1
+    for attempt in range(max_attempts):
         call_payload = dict(request_payload)
         if previous_error is not None:
             call_payload["contract_retry"] = {
@@ -556,11 +557,15 @@ def run_global_selection(
             ),
         )
         if payload is None:
-            raise GlobalSelectionError(
+            llm_failed_error = GlobalSelectionError(
                 "GLOBAL_SELECTION_LLM_FAILED",
                 "The global selector did not return valid JSON.",
                 diagnostic=diagnostic,
             )
+            if attempt < max_attempts - 1 and retry_enabled:
+                previous_error = llm_failed_error
+                continue
+            raise llm_failed_error
         payload, normalized_recommendation_ranks = (
             _normalize_recommendation_ranks(payload, cards)
         )
@@ -576,7 +581,7 @@ def run_global_selection(
                 expected_version=expected_version,
             )
         except GlobalSelectionError as exc:
-            if attempt == 0 and retry_enabled:
+            if attempt < max_attempts - 1 and retry_enabled:
                 previous_error = exc
                 continue
             if diagnostic and not exc.diagnostic:

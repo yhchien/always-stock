@@ -120,3 +120,111 @@ def test_daily_signals_workflow_runs_daily_and_fails_partial_results():
     assert "- cron: '23 11 * * *'" in workflow
     assert "SIGNALS_PIPELINE_MODE: phase2" in workflow
     assert "4) echo \"Status: partial_failure (FAIL; snapshot is incomplete)\"" in workflow
+
+
+@pytest.fixture
+def in_memory_session_factory():
+    """建一個乾淨的 in-memory sqlite session factory，掛上全部 models（含 DailyPrice）。"""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    import app.models  # noqa: F401  註冊全部 model 到 Base.metadata
+    from app.database import Base
+
+    engine = create_engine(
+        "sqlite:///:memory:", connect_args={"check_same_thread": False}
+    )
+    Base.metadata.create_all(engine)
+    return sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+def test_main_skips_non_trading_day_without_creating_job(
+    runner_module, monkeypatch, in_memory_session_factory
+):
+    """target_date 在 daily_price 完全沒有資料 → 視為非交易日，快速回 EXIT_NO_DATA，
+    且不建立 SignalGenerationJob、不呼叫任何後續 pipeline 步驟。"""
+    import app.database
+
+    monkeypatch.setattr(app.database, "SessionLocal", in_memory_session_factory)
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("non-trading day 不應該再往下呼叫 pipeline")
+
+    monkeypatch.setattr(
+        "app.signals.pipeline.run_signal_pipeline_sync", _boom, raising=False
+    )
+
+    exit_code = runner_module.main(["run_daily_signals.py", "2026-08-01"])
+    assert exit_code == runner_module.EXIT_NO_DATA
+
+    from app.models import SignalGenerationJob
+
+    with in_memory_session_factory() as db:
+        assert db.query(SignalGenerationJob).count() == 0
+
+
+def test_main_proceeds_when_target_date_has_trade_data(
+    runner_module, monkeypatch, in_memory_session_factory
+):
+    """target_date 確實有 daily_price 資料 → 通過交易日檢查，正常建立 job 並呼叫 pipeline。"""
+    import app.database
+    from app.models import DailyPrice
+
+    monkeypatch.setattr(app.database, "SessionLocal", in_memory_session_factory)
+
+    with in_memory_session_factory() as db:
+        db.add(
+            DailyPrice(
+                trade_date=date(2026, 8, 3),
+                stock_id="2330",
+                open_price=100.0,
+                high_price=101.0,
+                low_price=99.0,
+                close_price=100.5,
+                volume=1000.0,
+                turnover=100500.0,
+            )
+        )
+        db.commit()
+
+    def _fake_run_pipeline(*, job_id, target_date, session_factory=None):
+        from app.models import SignalGenerationJob
+
+        factory = session_factory or in_memory_session_factory
+        with factory() as db:
+            job = db.get(SignalGenerationJob, job_id)
+            job.status = "done"
+            job.progress_pct = 100
+            db.commit()
+
+    monkeypatch.setattr(runner_module, "SessionLocal", in_memory_session_factory, raising=False)
+    monkeypatch.setattr(
+        "app.signals.pipeline.run_signal_pipeline_sync",
+        _fake_run_pipeline,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.observation_schema.ensure_observation_tables",
+        lambda engine: None,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.outcome_schema.ensure_outcome_tables",
+        lambda engine: None,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.signals.outcome_metrics.refresh_incremental_outcomes",
+        lambda db: None,
+        raising=False,
+    )
+
+    exit_code = runner_module.main(["run_daily_signals.py", "2026-08-03"])
+    assert exit_code == runner_module.EXIT_OK
+
+    from app.models import SignalGenerationJob
+
+    with in_memory_session_factory() as db:
+        jobs = db.query(SignalGenerationJob).all()
+        assert len(jobs) == 1
+        assert jobs[0].snapshot_date == date(2026, 8, 3)

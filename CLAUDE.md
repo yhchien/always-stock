@@ -4,6 +4,29 @@
 > [docs/plans/魚尾選股邏輯與排除規則說明.md](docs/plans/魚尾選股邏輯與排除規則說明.md)
 > （2026-07-22，含 legacy + Phase 2 兩條路徑完整對照，給要查「某天某檔股票被剔除在哪一關」的人）
 
+## daily_signals workflow：非交易日跳過 + LLM 契約重試加倍（2026-08-10）
+
+### 背景
+- 使用者回報兩個問題：(1) `Daily Signals Generation` GitHub Action 常態性失敗、(2) 週末/國定假日也在跑選股
+- 查最近 10 次執行：6 成功 4 失敗（非「固定」失敗，約 40% 機率），且 08-01（週六）/08-02（週日）確實都完整跑了一次 LLM pipeline
+
+### 問題 2 根因：非交易日短路檢查從未真正實作
+- `.github/workflows/daily_signals.yml` 註解宣稱「國定假日／一般週末因當日無交易資料而 no_data pass」，但 `candidate_pool.ingest_data` 抓交易日資料一律用 `trade_date <= target_date`（找「不超過目標日的最近交易日」），不會因為 `target_date` 剛好是週末而回空——週末直接沿用上個交易日（通常週五）資料重新跑一次完整 pipeline，多燒一次 OpenAI 額度，也多一次觸發問題 1 的機會
+- **修法**（[backend/run_daily_signals.py](backend/run_daily_signals.py) `main()`）：建立 `SignalGenerationJob` 之前，先查 `DailyPrice` 是否有 `trade_date == target_date`（精確相等，非 `<=`）的任何一筆；沒有就直接 `return EXIT_NO_DATA`，不建 job、不呼叫 pipeline。維持 cron 每天觸發（涵蓋補班六），但只有真的有資料的那天才會往下跑
+
+### 問題 1 根因：兩處 LLM 契約修正重試都只有 1 次，且 P3 一個分支根本沒進到重試邏輯
+- **P4 每日觀察回顧**（[observation_lifecycle.py](backend/app/signals/observation_lifecycle.py) `run_tracking_assessments`）：對「已追蹤中」股票逐一呼叫 LLM 做當日回顧判斷，輸出不符合嚴格 schema（例如宣稱 `THESIS_INVALIDATED` 卻沒附可追溯來源）時只重試 1 次；重試仍失敗 → 該檔進 `technical_failures` → job 標記 `partial_failure`，即使 P3 主要推薦清單早已正常存進 DB
+- **P3 全體候選比較**（[global_selector.py](backend/app/signals/global_selector.py) `run_global_selection`）：135 檔候選塞進單一 prompt 做一次性「全體一對一比較」，`for attempt in range(2 ...)` 名義上有 1 次重試，但 `payload is None`（LLM 沒回傳合法 JSON）這個分支的 `raise GlobalSelectionError(...)` 寫在 for 迴圈的 try/except 保護範圍**之外**，完全沒機會重試就直接整批失敗（0 檔推薦）
+- **修法**：
+  1. `global_selector.run_global_selection`：`max_attempts` 從 2 改 3（1 次重試→2 次）；把 `payload is None` 的分支也納入同一套重試判斷（`attempt < max_attempts - 1` 才重試，否則才 raise）
+  2. `observation_lifecycle.run_tracking_assessments`：新增整批呼叫層級的重試（`max_batch_attempts=3`，涵蓋例外與格式不符兩種情況，原本 0 次重試）；單檔契約修正重試從 1 次改 2 次（`max_contract_retries=2`，用 for 迴圈取代原本單次 try）
+
+### Gotcha
+- `run_daily_signals.py` 的交易日檢查用 `SessionLocal()` 建立獨立連線，發生在建立 job **之前**；DB 連線本身失敗會回 `EXIT_DB_ERROR`（3），不會誤判為非交易日
+- 測試（[backend/tests/test_run_daily_signals.py](backend/tests/test_run_daily_signals.py)）monkeypatch `app.database.SessionLocal`（非 `runner_module.SessionLocal`，因為 `main()` 內是函式內 local import，要 patch 被 import 的來源模組屬性，call 時才會拿到新值）
+- P3/P4 重試次數提升後單次 pipeline 執行時間會拉長（原本失敗直接放棄，現在最多多打 1~2 次 LLM call 才放棄）；`daily_signals.yml` 既有 `timeout-minutes: 120` 未調整，先觀察是否足夠
+- 全 backend suite 驗證：新增 2 個測試（非交易日短路 + 有資料正常往下走）全 pass；既有 20 個 baseline fail（site-passwordless 認證相關）不變，零新增失敗
+
 ## Phase 2：魚尾 Canonical Momentum Pipeline（**production cutover 完成，2026-07-22**）
 
 > **狀態**：deterministic 決策層（sector context → role taxonomy → sector cluster →

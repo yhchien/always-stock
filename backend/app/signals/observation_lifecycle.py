@@ -631,31 +631,39 @@ def run_tracking_assessments(
             for item in batch
             if item.get("stock")
         }
-        try:
-            response, diagnostic, _ = call_tracking(batch)
-        except Exception as exc:
-            for sid in sorted(expected):
-                failures.append(
-                    _review_failure(
-                        sid,
-                        "TRACKING_RESEARCH_FAILED",
-                        str(exc) or "Tracking LLM call raised an exception.",
-                    )
+        max_batch_attempts = 3 if retry_enabled else 1
+        response: Optional[Dict[str, Any]] = None
+        diagnostic: Dict[str, Any] = {}
+        batch_error: Optional[str] = None
+        for batch_attempt in range(max_batch_attempts):
+            try:
+                response, diagnostic, _ = call_tracking(batch)
+                batch_error = None
+            except Exception as exc:
+                response = None
+                diagnostic = {}
+                batch_error = str(exc) or "Tracking LLM call raised an exception."
+                continue
+            diagnostic = diagnostic or {}
+            if not isinstance(response, dict) or not isinstance(
+                response.get("items"), list
+            ) or (
+                family == prompt_family.PROMPT_FAMILY_VERSION
+                and response.get("review_date") != review_date
+            ):
+                batch_error = (
+                    diagnostic.get("message") or "Tracking LLM call failed."
                 )
-            continue
-        diagnostic = diagnostic or {}
-        if not isinstance(response, dict) or not isinstance(
-            response.get("items"), list
-        ) or (
-            family == prompt_family.PROMPT_FAMILY_VERSION
-            and response.get("review_date") != review_date
-        ):
+                response = None
+                continue
+            break
+        if response is None:
             for sid in sorted(expected):
                 failures.append(
                     _review_failure(
                         sid,
                         "TRACKING_RESEARCH_FAILED",
-                        diagnostic.get("message") or "Tracking LLM call failed.",
+                        batch_error or "Tracking LLM call failed.",
                         diagnostic=diagnostic,
                     )
                 )
@@ -692,66 +700,76 @@ def run_tracking_assessments(
                 successful[sid] = validated
             except ValueError as exc:
                 retry_diagnostic: Dict[str, Any] = diagnostic
+                validated_via_retry: Optional[Dict[str, Any]] = None
+                max_contract_retries = 2
+                previous_exc = exc
                 if retry_enabled and sid in source_by_stock:
-                    try:
-                        retry_response, retry_diagnostic, _ = call_tracking(
-                            [source_by_stock[sid]],
-                            contract_retry={
-                                "previous_rejection": str(exc)[:1000],
-                                "required_correction": (
-                                    "只重做這一檔並修正契約錯誤。若要使用 "
-                                    "MATERIAL_NEGATIVE_EVENT 或 DATA_CONTRADICTION "
-                                    "判定 THESIS_INVALIDATED，material_evidence 必須有"
-                                    "截至 review_date 可追溯的 summary、URL、"
-                                    "published_date；否則不得宣告失效，應依證據改為 "
-                                    "THESIS_WEAKENING 或 RESEARCH_UNAVAILABLE，且 "
-                                    "invalidation_reason_code 必須為 null。不可捏造來源。"
-                                ),
-                            },
-                        )
-                        retry_items = (
-                            retry_response.get("items")
-                            if isinstance(retry_response, dict)
-                            and retry_response.get("review_date") == review_date
-                            else None
-                        )
-                        retry_raw = (
-                            retry_items[0]
-                            if isinstance(retry_items, list)
-                            and len(retry_items) == 1
-                            and isinstance(retry_items[0], dict)
-                            and str(retry_items[0].get("stock") or "") == sid
-                            else None
-                        )
-                        if retry_raw is not None:
-                            validated = _validate_external_assessment(
-                                retry_raw,
-                                review_date=date.fromisoformat(review_date),
+                    for contract_attempt in range(1, max_contract_retries + 1):
+                        try:
+                            retry_response, retry_diagnostic, _ = call_tracking(
+                                [source_by_stock[sid]],
+                                contract_retry={
+                                    "previous_rejection": str(previous_exc)[:1000],
+                                    "required_correction": (
+                                        "只重做這一檔並修正契約錯誤。若要使用 "
+                                        "MATERIAL_NEGATIVE_EVENT 或 DATA_CONTRADICTION "
+                                        "判定 THESIS_INVALIDATED，material_evidence 必須有"
+                                        "截至 review_date 可追溯的 summary、URL、"
+                                        "published_date；否則不得宣告失效，應依證據改為 "
+                                        "THESIS_WEAKENING 或 RESEARCH_UNAVAILABLE，且 "
+                                        "invalidation_reason_code 必須為 null。不可捏造來源。"
+                                    ),
+                                },
                             )
-                            validated["_prompt_metadata"] = {
-                                **metadata,
-                                "stage_prompt_version": tracking_version,
-                                "assembled_prompt_sha256": metadata[
-                                    "prompt_sha256"
-                                ]["tracking"],
-                            }
-                            validated["_llm_diagnostic"] = {
-                                **retry_diagnostic,
-                                "contract_retry_attempt": 1,
-                                "previous_contract_error": str(exc)[:500],
-                            }
-                            successful[sid] = validated
+                            retry_items = (
+                                retry_response.get("items")
+                                if isinstance(retry_response, dict)
+                                and retry_response.get("review_date") == review_date
+                                else None
+                            )
+                            retry_raw = (
+                                retry_items[0]
+                                if isinstance(retry_items, list)
+                                and len(retry_items) == 1
+                                and isinstance(retry_items[0], dict)
+                                and str(retry_items[0].get("stock") or "") == sid
+                                else None
+                            )
+                            if retry_raw is not None:
+                                validated_via_retry = _validate_external_assessment(
+                                    retry_raw,
+                                    review_date=date.fromisoformat(review_date),
+                                )
+                                validated_via_retry["_prompt_metadata"] = {
+                                    **metadata,
+                                    "stage_prompt_version": tracking_version,
+                                    "assembled_prompt_sha256": metadata[
+                                        "prompt_sha256"
+                                    ]["tracking"],
+                                }
+                                validated_via_retry["_llm_diagnostic"] = {
+                                    **retry_diagnostic,
+                                    "contract_retry_attempt": contract_attempt,
+                                    "previous_contract_error": str(previous_exc)[:500],
+                                }
+                                break
+                        except ValueError as retry_value_exc:
+                            previous_exc = retry_value_exc
                             continue
-                    except Exception as retry_exc:
-                        retry_diagnostic = {
-                            **retry_diagnostic,
-                            "retry_exception": str(retry_exc)[:500],
-                        }
+                        except Exception as retry_exc:
+                            retry_diagnostic = {
+                                **retry_diagnostic,
+                                "retry_exception": str(retry_exc)[:500],
+                            }
+                            break
+                if validated_via_retry is not None:
+                    successful[sid] = validated_via_retry
+                    continue
                 failures.append(
                     _review_failure(
                         sid,
                         "TRACKING_OUTPUT_INVALID",
-                        str(exc),
+                        str(previous_exc),
                         diagnostic=(
                             retry_diagnostic
                             if retry_enabled
