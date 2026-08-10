@@ -1,5 +1,39 @@
 # always-stock 專案記憶
 
+## 結果分析頁全中文化 + 白話說明（2026-08-10 第三輪）
+
+同一天第三輪：使用者發現 archive 卡片顯示某檔報酬率 20%+，但 outcomes 頁卻沒算它是
+Winner，追問原因；同時要求 outcomes 頁「全中文＋每個 section 附白話說明與例子」。
+
+**根因（不是 bug，是語意落差）**：`backend/app/signals/outcome_metrics.py:57-64`
+`classify_day10_return()` 的 WINNER 判定是 `return_pct >= 10.0`（BIG_LOSER `<= -10.0`），
+但這個 `return_pct` 是 `(exit_price - entry_price) / entry_price`，`exit_price` 固定抓
+**「推薦後第 10 個交易日收盤」單一時間點**（`EXIT_PRICE_DEFINITION`，line 33-34），**不是
+最高點、也不是即時報酬率**。archive 卡片顯示的 `return_pct` 是即時/當下算的（每天更新），
+兩個是完全不同的數字來源。所以「archive 顯示 20%+」跟「outcomes 沒算 Winner」不衝突：
+可能是還沒滿 10 個交易日（`IMMATURE`，`_nth_subsequent_trade_date` 找不到對應交易日就是
+這個狀態）、或是滿 10 天那天股價已經拉回到 +10% 以下（那天的快照就是最終定論，之後即使
+股價又漲回去也不會回頭改判定）。已把這條說明寫進頁面 header（永久顯示，不是一次性回答）。
+
+**Rank Override（越級推薦）精確定義**（`global_selector.py:666-721`）：**不是**比較
+`recommendation_rank` vs `backend_priority_rank`；而是「這檔被 RECOMMEND，但同一天有一檔
+`backend_priority_rank` 數字更小（排序更前面）的股票卻被 NOT_SELECTED」——觸發條件是跟
+「當天被排除股票裡最好的排序」比較，不是跟自己的排序比較。
+
+**Backend Rank 分布表**（`outcome_metrics.py:1011-1040`）：「winner」那列是**跨決策**
+統計——不管當天是 RECOMMEND 還是 NOT_SELECTED，只要最後結果是 WINNER 就算進對應排序區間，
+是獨立於 recommend/not_selected 兩列的第三個聚合，不是前兩列的子集。
+
+**改動**：`frontend/src/lib/signalP6Presentation.ts` 的 `OUTCOME_LABELS`／
+`REVIEW_CATEGORY_LABELS` 拔掉殘留英文（`"Winner／正向結果"` → `"大漲達標"` 等）；
+`outcomes/page.tsx` 全部下拉選單／表格欄位翻中文，每個 section 加 `SectionExplainer`
+（白話說明＋具體數字例子，用實際門檻/公式寫例句，不是空泛形容詞）。純內容改動，沒有動
+任何資料流或計算邏輯。
+
+**Gotcha**：這環境的 Bash tool 有時候 `cd` 不會跨 tool call 持續生效（同一輪對話裡遇到
+兩次 `pwd` 回到非預期目錄），每次要跑 `npx eslint`/`npx tsc` 前最好先 `pwd` 確認或每次都
+明確 `cd` 到 `frontend/`，不要假設前一個 Bash call 設的 cwd 還在。
+
 > **完整選股邏輯 / hard exclusion / pipeline step-by-step 說明**：
 > [docs/plans/魚尾選股邏輯與排除規則說明.md](docs/plans/魚尾選股邏輯與排除規則說明.md)
 > （2026-07-22，含 legacy + Phase 2 兩條路徑完整對照，給要查「某天某檔股票被剔除在哪一關」的人）
