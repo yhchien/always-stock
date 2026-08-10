@@ -325,6 +325,15 @@ export default function SignalObservationsPage() {
                 technicalStatus={detail.latest_review_technical_status}
               />
 
+              {detail.status === "STOPPED" && (
+                <Link
+                  href={`/signals/archive?q=${encodeURIComponent(detail.stock)}`}
+                  className="inline-block text-xs text-sky-300 hover:text-sky-200"
+                >
+                  查看完整追蹤紀錄（報酬率／最大正負報酬）→
+                </Link>
+              )}
+
               <section>
                 <h3 className="text-xs font-semibold text-slate-300">當初推薦理由</h3>
                 <p className="mt-1 text-sm leading-6 text-slate-400">

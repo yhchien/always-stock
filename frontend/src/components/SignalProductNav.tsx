@@ -13,8 +13,13 @@ const LINKS = [
   ["/signals/debug", "Debug"],
 ] as const
 
-// Debug 是純工程診斷頁，正式版時不顯示連結（直接輸入網址仍可進入，只是不曝光入口）。
-const ENGINEERING_ONLY_HREFS: ReadonlySet<string> = new Set(["/signals/debug"])
+// Debug／結果分析是純工程診斷頁，正式版時不顯示連結（直接輸入網址仍可進入，只是不曝光入口）。
+// 結果分析的 Day10 達標率／Winner Recall 是在稽核「選股演算法好不好」，跟「這檔股票現在賺不
+// 賠」是兩件事——後者已經在正式推薦卡片直接顯示報酬率，不需要使用者自己來這頁換算。
+const ENGINEERING_ONLY_HREFS: ReadonlySet<string> = new Set([
+  "/signals/debug",
+  "/signals/outcomes",
+])
 
 export default function SignalProductNav() {
   const pathname = usePathname()

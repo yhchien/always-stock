@@ -3,13 +3,17 @@
 import { useEffect, useMemo, useState } from "react"
 import { Dialog } from "@base-ui/react/dialog"
 
+import Link from "next/link"
+
 import ObservationStatusBadge from "@/components/ObservationStatusBadge"
 import SelectionReasonBadge from "@/components/SelectionReasonBadge"
 import SignalAssetBadge from "@/components/SignalAssetBadge"
 import SignalFunnel from "@/components/SignalFunnel"
 import {
+  fetchSignalArchive,
   fetchSignalObservations,
   fetchSignalRecommendations,
+  type SignalArchiveSummaryItem,
   type SignalObservationItem,
   type SignalRecommendationResponse,
   type SignalWatchlistItem,
@@ -24,6 +28,59 @@ const REASON_SECTIONS: Array<[keyof SignalWatchlistItem, string]> = [
   ["margin_reason", "融券"],
   ["technical_reason", "技術"],
 ]
+
+// 沿用 /signals/archive 頁的格式與紅漲綠跌配色慣例，讓兩頁看到的報酬率語意一致。
+function formatPct(value: number | null | undefined): string {
+  if (value == null) return "--"
+  return `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`
+}
+
+function formatPrice(value: number | null | undefined): string {
+  if (value == null) return "--"
+  return value.toFixed(2)
+}
+
+function PctText({ value, size = "sm" }: { value: number | null | undefined; size?: "sm" | "xs" }) {
+  const textSize = size === "sm" ? "text-sm" : "text-xs"
+  if (value == null) return <span className={`font-mono ${textSize} text-slate-500`}>--</span>
+  const color = value > 0 ? "text-red-400" : value < 0 ? "text-green-400" : "text-slate-300"
+  const arrow = value > 0 ? "▲" : value < 0 ? "▼" : ""
+  return (
+    <span className={`font-mono ${textSize} font-semibold ${color}`}>
+      {arrow ? `${arrow} ` : ""}
+      {formatPct(value)}
+    </span>
+  )
+}
+
+/** 正式版專用：比照 /signals/archive 卡片語意的追蹤資訊（收盤價／報酬率／預期價格）。 */
+function TrackingSummary({ archive }: { archive: SignalArchiveSummaryItem | undefined }) {
+  if (!archive) {
+    return <p className="mt-2 text-xs text-slate-500">今日新入選，尚無追蹤數據（明天起顯示報酬率）。</p>
+  }
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2 text-xs">
+      <span className="flex items-baseline gap-1.5">
+        <span className="text-slate-500">收盤</span>
+        <span className="font-mono text-slate-200">{formatPrice(archive.latest_close_price)}</span>
+        <PctText value={archive.daily_change_pct} size="xs" />
+      </span>
+      <span className="flex items-baseline gap-1.5">
+        <span className="text-slate-500">報酬率</span>
+        <PctText value={archive.return_pct} size="xs" />
+        <span className="text-slate-600">（已追蹤 {archive.tracking_day_index} 個交易日）</span>
+      </span>
+      {(archive.conservative_price != null || archive.dream_price != null) && (
+        <span className="flex items-baseline gap-1.5">
+          <span className="text-slate-500">預期價</span>
+          <span className="font-mono text-slate-300">
+            保守 {formatPrice(archive.conservative_price)}／夢想 {formatPrice(archive.dream_price)}
+          </span>
+        </span>
+      )}
+    </div>
+  )
+}
 
 /** 工程版專用：完整推薦依據（含 thesis/relative_advantage 重複顯示）＋版本 footer，維持原樣不動。 */
 function RecommendationDetail({ item }: { item: SignalWatchlistItem }) {
@@ -117,6 +174,13 @@ function RecommendationDialog({
                   )
                 })}
               </div>
+
+              <Link
+                href={`/signals/archive?q=${encodeURIComponent(item.stock)}`}
+                className="inline-block text-xs text-sky-300 hover:text-sky-200"
+              >
+                查看完整追蹤紀錄（報酬率／最大正負報酬／歷史紀錄）→
+              </Link>
             </div>
           )}
         </Dialog.Popup>
@@ -150,6 +214,7 @@ export default function SignalRecommendationsPage() {
   const { isEngineering } = useSignalsViewMode()
   const [snapshot, setSnapshot] = useState<SignalRecommendationResponse | null>(null)
   const [observations, setObservations] = useState<SignalObservationItem[]>([])
+  const [archiveItems, setArchiveItems] = useState<SignalArchiveSummaryItem[]>([])
   const [date, setDate] = useState("")
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -164,11 +229,17 @@ export default function SignalRecommendationsPage() {
       .then(async (payload) => {
         setSnapshot(payload)
         if (payload) {
-          const list = await fetchSignalObservations(
-            { asOfDate: payload.snapshot_date, limit: 2000 },
-            { signal: controller.signal },
-          )
-          setObservations(list.observations)
+          const [observationList, archiveList] = await Promise.all([
+            fetchSignalObservations(
+              { asOfDate: payload.snapshot_date, limit: 2000 },
+              { signal: controller.signal },
+            ),
+            // 比照 /signals/archive 頁的 return_pct／預期價格語意，同一批 pipeline 寫入
+            // signal_watch_hits，這裡直接借用來取代「追蹤中：自 X 起」那種不直覺的文字。
+            fetchSignalArchive(undefined, { signal: controller.signal }),
+          ])
+          setObservations(observationList.observations)
+          setArchiveItems(archiveList.items)
           setDate(payload.snapshot_date)
         }
       })
@@ -191,6 +262,10 @@ export default function SignalRecommendationsPage() {
       return latest
     },
     [observations],
+  )
+  const archiveByStock = useMemo(
+    () => new Map(archiveItems.map((item) => [item.stock_id, item])),
+    [archiveItems],
   )
   const processing = snapshot?.data.summary.processing_summary
   const selection = snapshot?.data.summary.selection_summary
@@ -282,6 +357,7 @@ export default function SignalRecommendationsPage() {
             <div className="grid gap-3 lg:grid-cols-2">
               {recommendations.map((item) => {
                 const observation = observationByStock.get(item.stock)
+                const archive = archiveByStock.get(item.stock)
                 return (
                   <article key={item.stock} className="rounded-xl border border-slate-700/60 bg-slate-900/55 p-4">
                     <div className="flex flex-wrap items-center gap-2">
@@ -304,12 +380,12 @@ export default function SignalRecommendationsPage() {
                     {isEngineering && (
                       <p className="mt-2 text-xs leading-5 text-slate-500">同日相對優勢：{item.relative_advantage ?? "—"}</p>
                     )}
-                    {observation && (
-                      isEngineering ? (
+                    {isEngineering ? (
+                      observation && (
                         <p className="mt-2 text-xs text-slate-500">P4 Episode {observation.episode_id}・首次推薦 {observation.started_signal_date}</p>
-                      ) : (
-                        <p className="mt-2 text-xs text-slate-500">追蹤中：自 {observation.started_signal_date} 起持續觀察</p>
                       )
+                    ) : (
+                      <TrackingSummary archive={archive} />
                     )}
                     {isEngineering ? (
                       <RecommendationDetail item={item} />

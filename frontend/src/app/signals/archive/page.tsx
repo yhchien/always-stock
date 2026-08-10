@@ -140,6 +140,29 @@ function SignalTypeChip({ type }: { type: string }) {
   return <span className="text-xs text-slate-400">{upper}</span>
 }
 
+// 判斷這檔追蹤週期內是否曾被新版 P3-P7 v7 pipeline 抓到（prompt_version 以 "v7" 開頭）；
+// v7 上線後（2026-07-29）prod 的 prompt_version 一律是 "v7_..." 開頭，此前/手動 replay
+// 才會是裸 v1~v6.1，用字串前綴判斷即可，不需要額外的 DB 欄位。
+function PipelineFlagChip({ version }: { version?: string | null }) {
+  const versions = (version || "v1")
+    .split(",")
+    .map((v) => v.trim())
+    .filter(Boolean)
+  const isNewPipeline = versions.some((v) => v.startsWith("v7"))
+  return (
+    <span
+      className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[11px] font-medium ${
+        isNewPipeline
+          ? "border-emerald-500/50 bg-emerald-500/15 text-emerald-200"
+          : "border-slate-600 bg-slate-800/50 text-slate-400"
+      }`}
+      title={isNewPipeline ? "此追蹤週期曾由新版 v7 pipeline 選出" : "此追蹤週期只由舊版 pipeline 選出"}
+    >
+      {isNewPipeline ? "新選股" : "舊選股"}
+    </span>
+  )
+}
+
 function VersionChip({ version }: { version?: string | null }) {
   // 整個追蹤 cycle 抓過的 prompt 版本集合（後端回 "v1,v2"）；舊資料無 → 視為 v1
   const versions = (version || "v1")
@@ -298,6 +321,7 @@ function StockDetailDialog({
                   </Dialog.Description>
                   <div className="mt-2 flex flex-wrap items-center gap-1">
                     <SignalTypeChip type={item.latest_signal_type} />
+                    <PipelineFlagChip version={item.prompt_version} />
                     <VersionChip version={item.prompt_version} />
                     {hitPeak && <PeakMilestoneChip />}
                     {hitStopLoss && <StopLossWarnChip />}
@@ -485,8 +509,11 @@ function SignalArchiveContent() {
   const [showAllActive, setShowAllActive] = useState(false)
 
   // 兩區各自的搜尋框：純前端 filter（不打 backend），by stock_id / stock_name 子字串
-  const [activeSearch, setActiveSearch] = useState("")
-  const [completedSearch, setCompletedSearch] = useState("")
+  // ?q= 讓其他頁（正式推薦／觀察生命週期）可以直接深連結到某檔股票的追蹤紀錄；
+  // 只當初始值讀一次，不雙向同步回 URL（沿用本頁搜尋框刻意不進 URL 的既有決定）。
+  const initialQuery = searchParams.get("q") ?? ""
+  const [activeSearch, setActiveSearch] = useState(initialQuery)
+  const [completedSearch, setCompletedSearch] = useState(initialQuery)
 
   // 兩區各自可折疊；偏好存 localStorage（追蹤中預設展開、紀錄區預設收合）
   const [activeCollapsed, setActiveCollapsed] = useState(false)
@@ -984,6 +1011,7 @@ function SignalArchiveContent() {
                       </div>
                       <div className="flex flex-wrap items-center justify-end gap-1">
                         <SignalTypeChip type={item.latest_signal_type} />
+                        <PipelineFlagChip version={item.prompt_version} />
                         <VersionChip version={item.prompt_version} />
                       </div>
                     </header>

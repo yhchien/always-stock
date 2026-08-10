@@ -36,7 +36,8 @@ const NAV_CARDS: NavCard[] = [
   {
     href: "/signals/outcomes",
     title: "結果分析",
-    description: "檢視過去推薦的事後成效。",
+    description: "檢視過去推薦的事後成效（工程稽核用，個股報酬率請直接看正式推薦卡片）。",
+    engineeringOnly: true,
   },
   {
     href: "/signals/debug",
@@ -149,18 +150,20 @@ export default function SignalsOverviewPage() {
                   : `今日新停止追蹤 ${tracking?.stopped_count ?? 0}`
               }
             />
-            <OutcomeMetricCard
-              label="10 日後達標率"
-              value={formatRate(outcomes?.recommendation.acceptable_rate)}
-              detail={`成熟樣本 ${outcomes?.sample.matured ?? 0}・目標 80%`}
-              status={
-                outcomes?.sample.matured
-                  ? outcomes.recommendation.acceptable_target_met
-                    ? "met"
-                    : "not-met"
-                  : "neutral"
-              }
-            />
+            {isEngineering && (
+              <OutcomeMetricCard
+                label="10 日後達標率"
+                value={formatRate(outcomes?.recommendation.acceptable_rate)}
+                detail={`成熟樣本 ${outcomes?.sample.matured ?? 0}・目標 80%`}
+                status={
+                  outcomes?.sample.matured
+                    ? outcomes.recommendation.acceptable_target_met
+                      ? "met"
+                      : "not-met"
+                    : "neutral"
+                }
+              />
+            )}
           </section>
 
           <section className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">

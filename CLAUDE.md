@@ -4,6 +4,73 @@
 > [docs/plans/魚尾選股邏輯與排除規則說明.md](docs/plans/魚尾選股邏輯與排除規則說明.md)
 > （2026-07-22，含 legacy + Phase 2 兩條路徑完整對照，給要查「某天某檔股票被剔除在哪一關」的人）
 
+## 正式推薦借用魚尾 archive 資料顯示報酬率 + 結果分析收進工程版（2026-08-10 第二輪）
+
+### 背景
+- 上一輪加了正式版／工程版 toggle 後，使用者發現 `/signals/recommendations` 每張卡片顯示
+  「追蹤中：自 X 起持續觀察」不直覺，希望比照 `/signals/archive`（魚尾 30 日追蹤頁）顯示
+  報酬率與預期價格
+- 使用者也回饋：連上一輪已簡化過的「結果分析」頁（10 日後達標率／成熟樣本數／圖表）都看
+  不懂在講什麼（不知道日期區間、不知道哪些股票是中性或大幅負報酬）——確認這頁對他沒價值，
+  應收進工程版
+
+### 查證：P3-P7（v7 pipeline）跟 M23 舊系統的資料關係
+- **P3 RECOMMEND 清單本來就有完整報酬率資料，純前端就能接**：`persist_signal_watch_hits`
+  （`backend/app/signals/archive.py:128`）在同一次 `run_signal_pipeline_sync` 裡把 P3 的
+  `final_payload["watchlist"]` 寫進 `signal_watch_hits`，所以 archive 頁的
+  `return_pct`／`max_positive_return_pct`／`latest_close_price`／`daily_change_pct`／
+  `tracking_day_index`／`hit_count`（`SignalArchiveSummaryItem`，`frontend/src/lib/api.ts:1603`）
+  對 P3 股票本來就存在，**不需要後端新工作**
+- **`signal_expectation_prices`（保守價／夢想價，M26）也已經對 P3 股票生效**：
+  `generate_for_new_signals()`（`backend/app/signals/expectation_price.py:982`）純粹以
+  `SignalWatchHit.snapshot_date == today` 找候選，不分是哪個 pipeline 寫入
+- **P4（`SignalObservation`）自己完全沒有 return_pct／price 欄位**，P5/P6 的 `day10_return`
+  是滿 10 個交易日後的一次性快照、不是即時報酬率——這正是為什麼直接借用 archive 頁既有的
+  `signal_watch_hits` 資料，而不是在 P4 系統裡重造一套即時報酬追蹤
+- **「新／舊選股」用既有 `prompt_version` 欄位判斷即可，不需要新增 DB 欄位**：v7 pipeline
+  上線後（commit `86a159b`，2026-07-29）寫入的 `prompt_version` 一律是 `"v7_..."` 開頭；
+  此前／手動 replay 才會是裸 `v1/v2/v4/v5/v6/v6.1`。純字串前綴判斷：任一版本 token 以
+  `"v7"` 開頭 → 新選股
+
+### 改動
+- **結果分析頁完全收進工程版**：`(product)/page.tsx` 的「結果分析」nav card 加
+  `engineeringOnly: true`；`SignalProductNav.tsx` 的 `ENGINEERING_ONLY_HREFS` 加
+  `/signals/outcomes`；`outcomes/page.tsx` 拿掉上一輪加的所有 `isEngineering` 條件
+  render，還原成單一份完整內容（比照 Debug 頁「內容不分版本，只是 nav 不連過去」）——避免
+  維護一個正式版永遠不會被看到、且已證實對使用者無意義的簡化版本。總覽頁的「10 日後達標
+  率」統計卡也一併收進工程版（4 顆變 3 顆）
+- **正式推薦卡片改魚尾風格**（`recommendations/page.tsx`）：額外呼叫
+  `fetchSignalArchive()`（預設 `limit=0` 已不限筆數）建 `Map<stock_id, SignalArchiveSummaryItem>`；
+  正式版卡片拿掉「追蹤中：自 X 起」，改用新元件 `TrackingSummary`（收盤價＋當日漲跌幅、
+  報酬率＋已追蹤 N 個交易日、保守／夢想價；archive 查無資料時顯示「今日新入選，尚無追蹤
+  數據」）；「查看完整分析」dialog 內加一行「查看完整追蹤紀錄 →」連到
+  `/signals/archive?q={stock}`。工程版不動
+- **觀察生命週期頁 STOPPED 加追蹤紀錄連結**（`observations/page.tsx`）：detail 面板對
+  `status === "STOPPED"` 的項目加「查看完整追蹤紀錄 →」連到 `/signals/archive?q={stock}`；
+  **只加在 detail 面板，不加在清單卡片**——清單卡片整張是 `<button>`，`<a>` 巢狀在
+  `<button>` 裡是無效 HTML（同 2026-07-16 K 線圖 popup 那次踩過的坑）
+- **archive 頁加 `?q=` deep-link + 新／舊選股 flag**：`activeSearch`／`completedSearch`
+  初始值改讀 `searchParams.get("q") ?? ""`（單純 mount 時讀一次當初始值，不雙向同步回
+  URL，沿用本頁搜尋框刻意不進 URL 的既有決定）；新增 `PipelineFlagChip`（緊鄰
+  `VersionChip` 放，不改 `VersionChip` 本身）用同一個 `prompt_version` 字串判斷新舊選股，
+  套用在 active 卡片 detail dialog 與 completed 卡片兩處（這是全檔案僅有的兩處
+  `VersionChip` 用量）
+
+### Gotcha
+- `git add` 用多個 pathspec 一次下指令時，若其中一個路徑打錯（`fatal: pathspec ... did
+  not match any files`），**整條指令會直接中斷、完全不 staged 任何檔案**（不是「跳過壞的
+  路徑、其餘照常」）——上一輪（正式版／工程版 toggle 那次）因此第一次 commit 漏掉
+  CLAUDE.md／prompt／SignalProductNav.tsx 三個檔案，而且 5 個搬移的頁面只有 rename 被
+  記錄、內容編輯反而遺漏，靠 `git status --short` 的 `RM`／` M` 前綴仔細分辨才抓到（`RM`
+  = 已 staged 的 rename + 額外 unstaged 修改，不是「已完全 staged」）。commit 前務必
+  `git diff --cached --stat` 確認變動量級合理，而不是只看 `git status` 有沒有列出檔名
+- `useSyncExternalStore` 取代 `useEffect`+`setState` 讀 localStorage 這個 pattern（見上
+  一輪 CLAUDE.md 條目）在這輪繼續沿用，本輪沒有新增類似需求
+- 本機驗證受工具限制：`chromium-cli`／Playwright 在此環境都不可用，只能用 `curl` 確認
+  路由 200／dev server log 無編譯錯誤（整站包在 client-side `<SiteGate>` 密碼閘門後，
+  未解鎖前 HTML 永遠只有「載入中…」殼層，RSC payload 裡的函式名也是編譯後的 chunk 參照，
+  grep 不到真正的字串內容）；`tsc --noEmit` + `eslint` 全綠
+
 ## /signals/* 產品頁：正式版／工程版 toggle（2026-08-10）
 
 ### 背景
