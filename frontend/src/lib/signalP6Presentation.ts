@@ -24,11 +24,11 @@ export const OBSERVATION_DECISION_LABELS: Record<SignalObservationDecision, stri
 }
 
 export const OUTCOME_LABELS: Record<SignalOutcomeLabel, string> = {
-  WINNER: "Winner／正向結果",
-  NEUTRAL: "中性結果",
-  BIG_LOSER: "大幅負報酬結果",
-  IMMATURE: "尚未成熟",
-  OUTCOME_DATA_MISSING: "結果資料缺漏",
+  WINNER: "大漲達標",
+  NEUTRAL: "持平",
+  BIG_LOSER: "大跌虧損",
+  IMMATURE: "尚未滿10日",
+  OUTCOME_DATA_MISSING: "資料缺漏",
 }
 
 export const SELECTION_REASON_LABELS: Record<string, string> = {
@@ -44,12 +44,12 @@ export const SELECTION_REASON_LABELS: Record<string, string> = {
 }
 
 export const REVIEW_CATEGORY_LABELS: Record<string, string> = {
-  NOT_SELECTED_WINNER: "未列入後成為 Winner",
-  HIGH_RANK_NOT_SELECTED_WINNER: "前段順位未列入後成為 Winner",
-  RECOMMEND_BIG_LOSER: "正式推薦後大幅負報酬",
-  RANK_OVERRIDE_BIG_LOSER: "Rank Override 後大幅負報酬",
-  PREMATURE_STOP_CANDIDATE: "可能過早停止觀察",
-  OUTCOME_DATA_MISSING: "Outcome 資料缺漏",
+  NOT_SELECTED_WINNER: "未推薦後來卻大漲",
+  HIGH_RANK_NOT_SELECTED_WINNER: "排名靠前卻未推薦，後來大漲",
+  RECOMMEND_BIG_LOSER: "推薦後大跌",
+  RANK_OVERRIDE_BIG_LOSER: "越級推薦後大跌",
+  PREMATURE_STOP_CANDIDATE: "疑似過早停止觀察",
+  OUTCOME_DATA_MISSING: "結果資料缺漏",
 }
 
 export function formatPercent(value: number | null | undefined, digits = 1): string {
