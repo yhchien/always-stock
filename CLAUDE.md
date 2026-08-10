@@ -3744,3 +3744,45 @@ function update(next) {
   import path 沒跟著更新（本輪較早一輪就踩過，3 個測試檔案的 import 壞了兩輪才被發現）；固定
   流程改成 tsc → eslint（僅本輪改動檔案）→ 全套 `npx jest` 三段都跑，且跟已知 baseline（StockChart／
   BacktestPanel／StockList 三個 pre-existing 失敗）比對，確認沒有新增失敗才算過
+
+## P3 global_selector 輸出 token 上限依候選數量動態放寬（2026-08-11）
+
+### 症狀
+`Daily Signals Generation` GitHub Action 連續兩次（2026-08-05／2026-08-10）以
+`exit_code=4 partial_failure` 失敗；查 `signal_snapshots` 發現這兩天的快照確實存在
+但 `watchlist=0`、`selection_complete=False`——**整天沒有任何推薦**，不是次要欄位缺漏。
+
+### 根因
+`global_selector.run_global_selection()` 把所有 eligible 候選塞進**一次性** LLM call
+做全體比較，`_call_llm_json` 的 `max_output_tokens` 吃 `estimate_selection_capacity()`
+算出的 `output_token_reserve`，這個值原本是**寫死的 16,000**，不隨候選數量調整。
+Structured Outputs 的嚴格 schema 要求每一檔候選都要有非 nullable 的 `selection_reason`
+＋約 13 個其他欄位（nullable 但仍佔 key），token 需求不會因為大多數候選最終判
+NOT_SELECTED 而縮小。兩次失敗當天的候選數（135／116 檔 eligible，對照
+`signal_snapshots.candidate_pool_size` 也同步暴增到 703／779，平常日子是 338～491）
+遠超平常，16,000 token 在這個規模下持續被 `max_output_tokens` 截斷，3 次契約重試
+（`GLOBAL_SELECTION_LLM_FAILED`）全部用盡後直接 raise，整份快照的 watchlist 變空。
+
+### 修法（[global_selector.py](backend/app/signals/global_selector.py)）
+`_OUTPUT_TOKEN_RESERVE`（固定 16,000）→ `_default_output_token_reserve(candidate_count)`
+= `3,000 + candidate_count * 220`；`estimate_selection_capacity()` 把這個動態值當
+`_positive_env_int()` 的 default 傳入，`SIGNALS_GLOBAL_SELECTOR_OUTPUT_TOKEN_RESERVE`
+env var override 語意不變（設了就優先用 env 值）。既有的 `within_limit` 檢查
+（`estimated_input_tokens + reserve <= limit`）維持不動——真的超大候選池會在呼叫 LLM
+**之前**就丟出明確的 `GLOBAL_SELECTION_CONTEXT_EXCEEDED`，不會再靜默送出去被
+`max_output_tokens` 截斷、燒 3 次重試才失敗。
+
+### Gotcha
+- 220 tokens/candidate 是保守估計：135/116 檔在 16,000/135≈118、16,000/116≈138
+  tokens/candidate 這個水準已經不夠，抓 220 留足夠安全邊界（不是精算出來的，是「明顯
+  高於已知的不夠用門檻」）
+- `_positive_env_int(name, default)` 對 unset env var 的行為是回傳傳入的 `default`
+  參數（`os.getenv(name, str(default))` 沒抓到才會用 default），所以把 fixed 值換成
+  函式呼叫結果完全相容既有 env override 邏輯，不需要改 `_positive_env_int` 本身
+- 新增 4 個 regression test（`test_global_selector.py`）：兩個直接鎖住 135／116 這兩個
+  真實觸發過事故的候選數，斷言新算出的 reserve 大於舊的固定 16,000；一個驗證隨候選數
+  線性成長；一個驗證 env override 仍然優先。全 backend suite 20 fail/5 error 維持既有
+  baseline（site-passwordless auth + FinMind SDK 需要 live token 兩類），零新增失敗
+- 沒有動 `_DEFAULT_CONTEXT_LIMIT_TOKENS=114_688`（該常數用途是「輸入+輸出 token 總和
+  上限」，跟本次改的 output reserve 是不同層次的東西，超出時 `within_limit` 檢查依然
+  是唯一的把關者）
