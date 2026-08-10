@@ -1,7 +1,8 @@
 import { render, screen, waitFor } from "@testing-library/react"
 
-import SignalRecommendationsPage from "@/app/signals/recommendations/page"
+import SignalRecommendationsPage from "@/app/signals/(product)/recommendations/page"
 import {
+  fetchSignalArchive,
   fetchSignalObservations,
   fetchSignalRecommendations,
 } from "@/lib/api"
@@ -13,8 +14,19 @@ jest.mock("@/lib/api", () => {
     ...actual,
     fetchSignalRecommendations: jest.fn(),
     fetchSignalObservations: jest.fn(),
+    fetchSignalArchive: jest.fn(),
   }
 })
+// 這份測試在驗證工程稽核內容（NOT_SELECTED／REMOVE／技術失敗分區）；這些內容在正式版／
+// 工程版 toggle 上線後只在工程版顯示，直接 mock 成工程版繞過 Provider／localStorage。
+jest.mock("@/lib/signalsViewMode", () => ({
+  useSignalsViewMode: () => ({
+    mode: "engineering",
+    isEngineering: true,
+    setMode: jest.fn(),
+    toggle: jest.fn(),
+  }),
+}))
 
 const recommendationMock = fetchSignalRecommendations as jest.MockedFunction<
   typeof fetchSignalRecommendations
@@ -22,6 +34,11 @@ const recommendationMock = fetchSignalRecommendations as jest.MockedFunction<
 const observationsMock = fetchSignalObservations as jest.MockedFunction<
   typeof fetchSignalObservations
 >
+const archiveMock = fetchSignalArchive as jest.MockedFunction<typeof fetchSignalArchive>
+
+function renderPage() {
+  return render(<SignalRecommendationsPage />)
+}
 
 function payload(selectionComplete = true) {
   return {
@@ -102,6 +119,7 @@ function payload(selectionComplete = true) {
 describe("SignalRecommendationsPage", () => {
   beforeEach(() => {
     recommendationMock.mockResolvedValue(payload() as never)
+    archiveMock.mockResolvedValue({ as_of_trade_date: null, retention_trade_days: 30, items: [] })
     observationsMock.mockResolvedValue({
       as_of_date: "2026-07-29",
       observations: [
@@ -132,7 +150,7 @@ describe("SignalRecommendationsPage", () => {
   })
 
   it("sorts only RECOMMEND in the main list and separates neutral/veto/technical buckets", async () => {
-    render(<SignalRecommendationsPage />)
+    renderPage()
     await screen.findByText("今日正式推薦（2）")
     const ranks = screen.getAllByText(/^#[12]$/).map((node) => node.textContent)
     expect(ranks).toEqual(["#1", "#2"])
@@ -145,7 +163,7 @@ describe("SignalRecommendationsPage", () => {
 
   it("does not render a global selection failure as a legitimate zero recommendation", async () => {
     recommendationMock.mockResolvedValue(payload(false) as never)
-    render(<SignalRecommendationsPage />)
+    renderPage()
     expect(
       await screen.findByText(
         "本次研究已完成，但正式推薦選擇未完成；目前結果不可視為完整推薦名單。",
@@ -168,7 +186,7 @@ describe("SignalRecommendationsPage", () => {
     historical.data.technical_failures = []
     historical.data.summary = {}
     recommendationMock.mockResolvedValue(historical as never)
-    render(<SignalRecommendationsPage />)
+    renderPage()
     expect(await screen.findByText("今日正式推薦（0）")).toBeInTheDocument()
     expect(screen.queryByText("舊 WATCH")).not.toBeInTheDocument()
   })

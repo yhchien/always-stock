@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react"
 
-import SignalObservationsPage from "@/app/signals/observations/page"
+import SignalObservationsPage from "@/app/signals/(product)/observations/page"
 import {
   fetchSignalObservationDetail,
   fetchSignalObservations,
@@ -17,6 +17,17 @@ jest.mock("@/lib/api", () => {
     fetchSignalTrackingSummary: jest.fn(),
   }
 })
+// 這份測試在驗證工程稽核內容（TRACKING_SELECTION_CONFLICT 提示、Episode 歷史等）；
+// 這些內容在正式版／工程版 toggle 上線後只在工程版顯示，直接 mock 成工程版繞過
+// Provider／localStorage，不測 toggle 機制本身（toggle 機制另有測試涵蓋）。
+jest.mock("@/lib/signalsViewMode", () => ({
+  useSignalsViewMode: () => ({
+    mode: "engineering",
+    isEngineering: true,
+    setMode: jest.fn(),
+    toggle: jest.fn(),
+  }),
+}))
 
 const listMock = fetchSignalObservations as jest.MockedFunction<typeof fetchSignalObservations>
 const detailMock = fetchSignalObservationDetail as jest.MockedFunction<typeof fetchSignalObservationDetail>
@@ -116,8 +127,8 @@ describe("SignalObservationsPage", () => {
     expect(await screen.findByText(/TRACKING_SELECTION_CONFLICT/)).toBeInTheDocument()
     expect(screen.getByText("本次追蹤檢查未完成，維持上一個有效狀態。")).toBeInTheDocument()
     fireEvent.click(screen.getByText("台積電"))
-    expect(await screen.findByText("Episode History")).toBeInTheDocument()
-    expect(screen.getByText(/Episode 1/)).toBeInTheDocument()
+    expect(await screen.findByText("追蹤紀錄")).toBeInTheDocument()
+    expect(screen.getByText(/第 1 次/)).toBeInTheDocument()
     expect(screen.getByText(/停止觀察僅代表/)).toBeInTheDocument()
     expect(screen.getAllByText("今日推薦：RECOMMEND").length).toBeGreaterThan(0)
   })

@@ -40,7 +40,7 @@ describe("P6 shared presentation", () => {
     )
     expect(screen.getByText("今日缺少明確相對優勢")).toBeInTheDocument()
     expect(screen.getByText("80.0%")).toBeInTheDocument()
-    expect(OUTCOME_LABELS.NEUTRAL).toBe("中性結果")
+    expect(OUTCOME_LABELS.NEUTRAL).toBe("持平")
     expect(formatPercent(-10)).toBe("-10.0%")
     expect(formatRate(0.8)).toBe("80.0%")
     expect(selectionCompleteness("FAILED", false)).toBe("GLOBAL_SELECTION_FAILED")

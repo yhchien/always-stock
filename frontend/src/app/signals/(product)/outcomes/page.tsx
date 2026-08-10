@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useState, type ReactNode } from "react"
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 
 import OutcomeMetricCard from "@/components/OutcomeMetricCard"
 import { OutcomeDistributionChart, OutcomeTimeseriesChart } from "@/components/OutcomeCharts"
@@ -16,6 +16,7 @@ import {
   type SignalObservationAnalyticsResponse,
   type SignalOutcomeFilters,
   type SignalOutcomeItemsResponse,
+  type SignalOutcomeLabel,
   type SignalOutcomeReviewQueueResponse,
   type SignalOutcomeSummary,
   type SignalOutcomeTimeseriesResponse,
@@ -77,6 +78,17 @@ export default function SignalOutcomesPage() {
   const [queue, setQueue] = useState<SignalOutcomeReviewQueueResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const detailRef = useRef<HTMLDivElement | null>(null)
+
+  /** 任何摘要數字／圖表被點擊時，把逐筆明細表篩到對應條件並捲到該處，讓「這是哪幾檔」有地方看。 */
+  const goToDetail = useCallback((patch: { outcomeLabel?: string; decision?: string }) => {
+    setPage(1)
+    setOutcomeLabel(patch.outcomeLabel ?? "")
+    setDecision(patch.decision ?? "")
+    requestAnimationFrame(() => {
+      detailRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
+    })
+  }, [])
 
   const filters: SignalOutcomeFilters = {
     start_date: startDate || undefined,
@@ -206,6 +218,13 @@ export default function SignalOutcomesPage() {
 
       {summary && (
         <>
+          <p className="mb-4 rounded-lg border border-slate-800 bg-slate-900/50 px-3 py-2 text-xs text-slate-300">
+            目前顯示區間：
+            <span className="ml-1 font-mono text-slate-100">
+              {summary.date_range.actual_start ?? "—"} ～ {summary.date_range.actual_end ?? "—"}
+            </span>
+            （可用上方「開始日期」「結束日期」調整；沒填就是系統目前有的全部資料）
+          </p>
           {summary.sample.missing > 0 && <p className="mb-4 rounded border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-100">部分結果資料不完整，本頁比例只使用價格資料完整的成熟樣本。</p>}
 
           <section>
@@ -231,7 +250,28 @@ export default function SignalOutcomesPage() {
               <OutcomeMetricCard
                 label="大跌比例／大漲抓取率"
                 value={`${formatRate(summary.recommendation.big_loser_rate)} / ${formatRate(summary.selection.winner_recall)}`}
-                detail={`漏抓大漲股 ${summary.selection.not_selected_winner_count} 檔・平均篩掉 ${formatRate(summary.selection.average_compression_rate)} 的候選`}
+                detail={
+                  <>
+                    漏抓大漲股 {summary.selection.not_selected_winner_count} 檔・平均篩掉{" "}
+                    {formatRate(summary.selection.average_compression_rate)} 的候選
+                    <span className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
+                      <button
+                        type="button"
+                        onClick={() => goToDetail({ outcomeLabel: "BIG_LOSER", decision: "RECOMMEND" })}
+                        className="text-sky-300 hover:text-sky-200"
+                      >
+                        查看大跌名單 →
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => goToDetail({ outcomeLabel: "WINNER" })}
+                        className="text-sky-300 hover:text-sky-200"
+                      >
+                        查看大漲名單 →
+                      </button>
+                    </span>
+                  </>
+                }
               />
             </div>
             <SectionExplainer>
@@ -263,7 +303,10 @@ export default function SignalOutcomesPage() {
           <section className="mt-5">
             <h2 className="text-sm font-semibold text-slate-200">趨勢圖表</h2>
             <div className="mt-2 grid gap-4 xl:grid-cols-2">
-              <OutcomeDistributionChart summary={summary} />
+              <OutcomeDistributionChart
+                summary={summary}
+                onSelect={(label: SignalOutcomeLabel) => goToDetail({ outcomeLabel: label })}
+              />
               <OutcomeTimeseriesChart items={timeseries?.items ?? []} />
             </div>
             <SectionExplainer>
@@ -290,13 +333,24 @@ export default function SignalOutcomesPage() {
                   </tr>
                 </thead>
                 <tbody className="text-slate-300">
-                  {[
-                    ["recommend", "被 AI 正式推薦"],
-                    ["not_selected", "被 AI 排除"],
-                    ["winner", "最後大漲達標"],
-                  ].map(([key, label]) => (
+                  {(
+                    [
+                      ["recommend", "被 AI 正式推薦", { decision: "RECOMMEND" }],
+                      ["not_selected", "被 AI 排除", { decision: "NOT_SELECTED" }],
+                      ["winner", "最後大漲達標", { outcomeLabel: "WINNER" }],
+                    ] as const
+                  ).map(([key, label, patch]) => (
                     <tr key={key} className="border-t border-slate-800">
-                      <td className="px-2 py-2">{label}</td>
+                      <td className="px-2 py-2">
+                        <button
+                          type="button"
+                          onClick={() => goToDetail(patch)}
+                          className="text-sky-300 hover:text-sky-200 hover:underline"
+                          title="點擊查看這個分類的股票明細（表格不分後端排序區間，只能整類看）"
+                        >
+                          {label}
+                        </button>
+                      </td>
                       {["1-10", "11-25", "26-50", "51+"].map((bucket) => (
                         <td key={bucket} className="px-2 py-2 font-mono">
                           {summary.selection.backend_rank_distribution[key]?.[bucket] ?? 0}
@@ -344,14 +398,10 @@ export default function SignalOutcomesPage() {
               </div>
               <button
                 type="button"
-                onClick={() => {
-                  setPage(1)
-                  setDecision("NOT_SELECTED")
-                  setOutcomeLabel("WINNER")
-                }}
+                onClick={() => goToDetail({ decision: "NOT_SELECTED", outcomeLabel: "WINNER" })}
                 className="rounded border border-sky-500/40 px-3 py-1.5 text-xs text-sky-200"
               >
-                篩出股票明細
+                查看股票明細 →
               </button>
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
@@ -393,11 +443,30 @@ export default function SignalOutcomesPage() {
             </SectionExplainer>
           </section>
 
-          <section className="mt-5 overflow-hidden rounded-xl border border-slate-800">
+          <section ref={detailRef} className="mt-5 overflow-hidden rounded-xl border border-slate-800 scroll-mt-4">
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 bg-slate-900/50 p-3">
               <div>
                 <h2 className="text-sm font-semibold">逐筆明細</h2>
-                <p className="text-[11px] text-slate-500">共 {items?.total ?? 0} 筆・第 {items?.page ?? 1}/{Math.max(items?.pages ?? 1, 1)} 頁</p>
+                <p className="text-[11px] text-slate-500">
+                  共 {items?.total ?? 0} 筆・第 {items?.page ?? 1}/{Math.max(items?.pages ?? 1, 1)} 頁
+                  {(outcomeLabel || decision) && (
+                    <>
+                      ・目前篩選：
+                      {decision && <span className="text-sky-300">{P3_DECISION_LABELS[decision] ?? decision}</span>}
+                      {decision && outcomeLabel && "・"}
+                      {outcomeLabel && (
+                        <span className="text-sky-300">{OUTCOME_LABELS[outcomeLabel as SignalOutcomeLabel] ?? outcomeLabel}</span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => { setPage(1); setOutcomeLabel(""); setDecision("") }}
+                        className="ml-2 text-slate-500 underline hover:text-slate-300"
+                      >
+                        清除篩選
+                      </button>
+                    </>
+                  )}
+                </p>
               </div>
               <div className="flex gap-2">
                 <button type="button" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))} className="rounded border border-slate-700 px-2 py-1 text-xs disabled:opacity-30">上一頁</button>
@@ -429,7 +498,8 @@ export default function SignalOutcomesPage() {
             <div className="border-t border-slate-800 p-3">
               <SectionExplainer>
                 這是最原始的逐筆資料，每一列是「某一天、某一檔股票」的完整紀錄，給想自己核對數字
-                的人用。上面所有卡片與圖表的統計數字，都是從這張表彙總出來的。
+                的人用。上面所有卡片與圖表的統計數字，都是從這張表彙總出來的——點上面任何一個
+                數字、長條圖或表格列，都會自動篩到這裡並捲下來，不用自己重選篩選條件。
               </SectionExplainer>
             </div>
           </section>

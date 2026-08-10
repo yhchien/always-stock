@@ -1,5 +1,62 @@
 # always-stock 專案記憶
 
+## 結果分析頁項導番（drill-down）+ 修復路由重構遺留的測試 regression（2026-08-10 第四輪）
+
+### 背景
+使用者接著問：摘要數字（如「大跌比例／大漲抓取率 50.0%／0.0%」）跟圖表上的「中性 8
+檔」「大跌 8 檔」，要怎麼知道具體是哪幾檔？沒有地方可以點。順便發現目前顯示的資料是
+哪一天的區間也沒有標示清楚。
+
+### 改動
+- **日期區間移到頁面顯眼位置**：原本只藏在「趨勢圖表」子標題裡，現在在
+  `{summary && (...)}` 區塊最上方加一個永久橫幅：「目前顯示區間：2026-07-20 ～
+  2026-08-09（可用上方「開始日期」「結束日期」調整）」
+- **項導番機制**（`goToDetail` helper，`outcomes/page.tsx`）：把既有「逐筆明細」表格
+  （本來就有 `outcome_label`／`p3_decision` 篩選＋分頁）當成唯一的「哪幾檔」答案來源，
+  任何摘要數字/圖表/表格列被點擊時，統一呼叫 `goToDetail({ outcomeLabel?, decision? })`
+  → 設篩選 + `requestAnimationFrame` 後 `scrollIntoView`。**沒有新增任何 API 或資料抓
+  取**，純粹是「幫使用者把篩選條件填好、捲到看得到的地方」
+- 套用位置：「大跌比例／大漲抓取率」卡片下方加「查看大跌名單 →」／「查看大漲名單 →」；
+  `OutcomeDistributionChart`（`components/OutcomeCharts.tsx`）新增可選的 `onSelect`
+  prop，用 `echarts-for-react` 的 `onEvents={{ click }}` 把長條圖三個分類變成可點擊；
+  Backend Rank 分布表三個列標籤（被 AI 正式推薦／被 AI 排除／最後大漲達標）改成按鈕；
+  既有「查看股票明細」按鈕（NOT_SELECTED 後成為 Winner 區）也統一走同一個 helper
+- 「逐筆明細」表格 header 加「目前篩選：XXX・清除篩選」提示，讓使用者知道自己現在看到
+  的是被篩過的子集，不是全部
+- **Backend Rank 表格cell（4×3 矩陣）本身沒有做到逐格點擊**：現有 API 篩選參數只有
+  `outcome_label`／`p3_decision`，沒有 rank 區間參數，逐格點擊需要後端加新篩選欄位，
+  這輪先只做到列級（整類）點擊，是刻意的範圍取捨
+
+### 意外抓到的 regression（不是這輪引入，是兩輪前搬檔案時漏掉的）
+第一輪（正式版／工程版 toggle）把 5 個頁面搬進 `(product)/` route group 時，只跑了
+`tsc --noEmit`（用 `grep -v "__tests__"` 過濾掉雜訊）跟 `eslint`，**從未跑過
+`npm test`**——`src/__tests__/components/Signal{Outcomes,Observations,Recommendations}Page.test.tsx`
+三個測試檔案的 `import ... from "@/app/signals/xxx/page"` 全部還指向搬移前的舊路徑，
+測試套件直接 `Could not locate module` 掛掉；額外因為這幾頁後來加了 `useSignalsViewMode()`
+（P3/P4 兩頁）跟 `fetchSignalArchive()`（P3 頁），測試也需要對應補 mock。**教訓**：
+`tsc --noEmit` 不會檢查測試檔案本身有沒有跟著搬移（尤其是這個專案的既有慣例會把
+`__tests__` 的 tsc 錯誤直接 filter 掉，很容易把真的 regression 跟已知雜訊一起濾掉）；
+移動/重構任何被測試 import 的檔案後，**必須額外跑一次 `npx jest` 全套件**，不能只靠
+tsc/eslint。修法：
+- 三個測試檔案的 import path 改成 `@/app/signals/(product)/xxx/page`
+- Observations／Recommendations 兩個測試因為頁面組件內部呼叫 `useSignalsViewMode()`
+  需要 Provider；這兩份測試的意圖本來就是在驗證「工程稽核內容」（TRACKING_SELECTION_
+  CONFLICT、Episode 歷史、NOT_SELECTED/REMOVE 分區），所以用
+  `jest.mock("@/lib/signalsViewMode", () => ({ useSignalsViewMode: () => ({ isEngineering:
+  true, ... }) }))` 直接鎖定工程版，不測 toggle 機制本身（避免依賴真實 Provider 的
+  localStorage 讀取在 jsdom 裡的行為）
+- Recommendations 測試補上 `fetchSignalArchive` mock（回傳空 `items: []`），否則會呼叫
+  真實的 `apiFetch` 在 jsdom 無網路環境掛掉
+- `OUTCOME_LABELS.NEUTRAL` 文字從 `"中性結果"` 改 `"持平"` 那次真的是新規在，
+  `SignalP6Components.test.tsx` 的斷言也同步更新
+
+### Gotcha
+- 這個環境的 Bash tool cwd 不穩定跨 tool call（第三輪就記過一次），這輪又發生兩次：
+  下指令前務必 `pwd` 或每次都明確 `cd frontend/`
+- `npx eslint "src/app/signals/(product)/xxx.tsx"` 這種帶括號的具體路徑會被 eslint 的
+  glob 引擎當成找不到檔案（跟 bash 的 quoting 無關，是 eslint 自己的 minimatch 行為）；
+  改用萬用字元 `"src/app/signals/**/*.tsx"` 才吃得到
+
 ## 結果分析頁全中文化 + 白話說明（2026-08-10 第三輪）
 
 同一天第三輪：使用者發現 archive 卡片顯示某檔報酬率 20%+，但 outcomes 頁卻沒算它是

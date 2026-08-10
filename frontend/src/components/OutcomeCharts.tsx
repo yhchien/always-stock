@@ -2,21 +2,27 @@
 
 import ReactECharts from "echarts-for-react"
 
-import type { SignalOutcomeSummary, SignalOutcomeTimeseriesItem } from "@/lib/api"
+import type { SignalOutcomeLabel, SignalOutcomeSummary, SignalOutcomeTimeseriesItem } from "@/lib/api"
+
+const DISTRIBUTION_CATEGORIES: SignalOutcomeLabel[] = ["WINNER", "NEUTRAL", "BIG_LOSER"]
 
 export function OutcomeDistributionChart({
   summary,
+  onSelect,
 }: {
   summary: SignalOutcomeSummary
+  /** 點長條圖時回傳該分類，讓外層可以篩出對應股票明細。 */
+  onSelect?: (label: SignalOutcomeLabel) => void
 }) {
   if (!summary.sample.matured) {
     return <p className="rounded border border-slate-800 p-4 text-sm text-slate-500">此區間尚無成熟 Day10 Outcome。</p>
   }
   return (
     <section className="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
-      <h2 className="text-sm font-semibold">成熟推薦 Outcome 分布</h2>
+      <h2 className="text-sm font-semibold">成熟推薦結果分布</h2>
       <p className="mt-1 text-xs text-slate-500">
         {summary.date_range.actual_start ?? "—"}～{summary.date_range.actual_end ?? "—"}・樣本 {summary.sample.matured}
+        {onSelect ? "・點長條可看該類股票明細" : ""}
       </p>
       <ReactECharts
         style={{ height: 260 }}
@@ -25,7 +31,7 @@ export function OutcomeDistributionChart({
           grid: { left: 44, right: 20, top: 28, bottom: 42 },
           xAxis: {
             type: "category",
-            data: ["Winner／正向", "中性結果", "大幅負報酬"],
+            data: ["大漲達標", "持平", "大跌虧損"],
             axisLabel: { color: "#94a3b8" },
             axisLine: { lineStyle: { color: "#334155" } },
           },
@@ -45,9 +51,20 @@ export function OutcomeDistributionChart({
               ],
               itemStyle: { color: "#64748b", borderRadius: [4, 4, 0, 0] },
               label: { show: true, position: "top", color: "#cbd5e1" },
+              cursor: onSelect ? "pointer" : "default",
             },
           ],
         }}
+        onEvents={
+          onSelect
+            ? {
+                click: (params: { dataIndex: number }) => {
+                  const label = DISTRIBUTION_CATEGORIES[params.dataIndex]
+                  if (label) onSelect(label)
+                },
+              }
+            : undefined
+        }
       />
     </section>
   )

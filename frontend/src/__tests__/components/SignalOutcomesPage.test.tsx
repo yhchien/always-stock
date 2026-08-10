@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react"
 
-import SignalOutcomesPage from "@/app/signals/outcomes/page"
+import SignalOutcomesPage from "@/app/signals/(product)/outcomes/page"
 import * as api from "@/lib/api"
 
 jest.mock("next/navigation", () => ({ usePathname: () => "/signals/outcomes" }))
