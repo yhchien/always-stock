@@ -4,6 +4,92 @@
 > [docs/plans/魚尾選股邏輯與排除規則說明.md](docs/plans/魚尾選股邏輯與排除規則說明.md)
 > （2026-07-22，含 legacy + Phase 2 兩條路徑完整對照，給要查「某天某檔股票被剔除在哪一關」的人）
 
+## /signals/* 產品頁：正式版／工程版 toggle（2026-08-10）
+
+### 背景
+- `/signals/*`（總覽／正式推薦／觀察生命週期／結果分析／Debug，P3-P7 v7 pipeline 的前端）
+  混雜大量工程診斷資訊（raw UUID、JSON dump、prompt/selection/score 版本字串、Funnel、
+  NOT_SELECTED/REMOVE 稽核清單），使用者反映「看不懂在幹嘛」，只想看「今天推薦了什麼、
+  為什麼」。需求：加一個正式版／工程版 toggle（預設正式版），正式版只留真正會用到的內容、
+  全部中文；工程版維持現狀。同時修掉推薦理由裡混雜英文 enum 的問題、隱藏 Debug 入口。
+
+### 架構：view-mode toggle
+- 新模組 [frontend/src/lib/signalsViewMode.tsx](frontend/src/lib/signalsViewMode.tsx)：
+  `SignalsViewModeProvider` + `useSignalsViewMode()`，state 存 localStorage
+  `always-stock:signals:view-mode`（預設 `"production"`）
+  - **用 `useSyncExternalStore` 而非 `useEffect`+`setState`**：後者會撞上
+    `eslint-plugin-react-hooks` 的 `react-hooks/set-state-in-effect` 規則（同樣是「mount
+    後讀 localStorage 覆寫預設值」的模式，`archive/page.tsx` 的 `completedCollapsed` 舊
+    寫法沒被這條規則抓到，但新寫的 code 會被抓——不確定是規則的啟發式判斷差異還是版本
+    差異，總之新規劃一律改用 `useSyncExternalStore`：`getServerSnapshot` 固定回
+    `"production"`（SSR 安全）、`getSnapshot` 讀 localStorage、寫入時透過極簡 module-level
+    pub-sub（`Set<() => void>`）通知同分頁內的其他 subscriber——原生 `storage` 事件只在
+    **其他分頁**才會觸發，同分頁呼叫 `setItem` 不會自動通知自己，這是這個模式最容易忽略
+    的坑
+- 新增 [frontend/src/app/signals/(product)/layout.tsx](frontend/src/app/signals/(product)/layout.tsx)：
+  套 `SignalsViewModeProvider` + 統一 render 一次 `SignalProductNav`
+  - **用 `(product)` route group 隔離**：Next.js layout 會套用到整個子樹，若直接加在
+    `signals/layout.tsx` 會連 `archive/`、`phase2/` 兩個獨立風格頁面也一起被包住（多一條
+    不該出現的 nav bar）。用 route group 把總覽/正式推薦/觀察生命週期/結果分析/Debug 這
+    5 個頁面移進 `(product)/` 資料夾，`archive`、`phase2` 留在外面當 sibling，URL 完全
+    不變（route group 資料夾名不進 URL）
+- Toggle 按鈕做在 [SignalProductNav.tsx](frontend/src/components/SignalProductNav.tsx)：
+  nav 列右側切換鈕；`isEngineering` 時 nav 才顯示「Debug」連結（正式版隱藏入口，但
+  `/signals/debug` 本身不做存取限制，直接輸入網址仍可進）
+
+### 各頁面改動模式
+- 所有「正式版隱藏、工程版顯示」統一用 `{isEngineering && (...)}` 條件 render 包住，不拆
+  兩份 component
+- **正式推薦頁**：Funnel／未列入今日推薦／明確移除／技術失敗四區全部移到工程版；正式版
+  每張卡片拿掉 `Theme {cluster}`／`Backend Rank {n}` 工程標籤、拿掉 raw `P4 Episode {uuid}`
+  （改顯示「追蹤中：自 {date} 起持續觀察」）、拿掉版本 footer 行；新增
+  `RecommendationDialog`（`@base-ui/react/dialog`，仿 `StockChartDialog` 樣式）取代原本
+  `<details>` accordion，同時修掉「thesis/relative_advantage 在卡片本體與 details 各印一
+  次」的重複顯示
+- **觀察生命週期頁**：隱藏 Asset Type／Episode ID 篩選、`EvidenceBlock` raw JSON dump ×2、
+  Review Timeline 版本行；`stop_reason_code`／`episode.status` 等 enum 值一律經既有翻譯
+  字典（`OBSERVATION_STATUS_LABELS`／`observationStatusLabel()`）轉中文再顯示
+- **結果分析頁**：大幅精簡，正式版只留日期區間篩選 + 2 張圖表 + 2 顆核心卡片（10 日後
+  達標率／成熟樣本數）；版本篩選 5 個下拉、CSV 匯出、Backend Rank 分布表、
+  NOT_SELECTED→Winner 區塊、Outcome 明細表、人工檢查清單、raw JSON「版本與定義」全部移
+  到工程版
+
+### Prompt 修正：英文 enum 洩漏進中文推薦理由
+- 根因：[recommendation-reason-v7.md](backend/app/prompts/recommendation-reason-v7.md)
+  原本逐條要求 LLM 在中文 bullet 裡「引用」`Role／Tracking State`、`Backend Rank`、
+  `Entry State`、`Technical Status` 等**內部欄位名稱**，LLM 因此把
+  `ACTIVE_TREND`／`backend_priority_rank`／`sector_rotation_status` 這類 enum/欄位名原樣
+  抄進中文句子（真實案例：威強電推薦理由出現「後端為 ACTIVE_TREND，且
+  backend_priority_rank 為 2」）
+- 修法：把「引用欄位名稱」改成「描述欄位所代表的中文語意」，並加一條全文通則：「一律用
+  繁體中文描述語意，不得在句子中出現任何英文欄位名稱、程式變數名、enum 代碼或底線命名」
+- **只影響之後新產生的 snapshot**；已存在資料庫的舊快照不回溯清洗（維持本專案一貫「不
+  回溯造假資料」原則，使用者已確認接受）
+
+### 資料流確認（非改動，純回報）
+- 使用者問「/signals 下的股票有沒有放到魚尾（/signals/archive）」——**答案是有**：
+  `app/signals/pipeline.py` 在同一個 `run_signal_pipeline_sync` 呼叫裡，`_persist_snapshot()`
+  存新版 P3-P7 資料後緊接著呼叫
+  `signal_archive.persist_signal_watch_hits(db, target_date, final_payload, job_id)`，
+  把同一份 `final_payload["watchlist"]`（RECOMMEND 清單）寫進舊版 `signal_watch_hits`。
+  兩邊資料同源，不需要額外接線
+
+### Gotcha
+- `git mv` 對「本次 session 內剛建立、尚未 `git add` 的檔案」會報
+  `fatal: not under version control`（本次移動 `layout.tsx` 時踩到）；改用一般 `mv` 即可，
+  下次 `git add` 會自動偵測成 rename
+- 用 `{isEngineering && (<section/><section/>)}` 包多個相鄰 JSX 元素會編譯錯誤（JSX 只能有
+  一個根節點），要包 `<>...</>` Fragment
+- 型別檢查前先 `rm -rf .next`：`next dev`/`next build` 產生的 `.next/types/validator.ts`
+  會快取舊路徑（`src/app/signals/debug/page.js` 等），檔案搬進 `(product)/` 後這些快取型
+  別檔案會報 `Cannot find module`，是 stale cache 不是真的錯誤
+- 本機驗證受工具限制：`chromium-cli`／Playwright 在此環境都不可用，只能用
+  `curl` 檢查 SSR HTML（因整站包在 client-side `<SiteGate>` 密碼閘門後，未解鎖前 HTML
+  永遠只有「載入中…」殼層）+ dev server log 確認 200／無編譯錯誤 + RSC payload 內文字
+  確認新模組正確被引用（`signalsViewMode.tsx`／`SignalProductNav.tsx` 有出現在
+  `/signals` 的 payload、`archive` 頁的 payload 裡沒有——證實 route group 隔離確實生效）；
+  沒有做到真正點擊 toggle／開 dialog 的互動驗證，`tsc --noEmit` + `eslint` 全綠
+
 ## daily_signals workflow：非交易日跳過 + LLM 契約重試加倍（2026-08-10）
 
 ### 背景

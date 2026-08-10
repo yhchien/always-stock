@@ -32,11 +32,19 @@
 }
 
 - theme_reason：實際業務／ETF 曝險、題材、催化劑及延續性。
-- capital_reason：今日關注理由、Role／Tracking State、相對優勢及 Backend Rank 意義。
+- capital_reason：今日關注理由、目前處於的動能階段（例如上升趨勢中／回檔整理中／剛啟動），
+  以及在今日候選中的相對排名意義（例如排名靠前／中段／後段）。
 - chip_reason：法人、籌碼與量價參與。
 - margin_reason：融資、融券、券資比及缺漏。
-- technical_reason：價格結構、Entry State、Technical Status 及追高／回檔風險。
-- momentum_reason：相對大盤、相對同業、Momentum Phase、Freshness、趨勢品質及波動。
+- technical_reason：價格結構、目前的進場位置（例如剛突破／已偏高追價風險／回檔整理中）、
+  價格所處的技術狀態（例如突破整理／延續上升／轉弱）以及追高／回檔風險。
+- momentum_reason：相對大盤、相對同業、目前的動能所處階段（剛啟動／加速中／過熱／降溫）、
+  動能是否新鮮、趨勢品質及波動。
+
+**全文語言規則（所有段落一律適用）**：一律用繁體中文描述語意，不得在句子中出現任何英文
+欄位名稱、程式變數名、enum 代碼或底線命名（例如 ACTIVE_TREND、backend_priority_rank、
+sector_rotation_status、institution_flow_momentum 這類寫法一律禁止）；輸入資料中若有這類
+內部欄位/狀態值，必須先在腦中把它翻譯成對應的中文語意再寫進句子，不可原樣抄錄或音譯。
 
 每段 2～4 個繁體中文 bullet，每個 18～45 個中文字；margin_reason 可 1～3 個。
 不得使用表格、跨段重複同一數字或產生空陣列。沒有資料時直接寫「該項資料缺漏」。

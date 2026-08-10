@@ -4,7 +4,6 @@ import { useEffect, useState } from "react"
 import Link from "next/link"
 
 import OutcomeMetricCard from "@/components/OutcomeMetricCard"
-import SignalProductNav from "@/components/SignalProductNav"
 import {
   fetchLatestSignalSnapshot,
   fetchSignalOutcomeSummary,
@@ -13,7 +12,39 @@ import {
   type SignalSnapshotResponse,
   type SignalTrackingSummary,
 } from "@/lib/api"
+import { useSignalsViewMode } from "@/lib/signalsViewMode"
 import { formatRate } from "@/lib/signalP6Presentation"
+
+interface NavCard {
+  href: string
+  title: string
+  description: string
+  engineeringOnly?: boolean
+}
+
+const NAV_CARDS: NavCard[] = [
+  {
+    href: "/signals/recommendations",
+    title: "正式推薦",
+    description: "查看今日推薦的股票與完整分析理由。",
+  },
+  {
+    href: "/signals/observations",
+    title: "觀察生命週期",
+    description: "檢查既有推薦目前的追蹤狀態與每日檢查紀錄。",
+  },
+  {
+    href: "/signals/outcomes",
+    title: "結果分析",
+    description: "檢視過去推薦的事後成效。",
+  },
+  {
+    href: "/signals/debug",
+    title: "Debug",
+    description: "查看 prompt、selection、score、tracking 版本與完整性診斷。",
+    engineeringOnly: true,
+  },
+]
 
 export default function SignalsOverviewPage() {
   const [snapshot, setSnapshot] = useState<SignalSnapshotResponse | null>(null)
@@ -51,16 +82,22 @@ export default function SignalsOverviewPage() {
     processing?.global_selection_status === "FAILED" ||
     selection?.selection_complete === false
 
+  const { isEngineering } = useSignalsViewMode()
+  const visibleNavCards = NAV_CARDS.filter((card) => isEngineering || !card.engineeringOnly)
+
   return (
     <main className="mx-auto min-h-screen max-w-7xl px-4 py-6 text-slate-100">
-      <SignalProductNav />
       <header className="mb-5">
-        <p className="text-xs uppercase tracking-[0.2em] text-sky-300/80">
-          Signals Product Overview
-        </p>
+        {isEngineering && (
+          <p className="text-xs uppercase tracking-[0.2em] text-sky-300/80">
+            Signals Product Overview
+          </p>
+        )}
         <h1 className="mt-1 text-2xl font-semibold">魚尾選股總覽</h1>
         <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
-          今日正式推薦、既有觀察生命週期與 Day10 事後結果彼此分離；結果分析不會回饋 production 選股。
+          {isEngineering
+            ? "今日正式推薦、既有觀察生命週期與 Day10 事後結果彼此分離；結果分析不會回饋 production 選股。"
+            : "查看今日推薦、既有推薦的追蹤狀態，以及過去推薦的事後成效。"}
         </p>
       </header>
 
@@ -87,21 +124,33 @@ export default function SignalsOverviewPage() {
             <OutcomeMetricCard
               label="最新有效交易日"
               value={snapshot.snapshot_date}
-              detail={`Prompt Family：${processing?.prompt_family_version ?? "歷史版本"}`}
+              detail={
+                isEngineering
+                  ? `Prompt Family：${processing?.prompt_family_version ?? "歷史版本"}`
+                  : undefined
+              }
             />
             <OutcomeMetricCard
               label="今日正式推薦"
               value={globalFailed ? "未完成" : snapshot.data.watchlist.length}
-              detail={`未列入 ${snapshot.data.not_selected?.length ?? 0}・明確移除 ${snapshot.data.removed?.length ?? 0}`}
+              detail={
+                isEngineering
+                  ? `未列入 ${snapshot.data.not_selected?.length ?? 0}・明確移除 ${snapshot.data.removed?.length ?? 0}`
+                  : undefined
+              }
               status={globalFailed ? "not-met" : "neutral"}
             />
             <OutcomeMetricCard
-              label="Active / Caution"
+              label="追蹤中 / 警戒中"
               value={`${tracking?.active_before_review ?? 0} / ${tracking?.caution_count ?? 0}`}
-              detail={`今日停止 ${tracking?.stopped_count ?? 0}・Review Failed ${tracking?.review_failed_count ?? 0}`}
+              detail={
+                isEngineering
+                  ? `今日停止 ${tracking?.stopped_count ?? 0}・Review Failed ${tracking?.review_failed_count ?? 0}`
+                  : `今日新停止追蹤 ${tracking?.stopped_count ?? 0}`
+              }
             />
             <OutcomeMetricCard
-              label="Day10 Acceptable Rate"
+              label="10 日後達標率"
               value={formatRate(outcomes?.recommendation.acceptable_rate)}
               detail={`成熟樣本 ${outcomes?.sample.matured ?? 0}・目標 80%`}
               status={
@@ -115,35 +164,19 @@ export default function SignalsOverviewPage() {
           </section>
 
           <section className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            {[
-              [
-                "/signals/recommendations",
-                "正式推薦",
-                "查看 Funnel、RECOMMEND、NOT_SELECTED、REMOVE 與技術失敗。",
-              ],
-              [
-                "/signals/observations",
-                "觀察生命週期",
-                "檢查 OBSERVING、CAUTION、STOPPED 與每日 Review timeline。",
-              ],
-              [
-                "/signals/outcomes",
-                "結果分析",
-                "比較 Day10 outcome、Winner Recall、停止觀察與版本樣本。",
-              ],
-              [
-                "/signals/debug",
-                "Debug",
-                "查看 prompt、selection、score、tracking 版本與完整性診斷。",
-              ],
-            ].map(([href, title, description]) => (
+            {visibleNavCards.map(({ href, title, description }) => (
               <Link
                 key={href}
                 href={href}
-                className="rounded-xl border border-slate-800 bg-slate-900/40 p-4 transition-colors hover:border-slate-600"
+                className="group flex items-center justify-between gap-3 rounded-xl border border-sky-800/40 bg-sky-950/20 p-4 transition-colors hover:border-sky-400/60 hover:bg-sky-950/30"
               >
-                <h2 className="text-sm font-semibold text-slate-200">{title}</h2>
-                <p className="mt-2 text-xs leading-5 text-slate-500">{description}</p>
+                <div>
+                  <h2 className="text-sm font-semibold text-slate-200">{title}</h2>
+                  <p className="mt-2 text-xs leading-5 text-slate-500">{description}</p>
+                </div>
+                <span className="shrink-0 text-sky-400 transition-transform group-hover:translate-x-0.5">
+                  →
+                </span>
               </Link>
             ))}
           </section>

@@ -1,12 +1,12 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
+import { Dialog } from "@base-ui/react/dialog"
 
 import ObservationStatusBadge from "@/components/ObservationStatusBadge"
 import SelectionReasonBadge from "@/components/SelectionReasonBadge"
 import SignalAssetBadge from "@/components/SignalAssetBadge"
 import SignalFunnel from "@/components/SignalFunnel"
-import SignalProductNav from "@/components/SignalProductNav"
 import {
   fetchSignalObservations,
   fetchSignalRecommendations,
@@ -15,6 +15,7 @@ import {
   type SignalWatchlistItem,
 } from "@/lib/api"
 import { selectionCompleteness } from "@/lib/signalP6Presentation"
+import { useSignalsViewMode } from "@/lib/signalsViewMode"
 
 const REASON_SECTIONS: Array<[keyof SignalWatchlistItem, string]> = [
   ["theme_reason", "題材"],
@@ -24,6 +25,7 @@ const REASON_SECTIONS: Array<[keyof SignalWatchlistItem, string]> = [
   ["technical_reason", "技術"],
 ]
 
+/** 工程版專用：完整推薦依據（含 thesis/relative_advantage 重複顯示）＋版本 footer，維持原樣不動。 */
 function RecommendationDetail({ item }: { item: SignalWatchlistItem }) {
   return (
     <details className="mt-3 border-t border-slate-800 pt-3">
@@ -62,6 +64,67 @@ function RecommendationDetail({ item }: { item: SignalWatchlistItem }) {
   )
 }
 
+/** 正式版專用：完整分析 popup，只留同日相對優勢＋5 段中文理由，不含版本字串。 */
+function RecommendationDialog({
+  item,
+  onClose,
+}: {
+  item: SignalWatchlistItem | null
+  onClose: () => void
+}) {
+  return (
+    <Dialog.Root open={item !== null} onOpenChange={(open) => { if (!open) onClose() }}>
+      <Dialog.Portal>
+        <Dialog.Backdrop className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm" />
+        <Dialog.Popup className="fixed inset-0 z-50 w-full overflow-y-auto bg-slate-900 p-4 shadow-2xl sm:inset-auto sm:left-1/2 sm:top-1/2 sm:max-h-[85vh] sm:w-[min(92vw,42rem)] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-2xl sm:border sm:border-slate-700 sm:p-5">
+          {item && (
+            <div className="space-y-4">
+              <header className="flex items-start justify-between gap-3">
+                <div>
+                  <Dialog.Title className="text-lg font-semibold text-slate-100">
+                    {item.stock} {item.name}
+                  </Dialog.Title>
+                  <Dialog.Description className="mt-1 text-xs text-slate-500">
+                    完整推薦分析
+                  </Dialog.Description>
+                </div>
+                <Dialog.Close className="rounded border border-slate-600 bg-slate-800/50 px-2 py-1 text-xs text-slate-300 hover:bg-slate-700">
+                  關閉 ✕
+                </Dialog.Close>
+              </header>
+
+              <section className="rounded-lg border border-slate-800 p-3">
+                <h4 className="text-xs font-semibold text-slate-300">同日相對優勢</h4>
+                <p className="mt-2 text-sm leading-6 text-slate-400">
+                  {item.relative_advantage ?? "此快照未保存同日相對優勢"}
+                </p>
+              </section>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                {REASON_SECTIONS.map(([key, label]) => {
+                  const bullets = item[key] as string[] | null | undefined
+                  return (
+                    <section key={String(key)} className="rounded-lg border border-slate-800 p-3">
+                      <h4 className="text-xs font-semibold text-slate-300">{label}</h4>
+                      {bullets?.length ? (
+                        <ul className="mt-2 space-y-1 text-xs leading-5 text-slate-400">
+                          {bullets.map((bullet, index) => <li key={index}>• {bullet}</li>)}
+                        </ul>
+                      ) : (
+                        <p className="mt-2 text-xs text-slate-600">此項目暫無資料。</p>
+                      )}
+                    </section>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+        </Dialog.Popup>
+      </Dialog.Portal>
+    </Dialog.Root>
+  )
+}
+
 function TechnicalFailures({ items }: { items: SignalRecommendationResponse["data"]["technical_failures"] }) {
   if (!items?.length) return null
   return (
@@ -84,11 +147,13 @@ function TechnicalFailures({ items }: { items: SignalRecommendationResponse["dat
 }
 
 export default function SignalRecommendationsPage() {
+  const { isEngineering } = useSignalsViewMode()
   const [snapshot, setSnapshot] = useState<SignalRecommendationResponse | null>(null)
   const [observations, setObservations] = useState<SignalObservationItem[]>([])
   const [date, setDate] = useState("")
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [dialogItem, setDialogItem] = useState<SignalWatchlistItem | null>(null)
 
   useEffect(() => {
     const queryDate =
@@ -169,12 +234,17 @@ export default function SignalRecommendationsPage() {
 
   return (
     <main className="mx-auto min-h-screen max-w-7xl px-4 py-6 text-slate-100">
-      <SignalProductNav />
       <header className="mb-5 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <p className="text-xs uppercase tracking-[0.2em] text-sky-300/80">P3 Formal Recommendations</p>
+          {isEngineering && (
+            <p className="text-xs uppercase tracking-[0.2em] text-sky-300/80">P3 Formal Recommendations</p>
+          )}
           <h1 className="mt-1 text-2xl font-semibold">正式推薦與候選比較</h1>
-          <p className="mt-1 text-sm text-slate-400">主清單只顯示 RECOMMEND；P3 今日決策與 P4 既有觀察狀態分開。</p>
+          <p className="mt-1 text-sm text-slate-400">
+            {isEngineering
+              ? "主清單只顯示 RECOMMEND；P3 今日決策與 P4 既有觀察狀態分開。"
+              : "以下是今天系統推薦的股票與推薦理由。"}
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <button type="button" onClick={() => changeDate(snapshot?.navigation.previous_date ?? null)} disabled={!snapshot?.navigation.previous_date} className="rounded border border-slate-700 px-3 py-1.5 text-xs disabled:opacity-30">前一交易日</button>
@@ -183,20 +253,22 @@ export default function SignalRecommendationsPage() {
         </div>
       </header>
 
-      {loading && <p className="text-sm text-slate-500">正在載入正式推薦與完整 Funnel…</p>}
+      {loading && <p className="text-sm text-slate-500">正在載入正式推薦…</p>}
       {error && <p className="rounded border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-100">{error}</p>}
       {!loading && !error && !snapshot && <p className="rounded border border-slate-800 p-4 text-sm text-slate-500">此日期沒有訊號快照。</p>}
 
       {snapshot && (
         <div className="space-y-5">
-          <section className="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
-            <div className="mb-3 flex flex-wrap items-center gap-2">
-              <h2 className="text-sm font-semibold">處理 Funnel</h2>
-              <span className="rounded-full border border-slate-700 px-2 py-0.5 text-[11px] text-slate-400">{completeness}</span>
-              <span className="text-[11px] text-slate-600">快照 {snapshot.snapshot_date}</span>
-            </div>
-            <SignalFunnel steps={funnel} />
-          </section>
+          {isEngineering && (
+            <section className="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+              <div className="mb-3 flex flex-wrap items-center gap-2">
+                <h2 className="text-sm font-semibold">處理 Funnel</h2>
+                <span className="rounded-full border border-slate-700 px-2 py-0.5 text-[11px] text-slate-400">{completeness}</span>
+                <span className="text-[11px] text-slate-600">快照 {snapshot.snapshot_date}</span>
+              </div>
+              <SignalFunnel steps={funnel} />
+            </section>
+          )}
 
           {completeness === "GLOBAL_SELECTION_FAILED" && (
             <p className="rounded border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-100">
@@ -219,61 +291,91 @@ export default function SignalRecommendationsPage() {
                       <SignalAssetBadge assetType={item.asset_type} />
                       {observation && <ObservationStatusBadge status={observation.status} />}
                     </div>
-                    <p className="mt-2 text-xs text-slate-500">
-                      {item.industry ?? "—"}・{item.sub_industry ?? "—"}・Theme {item.theme_cluster ?? "—"}・Backend Rank {item.backend_priority_rank ?? "—"}
-                    </p>
+                    {isEngineering ? (
+                      <p className="mt-2 text-xs text-slate-500">
+                        {item.industry ?? "—"}・{item.sub_industry ?? "—"}・Theme {item.theme_cluster ?? "—"}・Backend Rank {item.backend_priority_rank ?? "—"}
+                      </p>
+                    ) : (
+                      <p className="mt-2 text-xs text-slate-500">
+                        {item.industry ?? "—"}・{item.sub_industry ?? "—"}
+                      </p>
+                    )}
                     <p className="mt-3 text-sm leading-6 text-slate-300">{item.recommendation_thesis ?? item.reason ?? "歷史快照未保存推薦論點"}</p>
-                    <p className="mt-2 text-xs leading-5 text-slate-500">同日相對優勢：{item.relative_advantage ?? "—"}</p>
-                    {observation && <p className="mt-2 text-xs text-slate-500">P4 Episode {observation.episode_id}・首次推薦 {observation.started_signal_date}</p>}
-                    <RecommendationDetail item={item} />
+                    {isEngineering && (
+                      <p className="mt-2 text-xs leading-5 text-slate-500">同日相對優勢：{item.relative_advantage ?? "—"}</p>
+                    )}
+                    {observation && (
+                      isEngineering ? (
+                        <p className="mt-2 text-xs text-slate-500">P4 Episode {observation.episode_id}・首次推薦 {observation.started_signal_date}</p>
+                      ) : (
+                        <p className="mt-2 text-xs text-slate-500">追蹤中：自 {observation.started_signal_date} 起持續觀察</p>
+                      )
+                    )}
+                    {isEngineering ? (
+                      <RecommendationDetail item={item} />
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setDialogItem(item)}
+                        className="mt-3 text-xs text-sky-300 hover:text-sky-200"
+                      >
+                        查看完整分析 →
+                      </button>
+                    )}
                   </article>
                 )
               })}
             </div>
           </section>
 
-          <section className="rounded-xl border border-slate-700/60 bg-slate-900/35 p-4">
-            <h2 className="text-sm font-semibold text-slate-200">未列入今日推薦（{notSelected.length}）</h2>
-            <p className="mt-1 text-xs text-slate-500">候選仍有效；這是中性的同日相對選擇，不代表永久負面或停止追蹤。</p>
-            <div className="mt-3 space-y-2">
-              {notSelected.map((item) => {
-                const observation = observationByStock.get(item.stock)
-                return (
-                  <article key={item.stock} className="rounded-lg border border-slate-800 bg-slate-950/35 p-3">
-                    <div className="flex flex-wrap items-center gap-2 text-sm">
-                      <span className="font-mono text-slate-300">{item.stock}</span>
-                      <span>{item.name}</span>
-                      <SignalAssetBadge assetType={item.asset_type} />
-                      <SelectionReasonBadge code={item.selection_reason_code} />
-                      <span className="text-xs text-slate-600">Backend Rank {item.backend_priority_rank ?? "—"}</span>
-                    </div>
-                    <p className="mt-2 text-xs leading-5 text-slate-400">{item.selection_reason ?? "歷史快照未保存未入選原因"}</p>
-                    {item.overlap_with?.length ? <p className="mt-1 text-[11px] text-slate-600">論點重疊：{item.overlap_with.join("、")}・{item.overlap_reason}</p> : null}
-                    {observation && <p className="mt-2 text-xs text-sky-200">今日未列入推薦，但既有觀察仍繼續（P4：{observation.status}）。</p>}
-                  </article>
-                )
-              })}
-            </div>
-          </section>
+          {isEngineering && (
+            <>
+              <section className="rounded-xl border border-slate-700/60 bg-slate-900/35 p-4">
+                <h2 className="text-sm font-semibold text-slate-200">未列入今日推薦（{notSelected.length}）</h2>
+                <p className="mt-1 text-xs text-slate-500">候選仍有效；這是中性的同日相對選擇，不代表永久負面或停止追蹤。</p>
+                <div className="mt-3 space-y-2">
+                  {notSelected.map((item) => {
+                    const observation = observationByStock.get(item.stock)
+                    return (
+                      <article key={item.stock} className="rounded-lg border border-slate-800 bg-slate-950/35 p-3">
+                        <div className="flex flex-wrap items-center gap-2 text-sm">
+                          <span className="font-mono text-slate-300">{item.stock}</span>
+                          <span>{item.name}</span>
+                          <SignalAssetBadge assetType={item.asset_type} />
+                          <SelectionReasonBadge code={item.selection_reason_code} />
+                          <span className="text-xs text-slate-600">Backend Rank {item.backend_priority_rank ?? "—"}</span>
+                        </div>
+                        <p className="mt-2 text-xs leading-5 text-slate-400">{item.selection_reason ?? "歷史快照未保存未入選原因"}</p>
+                        {item.overlap_with?.length ? <p className="mt-1 text-[11px] text-slate-600">論點重疊：{item.overlap_with.join("、")}・{item.overlap_reason}</p> : null}
+                        {observation && <p className="mt-2 text-xs text-sky-200">今日未列入推薦，但既有觀察仍繼續（P4：{observation.status}）。</p>}
+                      </article>
+                    )
+                  })}
+                </div>
+              </section>
 
-          <section className="rounded-xl border border-slate-700/60 bg-slate-900/35 p-4">
-            <h2 className="text-sm font-semibold text-slate-200">明確移除（{removed.length}）</h2>
-            <p className="mt-1 text-xs text-slate-500">此區只顯示 backend 驗證成立的 true veto。</p>
-            <div className="mt-3 space-y-2">
-              {removed.map((item) => {
-                const observation = observationByStock.get(item.stock)
-                return (
-                  <article key={item.stock} className="rounded-lg border border-slate-800 p-3 text-xs text-slate-400">
-                    <span className="font-mono text-slate-300">{item.stock}</span> {item.name}・{item.veto_reason ?? "VALIDATED_VETO"}・{item.short_reason ?? item.reason}
-                    {observation && <p className="mt-2 text-sky-200">今日候選評估為 REMOVE；既有觀察是否停止，仍以 P4 Review 為準。</p>}
-                  </article>
-                )
-              })}
-            </div>
-          </section>
-          <TechnicalFailures items={snapshot.data.technical_failures} />
+              <section className="rounded-xl border border-slate-700/60 bg-slate-900/35 p-4">
+                <h2 className="text-sm font-semibold text-slate-200">明確移除（{removed.length}）</h2>
+                <p className="mt-1 text-xs text-slate-500">此區只顯示 backend 驗證成立的 true veto。</p>
+                <div className="mt-3 space-y-2">
+                  {removed.map((item) => {
+                    const observation = observationByStock.get(item.stock)
+                    return (
+                      <article key={item.stock} className="rounded-lg border border-slate-800 p-3 text-xs text-slate-400">
+                        <span className="font-mono text-slate-300">{item.stock}</span> {item.name}・{item.veto_reason ?? "VALIDATED_VETO"}・{item.short_reason ?? item.reason}
+                        {observation && <p className="mt-2 text-sky-200">今日候選評估為 REMOVE；既有觀察是否停止，仍以 P4 Review 為準。</p>}
+                      </article>
+                    )
+                  })}
+                </div>
+              </section>
+              <TechnicalFailures items={snapshot.data.technical_failures} />
+            </>
+          )}
         </div>
       )}
+
+      <RecommendationDialog item={dialogItem} onClose={() => setDialogItem(null)} />
     </main>
   )
 }

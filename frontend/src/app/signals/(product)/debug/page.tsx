@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react"
 
-import SignalProductNav from "@/components/SignalProductNav"
 import {
   fetchLatestSignalJob,
   fetchLatestSignalSnapshot,
@@ -37,7 +36,6 @@ export default function SignalDebugPage() {
   const selection = snapshot?.data.summary.selection_summary
   return (
     <main className="mx-auto min-h-screen max-w-6xl px-4 py-6 text-slate-100">
-      <SignalProductNav />
       <header className="mb-5">
         <p className="text-xs uppercase tracking-[0.2em] text-sky-300/80">Operational Debug</p>
         <h1 className="mt-1 text-2xl font-semibold">訊號版本與處理診斷</h1>
