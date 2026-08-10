@@ -63,8 +63,23 @@ _PROMPT_PATH = (
     / "global-recommendation-selector-v1.md"
 )
 _CACHE_KEY = "signals:p3:global-selector:v1"
-_OUTPUT_TOKEN_RESERVE = 16_000
+# 2026-08-05／2026-08-10 production incidents: candidate pools spiked to
+# 135／116 eligible cards and the fixed 16,000 token reserve was too small —
+# every item requires a non-nullable `selection_reason` plus ~13 other
+# schema fields (nullable but still emitted as keys under Structured
+# Outputs), so per-item token cost does not shrink just because most items
+# end up NOT_SELECTED. All 3 contract retries hit `max_output_tokens`
+# truncation and the day's watchlist came back empty. The reserve now scales
+# with candidate count instead of a flat number; `within_limit` below still
+# guards against genuinely oversized pools by raising a clear
+# GLOBAL_SELECTION_CONTEXT_EXCEEDED instead of silently truncating output.
+_OUTPUT_TOKEN_RESERVE_BASE = 3_000
+_OUTPUT_TOKEN_RESERVE_PER_CANDIDATE = 220
 _DEFAULT_CONTEXT_LIMIT_TOKENS = 114_688
+
+
+def _default_output_token_reserve(candidate_count: int) -> int:
+    return _OUTPUT_TOKEN_RESERVE_BASE + candidate_count * _OUTPUT_TOKEN_RESERVE_PER_CANDIDATE
 
 
 def global_selection_output_schema(
@@ -429,7 +444,7 @@ def estimate_selection_capacity(cards: List[Dict[str, Any]]) -> SelectionCapacit
     )
     reserve = _positive_env_int(
         "SIGNALS_GLOBAL_SELECTOR_OUTPUT_TOKEN_RESERVE",
-        _OUTPUT_TOKEN_RESERVE,
+        _default_output_token_reserve(len(cards)),
     )
     return SelectionCapacity(
         candidate_count=len(cards),
