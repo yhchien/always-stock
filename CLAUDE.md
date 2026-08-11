@@ -3894,3 +3894,40 @@ unused warning，要復活只要把 `<HomeSidebar />` 加回 render 即可
 - 已確認 `recommendations/page.tsx` 的 `snapshot.data.watchlist` 跟首頁吃的是**同一個
   `SignalWatchlistItem[]` 型別**（`SignalRecommendationResponse extends
   SignalSnapshotResponse`），`item.type` 欄位本來就在，純前端補顯示即可，後端零改動
+
+## 正式推薦頁標題改名 + rank 編號改條件顯示 + 觀察/警戒定義（2026-08-11）
+
+同一輪後續：使用者在 Vercel 正式站上看這頁時反映「標題叫『今日推薦』但裡面有幾天前
+就在觀察的股票，這名字不對」；另外問「#1 #2 代號是什麼？感覺不是很需要」；並要求
+補充觀察中／警戒的定義。
+
+### 標題改名
+h2「今日正式推薦（N）」→「**目前正式推薦（N）**」；正式版 subtitle 從「以下是今天
+系統推薦的股票與推薦理由」改成「系統每天重新比較全部候選股票；同一檔可能連續多天
+勝出、持續留在名單上，不是每天都會整批換新」——直接把 P3「每天從零重新評估，同一檔
+可以連續多天勝出」的設計講清楚，而不是換個名字迴避問題
+
+### #N 排名編號改條件顯示
+查 `_normalize_recommendation_ranks()`（`global_selector.py`）確認 `recommendation_rank`
+不是隨機編號——是 LLM 自報排序（若合法）搭配 `backend_priority_rank` 打散重複值算出來
+的 1..N 連續序列，**是有意義的資訊，只是跟畫面顯示順序脫鉤時會造成誤導**：這頁本身有
+排序選項（推薦排序／抓到日期／報酬率），切到後兩者時卡片視覺順序已經不是 rank 順序，
+`#7` 出現在畫面第 3 張的位置會讓人以為編號亂掉。**修法不是刪除，是加條件**：
+`{sortBy === "rank" && <span>#{...}</span>}`，只有選「推薦排序」這個 sort mode 時才顯示
+編號，切到其他排序自動隱藏，避免顯示跟位置對不上的數字
+
+### 觀察/警戒定義說明文字
+在正式推薦清單標題下方加一段固定顯示的白話說明（[recommendations/page.tsx](<frontend/src/app/signals/(product)/recommendations/page.tsx>)）：
+「觀察中＝動能結構、資金參與等關鍵條件目前仍然成立；警戒＝部分關鍵條件今天檢查後開始
+不成立，但還沒到判定『論點失效』的程度，值得留意但不是賣出訊號」——文字直接對應
+`decide_observation_action()`（`observation_lifecycle.py`）的實際判斷邏輯（caution_
+dimensions 命中即 CAUTION，尚未觸發 STOP 條件），不是憑感覺寫的行銷文案
+
+### Gotcha
+- 測試 `SignalRecommendationsPage.test.tsx` 兩處字面比對「今日正式推薦（N）」同步改成
+  「目前正式推薦（N）」；`#1`/`#2` rank badge 斷言不需要改，因為預設 `sortBy` 仍是
+  `"rank"`，條件顯示邏輯下預設狀態行為不變
+- 本輪再次踩到 Bash tool cwd 不會跨呼叫持續生效的環境問題（`cd backend && ... ; sleep
+  6` 後同一個工具呼叫內的下一行仍在 backend/，但下一個獨立 tool call 又回到舊目錄）；
+  每次要跑 frontend 指令前一律重新 `cd frontend && pwd` 確認，不要假設前一輪設的 cwd
+  還在——這是這個環境的已知常態，不是一次性意外
