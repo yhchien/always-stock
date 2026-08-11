@@ -89,11 +89,11 @@ function observationCardTone(status: SignalObservationStatus | undefined): strin
   return "border-slate-700/60 bg-slate-900/55"
 }
 
-// 2026-08-11：卡片股價/報酬率改顯示即時報價（開盤期間每 3 分鐘更新一次）。資料源沿用
+// 2026-08-11：卡片股價/報酬率改顯示即時報價（開盤期間每 1 分鐘更新一次）。資料源沿用
 // 既有 /api/realtime/quotes（TWSE mis.twse.com.tw 官方盤中 API，非另外爬 goodinfo/
 // yahoo）；有即時報價時優先顯示，收盤後或抓不到即時報價時 fallback 回 archive 頁 ETL
 // 寫入的 EOD latest_close_price/daily_change_pct，不會出現空白。
-const REALTIME_INTERVAL_MS = 180_000
+const REALTIME_INTERVAL_MS = 60_000
 
 function resolveLivePrice(
   archive: SignalArchiveSummaryItem,
@@ -488,7 +488,7 @@ export default function SignalRecommendationsPage() {
             </p>
             <p className="mb-3 rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2 text-xs leading-5 text-slate-400">
               <span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-emerald-400 align-middle" />
-              股價與報酬率在開盤期間（09:00–13:30）每 3 分鐘自動更新一次，資料來源為證交所盤中即時報價；收盤後或非交易日顯示最後一次的即時或前一交易日收盤數字。
+              股價與報酬率在開盤期間（09:00–13:30）每 1 分鐘自動更新一次，資料來源為證交所盤中即時報價；收盤後或非交易日顯示最後一次的即時或前一交易日收盤數字。
             </p>
             {!recommendations.length && completeness === "COMPLETE" && <p className="rounded border border-slate-800 p-4 text-sm text-slate-500">此日期沒有正式推薦；這是完整比較後的合法 0 推薦結果。</p>}
             <div className="grid gap-3 lg:grid-cols-2">

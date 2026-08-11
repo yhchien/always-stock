@@ -228,12 +228,12 @@ function DailyChangeCell({ value }: { value: number | null }) {
   )
 }
 
-// 2026-08-11：追蹤中卡片改顯示即時報價（開盤期間每 3 分鐘更新一次）。資料源沿用既有
+// 2026-08-11：追蹤中卡片改顯示即時報價（開盤期間每 1 分鐘更新一次）。資料源沿用既有
 // /api/realtime/quotes（TWSE mis.twse.com.tw 官方盤中 API，非另外爬 goodinfo/yahoo）；
 // 有即時報價時優先顯示，收盤後或抓不到即時報價時 fallback 回 ETL 寫入的 EOD latest_
 // close_price/daily_change_pct，不會出現空白。只套用在「追蹤中」，移出紀錄區與工程版
 // 不接即時報價。
-const REALTIME_INTERVAL_MS = 180_000
+const REALTIME_INTERVAL_MS = 60_000
 
 function resolveLivePrice(
   item: SignalArchiveSummaryItem,
@@ -331,7 +331,7 @@ function StockDetailDialog({
   detailError: string | null
   /** P4 每日觀察狀態；沒有對應觀察（archive 抓到但 P4 沒建立）則為 undefined。 */
   observation?: SignalObservationItem
-  /** 即時報價（開盤期間每 3 分鐘更新）；無資料時 fallback 回 EOD latest_close_price。 */
+  /** 即時報價（開盤期間每 1 分鐘更新）；無資料時 fallback 回 EOD latest_close_price。 */
   quote?: RealtimeQuote
   onClose: () => void
   /** K 線圖改 popup（StockChartDialog）：點擊時疊在本 popup 之上開啟 */
@@ -864,7 +864,7 @@ function SignalArchiveContent() {
           <div className="mt-2 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs leading-6 text-slate-400">
             <p>
               <span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-emerald-400 align-middle" />
-              「追蹤中」的股價與報酬率在開盤期間（09:00–13:30）每 3 分鐘自動更新一次，資料來源為證交所盤中即時報價；收盤後或非交易日顯示最後一次的即時或前一交易日收盤數字。移出紀錄區不會即時更新。
+              「追蹤中」的股價與報酬率在開盤期間（09:00–13:30）每 1 分鐘自動更新一次，資料來源為證交所盤中即時報價；收盤後或非交易日顯示最後一次的即時或前一交易日收盤數字。移出紀錄區不會即時更新。
             </p>
           </div>
           {summary?.as_of_trade_date && (

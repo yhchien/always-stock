@@ -526,7 +526,13 @@ export async function fetchRealtimeQuotes(stockIds: string[]): Promise<RealtimeQ
   const responses = await Promise.all(
     batches.map(async (batch) => {
       const ids = batch.join(",")
-      const res = await apiFetch(`${API_BASE}/api/realtime/quotes?stock_ids=${ids}`)
+      // no-store：這是輪詢端點，同一組 stock_ids 每次呼叫都要拿當下最新報價；
+      // 沒有明確關掉快取的話，瀏覽器/中間層有機會把重複的 GET URL 當成可快取
+      // 回應重複使用，造成畫面卡在某一次抓到的舊漲跌幅（2026-08-11 使用者回報
+      // 「漲幅看起來像昨天的」）。
+      const res = await apiFetch(`${API_BASE}/api/realtime/quotes?stock_ids=${ids}`, {
+        cache: "no-store",
+      })
       if (!res.ok) return []
       return res.json() as Promise<RealtimeQuote[]>
     })
