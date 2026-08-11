@@ -5,6 +5,7 @@ import { Suspense, useCallback, useEffect, useMemo, useState, type ReactNode } f
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { Dialog } from "@base-ui/react/dialog"
 
+import { MarginAnalysisPanel } from "@/components/DailySignalsPanel"
 import ObservationStatusBadge from "@/components/ObservationStatusBadge"
 import StockChartDialog from "@/components/StockChartDialog"
 import { useRealtimeQuotes } from "@/lib/useRealtimeQuotes"
@@ -109,6 +110,16 @@ function ClosureReasonChip({ reason }: { reason: SignalClosureReason }) {
         title="從歷史高點回落 30% 以上，且後續 3 個交易日仍未縮小差距至 30% 以內，已提前結算（停利紀律）。"
       >
         提前結算（高點回落 30%）
+      </span>
+    )
+  }
+  if (reason === "manual_reset") {
+    return (
+      <span
+        className="inline-flex items-center rounded border border-slate-600 bg-slate-700/40 px-1.5 py-0.5 text-[11px] font-medium text-slate-300"
+        title="2026-08-11 正式推薦頁併入魚尾單一入口時，一次性強制結算所有進行中追蹤週期。"
+      >
+        人工重置
       </span>
     )
   }
@@ -457,6 +468,30 @@ function StockDetailDialog({
                   個股頁 →
                 </Link>
               </div>
+
+              {detail && detail.stock_id === item.stock_id &&
+                (detail.recommendation_thesis || detail.relative_advantage) && (
+                  <div className="flex flex-col gap-2 border-t border-slate-800 pt-3 text-sm">
+                    {detail.recommendation_thesis && (
+                      <p>
+                        <span className="mr-1.5 text-xs text-slate-500">推薦論點</span>
+                        <span className="text-slate-200">{detail.recommendation_thesis}</span>
+                      </p>
+                    )}
+                    {detail.relative_advantage && (
+                      <p>
+                        <span className="mr-1.5 text-xs text-slate-500">相對優勢</span>
+                        <span className="text-slate-300">{detail.relative_advantage}</span>
+                      </p>
+                    )}
+                  </div>
+                )}
+
+              {detail && detail.stock_id === item.stock_id && detail.margin_analysis && (
+                <div className="border-t border-slate-800 pt-3">
+                  <MarginAnalysisPanel analysis={detail.margin_analysis} stockId={item.stock_id} />
+                </div>
+              )}
 
               <div className="flex flex-col gap-3 border-t border-slate-800 pt-3">
                 <h4 className="text-sm font-medium text-slate-200">報告時間軸</h4>

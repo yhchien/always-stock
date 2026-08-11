@@ -27,6 +27,10 @@ def ensure_signal_watch_hit_return_columns(engine: Engine) -> None:
             "prompt_version": "ALTER TABLE signal_watch_hits ADD COLUMN prompt_version VARCHAR(16) NOT NULL DEFAULT 'v1'",
             # v2.1 fishtail momentum upgrade（2026-07-15）：spec §9.2 第一批動能特徵 JSON
             "signal_metrics": "ALTER TABLE signal_watch_hits ADD COLUMN signal_metrics JSON",
+            # 2026-08-11：正式推薦頁併入魚尾單一入口，補這三欄讓魚尾詳情 popup 能顯示完整內容
+            "recommendation_thesis": "ALTER TABLE signal_watch_hits ADD COLUMN recommendation_thesis TEXT",
+            "relative_advantage": "ALTER TABLE signal_watch_hits ADD COLUMN relative_advantage TEXT",
+            "margin_analysis": "ALTER TABLE signal_watch_hits ADD COLUMN margin_analysis JSON",
         },
         "signal_watch_completed_archives": {
             "max_positive_return_pct": "ALTER TABLE signal_watch_completed_archives ADD COLUMN max_positive_return_pct FLOAT",

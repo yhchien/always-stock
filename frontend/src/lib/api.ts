@@ -1672,6 +1672,7 @@ export type SignalClosureReason =
   | "completed_30_days"
   | "early_exit_stop_loss"
   | "early_exit_drawdown_from_peak"
+  | "manual_reset"
 
 export interface SignalArchiveCompletedPeriod {
   period_start: string
@@ -1695,6 +1696,10 @@ export interface SignalArchiveReportItem {
 
 export interface SignalArchiveDetailResponse extends SignalArchiveSummaryItem {
   reports: SignalArchiveReportItem[]
+  // 2026-08-11：正式推薦頁併入魚尾單一入口，取最新一筆命中的補充欄位；舊資料 = null
+  recommendation_thesis?: string | null
+  relative_advantage?: string | null
+  margin_analysis?: SignalMarginAnalysis | null
 }
 
 // ── P4 Observation Lifecycle ───────────────────────────────────────────────
@@ -1796,14 +1801,6 @@ export interface SignalTrackingSummaryResponse {
 }
 
 // ── P6 Product UI / Outcome Analytics ─────────────────────────────────────
-
-export interface SignalRecommendationResponse extends SignalSnapshotResponse {
-  navigation: {
-    previous_date: string | null
-    next_date: string | null
-    latest_date: string
-  }
-}
 
 export type SignalOutcomeLabel =
   | "WINNER"
@@ -2171,22 +2168,6 @@ function appendDefinedParams<T extends object>(
   Object.entries(params ?? {}).forEach(([key, value]) => {
     if (value !== undefined && value !== "") qs.set(key, String(value))
   })
-}
-
-export async function fetchSignalRecommendations(
-  snapshotDate?: string,
-  options?: FetchOptions,
-): Promise<SignalRecommendationResponse | null> {
-  const qs = new URLSearchParams()
-  if (snapshotDate) qs.set("date", snapshotDate)
-  const res = await apiFetch(
-    `${API_BASE}/api/signals/recommendations${qs.size ? `?${qs}` : ""}`,
-    { signal: options?.signal },
-  )
-  if (res.status === 404) return null
-  if (!res.ok)
-    throw new Error(await buildErrorMessage(res, "正式推薦快照載入失敗"))
-  return res.json()
 }
 
 export async function fetchLatestSignalJob(

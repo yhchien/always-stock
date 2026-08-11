@@ -1018,7 +1018,9 @@ function GreenOnlyChip({
 }
 
 // 2026-05-25：融資融券專屬結構化分析卡（比重 大盤 30% / 個股 70%）
-function MarginAnalysisPanel({
+// 2026-08-11：改為匯出共用，/signals/archive 詳情 popup 也直接重用這個元件
+// （60+ 行含格式化邏輯的完整元件，複製一份維護成本明顯高於匯出共用）
+export function MarginAnalysisPanel({
   analysis,
   stockId,
 }: {

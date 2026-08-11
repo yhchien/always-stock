@@ -246,6 +246,10 @@ class SignalArchiveReportResponse(BaseModel):
 
 class SignalArchiveDetailResponse(SignalArchiveSummaryItemResponse):
     reports: List[SignalArchiveReportResponse]
+    # 2026-08-11：正式推薦頁併入魚尾單一入口，取最新一筆命中的三個補充欄位；舊資料 = None
+    recommendation_thesis: Optional[str] = None
+    relative_advantage: Optional[str] = None
+    margin_analysis: Optional[Dict[str, Any]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -426,46 +430,6 @@ def get_latest_signal(db: Session = Depends(get_db)) -> SnapshotResponse:
     if snap is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No snapshot yet")
     return _serialize_snapshot(snap, db)
-
-
-@router.get("/recommendations")
-def get_recommendations(
-    snapshot_date: Optional[date] = Query(default=None, alias="date"),
-    db: Session = Depends(get_db),
-):
-    """P6 date-aware recommendation snapshot with deterministic navigation."""
-
-    dates = [
-        row[0]
-        for row in (
-            db.query(SignalSnapshot.snapshot_date)
-            .order_by(SignalSnapshot.snapshot_date.asc())
-            .all()
-        )
-    ]
-    if not dates:
-        raise HTTPException(status_code=404, detail="No snapshot yet")
-    selected = snapshot_date or dates[-1]
-    snap = (
-        db.query(SignalSnapshot)
-        .filter(SignalSnapshot.snapshot_date == selected)
-        .one_or_none()
-    )
-    if snap is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No snapshot for {selected.isoformat()}",
-        )
-    index = dates.index(selected)
-    serialized = _serialize_snapshot(snap, db).model_dump()
-    return {
-        **serialized,
-        "navigation": {
-            "previous_date": dates[index - 1] if index > 0 else None,
-            "next_date": dates[index + 1] if index + 1 < len(dates) else None,
-            "latest_date": dates[-1],
-        },
-    }
 
 
 @router.get("/snapshot/{snapshot_date}", response_model=SnapshotResponse)

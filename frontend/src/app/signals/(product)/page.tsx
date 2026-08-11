@@ -24,14 +24,9 @@ interface NavCard {
 
 const NAV_CARDS: NavCard[] = [
   {
-    href: "/signals/recommendations",
-    title: "正式推薦",
-    description: "查看今日推薦的股票與完整分析理由。",
-  },
-  {
     href: "/signals/archive",
     title: "追蹤紀錄",
-    description: "查看每檔股票的報酬率、預期價格與歷史追蹤紀錄。",
+    description: "查看今日新推薦的股票、每檔的報酬率、預期價格與歷史追蹤紀錄。",
   },
   {
     href: "/signals/observations",
@@ -42,13 +37,13 @@ const NAV_CARDS: NavCard[] = [
   {
     href: "/signals/outcomes",
     title: "結果分析",
-    description: "檢視過去推薦的事後成效（工程稽核用，個股報酬率請直接看正式推薦卡片）。",
+    description: "檢視過去推薦的事後成效（工程稽核用，個股報酬率請直接看追蹤紀錄卡片）。",
     engineeringOnly: true,
   },
   {
     href: "/signals/debug",
     title: "Debug",
-    description: "查看 prompt、selection、score、tracking 版本與完整性診斷。",
+    description: "查看 prompt、selection、score、tracking 版本、處理 Funnel 與完整性診斷。",
     engineeringOnly: true,
   },
 ]

@@ -152,15 +152,15 @@ export default function SignalObservationsPage() {
           <h1 className="mt-1 text-xl font-semibold">每日觀察檢查</h1>
           <p className="mt-1 max-w-3xl text-sm text-slate-400">
             {isEngineering
-              ? "這裡追蹤既有推薦 thesis 是否仍值得觀察，與「今日正式推薦」是兩個獨立狀態。"
-              : "這裡追蹤已推薦股票目前的觀察狀態，跟「今日正式推薦」是分開看的。"}
+              ? "這裡追蹤既有推薦 thesis 是否仍值得觀察，與每天的推薦決策（P3）是兩個獨立狀態。"
+              : "這裡追蹤已推薦股票目前的觀察狀態，跟每天的推薦決策是分開看的。"}
           </p>
         </div>
         <Link
-          href="/signals/recommendations"
+          href="/signals/archive"
           className="rounded border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:border-slate-500"
         >
-          正式推薦
+          追蹤紀錄
         </Link>
       </header>
 

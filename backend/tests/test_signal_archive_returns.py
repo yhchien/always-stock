@@ -145,6 +145,96 @@ def test_persist_signal_watch_hits_stores_prompt_version():
         assert by_id["2454"].prompt_version == "v1"
 
 
+def test_persist_signal_watch_hits_stores_recommendation_detail_fields():
+    """2026-08-11：正式推薦頁併入魚尾——watchlist item 的 recommendation_thesis／
+    relative_advantage／margin_analysis 要寫進 SignalWatchHit；缺值時維持 None。"""
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+
+    with Session() as db:
+        job_id = _seed_job_and_snapshot(db, date(2026, 8, 11))
+        archive.persist_signal_watch_hits(
+            db,
+            date(2026, 8, 11),
+            {
+                "watchlist": [
+                    {
+                        "stock": "3231",
+                        "name": "緯創",
+                        "type": "LEADER",
+                        "recommendation_thesis": "受惠 AI 伺服器需求延伸",
+                        "relative_advantage": "今日候選中排序靠前",
+                        "margin_analysis": {"weight_ratio": "個股 70% / 大盤 30%"},
+                    },
+                    {"stock": "2454", "name": "聯發科", "type": "FOLLOWER"},  # 缺值
+                ]
+            },
+            job_id,
+        )
+        by_id = {
+            row.stock_id: row
+            for row in db.query(SignalWatchHit)
+            .filter(SignalWatchHit.snapshot_date == date(2026, 8, 11))
+            .all()
+        }
+        assert by_id["3231"].recommendation_thesis == "受惠 AI 伺服器需求延伸"
+        assert by_id["3231"].relative_advantage == "今日候選中排序靠前"
+        assert by_id["3231"].margin_analysis == {"weight_ratio": "個股 70% / 大盤 30%"}
+        assert by_id["2454"].recommendation_thesis is None
+        assert by_id["2454"].relative_advantage is None
+        assert by_id["2454"].margin_analysis is None
+
+
+def test_get_archive_detail_returns_latest_recommendation_detail_fields():
+    """get_archive_detail 取最新一筆命中的三個補充欄位；跨天以最新一筆為準。"""
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+
+    with Session() as db:
+        job_id_1 = _seed_job_and_snapshot(db, date(2026, 8, 10))
+        archive.persist_signal_watch_hits(
+            db,
+            date(2026, 8, 10),
+            {
+                "watchlist": [
+                    {
+                        "stock": "3231",
+                        "name": "緯創",
+                        "type": "LEADER",
+                        "recommendation_thesis": "第一天的論點",
+                        "relative_advantage": "第一天的優勢",
+                    },
+                ]
+            },
+            job_id_1,
+        )
+        job_id_2 = _seed_job_and_snapshot(db, date(2026, 8, 11))
+        archive.persist_signal_watch_hits(
+            db,
+            date(2026, 8, 11),
+            {
+                "watchlist": [
+                    {
+                        "stock": "3231",
+                        "name": "緯創",
+                        "type": "LEADER",
+                        "recommendation_thesis": "第二天的論點",
+                        "relative_advantage": "第二天的優勢",
+                        "margin_analysis": {"weight_ratio": "個股 70% / 大盤 30%"},
+                    },
+                ]
+            },
+            job_id_2,
+        )
+        detail = archive.get_archive_detail(db, "3231", now=datetime(2026, 8, 11, 20, 0))
+        assert detail is not None
+        assert detail["recommendation_thesis"] == "第二天的論點"
+        assert detail["relative_advantage"] == "第二天的優勢"
+        assert detail["margin_analysis"] == {"weight_ratio": "個股 70% / 大盤 30%"}
+
+
 def test_persist_recatch_after_cycle_completion_starts_fresh_cycle():
     """完成 30 日 → 進歷史區 → 同一天又被抓到，要視為全新獨立事件。
 

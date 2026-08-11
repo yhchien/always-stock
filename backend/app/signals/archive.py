@@ -49,6 +49,9 @@ DRAWDOWN_EXIT_GRACE_TRADE_DAYS = 3
 CLOSURE_REASON_COMPLETED_30_DAYS = "completed_30_days"
 CLOSURE_REASON_EARLY_EXIT_STOP_LOSS = "early_exit_stop_loss"
 CLOSURE_REASON_EARLY_EXIT_DRAWDOWN = "early_exit_drawdown_from_peak"
+# 2026-08-11：正式推薦頁併入魚尾單一入口時，一次性強制結算所有進行中追蹤週期用
+# （見 backend/stop_all_active_signal_watch_cycles.py）
+CLOSURE_REASON_MANUAL_RESET = "manual_reset"
 
 # 半年表格起算日（2026-05-01）；之後每 6 個月一段。
 HALF_YEAR_PERIOD_ANCHOR = date(2026, 5, 1)
@@ -172,6 +175,9 @@ def persist_signal_watch_hits(
                 sub_industry=item.get("sub_industry"),
                 business_summary=item.get("business_summary"),
                 reason=str(item.get("reason") or ""),
+                recommendation_thesis=item.get("recommendation_thesis"),
+                relative_advantage=item.get("relative_advantage"),
+                margin_analysis=item.get("margin_analysis"),
                 theme=item.get("theme") or {},
                 group_info=item.get("group_info") or {},
                 leader_check=item.get("leader_check") or {},
@@ -372,6 +378,12 @@ def get_archive_detail(
     ]
     payload = _serialize_summary_item(summary)
     payload["reports"] = reports
+    # 2026-08-11：正式推薦頁併入魚尾單一入口——rows 依 snapshot_date 升序排列，取最新一筆
+    # 的一句話總結／當天相對優勢／融資融券分析，只在詳情回傳（精簡卡片不需要這三個大欄位）
+    latest_row = rows[-1]
+    payload["recommendation_thesis"] = latest_row.recommendation_thesis
+    payload["relative_advantage"] = latest_row.relative_advantage
+    payload["margin_analysis"] = latest_row.margin_analysis
     return payload
 
 

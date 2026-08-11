@@ -383,6 +383,12 @@ class SignalWatchHit(Base):
     sub_industry = Column(String, nullable=True)
     business_summary = Column(Text, nullable=True)
     reason = Column(Text, nullable=False)
+    # 2026-08-11：正式推薦頁併入魚尾單一入口，補這三欄讓魚尾詳情 popup 能顯示完整內容
+    # （舊 row 沒有這幾欄，nullable；`reason` 本身已含【題材】【資金】【籌碼】【融券】
+    # 分段文字，這三欄是額外補充，不是取代）
+    recommendation_thesis = Column(Text, nullable=True)
+    relative_advantage = Column(Text, nullable=True)
+    margin_analysis = Column(JSON, nullable=True)
     theme = Column(JSON, nullable=False)
     group_info = Column(JSON, nullable=False)
     leader_check = Column(JSON, nullable=False)

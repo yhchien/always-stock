@@ -7,7 +7,6 @@ import { useSignalsViewMode } from "@/lib/signalsViewMode"
 
 const LINKS = [
   ["/signals", "總覽"],
-  ["/signals/recommendations", "正式推薦"],
   ["/signals/archive", "追蹤紀錄"],
   ["/signals/observations", "觀察生命週期"],
   ["/signals/outcomes", "結果分析"],
@@ -17,12 +16,16 @@ const LINKS = [
 // Debug／結果分析／觀察生命週期是純工程診斷頁，正式版時不顯示連結（直接輸入網址仍可
 // 進入，只是不曝光入口）。
 // - 結果分析的 Day10 達標率／Winner Recall 是在稽核「選股演算法好不好」，跟「這檔股票
-//   現在賺不賠」是兩件事——後者已經在正式推薦卡片直接顯示報酬率，不需要使用者自己來
+//   現在賺不賠」是兩件事——後者已經在追蹤紀錄卡片直接顯示即時報酬率，不需要使用者自己來
 //   這頁換算。
 // - 觀察生命週期（P4）跟追蹤紀錄（archive／魚尾）是兩套獨立計算的追蹤系統（2026-08-10
 //   合併）；正式版只留 archive 一個入口當「追蹤紀錄」，P4 的觀察中／警戒／已停止觀察
 //   狀態已經以徽章形式嵌進 archive 卡片詳情，原始 Review Timeline／後端證據 JSON 這類
 //   工程診斷資訊才留在這頁，給想深入看的人用。
+// - 2026-08-11：正式推薦頁（/signals/recommendations）併入追蹤紀錄——今天新推薦的股票
+//   本來就會當天寫進 signal_watch_hits，直接以「追蹤中」第 1 天的樣子出現在同一份清單裡，
+//   不需要另一個獨立頁面；工程版限定的處理 Funnel／未列入今日推薦／明確移除清單搬到
+//   Debug 頁。
 const ENGINEERING_ONLY_HREFS: ReadonlySet<string> = new Set([
   "/signals/debug",
   "/signals/outcomes",
