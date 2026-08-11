@@ -4186,3 +4186,57 @@ P4（`SignalObservation`）與魚尾（`signal_watch_hits`）雖然共用同一�
   魚尾。全 backend suite 1267 pass + 20 個既有 baseline fail（site-passwordless 相關，
   與本輪無關）零新增失敗；前端 tsc/eslint（僅改動的兩個檔案）全過、jest 106 案例中
   18 fail 全屬既有 StockList/StockChart/BacktestPanel baseline，零新增失敗
+
+## global_selection 逾時依候選數量動態放寬，修復大候選池 timeout（2026-08-11）
+
+### 症狀
+`Daily Signals Generation` 2026-08-11 12:01 UTC（台北 20:01）排程 fail，exit_code=4
+`partial_failure`。查 log：112 檔候選連續 3 次 `openai.APITimeoutError`（12:31/12:35/12:39，
+每次間隔約 4 分鐘），最終 `Global recommendation selection failed atomically; 112 eligible
+candidates were not selected.`——當天推薦清單整個是空的。
+
+### 根因：token 上限修法換來輸出空間，卻沒同步換到足夠的時間
+本輪稍早那次修法（見上方「global_selection 輸出 token 上限依候選數量動態放寬」）把
+`max_output_tokens` 從固定 16,000 改成 `3,000 + 候選數 × 220`——112 檔候選算出來約
+27,600 tokens，遠大於原本的 16,000。但 `_call_llm_json` 的 OpenAI client 逾時
+（`_OPENAI_TIMEOUT_SECONDS=120.0`）是全站共用的固定值，從未跟著調整。生成 27,600
+tokens 的 JSON（一次性把 112 檔全部拿來互相比較）本來就需要比 120 秒更久，加上 SDK
+層 `max_retries=1`（每次 app 層 attempt 內部可能再重試一次，等於單次 attempt 最長等
+2×120=240 秒）——3 次 app 層重試 × 最長 240 秒 ≈ 12 分鐘全部落空，從頭到尾沒有一次
+真正等到模型把 27,600 tokens 生完。**這是同一個根因（候選池暴增）的兩種不同症狀**：
+token 太小 → 截斷失敗；token 修大後換成時間太短 → 逾時失敗。
+
+### 修法（[global_selector.py](backend/app/signals/global_selector.py)）
+比照既有 `_default_output_token_reserve()` 的 pattern，新增
+`_default_selection_timeout_seconds(candidate_count)` = `max(120.0, 90.0 + 候選數 × 2.5)`；
+112 檔算出來約 370 秒。新增 env override `SIGNALS_GLOBAL_SELECTOR_TIMEOUT_SECONDS`
+（`_positive_env_float` helper，鏡像既有 `_positive_env_int`）。
+
+[llm_caller.py](backend/app/signals/llm_caller.py) 的 `_call_llm_json()` 新增可選
+`timeout`/`max_retries` 參數，預設值等同原本的模組常數（`_OPENAI_TIMEOUT_SECONDS`/
+`_OPENAI_MAX_RETRIES`），其餘 8 個呼叫點（market/research/decision/watch_reason 等）
+沒有顯式傳入，行為完全不變。
+
+**順手把這次呼叫的 SDK 層 `max_retries` 降到 0**：app 層迴圈本來就會用修正過的 prompt
+重試 3 次，SDK 層再自動重試一次只是把每次等待時間乘以 2、換不到成功率（同一個請求重送
+一次不會突然變快），反而拖長 worst-case 總時間。改完後 worst case = 3 attempts × 370 秒
+≈ 18.5 分鐘（原本是 3 × 240 秒 ≈ 12 分鐘但穩定失敗；現在時間拉長但每次 attempt 真的有
+機會等到模型生完）；`daily_signals.yml` 的 `timeout-minutes: 120` 仍有充足餘裕。
+
+### 測試
+`test_global_selector.py` 新增 6 個測試：3 個純函式測試（timeout 隨候選數放大過原本
+120 秒／線性成長／env override 生效）+ 3 個整合測試（`run_global_selection` 實際呼叫
+`_call_llm_json` 時，`timeout` kwarg 確實帶入放大後的值、`max_retries=0`、env override
+在整合路徑上也生效）。全 backend suite 1273 pass（+6，皆為本輪新增）+ 20 個既有 baseline
+fail（與本輪無關），零新增失敗。
+
+### Gotcha
+- **不要只加大 timeout 不動 `max_retries`**：SDK 層 retry-on-timeout 是「同一個請求原封
+  不動再送一次」，對「請求本身就需要更久」這種根因沒有幫助，只會讓 worst-case 時間再乘 2；
+  app 層的 contract-retry 迴圈才是真正有意義的重試（會帶上一輪的錯誤修正說明）
+- **只動 `global_selector.py` 這一個呼叫點**：research/decision/watch_reason 三段是
+  batch（每批固定 ~8 檔），輸出大小不隨候選總數成長，不會重現這個問題；`_call_llm_json`
+  的新參數對它們是無操作的預設值，不需要改
+- **判斷「filter 沒作用」類回報時記得先查真實資料**：這次跟上一輪的「排序看起來沒反應」
+  是兩個獨立問題，不要因為都發生在同一天就假設同一個根因；本次是純粹去讀 GitHub Actions
+  log 才找到的，不是靠推測
