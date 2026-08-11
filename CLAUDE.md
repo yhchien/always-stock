@@ -4053,6 +4053,34 @@ JSON（`price`/`change_pct`/`open`/`high`/`low`/`volume`/`trade_time`），**不
   `.env` 指向 production DB，lifespan 啟動時的 idempotent migration 一啟動就會跑）；
   起 dev server 後直接查 `information_schema` 確認三個新欄位已存在，不是只看 log
 
+### 執行 --execute 時撞到的真實 bug：`prompt_version` 欄位太窄
+`stop_all_active_signal_watch_cycles.py --execute` 第一次跑對 112 檔 production 資料
+就直接炸：`psycopg.errors.StringDataRightTruncation: value too long for type character
+varying(16)`。根因：`_distinct_versions(rows)`（archive.py）回傳的是**整個追蹤 cycle
+涵蓋的 prompt 版本集合**（逗號相連，如 `"v5,v6,v7_research"`），不是單一版本，但
+`signal_watch_completed_archives.prompt_version` 當初是照「單一版本」設計成
+`VARCHAR(16)`——版本 token 變長（`v7_research` 本身就 11 字元）之後，一個 cycle 只要
+跨過 2~3 個版本就會超過 16 字元。這個 bug **原本就潛伏在自然 30 天完成的路徑**
+（`refresh_completed_signal_cycles` 也呼叫同一個 `_distinct_versions`），只是還沒有
+單一 cycle 剛好同時「滿 30 天」+「跨夠多版本」觸發過；這次一口氣強制結算 112 檔，
+其中 7 檔的版本集合字串剛好是 17 字元，直接撞到上限。
+
+**修法**：`models.py` 的 `SignalWatchCompletedArchive.prompt_version` 改
+`String(64)`；新增 idempotent migration
+`widen_completed_archive_prompt_version_column()`（`signal_watch_schema.py`，用
+`inspector` 查目前欄寬，< 64 才執行 `ALTER COLUMN ... TYPE VARCHAR(64)`，PostgreSQL
+對「只放寬長度」的 VARCHAR ALTER 是 metadata-only、不搬資料，安全快速）；`main.py`
+lifespan 掛上。**失敗那次是整包 bulk insert 一次 112 筆的單一 SQL statement**，
+`StringDataRightTruncation` 讓整個 transaction rollback，驗證過失敗當下 active hits
+跟 completed archive 都完全沒有異動（原子性）；修好欄寬後重跑 `--execute` 成功，
+112 檔全部結算、`signal_watch_hits` 清空、`signal_watch_completed_archives` 新增 112
+筆 `closure_reason=manual_reset`。
+
+**Gotcha**：這類「聚合成集合字串」的欄位（版本集合、逗號相連的多值字串）欄寬不能照
+「單一值」的欄位抓，尤其當底層 token 本身可能變長（`v1` → `v7_research`）時，原本
+覺得夠用的長度會隨時間推移變得不夠——下次再新增類似的「多值聚合成字串」欄位，欄寬
+應該抓夠大的安全邊界（例如比照這次的 `String(64)`），不要照單一值的直覺去抓。
+
 ### 追蹤中／正式推薦即時報價修正（2026-08-11 第二輪，同日）
 
 上線後使用者回報「漲幅看起來像昨天的」，另外問可不可以改成每 1 分鐘更新一次。
