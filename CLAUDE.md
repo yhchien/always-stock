@@ -3980,3 +3980,18 @@ JSON（`price`/`change_pct`/`open`/`high`/`low`/`volume`/`trade_time`），**不
 - `SignalRecommendationsPage.test.tsx` 沒有額外 mock `fetchRealtimeQuotes` 也能過：
   jsdom 測試環境下 fetch 會失敗，`useRealtimeQuotes` 內部已用 try/catch 靜默吞掉（原本
   就是為了「市場休市或連線失敗不炸頁面」設計的），不影響既有測試斷言
+
+### 追蹤中／正式推薦即時報價修正（2026-08-11 第二輪，同日）
+
+上線後使用者回報「漲幅看起來像昨天的」，另外問可不可以改成每 1 分鐘更新一次。
+
+- **漲跌幅卡在舊值的根因**：`fetchRealtimeQuotes()`（[api.ts](frontend/src/lib/api.ts)）
+  對 `/api/realtime/quotes` 的輪詢請求原本沒有明確關閉 fetch 快取，同一組
+  `stock_ids` 組成完全相同的 GET URL、每次輪詢都是同一條 request，瀏覽器或中間層有
+  機會把它當成可快取回應重複使用，導致畫面停在某一次抓到的舊漲跌幅（但股價本身因為
+  fallback 邏輯多半還是新的，只有 `change_pct` 卡住，所以症狀具體是「漲幅」不對，
+  不是股價完全沒動）。修法：`apiFetch(url, { cache: "no-store" })` 明確關閉
+  快取，確保每次輪詢真的打到最新資料
+- **更新頻率**：兩頁 `REALTIME_INTERVAL_MS` 從 `180_000`（3 分鐘）改成 `60_000`
+  （1 分鐘），使用者確認可接受；`fetchRealtimeQuotes` 本身已有 50 檔一批＋
+  `Promise.all` 平行請求，改頻率不需要額外調整批次邏輯
