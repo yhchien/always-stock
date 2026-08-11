@@ -3931,3 +3931,52 @@ dimensions 命中即 CAUTION，尚未觸發 STOP 條件），不是憑感覺寫�
   6` 後同一個工具呼叫內的下一行仍在 backend/，但下一個獨立 tool call 又回到舊目錄）；
   每次要跑 frontend 指令前一律重新 `cd frontend && pwd` 確認，不要假設前一輪設的 cwd
   還在——這是這個環境的已知常態，不是一次性意外
+
+## 追蹤中／正式推薦卡片改即時股價（2026-08-11）
+
+### 需求
+使用者要求 `/signals/archive`「追蹤中」與 `/signals/recommendations` 正式推薦兩頁的
+股價在開盤期間即時更新，可接受延遲 3 分鐘；建議去 goodinfo／yahoo 用 XPath 爬。
+
+### 查證：不需要新爬蟲，現成基礎設施已經在用
+專案早就有 `GET /api/realtime/quotes`（[realtime.py](backend/app/routers/realtime.py)）
+直接打 TWSE 官方盤中 API（`mis.twse.com.tw/stock/api/getStockInfo.jsp`），回傳乾淨
+JSON（`price`/`change_pct`/`open`/`high`/`low`/`volume`/`trade_time`），**不是爬蟲**，
+不需要 XPath；前端 `fetchRealtimeQuotes()`（[api.ts](frontend/src/lib/api.ts)）已內建
+50 檔一批自動分批（`Promise.all` 平行）、`useRealtimeQuotes(stockIds, intervalMs)`
+（[useRealtimeQuotes.ts](frontend/src/lib/useRealtimeQuotes.ts)）已內建「只在
+09:00–13:30 週一~五才啟動 polling、市場休市時 silently ignore」的邏輯——這條路徑早就
+在 L2 個股頁／首頁 `DailySignalsPanel` SignalCard 用著，只是這兩頁沒接上。**遇到「能不能
+即時更新」這類需求，先查有沒有現成的資料源在用，不要預設要另外接外部網站爬蟲**。
+
+### 改動
+- 兩頁都呼叫 `useRealtimeQuotes(stockIds, 180_000)`（3 分鐘，對齊使用者可接受延遲；
+  預設值 15 秒但這裡刻意調慢，避免對一次可能上百檔的「追蹤中」清單頻繁打 TWSE）
+- 新增 3 個 page-local helper（`resolveLivePrice`/`resolveLiveChangePct`/
+  `resolveLiveReturnPct`，兩頁各自複製一份，比照 3 色 type chip 那次的判斷：3 行邏輯
+  複製一份比新增共用匯出成本低）：有即時報價優先用，`null`／收盤後 fallback 回 archive
+  的 EOD `latest_close_price`/`daily_change_pct`
+- **報酬率也做到即時**：`(quote.price - baseline_price) / baseline_price * 100`，
+  `baseline_price` 是 `SignalArchiveSummaryItem` 本來就有的欄位（第二個交易日起才有值，
+  沿用既有「第二天固定 0%」規則）；沒有 baseline 或沒有即時報價時 fallback 回後端算好
+  的 `return_pct`
+- **範圍嚴格限定**：archive 頁只套用在「追蹤中」卡片（極簡卡片 + 詳情 popup），移出
+  紀錄區（`completed`）不動；recommendations 頁只套用在正式 RECOMMEND 卡片，未列入
+  今日推薦／明確移除／技術失敗（工程版限定區塊）不動——完全對齊使用者「工程版都先不必
+  更新」的要求
+- 兩頁都加了固定顯示的說明文字（沿用既有「說明框」樣式），講清楚 3 分鐘更新頻率與資料
+  來源
+
+### Gotcha
+- `RealtimeQuote.price` 收盤後／非交易時段是 `null`（TWSE 該欄位語意是「今日最新成交
+  價」，非交易時沒有新成交），`resolveLivePrice` 的 `quote?.price ?? fallback` 會自動
+  接住這個情況，不需要額外判斷「現在是不是開盤中」
+- 本機 dev server 實測（非交易時段）：`/api/realtime/quotes?stock_ids=2330,2317` 正常
+  回應，`price: null` 但 `prev_close`/`open`/`high`/`low`/`volume`/`trade_time` 都有
+  值——證實 fallback 邏輯覆蓋這個情境沒有問題
+- `useRealtimeQuotes` 的 hook call 位置：兩頁都確認過呼叫點在 component function 最
+  上層、任何條件式 early return **之前**，符合 React hooks 規則（不能放在 if 區塊或
+  return 之後）
+- `SignalRecommendationsPage.test.tsx` 沒有額外 mock `fetchRealtimeQuotes` 也能過：
+  jsdom 測試環境下 fetch 會失敗，`useRealtimeQuotes` 內部已用 try/catch 靜默吞掉（原本
+  就是為了「市場休市或連線失敗不炸頁面」設計的），不影響既有測試斷言
