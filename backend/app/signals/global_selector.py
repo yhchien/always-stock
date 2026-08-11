@@ -82,6 +82,27 @@ def _default_output_token_reserve(candidate_count: int) -> int:
     return _OUTPUT_TOKEN_RESERVE_BASE + candidate_count * _OUTPUT_TOKEN_RESERVE_PER_CANDIDATE
 
 
+# 2026-08-11 production incident: the above token-reserve fix let 112 eligible
+# candidates request a ~27,600-token output budget, but `_call_llm_json`'s
+# fixed 120s timeout (× up to 2 SDK-level tries) was sized for the old, much
+# smaller reserve. All 3 app-level attempts hit `openai.APITimeoutError`
+# before the model could finish emitting that much JSON, and the day's
+# watchlist came back empty (exit_code=4 partial_failure). Scaling the
+# per-call timeout with candidate_count closes the same gap the token-reserve
+# fix opened, instead of trading "truncated output" for "never finishes".
+_SELECTION_TIMEOUT_BASE_SECONDS = 90.0
+_SELECTION_TIMEOUT_PER_CANDIDATE_SECONDS = 2.5
+_SELECTION_TIMEOUT_MIN_SECONDS = 120.0
+
+
+def _default_selection_timeout_seconds(candidate_count: int) -> float:
+    return max(
+        _SELECTION_TIMEOUT_MIN_SECONDS,
+        _SELECTION_TIMEOUT_BASE_SECONDS
+        + candidate_count * _SELECTION_TIMEOUT_PER_CANDIDATE_SECONDS,
+    )
+
+
 def global_selection_output_schema(
     *, expected_version: str, selection_date: str, expected_stocks: Iterable[str]
 ) -> Dict[str, Any]:
@@ -525,6 +546,10 @@ def run_global_selection(
             "SIGNALS_GLOBAL_SELECTION_CONTRACT_RETRY", "true"
         ).strip().lower() not in {"0", "false", "no", "off"}
     )
+    call_timeout_seconds = _positive_env_float(
+        "SIGNALS_GLOBAL_SELECTOR_TIMEOUT_SECONDS",
+        _default_selection_timeout_seconds(len(cards)),
+    )
     previous_error: Optional[GlobalSelectionError] = None
     max_attempts = 3 if retry_enabled else 1
     for attempt in range(max_attempts):
@@ -556,6 +581,14 @@ def run_global_selection(
             prompt_cache_key=f"signals:{family}:global-selector",
             max_output_tokens=capacity.output_token_reserve,
             candidate_count=len(cards),
+            timeout=call_timeout_seconds,
+            # SDK-level retry-on-timeout would silently double each attempt's
+            # wait (up to 2× timeout) without changing the request; the
+            # app-level loop above already retries with a corrective prompt,
+            # so a single SDK try per attempt keeps worst-case wall time
+            # bounded (max_attempts × call_timeout_seconds) instead of
+            # doubling it for no benefit.
+            max_retries=0,
             prompt_metadata={
                 **metadata,
                 "stage_prompt_version": expected_version,
@@ -984,6 +1017,14 @@ def _serialize_cards(cards: List[Dict[str, Any]]) -> str:
 def _positive_env_int(name: str, default: int) -> int:
     try:
         value = int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def _positive_env_float(name: str, default: float) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
     except ValueError:
         return default
     return value if value > 0 else default

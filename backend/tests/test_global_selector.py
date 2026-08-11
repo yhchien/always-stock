@@ -592,3 +592,62 @@ def test_output_token_reserve_env_override_still_wins(monkeypatch):
     monkeypatch.setenv("SIGNALS_GLOBAL_SELECTOR_OUTPUT_TOKEN_RESERVE", "9999")
     capacity = global_selector.estimate_selection_capacity(_cards(200))
     assert capacity.output_token_reserve == 9999
+
+
+@pytest.mark.parametrize("candidate_count", [112, 116, 135])
+def test_selection_timeout_scales_past_prior_fixed_120s_incident_size(
+    candidate_count,
+):
+    """2026-08-11：112 檔候選在固定 120 秒逾時下連續 3 次 APITimeoutError，
+    當天推薦清單整個是空的（見 CLAUDE.md）。放大 output_token_reserve 換來足夠
+    輸出空間後，生成那麼多 JSON 需要的時間本來就會超過針對小候選池設計的 120 秒。"""
+    timeout = global_selector._default_selection_timeout_seconds(candidate_count)
+    assert timeout > 120.0
+
+
+def test_selection_timeout_grows_linearly_with_candidate_count():
+    small = global_selector._default_selection_timeout_seconds(10)
+    large = global_selector._default_selection_timeout_seconds(200)
+    assert large > small
+    assert small == global_selector._SELECTION_TIMEOUT_MIN_SECONDS  # floor for tiny pools
+
+
+def test_selection_timeout_env_override_still_wins(monkeypatch):
+    monkeypatch.setenv("SIGNALS_GLOBAL_SELECTOR_TIMEOUT_SECONDS", "555")
+    cards = _cards(2)
+    captured_kwargs = {}
+
+    def fake_call(_system, user_msg, **kwargs):
+        captured_kwargs.update(kwargs)
+        return _payload([_recommend("1000", 1), _not_selected("1001")]), {
+            "status": "ok"
+        }
+
+    monkeypatch.setattr(global_selector.llm_caller, "_call_llm_json", fake_call)
+    global_selector.run_global_selection(cards, {}, selection_date=SELECTION_DATE)
+
+    assert captured_kwargs["timeout"] == 555.0
+
+
+def test_run_global_selection_passes_scaled_timeout_and_single_sdk_try(
+    monkeypatch,
+):
+    """呼叫 _call_llm_json 時應帶入依候選數放寬的 timeout，且 max_retries=0——
+    app 層迴圈已經自己重試 3 次，SDK 層再重試一次只會把每次等待時間乘以 2，
+    對成功率沒有幫助卻拖長 worst-case 總時間。"""
+    cards = _cards(112)
+    captured_kwargs = {}
+
+    def fake_call(_system, user_msg, **kwargs):
+        captured_kwargs.update(kwargs)
+        items = [_recommend("1000", 1)] + [
+            _not_selected(str(1000 + i)) for i in range(1, 112)
+        ]
+        return _payload(items), {"status": "ok"}
+
+    monkeypatch.setattr(global_selector.llm_caller, "_call_llm_json", fake_call)
+    global_selector.run_global_selection(cards, {}, selection_date=SELECTION_DATE)
+
+    assert captured_kwargs["timeout"] == global_selector._default_selection_timeout_seconds(112)
+    assert captured_kwargs["timeout"] > 120.0
+    assert captured_kwargs["max_retries"] == 0

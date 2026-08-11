@@ -1099,6 +1099,8 @@ def _call_llm_json(
     prompt_metadata: Optional[Dict[str, Any]] = None,
     response_schema: Optional[Dict[str, Any]] = None,
     response_format_name: Optional[str] = None,
+    timeout: float = _OPENAI_TIMEOUT_SECONDS,
+    max_retries: int = _OPENAI_MAX_RETRIES,
 ) -> tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
     """呼叫 OpenAI 並嘗試 parse JSON。
 
@@ -1135,8 +1137,8 @@ def _call_llm_json(
 
     client = OpenAI(
         api_key=api_key,
-        timeout=_OPENAI_TIMEOUT_SECONDS,
-        max_retries=_OPENAI_MAX_RETRIES,
+        timeout=timeout,
+        max_retries=max_retries,
     )
     try:
         kwargs: Dict[str, Any] = {
