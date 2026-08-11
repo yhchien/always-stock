@@ -1404,3 +1404,131 @@ def test_not_selected_or_remove_day_does_not_stop_existing_observation():
         assert rows[0].snapshot_date == first_date
         assert archive.clear_signal_watch_hits_for_date(db, second_date) == 0
         assert archive.clear_signal_watch_hits_for_date(db, first_date) == 1
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# P4 停止觀察 → 魚尾追蹤週期跟著結算（2026-08-11 新增）
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def test_settle_stock_for_p4_stop_archives_active_cycle():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+
+    with Session() as db:
+        first_seen = date(2026, 7, 20)
+        _seed_price(db, "1234", date(2026, 7, 21), 100.0, 100.0)
+        _seed_price(db, "1234", date(2026, 7, 22), 108.0, 108.0)
+
+        db.add(
+            SignalWatchHit(
+                snapshot_date=first_seen,
+                stock_id="1234",
+                stock_name="測試股",
+                signal_type="LEADER",
+                industry_name="半導體業",
+                sub_industry="x",
+                business_summary="a",
+                reason="a",
+                theme={},
+                group_info={},
+                leader_check={},
+                signals={},
+                baseline_trade_date=date(2026, 7, 21),
+                baseline_price=100.0,
+                latest_eval_trade_date=date(2026, 7, 22),
+                latest_eval_price=108.0,
+                return_pct=8.0,
+                prompt_version="v7",
+            )
+        )
+        db.commit()
+
+        settled = archive.settle_stock_for_p4_stop(
+            db, stock_id="1234", as_of_trade_date=date(2026, 7, 22)
+        )
+        db.commit()
+
+        assert settled is True
+        active = db.query(SignalWatchHit).filter_by(stock_id="1234").all()
+        assert active == []
+
+        completed = (
+            db.query(SignalWatchCompletedArchive)
+            .filter_by(stock_id="1234")
+            .one()
+        )
+        assert completed.closure_reason == archive.CLOSURE_REASON_P4_STOPPED
+        assert completed.completed_trade_date == date(2026, 7, 22)
+        assert completed.first_seen_date == first_seen
+        assert completed.baseline_trade_date == date(2026, 7, 21)
+        assert completed.baseline_price == 100.0
+
+
+def test_settle_stock_for_p4_stop_no_active_cycle_is_noop():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+
+    with Session() as db:
+        settled = archive.settle_stock_for_p4_stop(
+            db, stock_id="9876", as_of_trade_date=date(2026, 7, 22)
+        )
+
+        assert settled is False
+        completed = (
+            db.query(SignalWatchCompletedArchive)
+            .filter_by(stock_id="9876")
+            .all()
+        )
+        assert completed == []
+
+
+def test_settle_stock_for_p4_stop_without_baseline_still_archives():
+    """今天才第一次抓到、還沒建立 baseline 就被 P4 判定停止觀察的邊界情境；
+    不應該噴例外，報酬相關欄位保持 None（沒有資料可算）。"""
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+
+    with Session() as db:
+        first_seen = date(2026, 7, 22)
+        db.add(
+            SignalWatchHit(
+                snapshot_date=first_seen,
+                stock_id="5555",
+                stock_name="當日新進",
+                signal_type="LAGGARD",
+                industry_name="航運業",
+                sub_industry="x",
+                business_summary="a",
+                reason="a",
+                theme={},
+                group_info={},
+                leader_check={},
+                signals={},
+                baseline_trade_date=None,
+                baseline_price=None,
+                latest_eval_trade_date=None,
+                latest_eval_price=None,
+                return_pct=None,
+            )
+        )
+        db.commit()
+
+        settled = archive.settle_stock_for_p4_stop(
+            db, stock_id="5555", as_of_trade_date=date(2026, 7, 22)
+        )
+        db.commit()
+
+        assert settled is True
+        completed = (
+            db.query(SignalWatchCompletedArchive)
+            .filter_by(stock_id="5555")
+            .one()
+        )
+        assert completed.closure_reason == archive.CLOSURE_REASON_P4_STOPPED
+        assert completed.baseline_trade_date is None
+        assert completed.max_positive_return_pct is None
+        assert completed.max_negative_return_pct is None

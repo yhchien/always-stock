@@ -123,6 +123,16 @@ function ClosureReasonChip({ reason }: { reason: SignalClosureReason }) {
       </span>
     )
   }
+  if (reason === "p4_stopped") {
+    return (
+      <span
+        className="inline-flex items-center rounded border border-amber-500/60 bg-amber-500/15 px-1.5 py-0.5 text-[11px] font-medium text-amber-200"
+        title="每日觀察判定這檔股票的推薦論點已確認失效（停止觀察），提前結算，不用等 30 個交易日或價格觸發規則。"
+      >
+        觀察已停止
+      </span>
+    )
+  }
   return (
     <span className="inline-flex items-center rounded border border-slate-600 bg-slate-700/40 px-1.5 py-0.5 text-[11px] font-medium text-slate-200">
       追蹤期滿

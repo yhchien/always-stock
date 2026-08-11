@@ -52,6 +52,10 @@ CLOSURE_REASON_EARLY_EXIT_DRAWDOWN = "early_exit_drawdown_from_peak"
 # 2026-08-11：正式推薦頁併入魚尾單一入口時，一次性強制結算所有進行中追蹤週期用
 # （見 backend/stop_all_active_signal_watch_cycles.py）
 CLOSURE_REASON_MANUAL_RESET = "manual_reset"
+# 2026-08-11：P4（SignalObservation）判定推薦論點確認失效（STOPPED，經
+# STOP_CONFIRM_THRESHOLD 次複核確認）時，魚尾追蹤週期跟著結算，不必再等自然滿 30 天或
+# 價格觸發的提前結算規則（見 observation_lifecycle.py::run_daily_observation_reviews）
+CLOSURE_REASON_P4_STOPPED = "p4_stopped"
 
 # 半年表格起算日（2026-05-01）；之後每 6 個月一段。
 HALF_YEAR_PERIOD_ANCHOR = date(2026, 5, 1)
@@ -1415,6 +1419,61 @@ def update_signal_watch_returns(
     if updated or completed_upserts or early_exits:
         db.commit()
     return updated
+
+
+def settle_stock_for_p4_stop(
+    db: Session,
+    *,
+    stock_id: str,
+    as_of_trade_date: date,
+) -> bool:
+    """P4 對一檔股票的推薦論點判定確認失效（STOPPED，經
+    STOP_CONFIRM_THRESHOLD 次複核確認）時，把魚尾對應的進行中追蹤週期一併結算——不用
+    再等自然滿 30 天或價格觸發的提前結算規則才移出。
+
+    找不到該股目前進行中的魚尾追蹤週期時是 no-op（P4 觀察與魚尾候選池不保證完全
+    重疊，兩套系統的追蹤起點與清空規則本來就各自獨立），回傳是否真的做了結算。
+
+    呼叫端（observation_lifecycle.py）負責 commit；這裡只做 mutation，跟現有
+    ``update_signal_watch_returns`` 提前結算段落遵循同一個「caller 決定何時 commit」
+    慣例，讓這個函式可以安全掛進既有 ``persist`` 參數控制的 review 流程裡。
+    """
+    grouped = _load_grouped_hits(db, stock_ids=[stock_id])
+    rows = grouped.get(stock_id)
+    if not rows:
+        return False
+
+    baseline_row = next(
+        (row for row in reversed(rows) if row.baseline_price not in (None, 0)),
+        None,
+    )
+    baseline_trade_date = baseline_row.baseline_trade_date if baseline_row else None
+    baseline_price = (
+        float(baseline_row.baseline_price) if baseline_row is not None else None
+    )
+
+    trade_date_cache: dict[tuple[date, int], Optional[date]] = {}
+    price_cache: dict[tuple[str, date], Optional[DailyPrice]] = {}
+    item = _build_early_exit_archive_item(
+        db,
+        stock_id=stock_id,
+        rows=rows,
+        baseline_trade_date=baseline_trade_date,
+        baseline_price=baseline_price,
+        settle_trade_date=as_of_trade_date,
+        trade_date_cache=trade_date_cache,
+        price_cache=price_cache,
+        closure_reason=CLOSURE_REASON_P4_STOPPED,
+    )
+    _upsert_completed_archive(db, item)
+    # synchronize_session="evaluate"：同一次 review 迴圈內，這批 row 可能已被
+    # update_signal_watch_returns／同一輪其他邏輯改寫成 dirty；autoflush=False 下
+    # 用 False 不會把它們移出 session，commit flush 時會對已刪除的 row 發 UPDATE
+    # → StaleDataError（2026-06-15 已踩過的坑，見上方 update_signal_watch_returns）。
+    db.query(SignalWatchHit).filter(SignalWatchHit.stock_id == stock_id).delete(
+        synchronize_session="evaluate"
+    )
+    return True
 
 
 def _serialize_summary_item(item: ArchiveSummaryItem) -> dict[str, Any]:

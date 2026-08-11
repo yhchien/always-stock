@@ -12,8 +12,10 @@ from app.models import (
     SignalObservation,
     SignalObservationArchive,
     SignalObservationReview,
+    SignalWatchCompletedArchive,
     SignalWatchHit,
 )
+from app.signals import archive as archive_module
 from app.signals import observation_lifecycle as lifecycle
 
 
@@ -912,6 +914,109 @@ def test_three_consecutive_stop_confirmations_archive_on_the_third_day(
     )
     assert db.query(SignalObservationArchive).count() == 1
     assert db.get(SignalObservation, observation.id).stop_confirm_count == 3
+
+
+def test_three_consecutive_stop_confirmations_settle_matching_signal_watch_hit_cycle(
+    db, monkeypatch
+):
+    """2026-08-11：P4 確認停止觀察（第 3 次 STOP 複核）時，魚尾（M23
+    signal_watch_hits）對應的進行中追蹤週期要跟著結算，不用等 30 個交易日或價格
+    觸發規則。鏡像上面 test_three_consecutive_stop_confirmations_archive_on_the_third_day
+    的三日複核流程，額外斷言魚尾側的結算結果。"""
+    observation = _observation(db)
+    db.add(DailyPrice(stock_id="2330", trade_date=DAY_0, close_price=100.0))
+    db.add(
+        SignalWatchHit(
+            snapshot_date=DAY_0,
+            stock_id="2330",
+            stock_name="Stock-2330",
+            signal_type="LEADER",
+            industry_name="半導體業",
+            sub_industry="x",
+            business_summary="a",
+            reason="a",
+            theme={},
+            group_info={},
+            leader_check={},
+            signals={},
+            baseline_trade_date=DAY_0,
+            baseline_price=100.0,
+            latest_eval_trade_date=DAY_0,
+            latest_eval_price=100.0,
+            return_pct=0.0,
+        )
+    )
+    db.commit()
+    _patch_evidence(monkeypatch, {observation.id: _hard_excluded_evidence()})
+
+    for review_date in (DAY_1, DAY_2, DAY_2 + timedelta(days=1)):
+        lifecycle.run_daily_observation_reviews(
+            db,
+            review_date=review_date,
+            market_context={},
+            assessment_runner=_runner_for({}),
+            persist=True,
+        )
+
+    row = db.get(SignalObservation, observation.id)
+    assert row.status == "STOPPED"
+    assert row.stop_confirm_count == 3
+
+    active_hits = db.query(SignalWatchHit).filter_by(stock_id="2330").all()
+    assert active_hits == []
+
+    completed = (
+        db.query(SignalWatchCompletedArchive).filter_by(stock_id="2330").one()
+    )
+    assert completed.closure_reason == archive_module.CLOSURE_REASON_P4_STOPPED
+    assert completed.completed_trade_date == DAY_2 + timedelta(days=1)
+
+
+def test_first_stop_confirmation_does_not_settle_signal_watch_hit_cycle(
+    db, monkeypatch
+):
+    """第一次 STOP（尚未達 STOP_CONFIRM_THRESHOLD）不應提前結算魚尾——STOP 仍可能在
+    確認期間內恢復回 CAUTION/OBSERVING，過早結算會誤刪還在觀察中的追蹤紀錄。"""
+    observation = _observation(db)
+    db.add(
+        SignalWatchHit(
+            snapshot_date=DAY_0,
+            stock_id="2330",
+            stock_name="Stock-2330",
+            signal_type="LEADER",
+            industry_name="半導體業",
+            sub_industry="x",
+            business_summary="a",
+            reason="a",
+            theme={},
+            group_info={},
+            leader_check={},
+            signals={},
+            baseline_trade_date=DAY_0,
+            baseline_price=100.0,
+            latest_eval_trade_date=DAY_0,
+            latest_eval_price=100.0,
+            return_pct=0.0,
+        )
+    )
+    db.commit()
+    _patch_evidence(monkeypatch, {observation.id: _hard_excluded_evidence()})
+
+    lifecycle.run_daily_observation_reviews(
+        db,
+        review_date=DAY_1,
+        market_context={},
+        assessment_runner=_runner_for({}),
+        persist=True,
+    )
+
+    row = db.get(SignalObservation, observation.id)
+    assert row.status == "STOPPED"
+    assert row.stop_confirm_count == 1
+
+    active_hits = db.query(SignalWatchHit).filter_by(stock_id="2330").all()
+    assert len(active_hits) == 1
+    assert db.query(SignalWatchCompletedArchive).filter_by(stock_id="2330").count() == 0
 
 
 def test_recovery_during_pending_window_cancels_archive_and_reactivates(

@@ -1673,6 +1673,7 @@ export type SignalClosureReason =
   | "early_exit_stop_loss"
   | "early_exit_drawdown_from_peak"
   | "manual_reset"
+  | "p4_stopped"
 
 export interface SignalArchiveCompletedPeriod {
   period_start: string

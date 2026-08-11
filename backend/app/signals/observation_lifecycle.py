@@ -28,6 +28,7 @@ from app.models import (
     SignalWatchHit,
 )
 from app.signals import (
+    archive,
     candidate_pool,
     deterministic_signals,
     filters,
@@ -1172,6 +1173,12 @@ def run_daily_observation_reviews(
             if observation.stop_confirm_count >= STOP_CONFIRM_THRESHOLD:
                 _finalize_observation_archive(
                     db, observation=observation, archived_date=review_date
+                )
+                # P4 確認停止觀察＝這檔的推薦論點已判定失效；魚尾（M23 signal_watch_hits）
+                # 的追蹤週期跟著結算，不用再等自然滿 30 天或價格觸發的提前結算規則。
+                # 找不到對應的魚尾進行中週期時是 no-op（兩套系統的候選範圍不保證完全重疊）。
+                archive.settle_stock_for_p4_stop(
+                    db, stock_id=sid, as_of_trade_date=review_date
                 )
         observation.latest_snapshot_json = {
             "review_date": review_date.isoformat(),
