@@ -7,12 +7,14 @@ import { Dialog } from "@base-ui/react/dialog"
 
 import ObservationStatusBadge from "@/components/ObservationStatusBadge"
 import StockChartDialog from "@/components/StockChartDialog"
+import { useRealtimeQuotes } from "@/lib/useRealtimeQuotes"
 
 import {
   fetchCompletedSignalArchive,
   fetchSignalArchive,
   fetchSignalArchiveDetail,
   fetchSignalObservations,
+  type RealtimeQuote,
   type SignalArchiveCompletedPeriod,
   type SignalArchiveCompletedResponse,
   type SignalArchiveDetailResponse,
@@ -226,6 +228,40 @@ function DailyChangeCell({ value }: { value: number | null }) {
   )
 }
 
+// 2026-08-11：追蹤中卡片改顯示即時報價（開盤期間每 3 分鐘更新一次）。資料源沿用既有
+// /api/realtime/quotes（TWSE mis.twse.com.tw 官方盤中 API，非另外爬 goodinfo/yahoo）；
+// 有即時報價時優先顯示，收盤後或抓不到即時報價時 fallback 回 ETL 寫入的 EOD latest_
+// close_price/daily_change_pct，不會出現空白。只套用在「追蹤中」，移出紀錄區與工程版
+// 不接即時報價。
+const REALTIME_INTERVAL_MS = 180_000
+
+function resolveLivePrice(
+  item: SignalArchiveSummaryItem,
+  quote: RealtimeQuote | undefined,
+): number | null {
+  return quote?.price ?? item.latest_close_price ?? null
+}
+
+function resolveLiveChangePct(
+  item: SignalArchiveSummaryItem,
+  quote: RealtimeQuote | undefined,
+): number | null {
+  return quote?.change_pct ?? item.daily_change_pct ?? null
+}
+
+// 報酬率即時版：用即時價相對 baseline_price 重算；baseline_price 從第二個交易日起才有值
+// （比照既有「第二天固定 0%」規則），沒有 baseline 或沒有即時報價時 fallback 回後端算好
+// 的 return_pct。
+function resolveLiveReturnPct(
+  item: SignalArchiveSummaryItem,
+  quote: RealtimeQuote | undefined,
+): number | null {
+  if (quote?.price != null && item.baseline_price != null && item.baseline_price !== 0) {
+    return ((quote.price - item.baseline_price) / item.baseline_price) * 100
+  }
+  return item.return_pct
+}
+
 function ExtremeReturnCell({
   value,
   tradeDate,
@@ -285,6 +321,7 @@ function StockDetailDialog({
   detailLoading,
   detailError,
   observation,
+  quote,
   onClose,
   onOpenChart,
 }: {
@@ -294,6 +331,8 @@ function StockDetailDialog({
   detailError: string | null
   /** P4 每日觀察狀態；沒有對應觀察（archive 抓到但 P4 沒建立）則為 undefined。 */
   observation?: SignalObservationItem
+  /** 即時報價（開盤期間每 3 分鐘更新）；無資料時 fallback 回 EOD latest_close_price。 */
+  quote?: RealtimeQuote
   onClose: () => void
   /** K 線圖改 popup（StockChartDialog）：點擊時疊在本 popup 之上開啟 */
   onOpenChart: (stockId: string, stockName?: string | null) => void
@@ -348,16 +387,16 @@ function StockDetailDialog({
               </header>
 
               <div className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-3">
-                <Metric label="收盤價 / 當日漲跌">
+                <Metric label="股價 / 當日漲跌（即時）">
                   <span className="flex items-baseline gap-2">
                     <span className="font-mono text-sm text-slate-100">
-                      {formatPrice(item.latest_close_price ?? null)}
+                      {formatPrice(resolveLivePrice(item, quote))}
                     </span>
-                    <DailyChangeCell value={item.daily_change_pct ?? null} />
+                    <DailyChangeCell value={resolveLiveChangePct(item, quote)} />
                   </span>
                 </Metric>
-                <Metric label="報酬率">
-                  <ReturnCell value={item.return_pct} />
+                <Metric label="報酬率（即時）">
+                  <ReturnCell value={resolveLiveReturnPct(item, quote)} />
                 </Metric>
                 <Metric label="追蹤進度">
                   <span className="text-sm text-slate-200">
@@ -507,6 +546,12 @@ function SignalArchiveContent() {
   )
 
   const [summary, setSummary] = useState<SignalArchiveSummaryResponse | null>(null)
+  // 「追蹤中」全部股票代號（不受搜尋/展開篩選影響，一次抓好快取），驅動即時報價 polling
+  const activeStockIds = useMemo(
+    () => (summary?.items ?? []).map((item) => item.stock_id),
+    [summary?.items],
+  )
+  const liveQuotes = useRealtimeQuotes(activeStockIds, REALTIME_INTERVAL_MS)
   const [completedSummary, setCompletedSummary] = useState<SignalArchiveCompletedResponse | null>(null)
   // popup 展開的股票（null = 關閉）；detail 內容依此 fetch
   const [popupStockId, setPopupStockId] = useState<string | null>(null)
@@ -816,6 +861,12 @@ function SignalArchiveContent() {
               期間曾達 +45% 報酬率里程碑；僅標注、不結算。
             </p>
           </div>
+          <div className="mt-2 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs leading-6 text-slate-400">
+            <p>
+              <span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-emerald-400 align-middle" />
+              「追蹤中」的股價與報酬率在開盤期間（09:00–13:30）每 3 分鐘自動更新一次，資料來源為證交所盤中即時報價；收盤後或非交易日顯示最後一次的即時或前一交易日收盤數字。移出紀錄區不會即時更新。
+            </p>
+          </div>
           {summary?.as_of_trade_date && (
             <p className="mt-1 text-xs text-slate-500">最新評估交易日：{summary.as_of_trade_date}</p>
           )}
@@ -904,29 +955,32 @@ function SignalArchiveContent() {
                 找不到符合「{activeSearch}」的股票
               </p>
             )}
-            {/* 極簡卡片：只留代號+名稱 / 收盤價 / 當日漲跌幅；其餘資訊在點開的 popup */}
+            {/* 極簡卡片：只留代號+名稱 / 即時股價 / 當日漲跌幅；其餘資訊在點開的 popup */}
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-              {visibleActiveItems.map((item) => (
-                <button
-                  key={item.stock_id}
-                  type="button"
-                  onClick={() => setPopupStockId(item.stock_id)}
-                  className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-900/50 px-3 py-2.5 text-left transition hover:border-sky-500/50 hover:bg-slate-800/60"
-                >
-                  <div className="flex min-w-0 flex-col">
-                    <span className="truncate text-sm font-semibold text-slate-100">
-                      {item.stock_id} {item.stock_name}
-                    </span>
-                    <span className="text-[11px] text-slate-500">查看更多 →</span>
-                  </div>
-                  <div className="flex shrink-0 flex-col items-end">
-                    <span className="font-mono text-sm text-slate-100">
-                      {formatPrice(item.latest_close_price ?? null)}
-                    </span>
-                    <DailyChangeCell value={item.daily_change_pct ?? null} />
-                  </div>
-                </button>
-              ))}
+              {visibleActiveItems.map((item) => {
+                const quote = liveQuotes.get(item.stock_id)
+                return (
+                  <button
+                    key={item.stock_id}
+                    type="button"
+                    onClick={() => setPopupStockId(item.stock_id)}
+                    className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-900/50 px-3 py-2.5 text-left transition hover:border-sky-500/50 hover:bg-slate-800/60"
+                  >
+                    <div className="flex min-w-0 flex-col">
+                      <span className="truncate text-sm font-semibold text-slate-100">
+                        {item.stock_id} {item.stock_name}
+                      </span>
+                      <span className="text-[11px] text-slate-500">查看更多 →</span>
+                    </div>
+                    <div className="flex shrink-0 flex-col items-end">
+                      <span className="font-mono text-sm text-slate-100">
+                        {formatPrice(resolveLivePrice(item, quote))}
+                      </span>
+                      <DailyChangeCell value={resolveLiveChangePct(item, quote)} />
+                    </div>
+                  </button>
+                )
+              })}
             </div>
             {!isSearchingActive && filteredActiveItems.length > TOP_N && (
               <div className="mt-3 flex justify-center">
@@ -1119,6 +1173,7 @@ function SignalArchiveContent() {
         detailLoading={detailLoading}
         detailError={detailError}
         observation={popupItem ? observationByStock.get(popupItem.stock_id) : undefined}
+        quote={popupItem ? liveQuotes.get(popupItem.stock_id) : undefined}
         onClose={() => setPopupStockId(null)}
         onOpenChart={(stockId, stockName) => setChartStock({ stockId, stockName })}
       />
