@@ -4095,3 +4095,94 @@ lifespan 掛上。**失敗那次是整包 bulk insert 一次 112 筆的單一 SQ
 - **更新頻率**：兩頁 `REALTIME_INTERVAL_MS` 從 `180_000`（3 分鐘）改成 `60_000`
   （1 分鐘），使用者確認可接受；`fetchRealtimeQuotes` 本身已有 50 檔一批＋
   `Promise.all` 平行請求，改頻率不需要額外調整批次邏輯
+
+## 強制結算誤刪過廣，補救回復 8/7 起的追蹤紀錄（2026-08-11 第三輪，同日）
+
+### 背景
+`stop_all_active_signal_watch_cycles.py --execute` 把當時**全部**進行中的追蹤週期
+（含當天／前幾天才剛抓到、根本不算「舊資料」的股票）一次全部結算清空，是刻意的
+「全部從現在重新開始算」設計。但使用者後來確認想保留的範圍只到 **2026-08-07**，
+不是連當週剛抓到的股票都要重置。結算後使用者發現「魚尾現在沒有任何追蹤中股票」，
+才回頭要求把 8/7 起有命中的股票救回來。
+
+### 補救做法
+1. 找出 112 檔被結算股票中，在 8/7～8/10 任一天的 `signal_snapshots.watchlist` 出現過
+   的股票（37 檔）
+2. 刪除這 37 檔的 `manual_reset` 永久結算紀錄
+3. 依序 replay `persist_signal_watch_hits()`（8/7→8/8→8/9→8/10）+
+   `update_signal_watch_returns()`，用 `signal_snapshots` 裡存的原始 watchlist payload
+   重建這 4 天的 `signal_watch_hits`
+4. 8/8、8/9 剛好是週六日，`daily_price` 本來就沒資料——驗證
+   `update_signal_watch_returns` 對這兩天正確 no-op、baseline 正確落在下一個「真交易
+   日」8/10（8/7 首次抓到的股票，baseline_trade_date=8/10），確認「第二天＝下一個
+   交易日」規則跨週末正確運作
+
+### 資料完整性缺口（誠實揭露，使用者已接受）
+補救過程中發現一個**我造成的真實 regression**：這 37 檔裡有幾檔原本在 8/7 之前就有
+**更長的連續追蹤歷史**（例如 3231 原本 `first_seen=2026-07-23, hit_count=14`），但因
+為補救時是「先刪掉整筆 `manual_reset` 摘要列，只重播 8/7～8/10 這 4 天窗口」，8/7 之
+前的完整歷史（含當時累積的最大正/負報酬）**已經被永久遺失、沒有備份可還原**——嘗試
+過用 90 天回溯查詢猜測「真正的 first_seen」，但這個做法邏輯上有瑕疵（無法區分中間有
+空窗的不同追蹤週期，算出來的日期會遠早於 30 個交易日 retention 視窗，明顯是把不同
+週期誤連在一起），判斷不值得冒更大風險去做不精確的重建。最終如實跟使用者說明「保留
+= 37 檔從 8/7～8/10 首次出現那天開始重新追蹤，但 8/7 之前的原始連續歷史／
+hit_count／極值報酬已經回不去了」，使用者回覆**「沒關係那就維持這樣」**，接受這個
+不完美但功能正常的狀態，不要求進一步搶救。
+
+### 教訓（下次遇到類似「批次結算後又要局部復原」的操作要遵守）
+在對「彙總／結算」類型的紀錄做刪除以便重播之前，**必須先完整備份被刪除那筆的所有
+欄位值**（不是只記筆數或摘要），不能假設「之後只要重播一段窄窗口就能等價重建」——
+魚尾的 `first_seen_date`／`hit_count`／`max_positive_return_pct` 等欄位是「整段連續
+追蹤週期」的累積結果，重播局部窗口只能重建那個窗口本身的資料，回不去更早的歷史。
+下次若還需要「先結算再局部復原」，應該在刪除前把完整 row（不只是 stock_id 清單）
+存成一份快照檔，復原時才有機會真正等價重建，而不是重新從窄窗口 replay。
+
+## P4 停止觀察時魚尾追蹤週期跟著結算（2026-08-11 第四輪，同日）
+
+### 背景
+使用者列出 4 條魚尾應該遵守的行為並要求逐一確保，其中第 4 條：「魚尾會有兩套報酬
+統計，一套是滿 30 天會跳出，另外一套是當觀察中的股票被標記成停止觀察，也會移出並
+記錄騎報酬」——查證後發現前 3 條（P3 每日重新評估、hit_count 累加、每日重新評估
+警戒/觀察狀態）系統本來就有做到，只有第 4 條（P4 STOPPED → 魚尾一併結算）從未接線：
+P4（`SignalObservation`）與魚尾（`signal_watch_hits`）雖然共用同一批候選股票，但兩套
+追蹤/清空規則完全獨立，P4 判定一檔股票停止觀察後，魚尾那邊只會繼續等自然滿 30 個
+交易日或價格觸發的提前結算規則，不會同步反應「P4 已經判定這檔的推薦論點失效」。
+
+### 落地
+- **`backend/app/signals/archive.py`**：新增
+  `CLOSURE_REASON_P4_STOPPED = "p4_stopped"` 常數 + 新函式
+  `settle_stock_for_p4_stop(db, *, stock_id, as_of_trade_date) -> bool`——找該股目前
+  進行中的魚尾週期（找不到就是 no-op，回傳 False；P4 觀察與魚尾候選池不保證完全重疊，
+  兩套系統候選範圍本來就各自獨立），取現有 baseline（若還沒建立就是 None，
+  `_build_early_exit_archive_item`／`_resolve_return_extrema` 本來就對 None baseline
+  安全 no-op，不會噴例外）呼叫既有 `_build_early_exit_archive_item(...)`（明確傳入
+  `settle_trade_date`，不是用 `_build_completed_archive_item` 那種「滿 30 天回推」
+  的寫法）+ `_upsert_completed_archive` 寫入永久紀錄 + 刪除 active hits（沿用
+  `synchronize_session="evaluate"`，同 2026-06-15 StaleDataError 那次的教訓）。函式
+  本身不 commit，跟 `observation_lifecycle.py` 既有 `persist` 參數控制的慣例一致，
+  由呼叫端決定何時真正落地
+- **`backend/app/signals/observation_lifecycle.py`**：`run_daily_observation_reviews()`
+  在 `_finalize_observation_archive(...)` 呼叫之後（即 `stop_confirm_count >=
+  STOP_CONFIRM_THRESHOLD`，P4 對 STOP 的**確認**時間點，不是第一次 STOP 就觸發）加一行
+  `archive.settle_stock_for_p4_stop(db, stock_id=sid, as_of_trade_date=review_date)`
+- **為何掛在確認時間點、不是第一次 STOP**：`STOP_CONFIRM_THRESHOLD=3` 是「連續 3 天
+  複核仍為 STOP 才真正定案」，STOP 狀態在確認期間內仍可能因為隔天 review 判斷回到
+  CAUTION/OBSERVING 而復活（見既有 `test_recovery_during_pending_window_cancels_
+  archive_and_reactivates`）；若在第一次 STOP 就結算魚尾，之後 P4 若判斷復活，魚尾那
+  邊的追蹤紀錄已經被刪除且無法復原，會製造新的資料遺失——刻意選在跟 P4 自己「永久
+  歸檔」同一個確認時間點動手，兩邊的「定案」語意完全對齊
+- **`replay_observation_lifecycle()`（同檔案另一個函式）確認不需要掛這個 hook**：
+  docstring 明講是「Read-only, chronological point-in-time replay」，只有
+  `run_p4_tracking_replay.py`（獨立回測腳本）與測試會呼叫，狀態改變只發生在
+  `state[observation.id][...]` 這個 in-memory dict、不寫回真正的 `SignalObservation`
+  row，是純粹的歷史回放/backtest 工具，跟正式每日 review 是兩條不相干的路徑
+- **前端**：`SignalClosureReason` union 加 `"p4_stopped"`；`archive/page.tsx` 的
+  `ClosureReasonChip` 加對應分支（琥珀色「觀察已停止」，跟既有「提前結算」用色區隔，
+  因為這不是報酬觸發的停損/停利規則，是推薦論點被判定失效）
+- **測試**：`archive.py` 新增 3 個單元測試（正常結算／找不到週期時 no-op／還沒建立
+  baseline 時安全結算不噴例外）；`observation_lifecycle.py` 新增 2 個整合測試，鏡像
+  既有 `test_three_consecutive_stop_confirmations_archive_on_the_third_day` 的三日
+  複核流程，額外斷言魚尾側正確結算 + 驗證第一次 STOP（未達確認門檻）不會提前結算
+  魚尾。全 backend suite 1267 pass + 20 個既有 baseline fail（site-passwordless 相關，
+  與本輪無關）零新增失敗；前端 tsc/eslint（僅改動的兩個檔案）全過、jest 106 案例中
+  18 fail 全屬既有 StockList/StockChart/BacktestPanel baseline，零新增失敗
