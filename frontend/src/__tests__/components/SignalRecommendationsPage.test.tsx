@@ -151,7 +151,7 @@ describe("SignalRecommendationsPage", () => {
 
   it("sorts only RECOMMEND in the main list and separates neutral/veto/technical buckets", async () => {
     renderPage()
-    await screen.findByText("今日正式推薦（2）")
+    await screen.findByText("目前正式推薦（2）")
     const ranks = screen.getAllByText(/^#[12]$/).map((node) => node.textContent)
     expect(ranks).toEqual(["#1", "#2"])
     expect(screen.getByText("未列入今日推薦（1）")).toBeInTheDocument()
@@ -187,7 +187,7 @@ describe("SignalRecommendationsPage", () => {
     historical.data.summary = {}
     recommendationMock.mockResolvedValue(historical as never)
     renderPage()
-    expect(await screen.findByText("今日正式推薦（0）")).toBeInTheDocument()
+    expect(await screen.findByText("目前正式推薦（0）")).toBeInTheDocument()
     expect(screen.queryByText("舊 WATCH")).not.toBeInTheDocument()
   })
 })

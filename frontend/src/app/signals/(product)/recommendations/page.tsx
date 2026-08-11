@@ -382,7 +382,7 @@ export default function SignalRecommendationsPage() {
           <p className="mt-1 text-sm text-slate-400">
             {isEngineering
               ? "主清單只顯示 RECOMMEND；P3 今日決策與 P4 既有觀察狀態分開。"
-              : "以下是今天系統推薦的股票與推薦理由。"}
+              : "系統每天重新比較全部候選股票；同一檔可能連續多天勝出、持續留在名單上，不是每天都會整批換新。"}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -417,7 +417,7 @@ export default function SignalRecommendationsPage() {
 
           <section>
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-              <h2 className="text-base font-semibold">今日正式推薦（{recommendations.length}）</h2>
+              <h2 className="text-base font-semibold">目前正式推薦（{recommendations.length}）</h2>
               <div className="flex flex-wrap gap-1" aria-label="排序方式">
                 {SORT_OPTIONS.map((option) => (
                   <button
@@ -435,6 +435,11 @@ export default function SignalRecommendationsPage() {
                 ))}
               </div>
             </div>
+            <p className="mb-3 rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2 text-xs leading-5 text-slate-400">
+              <span className="text-slate-300">觀察中</span>／<span className="text-amber-300">警戒</span>是系統每天覆核推薦論點的結果：
+              <span className="text-slate-300">觀察中</span> = 動能結構、資金參與等關鍵條件目前仍然成立；
+              <span className="text-amber-300">警戒</span> = 部分關鍵條件今天檢查後開始不成立，但還沒到判定「論點失效」的程度，值得留意但不是賣出訊號。
+            </p>
             {!recommendations.length && completeness === "COMPLETE" && <p className="rounded border border-slate-800 p-4 text-sm text-slate-500">此日期沒有正式推薦；這是完整比較後的合法 0 推薦結果。</p>}
             <div className="grid gap-3 lg:grid-cols-2">
               {recommendations.map((item) => {
@@ -446,7 +451,9 @@ export default function SignalRecommendationsPage() {
                     className={`rounded-xl border p-4 ${observationCardTone(observation?.status)}`}
                   >
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-mono text-lg text-sky-200">#{item.recommendation_rank ?? "—"}</span>
+                      {sortBy === "rank" && (
+                        <span className="font-mono text-lg text-sky-200">#{item.recommendation_rank ?? "—"}</span>
+                      )}
                       <span className="font-mono text-sm text-slate-300">{item.stock}</span>
                       <strong className="text-sm">{item.name}</strong>
                       <TypeChip type={item.type} />
