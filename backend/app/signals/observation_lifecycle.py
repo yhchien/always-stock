@@ -47,7 +47,6 @@ from app.signals.phase2 import watch_quality
 
 TRACKING_PROMPT_VERSION = "v7_tracking"
 STATE_MACHINE_VERSION = "p4_state_v1"
-EPISODE_GAP_TRADE_DAYS = candidate_pool.EPISODE_NEW_GAP_TRADE_DAYS
 DEFAULT_TRACKING_BATCH_SIZE = 12
 DEFAULT_TRACKING_MODEL = os.getenv(
     "OPENAI_SIGNALS_TRACKING_MODEL",
@@ -133,8 +132,20 @@ def sync_recommendations(
 ) -> Dict[str, Any]:
     """Idempotently create P4 episodes for new P3 RECOMMEND rows.
 
-    Existing active episodes are never duplicated or reset.  A stopped stock may
-    restart only after the existing five-unhit-trading-day episode gap.
+    Existing active episodes are never duplicated or reset.  A stopped (or
+    never-observed) stock always opens a fresh episode the moment P3
+    recommends it again — there is no minimum-gap cooldown.  (2026-08-11:
+    the previous five-unhit-trading-day gap rule was removed.  It used the
+    archive's `signal_watch_hits` continuity, not P4's own timeline, to
+    decide whether a restart was "genuine".  For a stock P3 keeps
+    recommending without a break — e.g. one of the 68 legacy-baseline
+    observations stopped by `stop_legacy_incomplete_observations.py` on
+    2026-08-10 — the archive hit history never has a gap, so the gap check
+    perpetually deferred the restart and the stale STOPPED badge never
+    cleared even though P3 was actively recommending the stock again.  P3's
+    daily RECOMMEND decision is the authority on "does this stock deserve
+    attention today"; P4 should not second-guess that with its own
+    cooldown.)
     """
 
     items = [
@@ -144,7 +155,7 @@ def sync_recommendations(
         == "RECOMMEND"
     ]
     if not items:
-        return {"created": [], "continued": [], "restart_deferred": []}
+        return {"created": [], "continued": []}
 
     stock_ids = sorted(
         {
@@ -166,33 +177,9 @@ def sync_recommendations(
     for row in rows:
         by_stock.setdefault(row.stock_id, []).append(row)
 
-    latest_hit_rows = (
-        db.query(SignalWatchHit.stock_id, func.max(SignalWatchHit.snapshot_date))
-        .filter(
-            SignalWatchHit.stock_id.in_(stock_ids),
-            SignalWatchHit.snapshot_date < signal_date,
-        )
-        .group_by(SignalWatchHit.stock_id)
-        .all()
-    )
-    latest_hit = {sid: hit_date for sid, hit_date in latest_hit_rows}
-    all_trade_dates = sorted(
-        {
-            row[0]
-            for row in (
-                db.query(DailyPrice.trade_date)
-                .filter(DailyPrice.trade_date <= signal_date)
-                .distinct()
-                .all()
-            )
-        }
-    )
-    trade_index = {trade_date: index for index, trade_date in enumerate(all_trade_dates)}
-
     result: Dict[str, List[str]] = {
         "created": [],
         "continued": [],
-        "restart_deferred": [],
     }
     for item in items:
         sid = str(item.get("stock") or item.get("stock_id") or "")
@@ -208,20 +195,6 @@ def sync_recommendations(
         if active is not None:
             result["continued"].append(sid)
             continue
-
-        latest = prior[0] if prior else None
-        if latest is not None:
-            previous_hit = latest_hit.get(sid) or latest.started_signal_date
-            previous_index = trade_index.get(previous_hit)
-            current_index = trade_index.get(signal_date)
-            missed_trade_dates = (
-                current_index - previous_index - 1
-                if previous_index is not None and current_index is not None
-                else 0
-            )
-            if missed_trade_dates < EPISODE_GAP_TRADE_DAYS:
-                result["restart_deferred"].append(sid)
-                continue
 
         initial_snapshot, baseline_quality = _initial_snapshot_from_recommendation(
             item,

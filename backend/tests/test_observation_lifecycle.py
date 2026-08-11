@@ -670,6 +670,34 @@ def test_stopped_stock_can_restart_after_existing_five_day_gap(db):
     ).count() == 1
 
 
+def test_stopped_stock_restarts_immediately_without_waiting_for_gap(db):
+    """2026-08-11 regression: P3 recommending a stock again the very next day
+    after its only P4 observation was stopped must reopen observation right
+    away — no minimum-gap cooldown. (Root cause of the 2026-08-10 bug: stocks
+    stopped by stop_legacy_incomplete_observations.py that P3 kept
+    recommending stayed stuck showing a stale STOPPED badge, because the old
+    gap check used signal_watch_hits continuity — which never has a gap for a
+    stock P3 recommends every day — to defer the restart indefinitely.)"""
+    observation = _observation(db, started=DAY_0)
+    observation.status = "STOPPED"
+    observation.stopped_at = datetime.utcnow()
+    db.commit()
+
+    sync = lifecycle.sync_recommendations(
+        db,
+        signal_date=DAY_1,
+        watchlist=[_recommend()],
+    )
+    assert sync["created"] == ["2330"]
+    assert db.query(SignalObservation).count() == 2
+    fresh = (
+        db.query(SignalObservation)
+        .filter(SignalObservation.status == "OBSERVING")
+        .one()
+    )
+    assert fresh.started_signal_date == DAY_1
+
+
 def test_asset_types_share_identical_state_machine():
     decisions = []
     for asset_type in ("COMMON_STOCK", "FINANCIAL", "ETF"):

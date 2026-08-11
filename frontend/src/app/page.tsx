@@ -35,6 +35,8 @@ function readStoredToggle(key: string, defaultValue: boolean): boolean {
   return stored === "true"
 }
 
+// 2026-08-11：入口已拔（見下方 render 處註解），元件保留供未來復活
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function HomeSidebar({
   showTradeQuality,
   onToggleTradeQuality,
@@ -221,13 +223,9 @@ function HomeContent() {
   const [initialIndustries, setInitialIndustries] = useState<IndustryFlowItem[] | null>(null)
   const [initialIndustriesDate, setInitialIndustriesDate] = useState<string | null>(null)
   const defaultDate = queryDate ?? latestTradeDate ?? (latestTradeDateReady ? todayInTaipei() : null)
-  const [showTradeQuality, setShowTradeQuality] = useState(() =>
+  const [showTradeQuality] = useState(() =>
     readStoredToggle(TRADE_QUALITY_TOGGLE_STORAGE_KEY, false),
   )
-
-  useEffect(() => {
-    window.localStorage.setItem(TRADE_QUALITY_TOGGLE_STORAGE_KEY, String(showTradeQuality))
-  }, [showTradeQuality])
 
   // M19 watchlist 卡片深連結帶 stock_id+buy_date → 強制展開分析欄位，
   // 避免使用者跳過來但畫面看不到分析。
@@ -313,11 +311,11 @@ function HomeContent() {
   return (
     <>
       {showBootOverlay && <HomeBootstrapOverlay tasks={tasks} />}
-      <HomeSidebar
-        showTradeQuality={effectiveShowTradeQuality}
-        onToggleTradeQuality={() => setShowTradeQuality((v) => !v)}
-      />
-      <main className="ml-12">
+      {/* 2026-08-11：交易質量分析 sidebar toggle 拿掉入口（沒人用，一直卡在畫面邊緣）；
+          HomeSidebar 元件與 showTradeQuality state 保留，/watchlist 卡片「交易分析 →」
+          仍靠 forceShowTradeQuality（?stock_id=&buy_date=）深連結正常運作，
+          要復活 toggle bar 只要把 <HomeSidebar /> 加回來即可。 */}
+      <main>
         <div className="mx-auto w-full max-w-5xl px-4 py-8 flex flex-col gap-6">
         {defaultDate && (
           <>
