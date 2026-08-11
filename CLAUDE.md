@@ -3786,3 +3786,71 @@ env var override 語意不變（設了就優先用 env 值）。既有的 `withi
 - 沒有動 `_DEFAULT_CONTEXT_LIMIT_TOKENS=114_688`（該常數用途是「輸入+輸出 token 總和
   上限」，跟本次改的 output reserve 是不同層次的東西，超出時 `within_limit` 檢查依然
   是唯一的把關者）
+
+## P4 觀察拿掉 5 天空窗判斷（2026-08-11）
+
+### 症狀
+2026-08-10 手動補跑當天推薦清單後（見上一輪 token 上限修復），使用者發現 2615 萬海
+明明才被 P3 重新推薦（今天第一天），`/signals/recommendations` 卡片卻顯示「已停止
+觀察」；同時 2049 上銀顯示「警戒中」讓使用者懷疑是不是把「每日推薦清單」跟「持續觀察/
+警戒清單」搞混了。
+
+### 查證結論
+- **2049 不是 bug**：查 DB 發現它是 2026-08-07 就開始被 P4 追蹤（非今天第一天），已
+  連續 3 天警戒——P3（每天重新選）跟 P4（持續追蹤同一檔表現）本來就是兩套獨立系統，
+  疊在同一張卡片顯示是設計上刻意的，這張卡片正確無誤
+- **2615 才是真的 bug**：它是上一輪 `stop_legacy_incomplete_observations.py --execute`
+  停止的 68 檔之一（`stop_reason_code=LEGACY_BASELINE_RETIRED`）。查
+  `sync_recommendations()`（`observation_lifecycle.py`）發現：對「最新一筆觀察是
+  STOPPED」的股票，要不要重開觀察是看**魚尾（`signal_watch_hits`）有沒有連續 5 個
+  未命中交易日**，不是看 P4 自己的時間軸。萬海因為一直被 P3 持續選中，魚尾追蹤從沒
+  斷過 → 系統永遠判定「沒有真正空窗」→ 拒絕重開 → 卡片卡在顯示舊的 STOPPED 狀態，
+  即使今天已經是全新的 P3 推薦
+
+### 修法（[observation_lifecycle.py](backend/app/signals/observation_lifecycle.py)
+`sync_recommendations()`）
+拿掉整段「5 個未命中交易日空窗」判斷（連同只給這段用的 `latest_hit_rows`／
+`trade_index`／`EPISODE_GAP_TRADE_DAYS` 一起刪除，皆為死碼）：只要該股票目前**沒有
+進行中（OBSERVING/CAUTION）的觀察**，P3 今天推薦就立即開新觀察，不再檢查空窗天數。
+**P3 的每日推薦判斷是唯一權威，P4 不該用自己的冷卻期二次否決**——這正是使用者提出的
+設計方向（AskUserQuestion 確認：P4 已有紀錄就直接設回觀察中）。回傳 dict 拿掉不再
+使用的 `restart_deferred` key（`grep` 確認 pipeline.py／測試都沒有消費這個 return
+value 的任何 key，可以安全整段移除，不用留 always-empty 相容殼）
+
+### Production 資料回補
+對 production 直接重跑一次 `sync_recommendations(db, signal_date=2026-08-10,
+watchlist=snap.watchlist)`（此函式本身冪等，`continued`/`created` 分流不會動到已在
+觀察中的股票）——當天 12 檔推薦中有 3 檔（3231 緯創／2059 川湖／2615 萬海）撞上這個
+問題，重跑後 3 檔都立刻拿到新的 `OBSERVING` 觀察（`started_signal_date=2026-08-10`），
+舊的 STOPPED 紀錄保留不動（歷史紀錄，不覆寫）
+
+### Gotcha
+- **`EPISODE_GAP_TRADE_DAYS` 只是 `candidate_pool.EPISODE_NEW_GAP_TRADE_DAYS` 的
+  local alias**：底層常數本身在 `candidate_pool.py` 還有另一個獨立用途（v2.2 spec
+  §7.4 的 episode hit_count 計算，跟 P4 的重開觀察判斷完全無關），只刪 observation_
+  lifecycle.py 這邊的 alias，**不要動** `candidate_pool.py` 的原始常數
+- `test_stopped_stock_can_restart_after_existing_five_day_gap`（既有測試，驗證「有
+  空窗時會重開」）在拿掉空窗判斷後**仍然通過**，因為新行為是舊行為的超集（有空窗一定
+  重開，沒空窗現在也會重開）；新增
+  `test_stopped_stock_restarts_immediately_without_waiting_for_gap` 專門鎖住「0 天
+  空窗也立刻重開」這個新行為（既有測試沒有反向案例會被破壞）
+- 全 backend suite：45 個 observation_lifecycle 測試 pass（新增 1 個），全 suite
+  20 fail/5 error 維持既有 baseline，零新增失敗
+
+## 首頁交易質量分析入口拔除（2026-08-11）
+
+使用者反映首頁左側「交易質量分析」sidebar toggle 沒人用、一直佔畫面邊緣。查
+[page.tsx](frontend/src/app/page.tsx) 發現 `showTradeQuality` 預設值其實已經是
+`false`（`readStoredToggle(..., false)`），問題是**toggle 按鈕本身**（`HomeSidebar`）
+一直固定顯示在畫面左側，不管有沒有展開都佔位。
+
+**修法**：`<HomeSidebar />` 從 render 拔掉（連同 `<main>` 的 `ml-12` 讓位間距一併
+移除），`showTradeQuality` state 改成唯讀（`const [showTradeQuality] = useState(...)`，
+拿掉 `setShowTradeQuality` 與同步寫 localStorage 的 `useEffect`，兩者都已無呼叫點）；
+`HomeSidebar` 函式本身**保留不刪**（沿用 StockChart／BrokerPanel 慣例：程式碼保留、
+只拔入口），加 `eslint-disable-next-line @typescript-eslint/no-unused-vars` 壓掉
+unused warning，要復活只要把 `<HomeSidebar />` 加回 render 即可
+
+**M19 深連結不受影響**：`/watchlist` 卡片「交易分析 →」按鈕靠
+`forceShowTradeQuality`（URL 帶 `?stock_id=&buy_date=`）強制顯示分析區塊，這條路徑
+完全獨立於 sidebar toggle，拔掉 toggle 後這個入口照常運作
