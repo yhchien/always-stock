@@ -14,7 +14,9 @@ import {
   fetchSignalObservations,
   fetchSignalRecommendations,
   type SignalArchiveSummaryItem,
+  type SignalDecisionType,
   type SignalObservationItem,
+  type SignalObservationStatus,
   type SignalRecommendationResponse,
   type SignalWatchlistItem,
 } from "@/lib/api"
@@ -51,6 +53,38 @@ function PctText({ value, size = "sm" }: { value: number | null | undefined; siz
       {formatPct(value)}
     </span>
   )
+}
+
+// 領漲／跟漲／補漲 色階，對齊首頁 DailySignalsPanel 的 SignalEmotionCard tone（紅/金黃/藍，刻意不用綠）
+const TYPE_CHIP_CLASSES: Record<SignalDecisionType, string> = {
+  LEADER: "border-rose-500/50 bg-rose-500/15 text-rose-200",
+  FOLLOWER: "border-amber-500/50 bg-amber-500/15 text-amber-200",
+  LAGGARD: "border-sky-500/50 bg-sky-500/15 text-sky-200",
+}
+const TYPE_LABELS: Record<SignalDecisionType, string> = {
+  LEADER: "領漲",
+  FOLLOWER: "跟漲",
+  LAGGARD: "補漲",
+}
+
+function TypeChip({ type }: { type: SignalDecisionType | null | undefined }) {
+  if (!type || !(type in TYPE_CHIP_CLASSES)) return null
+  return (
+    <span
+      className={`inline-flex whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px] font-medium ${TYPE_CHIP_CLASSES[type]}`}
+    >
+      {TYPE_LABELS[type]}
+    </span>
+  )
+}
+
+// 2026-08-11：觀察/警戒小徽章不明顯，改對整張卡片上色（比照首頁卡片配色語言）；
+// 停止觀察只在正式推薦頁面是極端邊界情況（P4 已改成 P3 推薦當天就立即重開觀察，見
+// sync_recommendations），保留較低調的樣式即可，不需要跟警戒一樣搶眼。
+function observationCardTone(status: SignalObservationStatus | undefined): string {
+  if (status === "CAUTION") return "border-amber-500/60 bg-amber-950/30"
+  if (status === "STOPPED") return "border-slate-600 bg-slate-800/40"
+  return "border-slate-700/60 bg-slate-900/55"
 }
 
 /** 比照 /signals/archive 卡片語意的追蹤資訊（首次抓到日期／收盤價／報酬率／預期價格）；正式版與工程版都顯示。 */
@@ -407,11 +441,15 @@ export default function SignalRecommendationsPage() {
                 const observation = observationByStock.get(item.stock)
                 const archive = archiveByStock.get(item.stock)
                 return (
-                  <article key={item.stock} className="rounded-xl border border-slate-700/60 bg-slate-900/55 p-4">
+                  <article
+                    key={item.stock}
+                    className={`rounded-xl border p-4 ${observationCardTone(observation?.status)}`}
+                  >
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="font-mono text-lg text-sky-200">#{item.recommendation_rank ?? "—"}</span>
                       <span className="font-mono text-sm text-slate-300">{item.stock}</span>
                       <strong className="text-sm">{item.name}</strong>
+                      <TypeChip type={item.type} />
                       {item.asset_type !== "COMMON_STOCK" && (
                         <SignalAssetBadge assetType={item.asset_type} />
                       )}
