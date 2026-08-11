@@ -3981,6 +3981,78 @@ JSON（`price`/`change_pct`/`open`/`high`/`low`/`volume`/`trade_time`），**不
   jsdom 測試環境下 fetch 會失敗，`useRealtimeQuotes` 內部已用 try/catch 靜默吞掉（原本
   就是為了「市場休市或連線失敗不炸頁面」設計的），不影響既有測試斷言
 
+## 正式推薦頁併入魚尾，成為唯一入口（2026-08-11）
+
+### 背景
+使用者觀察到 `/signals/recommendations`（正式推薦）跟 `/signals/archive`（魚尾）內容
+高度重疊——尤其是這輪稍早加了即時報價之後，兩頁卡片顯示的資訊幾乎一樣（因為兩者本來
+就是複製同一段 UI 邏輯）。提議乾脆砍掉正式推薦頁，讓魚尾成為唯一入口。
+
+### 查證（動手前先確認會不會真的遺失資訊）
+- `persist_signal_watch_hits()`（`archive.py`）每天把 P3 當天 RECOMMEND 清單寫進
+  `signal_watch_hits`——魚尾的「追蹤中」本來就包含「今天新入選」的股票，不需要另一個
+  頁面顯示「今天推薦了什麼」
+- `signal_watch_hits.reason` 欄位**已經**存著跟正式推薦頁 5 段 bullet 同一份內容（只是
+  存成一整塊【題材】【資金】【籌碼】【融券】文字），魚尾詳情 popup 本來就有「報告時間軸」
+  逐日顯示這份文字——**不會**因為砍頁面而遺失
+- 魚尾**沒存**的三個欄位：`recommendation_thesis`（一句話總結）、`relative_advantage`
+  （當天相對優勢）、`margin_analysis`（融資融券 3:7 權重分析）——後端補寫這三個欄位
+- 正式推薦頁工程版的「未列入今日推薦」／「明確移除」／「處理 Funnel」稽核清單，只有這頁
+  在用——搬到 `/signals/debug`
+
+三個 AskUserQuestion 確認的決策：首頁 `DailySignalsPanel` 不動；後端補三個欄位；稽核清單
+搬到 debug 頁；「魚尾全部停止觀察一次，一切重新算」= 把現在所有進行中的追蹤週期全部強制
+結算一次（比照上一輪 P4 legacy 清理的 dry-run→確認→execute 模式）。
+
+### 改動
+**後端**：
+- `signal_watch_hits` 新增 3 個 nullable 欄位（`recommendation_thesis TEXT` /
+  `relative_advantage TEXT` / `margin_analysis JSON`），比照既有 idempotent ALTER
+  TABLE dict pattern（[signal_watch_schema.py](backend/app/signal_watch_schema.py)）
+- `persist_signal_watch_hits()` 從 `payload["watchlist"]` item 讀這三個 key 寫入；
+  `get_archive_detail()` 從 `rows[-1]`（依 snapshot_date 升序排列後的最新一筆）取值，
+  只加在**詳情**回傳，不加進精簡卡片列表 API
+- 新增一次性腳本
+  [stop_all_active_signal_watch_cycles.py](backend/stop_all_active_signal_watch_cycles.py)：
+  `_load_grouped_hits(db)`（無篩選 = 全部）→ 對每檔呼叫既有 `_build_completed_archive_item`
+  （沿用同一個 helper，未滿 30 天的 cycle 會自動 fallback 用「最新一筆命中日」當結算點，
+  不需要額外改造）→ `closure_reason` 設新常數 `CLOSURE_REASON_MANUAL_RESET =
+  "manual_reset"` → `_upsert_completed_archive` 寫入 → 刪除 active hits（沿用
+  `synchronize_session="evaluate"`，避開 2026-06-15 修過的 StaleDataError 坑）。
+  `--dry-run` 預設、`--execute` 才寫入
+- 刪除只有正式推薦頁在用的 `GET /api/signals/recommendations` endpoint（含
+  `navigation` prev/next date 功能，沒有其他地方需要）
+
+**前端**：
+- 刪除 `recommendations/page.tsx` + 其測試；`next.config.ts` 加
+  `redirects()`（307 temporary，不用 308，怕以後想改又被瀏覽器永久快取）：
+  `/signals/recommendations → /signals/archive`
+- `SignalProductNav.tsx` LINKS／`(product)/page.tsx` NAV_CARDS／
+  `observations/page.tsx` 的「正式推薦」連結全部拿掉或改指向 `/signals/archive`
+- `/signals/debug` 新增「處理 Funnel／未列入今日推薦／明確移除」區塊（純搬移原
+  recommendations 頁的 JSX + 資料組裝邏輯，`funnel`／`notSelected`／`removed` 都是
+  `snapshot.data.*` 現成欄位，不需要新 fetch）——**刻意簡化**：不帶原本附註的 P4
+  觀察狀態（「今日未列入推薦，但既有觀察仍繼續」那類文字），避免這個純工程頁多拉一次
+  `fetchSignalObservations`；要看完整 P4 狀態去 `/signals/observations`
+- `MarginAnalysisPanel`（原本 [DailySignalsPanel.tsx](frontend/src/components/DailySignalsPanel.tsx)
+  local function）改 `export`，魚尾詳情 popup 直接重用——這是本輪唯一一個「不走 3 行
+  複製、改走匯出共用」的例外，因為它是 60+ 行含格式化邏輯的完整元件，複製一份維護成本
+  明顯高於匯出（跟本輪其他小 helper 的判斷基準不同）
+- 魚尾詳情 popup（[archive/page.tsx](<frontend/src/app/signals/(product)/archive/page.tsx>)）
+  在既有 Metric grid 之後、報告時間軸之前，新增 `recommendation_thesis`／
+  `relative_advantage` 純文字區塊 + 有 `margin_analysis` 時渲染 `<MarginAnalysisPanel>`；
+  `ClosureReasonChip` 加 `manual_reset` 分支（顯示「人工重置」，中性灰色不用警示色）
+
+### Gotcha
+- `_build_completed_archive_item` 原本是為「自然滿 30 天」設計（`completed_trade_date`
+  用 `_resolve_nth_trade_date(day_index=30)`），但對還沒滿 30 天的 cycle 呼叫它，
+  `_resolve_nth_trade_date` 會因為第 30 個交易日還沒發生而回 `None`，自動 `or
+  latest_row.snapshot_date` fallback 到「最新一筆命中日」當結算點——這個既有 fallback
+  邏輯剛好完美適配「中途強制結算」的場景，不需要為這支腳本另外改造 helper
+- 本機驗證這輪的 schema migration 是**對 production Postgres 真的執行**（本機 backend
+  `.env` 指向 production DB，lifespan 啟動時的 idempotent migration 一啟動就會跑）；
+  起 dev server 後直接查 `information_schema` 確認三個新欄位已存在，不是只看 log
+
 ### 追蹤中／正式推薦即時報價修正（2026-08-11 第二輪，同日）
 
 上線後使用者回報「漲幅看起來像昨天的」，另外問可不可以改成每 1 分鐘更新一次。
