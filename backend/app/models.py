@@ -718,8 +718,8 @@ class SignalWatchCompletedArchive(Base):
         default="completed_30_days",
         server_default="completed_30_days",
     )
-    prompt_version = Column(                                   # 此 cycle 最新一次命中所用 prompt 版本
-        String(16), nullable=False, default="v1", server_default="v1"
+    prompt_version = Column(                                   # 此 cycle 涵蓋的 prompt 版本集合（逗號相連，如 "v6,v7_research"）
+        String(64), nullable=False, default="v1", server_default="v1"
     )
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)

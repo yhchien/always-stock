@@ -122,3 +122,41 @@ def migrate_completed_archive_to_30_days(engine: Engine) -> None:
             "Failed to ALTER DEFAULT for closure_reason; new inserts still use Python default",
             exc_info=True,
         )
+
+
+def widen_completed_archive_prompt_version_column(engine: Engine) -> None:
+    """2026-08-11：`signal_watch_completed_archives.prompt_version` 存的是整個追蹤
+    cycle 涵蓋的 prompt 版本**集合**（`_distinct_versions()`，逗號相連，如
+    "v6,v7_research"），不是單一版本——原本 VARCHAR(16) 是比照單一版本的欄位寬度設的，
+    版本 token 變長（`v7_research` 本身就 11 字元）之後，一個 cycle 只要跨過 2~3 個版本
+    就可能超過 16 字元，寫入時直接被 Postgres 拒絕（StringDataRightTruncation），不是
+    默默截斷。widen 到 VARCHAR(64) 給足夠安全邊界。純粹放寬長度限制（metadata-only
+    ALTER，不搬動既有資料），SQLite（測試環境）不強制執行 VARCHAR 長度所以不需要處理。
+    """
+    inspector = inspect(engine)
+    if "signal_watch_completed_archives" not in inspector.get_table_names():
+        return
+    columns = {
+        column["name"]: column
+        for column in inspector.get_columns("signal_watch_completed_archives")
+    }
+    column = columns.get("prompt_version")
+    if column is None:
+        return
+    current_length = getattr(column["type"], "length", None)
+    if current_length is not None and current_length >= 64:
+        return
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE signal_watch_completed_archives "
+                "ALTER COLUMN prompt_version TYPE VARCHAR(64)"
+            ))
+        logger.info(
+            "Widened signal_watch_completed_archives.prompt_version to VARCHAR(64)"
+        )
+    except SQLAlchemyError:
+        logger.warning(
+            "Failed to widen signal_watch_completed_archives.prompt_version column",
+            exc_info=True,
+        )

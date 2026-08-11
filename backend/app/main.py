@@ -63,6 +63,7 @@ def _ensure_signal_watch_schema() -> None:
     from app.signal_watch_schema import (
         ensure_signal_watch_hit_return_columns,
         migrate_completed_archive_to_30_days,
+        widen_completed_archive_prompt_version_column,
     )
 
     try:
@@ -75,6 +76,12 @@ def _ensure_signal_watch_schema() -> None:
         migrate_completed_archive_to_30_days(engine)
     except Exception:
         logger.exception("Failed to migrate completed_archive 40d → 30d at startup")
+
+    # 2026-08-11：prompt_version 存的是整個 cycle 的版本集合，VARCHAR(16) 太窄
+    try:
+        widen_completed_archive_prompt_version_column(engine)
+    except Exception:
+        logger.exception("Failed to widen completed_archive.prompt_version column at startup")
 
 
 def _seed_admin_user() -> None:
