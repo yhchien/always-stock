@@ -3854,3 +3854,43 @@ unused warning，要復活只要把 `<HomeSidebar />` 加回 render 即可
 **M19 深連結不受影響**：`/watchlist` 卡片「交易分析 →」按鈕靠
 `forceShowTradeQuality`（URL 帶 `?stock_id=&buy_date=`）強制顯示分析區塊，這條路徑
 完全獨立於 sidebar toggle，拔掉 toggle 後這個入口照常運作
+
+## 正式推薦卡片加領漲/跟漲/補漲 chip + P4 狀態改整卡上色（2026-08-11）
+
+### 查證：領漲/跟漲/補漲概念還在嗎
+使用者問「現在新的選股，還有分領漲/跟漲/補漲的概念嗎？」查證發現：**還在，只是
+`/signals/recommendations` 這頁沒有顯示**。
+- `global_selector.py`（P3 全體比較）本身完全不處理 LEADER/FOLLOWER/LAGGARD——這是
+  一開始 grep 零命中造成的第一個誤判線索
+- 真正的來源是更早一段：`pipeline.py` 的 production 分支對 Phase 2 存活者呼叫
+  `pipeline_v2.role_to_prelim_type(c)`，把 `role`（SECTOR_LEADER/CO_LEADER/
+  INDEPENDENT_LEADER/SECTOR_FOLLOWER/ROTATION_LAGGARD/…）或已追蹤股的
+  `tracking_state`（ACTIVE_TREND/HEALTHY_PULLBACK/…）映射成簡化的 `prelim_type`
+  （LEADER/FOLLOWER/LAGGARD），這個值全程原封不動流過 `global_selector.
+  merge_selection_items()`（該函式的 LLM 輸出 schema 完全沒有 `type` 欄位，純粹
+  `{**source, **selected}` 帶過），最後變成 watchlist item 的 `type` 欄位
+- 首頁 `DailySignalsPanel.tsx` 的 `SignalEmotionCard`（`tone={decisionToTone(item.type)}`）
+  本來就在用這個欄位做整卡上色（rose=領漲／amber=跟漲／sky=補漲，刻意不用綠因為台股
+  綠色語意是跌），但 `/signals/recommendations` 頁面完全沒有讀取或顯示 `item.type`——
+  這才是使用者「看不到領漲跟漲補漲」的真正原因，不是概念消失，是這頁的 UI 缺漏
+
+### 改動（[recommendations/page.tsx](<frontend/src/app/signals/(product)/recommendations/page.tsx>)）
+- 新增 `TypeChip`：小型 pill，色階與 label（領漲/跟漲/補漲）對齊首頁
+  `SignalEmotionCard` 的三色（未匯出共用 module，本頁另建一份本地 3 行對照表，避免
+  跨檔耦合換一個 3 色 map 的成本）
+- 觀察中/警戒中/已停止觀察小徽章不夠明顯 → 新增 `observationCardTone()`：卡片
+  `<article>` 的 `className` 依 `observation?.status` 動態決定（CAUTION=琥珀底、
+  STOPPED=灰底、其餘維持原本中性色）；小徽章文字（`ObservationStatusBadge`）保留不
+  拿掉，整卡上色給一眼掃過的訊號、文字徽章給精確狀態名稱，兩者互補不衝突
+- **STOPPED 在這頁理論上會越來越少見**：上一輪已把 `sync_recommendations()` 改成
+  「P3 今天推薦、且目前沒有進行中觀察，就立即開新的 OBSERVING」，所以正常情況下一檔
+  出現在正式推薦頁的股票不該同時是 STOPPED；保留這個色階只是防禦性處理歷史快照或
+  極端 race window
+
+### Gotcha
+- `TYPE_CHIP_CLASSES`／`TYPE_LABELS` 三色三字對照表刻意不從 `SignalEmotionCard.tsx`
+  匯出共用（該檔目前只匯出 `emotionLabel` function 跟型別，color map 是模組內部
+  常數）——3 行對照表複製一份比新增一個匯出介面成本低，這輪判斷不值得為此重構共用檔
+- 已確認 `recommendations/page.tsx` 的 `snapshot.data.watchlist` 跟首頁吃的是**同一個
+  `SignalWatchlistItem[]` 型別**（`SignalRecommendationResponse extends
+  SignalSnapshotResponse`），`item.type` 欄位本來就在，純前端補顯示即可，後端零改動
