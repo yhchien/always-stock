@@ -893,8 +893,8 @@ def test_pipeline_persists_signal_watch_hits_and_replaces_same_day(session_facto
         assert rows[0].reason == "第二次重產覆蓋同日"
 
 
-def test_legacy_cap_wrapper_only_orders_and_keeps_every_candidate():
-    candidates = [
+def _cap_test_candidates():
+    return [
         {
             "stock_id": "L1",
             "prelim_type": "LEADER",
@@ -933,8 +933,31 @@ def test_legacy_cap_wrapper_only_orders_and_keeps_every_candidate():
         },
     ]
 
+
+def test_cap_llm_input_truncates_to_explicit_limit_in_priority_order(monkeypatch):
+    """2026-08-12（成本控制）：`_cap_llm_input` 從「相容殼、忽略 limit」改回真的
+    截斷——`limit` 明確傳入時優先套用，超過的候選被丟棄（不是被刪除，只是不送 LLM），
+    保留順序沿用既有 deterministic priority（LEADER > FOLLOWER > LAGGARD_CANDIDATE，
+    同桶再比 institution flow / price_change_5d）。"""
+    candidates = _cap_test_candidates()
+
     out = _cap_llm_input(candidates, limit=2)
+    assert [item["stock_id"] for item in out] == ["L2", "L1"]
+
+
+def test_cap_llm_input_keeps_everything_when_under_limit():
+    candidates = _cap_test_candidates()
+
+    out = _cap_llm_input(candidates, limit=10)
     assert [item["stock_id"] for item in out] == ["L2", "L1", "F1", "G1"]
+
+
+def test_cap_llm_input_defaults_to_llm_input_hard_limit_constant(monkeypatch):
+    monkeypatch.setattr(pipeline_mod, "LLM_INPUT_HARD_LIMIT", 2)
+    candidates = _cap_test_candidates()
+
+    out = _cap_llm_input(candidates)
+    assert [item["stock_id"] for item in out] == ["L2", "L1"]
 
 
 def test_phase2_llm_input_orders_all_73_without_truncation():

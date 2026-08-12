@@ -61,6 +61,24 @@ STAGE_PERSIST = "persist"
 LLM_BATCH_CONCURRENCY = 2
 
 
+def _positive_env_int(name: str, default: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+# 2026-08-12（成本控制）：候選數上限，套用在 after_regime 最終確定之後、送進
+# research/decision/global_selection 之前。10 天真實樣本顯示正常量是 36~94 檔，
+# 暴量日（116/135/144/151/156，也是本季兩次 timeout/token 截斷事故發生的日子）
+# 才會被這個上限截斷——不影響日常候選池完整性，只壓住成本最不可控的尾端。
+# `_order_llm_input` 既有的 deterministic priority（conviction > momentum_score >
+# rs_market_percentile_20d > risk_warnings 數量）決定誰被留下；超過上限的候選
+# 仍完整保留在候選池統計與 shadow snapshot 裡，只是不送進 LLM。
+LLM_INPUT_HARD_LIMIT = _positive_env_int("SIGNALS_LLM_INPUT_HARD_LIMIT", 100)
+
+
 @dataclass
 class BatchExecution:
     """One stage's deterministic batch results and audit trail."""
@@ -489,6 +507,15 @@ def run_signal_pipeline_sync(
                     regime_info["regime"],
                     taiex_return_1d_pct=(regime_info.get("metrics") or {}).get("return_1d_pct"),
                 )
+
+            # 候選數上限（成本控制，見 _cap_llm_input）：不論走 phase2 或 legacy 分支，
+            # after_regime 到這裡都已經是最終值；統一在這一個點截斷，兩條路徑不用
+            # 各自處理。regime_survivor_count 維持截斷前的數字（代表「通過 regime
+            # gate」的候選數），llm_eligible_count 改記錄截斷後、實際送進 LLM 的數量。
+            llm_eligible_before_cap = len(after_regime)
+            after_regime = _cap_llm_input(after_regime)
+            processing_summary["llm_eligible_before_cap_count"] = llm_eligible_before_cap
+            processing_summary["llm_eligible_count"] = len(after_regime)
 
             # Step 5：LLM Research（batch）
             total_for_llm = max(len(after_regime), 1)
@@ -1686,9 +1713,22 @@ def _cap_llm_input(
     *,
     limit: Optional[int] = None,
 ) -> list[Dict[str, Any]]:
-    """Compatibility wrapper retained for callers; P1 intentionally ignores ``limit``."""
-    del limit
-    return _order_llm_input(candidates)
+    """依既有 deterministic priority（`_order_llm_input`）排序後，取前 `limit` 檔。
+
+    2026-08-12：回填先前被拔掉的上限。Phase2→v7 對齊時這裡曾經是
+    「compatibility wrapper... P1 intentionally ignores limit」——當時的設計
+    哲學是「backend deterministic pool 是唯一 eligibility authority，不該再讓
+    非 deterministic 的上限機制刪掉候選」。這次因為 LLM 成本考量重新加回來，是
+    有意識的取捨：`limit` 預設抓 `LLM_INPUT_HARD_LIMIT`（只在候選量明顯超過
+    正常範圍時才生效，見該常數註解），且截斷順序沿用既有的 deterministic
+    priority（conviction/momentum_score/RS percentile/risk_warnings），不是
+    隨機或武斷地砍——超過上限的候選仍完整保留在候選池統計裡，只是不再送進 LLM。
+    """
+    ordered = _order_llm_input(candidates)
+    effective_limit = LLM_INPUT_HARD_LIMIT if limit is None else limit
+    if effective_limit <= 0 or len(ordered) <= effective_limit:
+        return ordered
+    return ordered[:effective_limit]
 
 
 def _llm_input_sort_key(candidate: Dict[str, Any]) -> tuple:

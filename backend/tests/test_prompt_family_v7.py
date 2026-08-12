@@ -524,10 +524,18 @@ def test_v7_research_future_evidence_becomes_conservative_unconfirmed(monkeypatc
     assert not output[0].get("_unavailable")
 
 
-def test_v7_research_batch_size_is_smaller_without_changing_legacy(monkeypatch):
-    assert llm_caller.current_research_batch_size() == 4
+def test_research_batch_size_routes_by_prompt_family_independently(monkeypatch):
+    """2026-08-12（成本控制）：v7／legacy 的 research batch size 常數各自獨立
+    設定（`DEFAULT_V7_RESEARCH_BATCH_SIZE` / `DEFAULT_RESEARCH_BATCH_SIZE`），
+    改一個不會連動另一個——這裡驗證 family routing 本身仍正確，不斷言兩者的
+    絕對值關係（4→8 那次調整已經讓兩者相等，但 routing 邏輯才是這個測試真正要
+    保護的行為）。"""
+    assert llm_caller.current_research_batch_size() == llm_caller.DEFAULT_V7_RESEARCH_BATCH_SIZE
     monkeypatch.setenv("SIGNALS_PROMPT_FAMILY", "legacy_split")
-    assert llm_caller.current_research_batch_size() == 8
+    assert llm_caller.current_research_batch_size() == llm_caller.DEFAULT_RESEARCH_BATCH_SIZE
+
+    monkeypatch.setattr(llm_caller, "DEFAULT_RESEARCH_BATCH_SIZE", 3)
+    assert llm_caller.current_research_batch_size() == 3
 
 
 def test_v7_payload_scale_is_linear_and_bounded():

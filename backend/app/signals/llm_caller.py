@@ -33,11 +33,20 @@ from app.signals import market_cache, prompt_family
 logger = logging.getLogger(__name__)
 
 
-# Legacy research 保持 8；v7 research schema 較完整，預設 4 檔並可在契約
-# 失敗時二分重試。Explanation 維持 4。
+# Legacy research 保持 8（僅 SIGNALS_PROMPT_FAMILY=legacy_split 時使用，production
+# 預設 v7 family 不會走到這個常數）。v7 research schema 較完整，原本預設 4 檔並可
+# 在契約失敗時二分重試。
+#
+# 2026-08-12（成本控制）：v7 research 與 explanation 都從 4→8。查證
+# `_run_v7_research_with_contract_retry` 發現「二分重試」只會重試批次內實際失敗
+# 的那幾檔（bisect retry_sources），不是整批重來——當初設成 4 檔並不是這個重試
+# 機制真正需要的條件，只是保守選擇。研究/決策/長理由三段每天合計要跑 20~40 次
+# API call（90~150 檔候選 ÷ 4），每次都要重新傳送一次完整的 system prompt
+# （shared policy + stage 說明）；batch 加倍讓呼叫次數直接砍半，同一份候選資料量
+# 不變，但重複傳送 system prompt 與每次呼叫的固定 reasoning overhead 都跟著減半。
 DEFAULT_RESEARCH_BATCH_SIZE = 8
-DEFAULT_V7_RESEARCH_BATCH_SIZE = 4
-DEFAULT_EXPLANATION_BATCH_SIZE = 4
+DEFAULT_V7_RESEARCH_BATCH_SIZE = 8
+DEFAULT_EXPLANATION_BATCH_SIZE = 8
 
 # Spec §3.2：第一版模型 fallback；workflow / Render env 可由 OPENAI_MODEL 覆寫。
 # 這裡避免再預設舊的 search-preview model 名稱，改以目前線上可用的 signals model
@@ -54,9 +63,17 @@ DEFAULT_RESEARCH_MODEL = os.getenv(
     "OPENAI_SIGNALS_RESEARCH_MODEL",
     "gpt-5.4-mini",
 ).strip()
+# 2026-08-12（成本控制）：gpt-5.4 → gpt-5.4-mini。Decision（WATCH/REMOVE 判斷 +
+# veto）是唯一「用完整版模型」又「套用在候選量最大的一段」——研究/決策吃的是同一份
+# after_regime（90~150 檔/天），研究段本來就是 mini，決策段換成 mini 後兩段模型
+# 一致，是這次成本優化裡影響最大的單一改動。決策空間本身已經由 backend
+# deterministic 層（regime gate／hard exclusion／backend_max_decision 天花板）
+# 先框定過，decision 只需要在既有框架內做業務/題材/供應鏈驗證 + 否決判斷，不是
+# 從零判斷動能門檻——降級後若觀察到否決品質明顯下滑，可用
+# `OPENAI_SIGNALS_DECISION_MODEL` env var 隨時切回 gpt-5.4，不需要改代碼。
 DEFAULT_DECISION_MODEL = os.getenv(
     "OPENAI_SIGNALS_DECISION_MODEL",
-    "gpt-5.4",
+    "gpt-5.4-mini",
 ).strip()
 DEFAULT_WATCH_REASON_MODEL = os.getenv(
     "OPENAI_SIGNALS_REASON_MODEL",

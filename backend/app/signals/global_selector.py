@@ -20,9 +20,15 @@ from app.signals import llm_caller, prompt_family
 SELECTION_VERSION = "v7_global_selector"
 ASSESSMENT_VERSION = "v7_assessment"
 REASON_VERSION = "v7_reason"
+# 2026-08-12：獨立於 llm_caller.DEFAULT_DECISION_MODEL 硬編碼自己的 fallback
+# （原本讀 llm_caller.DEFAULT_DECISION_MODEL，兩者共用同一顆模型）。這次 decision
+# 段為了省成本降級到 gpt-5.4-mini，但 global selection 是把「全部候選互相比較、
+# 一次決定最終推薦名單」的最高風險判斷（本季稍早兩次 production 事故——token 截斷
+# 與 timeout——都發生在這一段），先不跟著降級；獨立設定避免未來調整
+# DEFAULT_DECISION_MODEL 時意外連帶影響這裡。
 DEFAULT_GLOBAL_SELECTION_MODEL = os.getenv(
     "OPENAI_SIGNALS_GLOBAL_SELECTION_MODEL",
-    llm_caller.DEFAULT_DECISION_MODEL,
+    "gpt-5.4",
 ).strip()
 
 NOT_SELECTED_REASON_CODES = {
