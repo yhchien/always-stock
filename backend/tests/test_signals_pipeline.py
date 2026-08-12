@@ -426,6 +426,116 @@ def test_tracking_only_day_persists_empty_p3_snapshot_and_p4_summary(
         assert snapshot.summary["selection_summary"]["recommended_count"] == 0
 
 
+def test_tracking_only_day_conflict_does_not_mark_partial_failure(
+    session_factory,
+    monkeypatch,
+):
+    """2026-08-11：TRACKING_SELECTION_CONFLICT（P3 今天推薦、P4 同一天判定該股
+    STOP 觀察）是資訊性標記，兩套系統各自完整跑完、結論皆有效——不該讓當天整包
+    pipeline 被判定 partial_failure。回歸測試對應 pipeline.py 修法：conflicts
+    不再併入 technical_failures。"""
+    target_date = date(2026, 4, 25)
+    job_id = str(uuid.uuid4())
+    _seed_pending_job(session_factory, job_id, snapshot_date=target_date)
+    monkeypatch.setattr(
+        pipeline_mod.market_regime,
+        "compute_market_regime",
+        lambda db, td: {"regime": "BULL_TREND", "regime_label": "多頭", "reason": "test"},
+    )
+    monkeypatch.setattr(
+        pipeline_mod.market_breadth,
+        "compute_breadth_from_frame",
+        lambda frame, masters: {"breadth_score": 60},
+    )
+    monkeypatch.setattr(
+        pipeline_mod.market_breadth,
+        "resolve_regime_detail",
+        lambda regime, score: "BROAD_BULL",
+    )
+    monkeypatch.setattr(
+        pipeline_mod,
+        "_build_pipeline_market_context",
+        lambda *args, **kwargs: {"market_regime": "BULL_TREND"},
+    )
+    conflict_entry = {
+        "stock": "2383",
+        "status": "TRACKING_SELECTION_CONFLICT",
+        "stage": "TRACKING",
+        "error_code": "TRACKING_SELECTION_CONFLICT",
+        "error_summary": (
+            "P3 recommended the stock on the same date that P4 stopped its "
+            "active observation."
+        ),
+        "observation_id": 152,
+    }
+    monkeypatch.setattr(
+        pipeline_mod,
+        "_run_p4_tracking",
+        lambda *args, **kwargs: {
+            "tracking_summary": {
+                "review_date": target_date.isoformat(),
+                "active_before_review": 2,
+                "continue_count": 1,
+                "caution_count": 0,
+                "stopped_count": 1,
+                "review_failed_count": 0,
+                "conflict_count": 1,
+                "review_complete": True,
+            },
+            "reviews": [{}, {}],
+            "technical_failures": [],
+            "conflicts": [conflict_entry],
+        },
+    )
+    monkeypatch.setattr(
+        llm_caller,
+        "assemble_final_output",
+        lambda ctx, rows, *, candidate_pool_size: {
+            "market_context": ctx,
+            "watchlist": [],
+            "removed": [],
+            "summary": {},
+            "candidate_pool_size": candidate_pool_size,
+            "final_watchlist_size": 0,
+            "llm_model": "test",
+            "llm_total_tokens": 0,
+        },
+    )
+
+    with session_factory() as db:
+        job = db.get(SignalGenerationJob, job_id)
+        pipeline_mod._run_p4_tracking_only_day(
+            db,
+            job=job,
+            target_date=target_date,
+            ingestion={"stocks_master": {}},
+            momentum_frame={},
+            processing_summary={},
+            job_id=job_id,
+        )
+
+    with session_factory() as db:
+        job = db.get(SignalGenerationJob, job_id)
+        snapshot = (
+            db.query(SignalSnapshot)
+            .filter(SignalSnapshot.snapshot_date == target_date)
+            .one()
+        )
+        # 核心斷言：有衝突但沒有真正技術失敗 → 仍是 done，不是 partial_failure
+        assert job.status == "done"
+        assert job.error_message is None
+        # 衝突細節仍完整持久化，只是不再污染 technical_failures／不觸發整天失敗
+        assert snapshot.summary["technical_failures"] == []
+        assert snapshot.summary["tracking_conflicts"] == [conflict_entry]
+        assert (
+            snapshot.summary["processing_summary"]["tracking_conflicts"]
+            == [conflict_entry]
+        )
+        assert snapshot.summary["processing_summary"]["tracking_conflict_count"] == 1
+        assert snapshot.summary["processing_summary"]["technical_failure_count"] == 0
+        assert snapshot.summary["processing_summary"]["is_complete"] is True
+
+
 def test_pipeline_raises_when_job_not_found(session_factory):
     """job_id 不存在 → ValueError（不寫任何 status，因為沒 record 可寫）。"""
     with pytest.raises(ValueError, match="not found"):
@@ -528,6 +638,64 @@ def test_pipeline_persists_partial_failure_and_processing_summary(
             == pipeline_mod.momentum.MOMENTUM_SCORE_VERSION
         )
         assert processing["is_complete"] is False
+
+
+def test_pipeline_main_path_conflict_only_day_marks_done(session_factory, monkeypatch):
+    """同上一個 test 的 partial_failure 案例互為對照：這次 research/decision 全部
+    成功，唯一的異常是 P4 一筆 TRACKING_SELECTION_CONFLICT——主 pipeline 路徑
+    （run_signal_pipeline_sync，非 _run_p4_tracking_only_day）也不該因此判定
+    partial_failure。"""
+    _stub_all_stages_noop(monkeypatch)
+    monkeypatch.setattr(pipeline_mod, "SIGNALS_PIPELINE_MODE", "legacy")
+    conflict_entry = {
+        "stock": "2383",
+        "status": "TRACKING_SELECTION_CONFLICT",
+        "stage": "TRACKING",
+        "error_code": "TRACKING_SELECTION_CONFLICT",
+        "error_summary": (
+            "P3 recommended the stock on the same date that P4 stopped its "
+            "active observation."
+        ),
+        "observation_id": 152,
+    }
+    monkeypatch.setattr(
+        pipeline_mod,
+        "_run_p4_tracking",
+        lambda *args, **kwargs: {
+            "tracking_summary": {
+                "review_date": date(2026, 4, 25).isoformat(),
+                "active_before_review": 1,
+                "continue_count": 0,
+                "caution_count": 0,
+                "stopped_count": 1,
+                "review_failed_count": 0,
+                "conflict_count": 1,
+                "review_complete": True,
+            },
+            "reviews": [{}],
+            "technical_failures": [],
+            "conflicts": [conflict_entry],
+        },
+    )
+
+    job_id = str(uuid.uuid4())
+    target_date = date(2026, 4, 25)
+    _seed_pending_job(session_factory, job_id, snapshot_date=target_date)
+    run_signal_pipeline_sync(job_id, target_date, session_factory=session_factory)
+
+    with session_factory() as db:
+        job = db.get(SignalGenerationJob, job_id)
+        snap = db.query(SignalSnapshot).filter_by(snapshot_date=target_date).one()
+        processing = snap.summary["processing_summary"]
+
+        assert job.status == "done"
+        assert job.error_message is None
+        assert snap.summary["technical_failures"] == []
+        assert snap.summary["tracking_conflicts"] == [conflict_entry]
+        assert processing["tracking_conflicts"] == [conflict_entry]
+        assert processing["tracking_conflict_count"] == 1
+        assert processing["technical_failure_count"] == 0
+        assert processing["is_complete"] is True
 
 
 def test_pipeline_passes_db_market_snapshot_into_step_zero(session_factory, monkeypatch):

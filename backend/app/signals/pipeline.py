@@ -1013,14 +1013,21 @@ def run_signal_pipeline_sync(
                 watchlist=final_payload.get("watchlist", []),
                 processing_summary=processing_summary,
             )
-            tracking_failures = [
-                *tracking_result.get("technical_failures", []),
-                *tracking_result.get("conflicts", []),
-            ]
-            technical_failures.extend(tracking_failures)
+            # TRACKING_SELECTION_CONFLICT（P3 今天推薦、P4 同一天判定 STOP 同一檔）
+            # 是設計上刻意偵測並保留給人工檢視的資訊性標記，不是「這檔沒處理完」——
+            # 兩套系統各自完整跑完、各自的結論都有效持久化，只是彼此不互相覆寫。
+            # 2026-08-11：曾經跟真正的技術失敗（research/decision/tracking review
+            # 例外）混在同一個 technical_failures 清單裡，導致單一筆衝突就讓當天
+            # 整包 pipeline 被標成 partial_failure（workflow FAIL，需人工重跑，且
+            # 重跑要重新處理全部候選、重打一次 OpenAI）。衝突本身已經有獨立管道
+            # 曝光（`/signals/observations` 讀 tracking_summary.conflict_count），
+            # 這裡不需要也不應該讓它觸發整天失敗。
+            tracking_technical_failures = tracking_result.get("technical_failures", [])
+            tracking_conflicts = tracking_result.get("conflicts", [])
+            technical_failures.extend(tracking_technical_failures)
             failed_stock_ids.update(
                 str(item.get("stock") or item.get("stock_id") or "")
-                for item in tracking_failures
+                for item in tracking_technical_failures
                 if item.get("stock") or item.get("stock_id")
             )
             processing_summary.update(
@@ -1035,6 +1042,7 @@ def run_signal_pipeline_sync(
                             "review_failed_count", 0
                         )
                     ),
+                    "tracking_conflicts": tracking_conflicts,
                     "tracking_conflict_count": (
                         tracking_result.get("tracking_summary", {}).get(
                             "conflict_count", 0
@@ -1049,6 +1057,7 @@ def run_signal_pipeline_sync(
                 )
             )
             final_summary["technical_failures"] = technical_failures
+            final_summary["tracking_conflicts"] = tracking_conflicts
             final_summary["selection_summary"][
                 "technical_failure_count"
             ] = len(technical_failures)
@@ -1201,10 +1210,10 @@ def _run_p4_tracking_only_day(
         watchlist=[],
         processing_summary=processing_summary,
     )
-    technical_failures = [
-        *tracking_result.get("technical_failures", []),
-        *tracking_result.get("conflicts", []),
-    ]
+    # 同 run_signal_pipeline_sync 內的說明：TRACKING_SELECTION_CONFLICT 是資訊性
+    # 標記，不併入 technical_failures，避免單一衝突讓當天 pipeline 被判定失敗。
+    technical_failures = tracking_result.get("technical_failures", [])
+    tracking_conflicts = tracking_result.get("conflicts", [])
     processing_summary.update(
         {
             "technical_failures": technical_failures,
@@ -1215,6 +1224,7 @@ def _run_p4_tracking_only_day(
                     "review_failed_count", 0
                 )
             ),
+            "tracking_conflicts": tracking_conflicts,
             "tracking_conflict_count": (
                 tracking_result.get("tracking_summary", {}).get(
                     "conflict_count", 0
@@ -1239,6 +1249,7 @@ def _run_p4_tracking_only_day(
     payload["final_watchlist_size"] = 0
     summary = payload.setdefault("summary", {})
     summary["technical_failures"] = technical_failures
+    summary["tracking_conflicts"] = tracking_conflicts
     summary["tracking_summary"] = tracking_result.get("tracking_summary", {})
     summary["selection_summary"] = {
         "phase2_eligible_count": 0,
