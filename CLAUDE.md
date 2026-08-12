@@ -4526,3 +4526,76 @@ family routing 邏輯本身而非絕對數值關係。全 backend suite 1274 pas
   改動範圍內修（不是省 token 的槓桿，是「量測」的槓桿）；下次要驗證這次改動的
   真實效果，或做進一步優化，應該先把這個接上，才能拿 production 真實數字驗證
   估算是否準確
+
+## 接上 M23 pipeline 真實 token 用量追蹤（2026-08-12 第二輪）
+
+### 背景
+上一輪盤點時發現 `SignalSnapshot.llm_total_tokens` 從未被實際填入，使用者接著
+要求「幫我接上」。
+
+### 根因
+`_call_llm_json` 每次呼叫都會把 `response.usage`（Responses API 回傳的
+token 用量）存進 `diagnostic["usage"]`，且這個 diagnostic 早就隨著每筆研究/
+決策/理由結果一路帶到 `pipeline.py`（`item["llm_diagnostic"]`）——資料其實
+一直都在，只是從來沒有人把它彙總起來、寫回 `assemble_final_output(total_
+tokens=...)`。`llm_total_tokens` 這個 DB 欄位跟對外 API 也從來沒被真的用過。
+
+### 修法
+1. **[llm_caller.py](backend/app/signals/llm_caller.py) 新增
+   `summarize_token_usage(items, diagnostic_key="llm_diagnostic")`**：依
+   `response_id` 去重後加總 `usage.total_tokens`（缺就退回
+   `input_tokens+output_tokens`）。**去重是必要的**：一個 batch（8 檔）的候選
+   共用同一次 API 呼叫、同一個 `response_id`，天真對每筆候選的 diagnostic 加總
+   會把同一筆用量重複算 8 次
+2. **[observation_lifecycle.py](backend/app/signals/observation_lifecycle.py)**：
+   P4 每日複核也是一段 LLM stage，`run_daily_observation_reviews()` 的
+   `tracking_summary` 新增 `token_usage`（用 `_llm_diagnostic`，底線開頭，跟其他
+   stage 的 `llm_diagnostic` key 名不同，要指定 `diagnostic_key` 參數）
+3. **[pipeline.py](backend/app/signals/pipeline.py) 新增
+   `_summarize_pipeline_token_usage()`**：吃 market/research/decision/
+   global_selection/reason 五段的**合併前**原始結果 + P4 的 `token_usage`，
+   組成 `{"by_stage": {...}, "total_tokens": ..., "total_call_count": ...}`。
+   **關鍵細節**：decision 段必須用 `assessed_items`（合併前），不能用後來的
+   `explanation`／`selected_items`——RECOMMEND 候選在 reason 階段會
+   `{**item, **watch_by_id[sid]}` 合併，reason 的 `llm_diagnostic` 會蓋掉
+   decision 的（同一個 key 名），用合併後的資料算會把 decision 的用量誤算成
+   reason 的，兩段都算錯
+4. **3 個組裝最終 payload 的地方都接上**：成功路徑、全體比較失敗 fallback、
+   無 P3 候選（只跑 P4）的日子。成功路徑因為 P4 比 P3 晚跑完，需要兩段式：先用
+   P3 五段算一次傳進 `assemble_final_output(total_tokens=...)`，P4 的
+   `tracking_result` 出來後再重算一次（含 tracking）覆寫
+   `final_payload["llm_total_tokens"]` 與 `processing_summary["token_usage"]`
+5. **對外曝光**：`llm_total_tokens` 補進 `routers/signals.py` 的
+   `data` dict（欄位在 DB 早就存在，從未曝光過）；前端 [api.ts](frontend/src/lib/api.ts)
+   新增對應型別；[Debug 頁](<frontend/src/app/signals/(product)/debug/page.tsx>)
+   新增「LLM Tokens」統計卡（總量）+「Token 用量（依 Stage）」表格（六段各自的
+   呼叫次數與 tokens，讀 `processing_summary.token_usage.by_stage`）
+
+### 測試
+12 個新測試：`llm_caller` 6 個 `summarize_token_usage` 單元測試（去重、
+input+output fallback、缺 usage 跳過、單一 dict 包 list、自訂 diagnostic_key、
+空輸入）；`pipeline` 2 個 `_summarize_pipeline_token_usage` 整合測試（六段合成
+一個總數、部分 stage 為 None 時正確處理）；`observation_lifecycle` 2 個 P4
+token_usage 測試。另修正 2 個既有測試：一個是舊測試 monkeypatch 的
+`assemble_final_output` fake lambda 沒有 `total_tokens` 參數，加了會直接
+`TypeError`（5 處 lambda 統一補上 `total_tokens=None`）；另一個是斷言寫死
+`llm_total_tokens == 1234`（舊 fake 回傳值）的測試，改成斷言 `== 0`（noop
+stub 場景下沒有真實 diagnostic，真正算出來的答案本來就該是 0，這個修正本身
+證明了新邏輯正確覆寫了 fake 回傳值而不是照單全收）。全 backend suite 1284
+pass（+10；另外 2 個是既有測試修正非新增）+ 20 個既有 baseline fail（與本輪
+無關），零新增失敗。
+
+### Gotcha
+- **舊快照沒有這個資料是預期行為，不是 bug**：本機 curl 一筆 2026-08-11（今天
+  稍早重跑過的舊快照）確認 `llm_total_tokens` 正確回傳 `null`、`processing_
+  summary` 沒有 `token_usage` key——這條路徑本來就該對歷史資料優雅降級，不是
+  出錯。下一次排程真的跑完，Debug 頁才會顯示第一筆有真實數字的快照
+- **`assemble_final_output` 的 `model` 參數預設仍是單一值
+  （`DEFAULT_WATCH_REASON_MODEL`）**，不會因為這次改動而反映「這次 run 實際
+  用了 5 種不同模型」——`llm_model` 這個欄位本來就只能代表其中一段（歷史設計
+  遺留），這次只修 token 數量的量測，沒有動 model 欄位的語意，是刻意縮小範圍
+  沒有一併修
+- **`response_id` 缺失時的防禦性 fallback**（`summarize_token_usage` 內
+  `_no_response_id_{N}` 假 key）目前應該永遠不會被觸發（Responses API 正常
+  回應一定帶 `id`），只在真的發生時避免整段用量被誤判成「同一次呼叫」而錯誤
+  去重，寧可保守多算
