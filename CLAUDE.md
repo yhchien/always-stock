@@ -4599,3 +4599,51 @@ pass（+10；另外 2 個是既有測試修正非新增）+ 20 個既有 baselin
   `_no_response_id_{N}` 假 key）目前應該永遠不會被觸發（Responses API 正常
   回應一定帶 `id`），只在真的發生時避免整段用量被誤判成「同一次呼叫」而錯誤
   去重，寧可保守多算
+
+## 追蹤中卡片：報酬率排序修正 + 停止觀察判斷說明（2026-08-13）
+
+### Bug：排序依據跟卡片顯示的數字不是同一個
+使用者反映「魚尾觀察的股票報酬率的排序好像有錯」。查證發現：`sortedActiveItems`
+的 `return_desc`／`return_asc` 排序用的是 `item.return_pct`（後端算好的 EOD
+靜態值，只有每天跑一次 archive returns cron 才更新），但卡片上（`ArchiveCard
+ContextLine`）實際顯示的是 `resolveLiveReturnPct`（開盤期間用即時報價、相對
+`baseline_price` 重算的即時報酬率）——這兩個數字在盤中本來就會不一樣。本機連
+production 查證：`as_of_trade_date` 明顯落後（EOD returns cron 尚未跑到最新
+交易日），確認這個落差在真實資料上是有感的，不是理論上才會發生的邊界情況。
+
+**根因是上一輪（2026-08-11）加即時報價功能時的疏漏**：那次把卡片顯示改成即時
+值（`ArchiveCardContextLine`），但排序 `useMemo` 忘了同步改，導致「排序依據」
+跟「畫面上顯示的數字」變成兩個不同的計算結果——使用者點「最多報酬率」，卡片
+排出來的順序卻對不上卡片上寫的數字，因為兩者根本不是同一個值在比較。
+
+### 修法（[archive/page.tsx](<frontend/src/app/signals/(product)/archive/page.tsx>)）
+`sortedActiveItems` 的 `return_desc`／`return_asc` 分支改用
+`resolveLiveReturnPct(item, liveQuotes.get(item.stock_id))`，跟卡片顯示邏輯
+共用同一個函式；`useMemo` 依賴陣列加入 `liveQuotes`（開盤期間每 1 分鐘更新，
+排序也會跟著重新計算，屬預期行為）。
+
+### UI 補充：「停止觀察」不是單靠 LLM 決定
+使用者對現有的觀察狀態說明有個誤解：「目前看起來是 LLM 決定吧」。查證
+`decide_observation_action()`（單一權威 P4 狀態機，是純 deterministic 的
+Python 函式，不是 LLM call）確認：會觸發 STOP 的路徑分兩類——
+(a) `IMMEDIATE_HARD_REASONS`（`STRUCTURE_DAMAGED`／`LIQUIDITY_FAILURE`／
+`COMPOSITE_RISK_EXCLUDE`／`REVERSAL_FAILURE`／`MANUAL_BLACKLIST`／
+`FAILED_FOLLOW_THROUGH_CURRENT_EPISODE`），純 backend deterministic 證據，
+零 LLM 涉入；(b) `EXTERNAL_INVALIDATION_REASONS`（`BUSINESS_MISMATCH`／
+`THEME_MISMATCH`／`FALSE_SUPPLY_CHAIN_LINK`／`MATERIAL_NEGATIVE_EVENT`／
+`DATA_CONTRADICTION`），LLM 上網查證後判定業務/題材/供應鏈論點已被事實推翻。
+**LLM 只負責 (b) 這一項的事實查證本身，不會單獨決定要不要停止**——最終是否
+STOP，是這套固定規則整合技術面/資金面證據與 LLM 查證結果一起判斷的（還有
+第三條路徑：`CORE_DIMENSIONS`——動能結構/參與度/催化劑論點——連續兩次複核都
+持續失效才觸發，同樣混合兩種資訊來源，不是單一來源說了算）。
+Archive 頁「警戒」說明區塊下方新增一段「停止觀察的判斷依據」，用白話點出這個
+機制不是「AI 主觀認定」，是固定規則整合兩種資訊來源。
+
+### Gotcha
+- **完成/移出紀錄區的表格不受排序 bug 影響**：該表格本來就明確標示「不會即時
+  更新」，沒有即時報價概念，排序（若有）本來就內部一致，不需要一併修
+- **這類「兩個地方各自算一次同樣的東西」的疏漏，最保險的預防方式是共用同一個
+  函式**：這次的 root cause 正是排序跟顯示各自算了一次「即時報酬率」，只有
+  顯示那邊記得改、排序那邊忘了改——`resolveLiveReturnPct` 本來就是一個獨立
+  函式，兩處呼叫同一個函式，之後只要改動一次就能同步影響顯示跟排序，不會再
+  出現兩邊各自維護一份邏輯、其中一份忘記同步更新的問題
