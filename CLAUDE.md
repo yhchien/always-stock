@@ -4426,3 +4426,103 @@ review 內立即歸檔」跟「使用者隔天看到已經移除」在時間感�
 - **`app/models.py` 的兩處 docstring 也要同步修正**：原本寫死 `(3)` 具體數字在
   註解裡描述機制，這類「常數值寫死在別處註解」的模式很容易在改常數時被漏掉，這次
   順手搜尋 `STOP_CONFIRM_THRESHOLD` 全部引用點才抓到這兩處
+
+## M23 每日訊號 LLM 用量全面盤點 + 降本設計（2026-08-12）
+
+### 背景
+使用者反映「每跑一次 spent 的 token 非常多」，要求全面盤點現有 LLM 使用情況，並
+設計能減少約 50% token 用量的方式（可以是減少送進 LLM 的股票數，也可以是產出報告
+的模型換輕量一點）。
+
+### 盤點結果（v7 prompt family，production 實際在跑的版本）
+| Stage | 模型（改動前） | Batch size（改動前） | 候選量/天（8/2~8/11 樣本） | 呼叫次數/天 |
+|---|---|---|---|---|
+| Market context | gpt-5.4-mini | 1 檔 | — | 1 |
+| Research | gpt-5.4-mini（+ web_search） | 4 | 36～156 | ~9～39 |
+| Decision（WATCH/REMOVE+veto） | **gpt-5.4（完整版）** | 4 | 同 research | ~9～39 |
+| Global selection（P3 全體比較） | gpt-5.4（完整版） | 全部一次 | 27～135 | 1（單次超大） |
+| Reason（WATCH 長理由） | gpt-5.4-mini | 4 | 只有最終入選（9～22） | ~3～6 |
+| P4 每日觀察複核 | gpt-5.4-mini | 12 | ~38（觀察中+警戒） | ~4 |
+
+一天約 55～90 次 API 呼叫。`SignalSnapshot.llm_total_tokens` 從未被實際填入
+（`assemble_final_output` 有 `total_tokens` 參數但 caller 從未傳值），DB 裡沒有
+真實 token 用量紀錄，本輪盤點是架構推估，不是實測數字——這本身也是發現之一，未來
+若要用真實數據驗證效果，需要另外接上 `_call_llm_json` 已捕捉但從未往上傳遞的
+`diagnostic["usage"]`。
+
+### 根因
+1. **候選數上限早就被拔掉**：`_cap_llm_input(candidates, limit)` 的 docstring
+   直接寫「compatibility wrapper... P1 intentionally ignores limit」——這是
+   Phase2→v7 對齊時「backend deterministic pool 是唯一 eligibility authority，
+   不該再讓上限這種非 deterministic 機制刪掉候選」的刻意設計，副作用是候選池
+   暴量的日子（8/5 撞 135、8/11 撞 151——剛好也是本季兩次 timeout/token 截斷
+   事故發生的日子）research/decision 完全沒有煞車，成本跟著候選數線性暴增
+2. **Decision 段用完整版模型套在最大量的候選池上**：research 已經是
+   gpt-5.4-mini，但 decision 是 gpt-5.4（完整版），兩者處理的是同一份
+   `after_regime`（90～150 檔/天）——這是唯一「貴模型 × 大候選量」同時成立
+   的地方
+3. **Batch size 只有 4**：research/decision/reason 三段皆是。查證 research 的
+   「二分重試」機制（`_run_v7_research_with_contract_retry`）發現：契約失敗時
+   只會重試批次內**實際失敗的那幾檔**（bisect `retry_sources`），不是整批重
+   跑——當初設 4 檔並非這個重試機制真正需要的條件，是保守選擇，代價是
+   system prompt（shared policy + stage 說明）被重複傳送的次數是最佳值的
+   2 倍以上
+
+### 修法（三項，經 `AskUserQuestion` 確認後實作）
+1. **重新啟用候選上限**（[pipeline.py](backend/app/signals/pipeline.py)）：
+   新增 `LLM_INPUT_HARD_LIMIT = 100`（env `SIGNALS_LLM_INPUT_HARD_LIMIT` 可
+   覆寫）；`_cap_llm_input` 改成真的截斷（沿用既有 `_order_llm_input` 的
+   deterministic priority：conviction > momentum_score > RS percentile >
+   risk_warnings 數量，不是隨機砍）。套用點統一放在 `after_regime` 最終確定之後
+   （不論走 phase2 或 legacy fallback 分支）、Step 5 LLM Research 之前，兩條路徑
+   共用同一個截斷點。`processing_summary` 新增 `llm_eligible_before_cap_count`
+   保留截斷前的數字，`llm_eligible_count` 改記錄截斷後、實際送進 LLM 的數量；
+   `regime_survivor_count`（代表通過 regime gate 的候選數）不受影響。10 天樣本
+   正常量（36～94）完全不受影響，只有暴量日（116/135/144/151/156）被截斷
+2. **Research/decision/reason batch size 4→8**（[llm_caller.py](backend/app/signals/llm_caller.py)）：
+   `DEFAULT_V7_RESEARCH_BATCH_SIZE`／`DEFAULT_EXPLANATION_BATCH_SIZE` 皆調整；
+   呼叫次數直接砍半，同一份候選資料量不變
+3. **Decision 段模型降級**：`DEFAULT_DECISION_MODEL` fallback 從 `gpt-5.4` 改
+   `gpt-5.4-mini`（可用 `OPENAI_SIGNALS_DECISION_MODEL` env var 隨時切回）。
+   **Global selection 維持完整版模型不動**——這是本季兩次 production 事故
+   （token 截斷、timeout）發生的地方，是全 pipeline 風險最高的單一判斷，
+   使用者確認先不降級。順手把 `global_selector.py` 的
+   `DEFAULT_GLOBAL_SELECTION_MODEL` fallback 從「讀
+   `llm_caller.DEFAULT_DECISION_MODEL`」改成獨立硬編碼 `"gpt-5.4"`——原本兩者
+   共用同一顆模型，改 decision 預設值會不小心把 global selection 也一起降級
+
+### 效果驗證（用真實 8/2~8/11 候選數模擬，非production 實測）
+```
+Total calls over these 10 days: old=470, new=206, reduction=56.2%
+正常量日（36~94 檔）：44~50% 減少（單靠 batch 加倍）
+暴量日（116/135/144/151/156 檔）：64~67% 減少（batch 加倍 + 上限疊加）
+```
+達成使用者要求的「減少約 50%」目標，且暴量日效果更顯著——剛好是成本最不可控、
+過去出過事故的那幾天。Decision 模型降級是額外的 $ 成本槓桿（不算進上面呼叫次數
+的計算，因為降級不改變 token 數量，只改變單價）。
+
+### 測試
+`test_signals_pipeline.py`：`test_legacy_cap_wrapper_only_orders_and_keeps_
+every_candidate`（舊行為驗證測試，前提已不成立）改寫成 3 個新測試——明確傳
+`limit` 時真的截斷／低於上限時保留全部／`limit=None` 時吃
+`LLM_INPUT_HARD_LIMIT` 常數。`test_prompt_family_v7.py`：
+`test_v7_research_batch_size_is_smaller_without_changing_legacy`（斷言「v7
+比 legacy 小」，調整後兩者相等，前提不成立）重寫為
+`test_research_batch_size_routes_by_prompt_family_independently`，聚焦驗證
+family routing 邏輯本身而非絕對數值關係。全 backend suite 1274 pass（+2）
++ 20 個既有 baseline fail（與本輪無關），零新增失敗。
+
+### Gotcha
+- **`DEFAULT_GLOBAL_SELECTION_MODEL` 曾經跟 `DEFAULT_DECISION_MODEL` 共用同一顆
+  模型**（`os.getenv("OPENAI_SIGNALS_GLOBAL_SELECTION_MODEL",
+  llm_caller.DEFAULT_DECISION_MODEL)`，模組載入時 snapshot 一次）——這種
+  「A 的 fallback 讀 B 的值」耦合模式很容易在只改 B 時不小心連坐影響 A，這次先
+  解耦（改成 A 自己硬編碼獨立 fallback）才調整 B，順序不能反過來
+- **`_cap_llm_input` 套用點要在 phase2/legacy 兩條分支都設定完 `after_regime`
+  之後**：若只在其中一條分支內部加 cap，另一條分支（fail-safe fallback 或
+  `legacy` mode）會漏掉，兩條路徑共用同一個 `after_regime` 變數、在分支外統一
+  處理一次是唯一不會漏的做法
+- **`llm_total_tokens` 從未被實際填入**是本輪盤點意外發現的既有 gap，不在這次
+  改動範圍內修（不是省 token 的槓桿，是「量測」的槓桿）；下次要驗證這次改動的
+  真實效果，或做進一步優化，應該先把這個接上，才能拿 production 真實數字驗證
+  估算是否準確
