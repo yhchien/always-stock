@@ -4301,3 +4301,55 @@ decision/tracking review 真正處理失敗）合併進同一個清單，只要�
 - **這類「重跑修好一個問題卻冒出另一個問題」的情境要分開處理**：本輪先確認 timeout 修法
   本身有效（真的看到 116 檔完整跑完），再單獨處理這個新發現的分類 bug，不要把兩者混在
   一起判斷「修法到底有沒有效」
+
+## 30 日追蹤卡片：P4 狀態底色 + 排序即時顯示 + 觀察中/警戒篩選（2026-08-12）
+
+### 需求
+使用者對 `/signals/archive`「追蹤中」提出 3 項優化：
+1. P4 觀察狀態（觀察中/警戒）目前只有點開卡片 popup 才看得到，太不明顯；希望卡片直接
+   用不同底色呈現，並要有說明「什麼顏色代表什麼」跟「警戒連續幾次後會被移出追蹤」
+2. 排序（分類 chip）點下去後，卡片本身應該直接顯示跟該排序相關的數值（例如點「最多
+   報酬率」卡片就要秀出報酬率，點「追蹤日期」就要秀出首次抓到日期），不想要排序完
+   還要點開才知道實際數字
+3. 分類 chip 再加「觀察中」「警戒」兩個，點下去只顯示該 P4 狀態的股票
+
+### 落地（[archive/page.tsx](<frontend/src/app/signals/(product)/archive/page.tsx>)，純前端）
+- **P4 資料抓取搬到排序/篩選 memo 之前**：`fetchSignalObservations`／
+  `observationByStock` 原本在卡片渲染區塊之後才抓（純顯示用），搬到 `sortedActiveItems`
+  之前，因為新的「觀察中／警戒」篩選需要在算 `filteredActiveItems` 時就用到
+- **`observationCardTone(status)`**：卡片 className 依 P4 狀態變化——`CAUTION` 琥珀色
+  底、`OBSERVING` 淡藍色底、`STOPPED`（理論上不該出現在追蹤中，因為前一輪已經接上
+  P4 確認停止觀察時魚尾會一併結算移出；這裡仍防禦性保留一個中性色分支，避免資料
+  未同步時卡片樣式失控）、無 P4 資料維持原本中性色。header 新增對應說明區塊（比照
+  既有 LEADER/FOLLOWER/LAGGARD 說明卡樣式），講清楚「警戒持續到系統判定論點失效
+  （停止觀察）並經幾天複核確認後，會自動移出並記錄在下方『追蹤期滿移出紀錄』」——
+  這段文字直接對應前一輪「P4 停止觀察時魚尾追蹤週期跟著結算」那次接好的機制，
+  沒有另外杜撰
+- **`ArchiveCardContextLine`**：取代原本卡片上固定的「查看更多 →」提示文字，改成依
+  `view`（目前選的分類）顯示對應數值：`return_desc`/`return_asc` → 即時報酬率（沿用
+  既有 `resolveLiveReturnPct` fallback 邏輯，紅漲綠跌台股慣例）；`hit_count` → 抓到
+  N 次；`first_seen`／`observing`／`caution`（後兩者是篩選不是排序，沒有各自獨立的
+  排序準則，統一顯示首次抓到日期）
+- **`VIEW_OPTIONS` 從 4 個擴充到 6 個**：新增 `observing`（觀察中）／`caution`（警戒），
+  這兩個是純篩選（依 `observationByStock.get(stock_id)?.status` 比對），不是排序——
+  篩選後沿用「追蹤日期」的排序順序。`filteredActiveItems` 在既有搜尋 filter 前新增
+  一段狀態 filter；比照既有搜尋框「有輸入時忽略前 15 筆截斷」的邏輯，新增
+  `isStatusFilterView`／`bypassTopNTruncation`，選到這兩個分類時也直接顯示全部
+  符合的股票，不受 `TOP_N=15` 限制
+- 空結果訊息新增一個分支：沒有搜尋字串、但選到觀察中/警戒且沒有符合的股票時，顯示
+  「目前沒有『觀察中／警戒』的股票」（原本只有搜尋情境有這個訊息）
+
+### 真實資料驗證
+本機連 production DB 查證：目前「追蹤中」51 檔裡，P4 對應狀態分布是 CAUTION 20 檔／
+OBSERVING 14 檔／STOPPED 17 檔（尚未達 `STOP_CONFIRM_THRESHOLD=3` 次確認、還沒被
+前一輪的結算 hook 移出）／其餘無對應 P4 資料。確認底色與新篩選分類在真實資料上都有
+足夠樣本可以展示效果，不是只在空資料下能通過測試的功能。
+
+### Gotcha
+- **STOPPED 會合法出現在追蹤中清單裡**：不是 bug——P4 判 STOP 到魚尾真正結算移出之間
+  有 `STOP_CONFIRM_THRESHOLD=3` 次複核確認的緩衝期（避免誤判後又復活的觀察被錯殺），
+  緩衝期內卡片會同時符合「P4 status=STOPPED」與「仍在魚尾追蹤中」兩個條件，`observation
+  CardTone` 的 STOPPED 分支就是為了這個合法情境設計的，不是純防禦性的死碼
+- `tsc --noEmit`／`eslint`（僅改動檔案）全過；`npx jest` 全套件 18 fail 全屬既有
+  StockList／StockChart／BacktestPanel baseline，零新增失敗；這個頁面本身從未有
+  jest 測試覆蓋，本輪比照先前對這個頁面做過的其他改動，不額外新開測試檔案
