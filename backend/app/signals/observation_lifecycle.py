@@ -58,11 +58,17 @@ STATUS_OBSERVING = "OBSERVING"
 STATUS_CAUTION = "CAUTION"
 STATUS_STOPPED = "STOPPED"
 
-# STOPPED observations keep being reviewed daily until STOP_OBSERVING has been
-# confirmed on this many consecutive review days (the first stop counts as 1).
-# Any CONTINUE/CAUTION decision in between resets the counter and reactivates
-# the observation -- a single-day STOP is never enough to archive on its own.
-STOP_CONFIRM_THRESHOLD = 3
+# 2026-08-12：使用者要求 STOP 判定後不再等多日複核確認，第一次 STOP 隔天（使用者
+# 實際看到網站的時間點）就要從追蹤中移除——原本 =3（連續 3 個複核日皆判 STOP 才真的
+# 歸檔/結算，任何一天回到 CONTINUE/CAUTION 都會取消並重新啟用觀察）改成 =1，讓第一次
+# STOP 當下就滿足 `stop_confirm_count >= STOP_CONFIRM_THRESHOLD`，立即歸檔
+# （`_finalize_observation_archive`）並結算魚尾追蹤週期（`archive.settle_stock_for_
+# p4_stop`）。**這是刻意放棄「STOP 可能是誤判、留幾天觀察會不會打臉」的緩衝空間**，
+# 換取「警戒/停止一旦發生，隔天馬上從畫面上消失」的即時性；`was_already_stopped`
+# 分支（多日複核疊加 stop_confirm_count）在預設 threshold=1 下已不會被觸發（STOPPED
+# 觀察一旦 confirm_count 達標就被查詢條件排除，不會再被複核），保留該分支只是防禦性
+# 寫法，不是死碼——未來若把這個常數臨時調高，該分支會立刻恢復作用。
+STOP_CONFIRM_THRESHOLD = 1
 
 DECISION_CONTINUE = "CONTINUE"
 DECISION_CAUTION = "CAUTION"

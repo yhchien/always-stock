@@ -448,8 +448,12 @@ class SignalObservation(Base):
     consecutive_caution_count = Column(Integer, nullable=False, default=0)
     # Consecutive STOP_OBSERVING confirmations while status==STOPPED (day of
     # first stop counts as 1). Resets to 0 on any CONTINUE/CAUTION decision.
-    # Reaching STOP_CONFIRM_THRESHOLD (3) finalizes a SignalObservationArchive
+    # Reaching STOP_CONFIRM_THRESHOLD finalizes a SignalObservationArchive
     # row; the observation row itself is never deleted or altered further.
+    # 2026-08-12: STOP_CONFIRM_THRESHOLD defaults to 1, so in practice the
+    # first STOP already finalizes -- see the constant's docstring in
+    # observation_lifecycle.py for why the multi-day confirmation buffer
+    # was traded away for immediate removal.
     stop_confirm_count = Column(Integer, nullable=False, default=0)
     baseline_quality = Column(String(32), nullable=False, default="P3_COMPLETE")
     initial_snapshot_json = Column(JSON, nullable=False)
@@ -471,15 +475,16 @@ class SignalObservationArchive(Base):
     """P4 lifecycle final archive.
 
     An observation lands here only after P4 confirms STOP_OBSERVING on
-    ``STOP_CONFIRM_THRESHOLD`` (3) consecutive review days with no CONTINUE/
-    CAUTION recovery in between. Purely additive: the source
-    ``signal_observations`` row is never deleted, so existing P6 outcome
-    joins against it are unaffected.
+    ``STOP_CONFIRM_THRESHOLD`` consecutive review days with no CONTINUE/
+    CAUTION recovery in between (default 1, i.e. the first STOP already
+    finalizes -- see the constant's docstring in observation_lifecycle.py).
+    Purely additive: the source ``signal_observations`` row is never
+    deleted, so existing P6 outcome joins against it are unaffected.
 
     ``exit_price``/``return_pct`` are filled in a day late by design: the
-    archive row is written the moment the 3rd confirmation lands, but the
-    "next trading day's (open+close)/2" exit price does not exist yet at
-    that moment. A settlement pass backfills it once that day's
+    archive row is written the moment the confirmation threshold lands, but
+    the "next trading day's (open+close)/2" exit price does not exist yet
+    at that moment. A settlement pass backfills it once that day's
     ``daily_price`` row is available (see
     ``_settle_pending_archive_exits`` in observation_lifecycle.py).
     """

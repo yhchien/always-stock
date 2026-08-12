@@ -854,8 +854,13 @@ def _hard_excluded_evidence(reason: str = "STRUCTURE_DAMAGED"):
     return evidence
 
 
-def test_first_stop_sets_confirm_count_to_one_without_archiving(db, monkeypatch):
+def test_first_stop_immediately_archives(db, monkeypatch):
+    """2026-08-12：使用者要求 STOP 不再等多日複核確認，第一次 STOP 當下（隔天使用者
+    看到網站時）就要歸檔並從追蹤中移除——STOP_CONFIRM_THRESHOLD 改成 1 後，第一次
+    STOP 的 stop_confirm_count(1) 立刻滿足門檻，同一次 review 就完成歸檔。"""
     observation = _observation(db)
+    db.add(DailyPrice(stock_id="2330", trade_date=DAY_0, close_price=100.0))
+    db.commit()
     _patch_evidence(monkeypatch, {observation.id: _hard_excluded_evidence()})
 
     result = lifecycle.run_daily_observation_reviews(
@@ -870,59 +875,32 @@ def test_first_stop_sets_confirm_count_to_one_without_archiving(db, monkeypatch)
     assert row.status == "STOPPED"
     assert row.stop_confirm_count == 1
     assert result["tracking_summary"]["stopped_count"] == 1
-    assert db.query(SignalObservationArchive).count() == 0
-
-
-def test_three_consecutive_stop_confirmations_archive_on_the_third_day(
-    db, monkeypatch
-):
-    observation = _observation(db)
-    db.add(
-        DailyPrice(stock_id="2330", trade_date=DAY_0, close_price=100.0)
-    )
-    db.commit()
-    _patch_evidence(monkeypatch, {observation.id: _hard_excluded_evidence()})
-
-    for review_date in (DAY_1, DAY_2, DAY_2 + timedelta(days=1)):
-        lifecycle.run_daily_observation_reviews(
-            db,
-            review_date=review_date,
-            market_context={},
-            assessment_runner=_runner_for({}),
-            persist=True,
-        )
-
-    row = db.get(SignalObservation, observation.id)
-    assert row.status == "STOPPED"
-    assert row.stop_confirm_count == 3
     archive = db.query(SignalObservationArchive).one()
     assert archive.observation_id == observation.id
     assert archive.first_stop_date == DAY_1
-    assert archive.archived_date == DAY_2 + timedelta(days=1)
+    assert archive.archived_date == DAY_1
     assert archive.entry_price == 100.0
     assert archive.exit_price is None
     assert archive.return_pct is None
 
-    # Once archived, the observation drops out of daily review entirely --
-    # a 4th call must not touch it, error, or create a duplicate archive row.
+    # Once archived, the observation is excluded from the daily review query
+    # entirely (STOPPED + stop_confirm_count >= threshold) -- a later call
+    # must not touch it, error, or create a duplicate archive row.
     lifecycle.run_daily_observation_reviews(
         db,
-        review_date=DAY_2 + timedelta(days=2),
+        review_date=DAY_2,
         market_context={},
         assessment_runner=_runner_for({}),
         persist=True,
     )
     assert db.query(SignalObservationArchive).count() == 1
-    assert db.get(SignalObservation, observation.id).stop_confirm_count == 3
+    assert db.get(SignalObservation, observation.id).stop_confirm_count == 1
 
 
-def test_three_consecutive_stop_confirmations_settle_matching_signal_watch_hit_cycle(
-    db, monkeypatch
-):
-    """2026-08-11：P4 確認停止觀察（第 3 次 STOP 複核）時，魚尾（M23
-    signal_watch_hits）對應的進行中追蹤週期要跟著結算，不用等 30 個交易日或價格
-    觸發規則。鏡像上面 test_three_consecutive_stop_confirmations_archive_on_the_third_day
-    的三日複核流程，額外斷言魚尾側的結算結果。"""
+def test_first_stop_settles_matching_signal_watch_hit_cycle(db, monkeypatch):
+    """2026-08-12：STOP_CONFIRM_THRESHOLD=1 之後，第一次 STOP 就要讓魚尾（M23
+    signal_watch_hits）對應的進行中追蹤週期同一天跟著結算，不用等 30 個交易日或
+    價格觸發規則，也不用等多日複核確認。"""
     observation = _observation(db)
     db.add(DailyPrice(stock_id="2330", trade_date=DAY_0, close_price=100.0))
     db.add(
@@ -949,59 +927,6 @@ def test_three_consecutive_stop_confirmations_settle_matching_signal_watch_hit_c
     db.commit()
     _patch_evidence(monkeypatch, {observation.id: _hard_excluded_evidence()})
 
-    for review_date in (DAY_1, DAY_2, DAY_2 + timedelta(days=1)):
-        lifecycle.run_daily_observation_reviews(
-            db,
-            review_date=review_date,
-            market_context={},
-            assessment_runner=_runner_for({}),
-            persist=True,
-        )
-
-    row = db.get(SignalObservation, observation.id)
-    assert row.status == "STOPPED"
-    assert row.stop_confirm_count == 3
-
-    active_hits = db.query(SignalWatchHit).filter_by(stock_id="2330").all()
-    assert active_hits == []
-
-    completed = (
-        db.query(SignalWatchCompletedArchive).filter_by(stock_id="2330").one()
-    )
-    assert completed.closure_reason == archive_module.CLOSURE_REASON_P4_STOPPED
-    assert completed.completed_trade_date == DAY_2 + timedelta(days=1)
-
-
-def test_first_stop_confirmation_does_not_settle_signal_watch_hit_cycle(
-    db, monkeypatch
-):
-    """第一次 STOP（尚未達 STOP_CONFIRM_THRESHOLD）不應提前結算魚尾——STOP 仍可能在
-    確認期間內恢復回 CAUTION/OBSERVING，過早結算會誤刪還在觀察中的追蹤紀錄。"""
-    observation = _observation(db)
-    db.add(
-        SignalWatchHit(
-            snapshot_date=DAY_0,
-            stock_id="2330",
-            stock_name="Stock-2330",
-            signal_type="LEADER",
-            industry_name="半導體業",
-            sub_industry="x",
-            business_summary="a",
-            reason="a",
-            theme={},
-            group_info={},
-            leader_check={},
-            signals={},
-            baseline_trade_date=DAY_0,
-            baseline_price=100.0,
-            latest_eval_trade_date=DAY_0,
-            latest_eval_price=100.0,
-            return_pct=0.0,
-        )
-    )
-    db.commit()
-    _patch_evidence(monkeypatch, {observation.id: _hard_excluded_evidence()})
-
     lifecycle.run_daily_observation_reviews(
         db,
         review_date=DAY_1,
@@ -1015,50 +940,13 @@ def test_first_stop_confirmation_does_not_settle_signal_watch_hit_cycle(
     assert row.stop_confirm_count == 1
 
     active_hits = db.query(SignalWatchHit).filter_by(stock_id="2330").all()
-    assert len(active_hits) == 1
-    assert db.query(SignalWatchCompletedArchive).filter_by(stock_id="2330").count() == 0
+    assert active_hits == []
 
-
-def test_recovery_during_pending_window_cancels_archive_and_reactivates(
-    db, monkeypatch
-):
-    observation = _observation(db)
-
-    _patch_evidence(monkeypatch, {observation.id: _hard_excluded_evidence()})
-    lifecycle.run_daily_observation_reviews(
-        db,
-        review_date=DAY_1,
-        market_context={},
-        assessment_runner=_runner_for({}),
-        persist=True,
+    completed = (
+        db.query(SignalWatchCompletedArchive).filter_by(stock_id="2330").one()
     )
-    assert db.get(SignalObservation, observation.id).stop_confirm_count == 1
-
-    _patch_evidence(monkeypatch, {observation.id: _healthy_evidence()})
-    lifecycle.run_daily_observation_reviews(
-        db,
-        review_date=DAY_2,
-        market_context={},
-        assessment_runner=_runner_for({"2330": _external()}),
-        persist=True,
-    )
-    row = db.get(SignalObservation, observation.id)
-    assert row.status == "OBSERVING"
-    assert row.stop_confirm_count == 0
-    assert row.stopped_at is None
-    assert row.stop_reason_code is None
-    assert db.query(SignalObservationArchive).count() == 0
-
-    # A later, independent stop must start a fresh count from 1, not resume.
-    _patch_evidence(monkeypatch, {observation.id: _hard_excluded_evidence()})
-    lifecycle.run_daily_observation_reviews(
-        db,
-        review_date=DAY_2 + timedelta(days=1),
-        market_context={},
-        assessment_runner=_runner_for({}),
-        persist=True,
-    )
-    assert db.get(SignalObservation, observation.id).stop_confirm_count == 1
+    assert completed.closure_reason == archive_module.CLOSURE_REASON_P4_STOPPED
+    assert completed.completed_trade_date == DAY_1
 
 
 def test_settle_pending_archive_exits_uses_next_available_open_close_average(db):
