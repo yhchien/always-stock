@@ -747,21 +747,29 @@ function SignalArchiveContent() {
   }, [observations])
 
   // 分類排序：純前端。null 報酬率（第一天抓到還沒 baseline）在兩種報酬排序都排最後
+  //
+  // 2026-08-13 修正：return_desc／return_asc 原本排序用的是 item.return_pct
+  // （後端算好的 EOD 靜態值），但卡片上實際顯示的是 resolveLiveReturnPct（開盤
+  // 期間用即時報價重算的即時報酬率）——兩個數字在盤中會不一樣，導致排序結果跟畫面
+  // 上看到的數字對不起來（使用者反映「報酬率的排序好像有錯」）。改成排序也用同一個
+  // resolveLiveReturnPct，確保排序依據跟卡片顯示的數字永遠是同一個。
   const sortedActiveItems = useMemo(() => {
     const items = summary?.items ?? []
     const copy = [...items]
+    const liveReturn = (item: SignalArchiveSummaryItem) =>
+      resolveLiveReturnPct(item, liveQuotes.get(item.stock_id))
     switch (view) {
       case "return_desc":
         copy.sort(
           (a, b) =>
-            (b.return_pct ?? -Infinity) - (a.return_pct ?? -Infinity) ||
+            (liveReturn(b) ?? -Infinity) - (liveReturn(a) ?? -Infinity) ||
             a.stock_id.localeCompare(b.stock_id),
         )
         break
       case "return_asc":
         copy.sort(
           (a, b) =>
-            (a.return_pct ?? Infinity) - (b.return_pct ?? Infinity) ||
+            (liveReturn(a) ?? Infinity) - (liveReturn(b) ?? Infinity) ||
             a.stock_id.localeCompare(b.stock_id),
         )
         break
@@ -780,7 +788,7 @@ function SignalArchiveContent() {
         )
     }
     return copy
-  }, [summary?.items, view])
+  }, [summary?.items, view, liveQuotes])
 
   const isStatusFilterView = view === "observing" || view === "caution"
 
@@ -964,6 +972,21 @@ function SignalArchiveContent() {
                 部分關鍵條件今天開始不成立，卡片轉琥珀色底；值得留意但不是賣出訊號。若系統判定推薦論點已失效（停止觀察），隔天就會自動從「追蹤中」移出，改記錄在下方「追蹤期滿移出紀錄」（顯示「觀察已停止」），同時結算當時的報酬率。
               </p>
             </div>
+          </div>
+          <div className="mt-2 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs leading-6 text-slate-400">
+            <p>停止觀察的判斷依據：</p>
+            <p>
+              不是單靠 AI 主觀認定——系統每天用固定規則綜合評估兩種資訊，任一項明確確認就會停止：
+            </p>
+            <p>
+              ① 技術面／資金面數據出現結構性問題（例如流動性驟降、股價結構明顯損壞），或動能與資金參與度連續複核都未見回穩。
+            </p>
+            <p>
+              ② AI 上網查證公司業務、題材、供應鏈後，發現原本的推薦論點已被事實推翻（例如業務不符、題材不成立、供應鏈關聯是假的、出現重大負面消息、資料前後矛盾）。
+            </p>
+            <p>
+              AI 只負責②這一項的事實查證，本身不會單獨決定要不要停止；最終是否停止，是這套固定規則整合技術面數據與 AI 查證結果一起判斷的。
+            </p>
           </div>
           <div className="mt-2 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs leading-6 text-slate-400">
             <p>報酬率規則說明：</p>
