@@ -46,6 +46,14 @@ import WatchlistAddButton from "@/components/WatchlistAddButton"
 const LAST_SEEN_KEY = "always-stock:signals:last_seen_snapshot_date"
 const COLLAPSED_KEY = "always-stock:signals:collapsed"
 
+// 2026-08-13：即時報價輪詢間隔，原本沒帶參數走 useRealtimeQuotes 的預設值
+// （15 秒），比 archive 頁等其他頁面已採用的 60 秒明顯更頻繁。使用者反映首頁
+// 報價「很慢很慢，而且常常出不來」；查證 /api/realtime/quotes 是同步阻塞呼叫
+// TWSE（無快取），多位使用者同時瀏覽首頁時同一批股票的報價會被重複打好幾次
+// TWSE，放大延遲與失敗機率。後端已加上短 TTL cache，這裡同步把首頁輪詢頻率
+// 降到跟其他頁面一致，從源頭減少請求量。
+const REALTIME_INTERVAL_MS = 60_000
+
 // 2026-05-27：暫時隱藏 SignalDetailDialog 內的融資融券分析紅色框框
 // 改回顯示時把這個常數改成 true 即可（保留 MarginAnalysisPanel 函式與後端資料）
 // 明確標型別 boolean（不能用 const false literal，否則 TS 會把三元 truthy branch narrow 成 unreachable）
@@ -1407,7 +1415,7 @@ export default function DailySignalsPanel({
     () => (collapsed ? [] : watchlist.map((w) => w.stock).filter(Boolean)),
     [collapsed, watchlist],
   )
-  const realtimeQuotes = useRealtimeQuotes(watchlistStockIds)
+  const realtimeQuotes = useRealtimeQuotes(watchlistStockIds, REALTIME_INTERVAL_MS)
 
   return (
     <section className="rounded-lg border border-zinc-700 bg-zinc-700/50">
