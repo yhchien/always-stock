@@ -4353,3 +4353,76 @@ OBSERVING 14 檔／STOPPED 17 檔（尚未達 `STOP_CONFIRM_THRESHOLD=3` 次確�
 - `tsc --noEmit`／`eslint`（僅改動檔案）全過；`npx jest` 全套件 18 fail 全屬既有
   StockList／StockChart／BacktestPanel baseline，零新增失敗；這個頁面本身從未有
   jest 測試覆蓋，本輪比照先前對這個頁面做過的其他改動，不額外新開測試檔案
+
+## STOP 不再等多日複核確認，第一次 STOP 隔天立即移出追蹤（2026-08-12）
+
+### 背景：先釐清「警戒幾次後會被移出」這個問題本身的既有機制不準確之處
+使用者問這個問題時，準確答案不是一個簡單的次數——**警戒（CAUTION）本身沒有「連續 N
+次自動觸發 STOP」這種規則**。真正觸發 STOP 的路徑不只一種：immediate hard
+invalidation（結構性損壞等立即失效條件）、TRACKING_INVALIDATED、外部
+THESIS_INVALIDATED、或「持續警戒」路徑（`prior_decision==CAUTION` 且
+MOMENTUM_STRUCTURE／PARTICIPATION 等核心維度連續兩次 review 都失效）——警戒本身可以
+持續很多天而不觸發 STOP，一旦觸發 STOP 是看維度失效的模式，不是看警戒天數的計數器。
+
+STOP **觸發後**，原本還有第二層機制：`STOP_CONFIRM_THRESHOLD=3`——需要連續 3 天
+複核都仍判 STOP，才會真的歸檔（`_finalize_observation_archive`）並結算魚尾追蹤週期；
+中途任何一天回到 CONTINUE／CAUTION 都會取消並重新啟用觀察（`test_recovery_during_
+pending_window_cancels_archive_and_reactivates`，本輪已移除）。這是「確認」不是
+「觸發」——上一輪（2026-08-10）就已經在 CLAUDE.md 記過一次「上上輪誤把這兩層機制
+混成『連續 3 天警戒觸發 STOP』」的釐清，本次維持同一份準確理解。
+
+### 使用者要求：拿掉這層確認緩衝，第一次 STOP 就立即移出
+使用者明確要求「改成只要 STOP 就隔天立即移除」——不要等 3 天複核確認，一旦 STOP
+觸發，使用者隔天打開網站就該看不到這檔股票。
+
+### 修法（[observation_lifecycle.py](backend/app/signals/observation_lifecycle.py)）
+`STOP_CONFIRM_THRESHOLD` 從 `3` 改成 `1`。因為 `_finalize_observation_archive` +
+`archive.settle_stock_for_p4_stop` 的觸發條件本來就是通用的
+`stop_confirm_count >= STOP_CONFIRM_THRESHOLD`，第一次 STOP 時
+`stop_confirm_count` 一律先設成 1，改成門檻 1 之後，**第一次 STOP 當下、同一次
+review 呼叫內**就會立即歸檔並結算魚尾——不需要改動判斷邏輯本身，純粹改常數。
+
+從使用者實際體感的角度看，這正是「隔天立即移除」：STOP 判定是在當天晚上的排程
+（`run_daily_signals`）內計算的，使用者隔天早上才會打開網站查看，所以「同一次
+review 內立即歸檔」跟「使用者隔天看到已經移除」在時間感受上是同一件事。
+
+### 副作用（刻意接受的 trade-off）
+- **`was_already_stopped` 分支（多日複核疊加 `stop_confirm_count`）在預設
+  threshold=1 下不會再被觸發**：STOPPED 觀察一旦 `stop_confirm_count` 達標，就被
+  查詢條件（`stop_confirm_count < STOP_CONFIRM_THRESHOLD`）排除在每日複核範圍外，
+  不會再被複核到。這段程式碼保留下來（沒有刪除），是防禦性寫法——未來若把常數臨時
+  調高，這段邏輯會立刻恢復作用，不需要重寫
+- **「STOP 之後還可能因隔天回穩而復活」這個保護機制不再存在**：這是使用者明確要求
+  放棄的緩衝空間，換取「一旦判定失效，立即從畫面上消失」的即時性；若之後 STOP 判定
+  出現誤殺（例如短期波動被誤判成論點失效），使用者需要靠 P3 每天重新評估（若還符合
+  條件，P3 隔天可能重新推薦，開一個全新的觀察週期）來間接復活，而不是靠 P4 自己的
+  復原機制
+- **`stop_legacy_incomplete_observations.py`（68 檔一次性清理腳本，已於更早一輪
+  執行過 `--execute`）內 `obs.stop_confirm_count = STOP_CONFIRM_THRESHOLD` 這行**
+  依常數動態取值，語意上仍正確（「設成已達門檻」），不受這次改動影響，也不需要
+  重跑（該腳本已完成階段性任務）
+
+### 測試
+`test_observation_lifecycle.py`：移除/整併 5 個依賴「3 次複核」語意的測試
+（`test_three_consecutive_stop_confirmations_archive_on_the_third_day`／
+`test_first_stop_confirmation_does_not_settle_signal_watch_hit_cycle`／
+`test_recovery_during_pending_window_cancels_archive_and_reactivates` 等，
+這些測試的前提本身在新行為下不成立），新增 2 個驗證「第一次 STOP 立即歸檔＋
+立即結算魚尾」的測試（`test_first_stop_immediately_archives`／
+`test_first_stop_settles_matching_signal_watch_hit_cycle`）。全 backend suite
+1272 pass（44 個 observation_lifecycle 測試，較改動前淨減 3 個，反映測試整併）
++ 20 個既有 baseline fail（與本輪無關），零新增失敗。
+
+### 前端
+[archive/page.tsx](<frontend/src/app/signals/(product)/archive/page.tsx>) 的
+觀察狀態說明文字同步更新，拿掉「並經過幾天複核確認」，改成「隔天就會自動從
+『追蹤中』移出」，避免上一輪（同日稍早）剛寫好的文案立刻變成過時資訊。
+
+### Gotcha
+- **這次修法純粹改一個常數 + 更新過時註解／文件，完全沒有動判斷邏輯本身**：
+  `_finalize_observation_archive`／`archive.settle_stock_for_p4_stop`／查詢條件
+  ／STOP 分支的 if/else 結構都原封不動，這是這類「調整緩衝期長短」需求的理想改法
+  ——常數已經被設計成單一 source of truth，不需要在多處硬編碼數字 3
+- **`app/models.py` 的兩處 docstring 也要同步修正**：原本寫死 `(3)` 具體數字在
+  註解裡描述機制，這類「常數值寫死在別處註解」的模式很容易在改常數時被漏掉，這次
+  順手搜尋 `STOP_CONFIRM_THRESHOLD` 全部引用點才抓到這兩處
