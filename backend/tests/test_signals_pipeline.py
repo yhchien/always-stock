@@ -100,7 +100,7 @@ def _stub_all_stages_noop(monkeypatch):
     monkeypatch.setattr(
         llm_caller,
         "assemble_final_output",
-        lambda ctx, expl, *, candidate_pool_size: {
+        lambda ctx, expl, *, candidate_pool_size, total_tokens=None: {
             "market_context": ctx,
             "watchlist": [],
             "removed": [],
@@ -389,7 +389,7 @@ def test_tracking_only_day_persists_empty_p3_snapshot_and_p4_summary(
     monkeypatch.setattr(
         llm_caller,
         "assemble_final_output",
-        lambda ctx, rows, *, candidate_pool_size: {
+        lambda ctx, rows, *, candidate_pool_size, total_tokens=None: {
             "market_context": ctx,
             "watchlist": [],
             "removed": [],
@@ -490,7 +490,7 @@ def test_tracking_only_day_conflict_does_not_mark_partial_failure(
     monkeypatch.setattr(
         llm_caller,
         "assemble_final_output",
-        lambda ctx, rows, *, candidate_pool_size: {
+        lambda ctx, rows, *, candidate_pool_size, total_tokens=None: {
             "market_context": ctx,
             "watchlist": [],
             "removed": [],
@@ -728,7 +728,7 @@ def test_pipeline_passes_db_market_snapshot_into_step_zero(session_factory, monk
     monkeypatch.setattr(
         llm_caller,
         "assemble_final_output",
-        lambda ctx, expl, *, candidate_pool_size: {
+        lambda ctx, expl, *, candidate_pool_size, total_tokens=None: {
             "market_context": ctx,
             "watchlist": [],
             "removed": [],
@@ -772,7 +772,11 @@ def test_pipeline_persists_snapshot_with_payload_fields(session_factory, monkeyp
         assert snap.candidate_pool_size == 1
         assert snap.final_watchlist_size == 0
         assert snap.llm_model == "test-model"
-        assert snap.llm_total_tokens == 1234
+        # 2026-08-12：llm_total_tokens 現在由 pipeline.py 依實際 diagnostic usage
+        # 重新算過、蓋掉 assemble_final_output stub 回傳的任何值——noop stub 沒有
+        # 真實 diagnostic（research/decision/reason 全部 stub 掉），算出來正確是 0，
+        # 不是 stub 裡寫死的 1234；這正是這次接上真實用量追蹤要驗證的行為。
+        assert snap.llm_total_tokens == 0
         assert snap.job_id == job_id
         assert snap.generated_at is not None
 
@@ -873,7 +877,7 @@ def test_pipeline_persists_signal_watch_hits_and_replaces_same_day(session_facto
     monkeypatch.setattr(
         llm_caller,
         "assemble_final_output",
-        lambda ctx, expl, *, candidate_pool_size: payloads.pop(0),
+        lambda ctx, expl, *, candidate_pool_size, total_tokens=None: payloads.pop(0),
     )
 
     target_date = date(2026, 4, 25)
@@ -958,6 +962,66 @@ def test_cap_llm_input_defaults_to_llm_input_hard_limit_constant(monkeypatch):
 
     out = _cap_llm_input(candidates)
     assert [item["stock_id"] for item in out] == ["L2", "L1"]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# _summarize_pipeline_token_usage（2026-08-12 成本追蹤）
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _stage_diag(response_id, total_tokens, key="llm_diagnostic"):
+    return {key: {"response_id": response_id, "usage": {"total_tokens": total_tokens}}}
+
+
+def test_summarize_pipeline_token_usage_combines_all_stages():
+    """整合測試：驗證 pipeline.py 層級的彙整函式正確把 market/research/decision/
+    global_selection/reason/tracking 六段合成一個總數，而且每段各自去重（同一批
+    候選共用同一次 API 呼叫的 usage）。"""
+    market_context = {"market_state": "RANGE", **_stage_diag("m-1", 100)}
+    research_results = [
+        {"stock": "2330", **_stage_diag("r-1", 400)},
+        {"stock": "2317", **_stage_diag("r-1", 400)},  # 同批，去重後只算一次
+        {"stock": "1301", **_stage_diag("r-2", 300)},
+    ]
+    decision_results = [
+        {"stock": "2330", **_stage_diag("d-1", 200)},
+        {"stock": "2317", **_stage_diag("d-1", 200)},
+        {"stock": "1301", **_stage_diag("d-1", 200)},
+    ]
+    global_selection_result = {"stock": "n/a", **_stage_diag("g-1", 5000)}
+    reason_results = [{"stock": "2330", **_stage_diag("w-1", 600)}]
+    tracking_token_usage = {"call_count": 4, "total_tokens": 1200}
+
+    usage = pipeline_mod._summarize_pipeline_token_usage(
+        market_context=market_context,
+        research_results=research_results,
+        decision_results=decision_results,
+        global_selection_result=global_selection_result,
+        reason_results=reason_results,
+        tracking_token_usage=tracking_token_usage,
+    )
+
+    assert usage["by_stage"]["market"] == {"call_count": 1, "total_tokens": 100}
+    assert usage["by_stage"]["research"] == {"call_count": 2, "total_tokens": 700}
+    assert usage["by_stage"]["decision"] == {"call_count": 1, "total_tokens": 200}
+    assert usage["by_stage"]["global_selection"] == {"call_count": 1, "total_tokens": 5000}
+    assert usage["by_stage"]["reason"] == {"call_count": 1, "total_tokens": 600}
+    assert usage["by_stage"]["tracking"] == tracking_token_usage
+    assert usage["total_tokens"] == 100 + 700 + 200 + 5000 + 600 + 1200
+    assert usage["total_call_count"] == 1 + 2 + 1 + 1 + 1 + 4
+
+
+def test_summarize_pipeline_token_usage_handles_all_none_defaults():
+    """P3 沒跑（候選池為 0）的日子：只有 market + tracking 兩段有值。"""
+    usage = pipeline_mod._summarize_pipeline_token_usage(
+        market_context={"market_state": "RANGE", **_stage_diag("m-1", 50)},
+        tracking_token_usage={"call_count": 2, "total_tokens": 300},
+    )
+    assert usage["by_stage"]["research"] == {"call_count": 0, "total_tokens": 0}
+    assert usage["by_stage"]["decision"] == {"call_count": 0, "total_tokens": 0}
+    assert usage["by_stage"]["global_selection"] == {"call_count": 0, "total_tokens": 0}
+    assert usage["by_stage"]["reason"] == {"call_count": 0, "total_tokens": 0}
+    assert usage["total_tokens"] == 350
 
 
 def test_phase2_llm_input_orders_all_73_without_truncation():

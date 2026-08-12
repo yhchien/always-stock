@@ -1049,6 +1049,11 @@ def run_daily_observation_reviews(
         )
 
     external_by_stock, failures = assessment_runner(prompt_payloads)
+    # 2026-08-12（成本追蹤）：P4 每日複核也是 LLM stage 之一，一併彙整進
+    # tracking_summary，讓 pipeline.py 可以把它併進整次 run 的 token 總量。
+    token_usage = llm_caller.summarize_token_usage(
+        external_by_stock.values(), diagnostic_key="_llm_diagnostic"
+    )
     tracking_payload_metrics: List[Dict[str, Any]] = []
     seen_tracking_metrics: set[str] = set()
     for external in external_by_stock.values():
@@ -1220,6 +1225,7 @@ def run_daily_observation_reviews(
         "tracking_state_machine_version": STATE_MACHINE_VERSION,
         "prompt_payload_metrics": tracking_payload_metrics,
         "archived_exit_settled_count": settled_exit_count,
+        "token_usage": token_usage,
     }
     if persist:
         db.commit()

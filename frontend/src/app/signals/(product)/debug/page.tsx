@@ -82,6 +82,12 @@ export default function SignalDebugPage() {
               ["Tracking Prompt", processing?.tracking_prompt_version ?? "—"],
               ["State Machine", processing?.tracking_state_machine_version ?? "—"],
               ["LLM Model", snapshot.llm_model ?? "—"],
+              [
+                "LLM Tokens",
+                snapshot.data.llm_total_tokens != null
+                  ? snapshot.data.llm_total_tokens.toLocaleString("en-US")
+                  : "—（舊快照，2026-08-12 前未記錄）",
+              ],
             ].map(([label, value]) => (
               <article key={label} className="rounded-xl border border-slate-800 bg-slate-900/45 p-3">
                 <p className="text-[11px] text-slate-500">{label}</p>
@@ -89,6 +95,53 @@ export default function SignalDebugPage() {
               </article>
             ))}
           </section>
+
+          {processing?.token_usage && (
+            <section className="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+              <div className="mb-3 flex flex-wrap items-center gap-2">
+                <h2 className="text-sm font-semibold">Token 用量（依 Stage）</h2>
+                <span className="rounded-full border border-slate-700 px-2 py-0.5 text-[11px] text-slate-400">
+                  合計 {processing.token_usage.total_tokens.toLocaleString("en-US")} tokens ／
+                  {processing.token_usage.total_call_count} 次呼叫
+                </span>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="text-slate-500">
+                    <tr>
+                      <th className="pb-1 pr-4">Stage</th>
+                      <th className="pb-1 pr-4">呼叫次數</th>
+                      <th className="pb-1">Tokens</th>
+                    </tr>
+                  </thead>
+                  <tbody className="text-slate-200">
+                    {(
+                      [
+                        ["market", "Market Context"],
+                        ["research", "Research"],
+                        ["decision", "Decision"],
+                        ["global_selection", "Global Selection"],
+                        ["reason", "Reason（長理由）"],
+                        ["tracking", "P4 Tracking"],
+                      ] as const
+                    ).map(([key, label]) => {
+                      const stage = processing.token_usage?.by_stage[key]
+                      return (
+                        <tr key={key} className="border-t border-slate-800">
+                          <td className="py-1 pr-4 text-slate-400">{label}</td>
+                          <td className="py-1 pr-4 font-mono">{stage?.call_count ?? 0}</td>
+                          <td className="py-1 font-mono">
+                            {(stage?.total_tokens ?? 0).toLocaleString("en-US")}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
+
           <section className="grid gap-4 lg:grid-cols-2">
             <article className="rounded-xl border border-slate-800 p-4">
               <h2 className="text-sm font-semibold">Processing Summary</h2>

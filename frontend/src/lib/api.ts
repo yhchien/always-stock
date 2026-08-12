@@ -1490,6 +1490,28 @@ export interface SignalProcessingSummary {
   selection_output_token_reserve?: number
   selection_model_context_limit_tokens?: number
   is_complete?: boolean
+  /** 2026-08-12：這次 run 各 LLM stage 的實際 token 用量（去重後）。 */
+  token_usage?: SignalTokenUsageSummary
+}
+
+export interface SignalStageTokenUsage {
+  call_count: number
+  total_tokens: number
+}
+
+/** 2026-08-12：整次 pipeline run 的 token 用量彙整，見 pipeline.py
+ * `_summarize_pipeline_token_usage`。同一次 API 呼叫（同一批候選共用）只計一次。 */
+export interface SignalTokenUsageSummary {
+  by_stage: {
+    market: SignalStageTokenUsage
+    research: SignalStageTokenUsage
+    decision: SignalStageTokenUsage
+    global_selection: SignalStageTokenUsage
+    reason: SignalStageTokenUsage
+    tracking: SignalStageTokenUsage
+  }
+  total_tokens: number
+  total_call_count: number
 }
 
 export interface SignalMarketMarginToday {
@@ -1560,6 +1582,10 @@ export interface SignalSnapshotData {
   summary: SignalSummary
   candidate_pool_size: number | null
   final_watchlist_size: number | null
+  /** 2026-08-12：這次 run 實際花費的 token 總量（market+research+decision+
+   * global_selection+reason+tracking 六段加總，同一次 API 呼叫的用量只計一次）；
+   * 舊快照（本次改動之前產生的）沒有這個資料，會是 null。 */
+  llm_total_tokens?: number | null
 }
 
 export interface SignalSnapshotResponse {

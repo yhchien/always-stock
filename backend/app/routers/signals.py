@@ -298,6 +298,10 @@ def _serialize_snapshot(snap: SignalSnapshot, db: Optional[Session] = None) -> S
         "summary": summary,
         "candidate_pool_size": snap.candidate_pool_size,
         "final_watchlist_size": snap.final_watchlist_size,
+        # 2026-08-12：llm_total_tokens 欄位在 DB 早就存在，但從未被實際填入或對外
+        # 曝光過（pipeline.py 直到這輪才真的把每次 run 的 token 用量算出來寫進去）；
+        # 補進 data 讓 Debug 頁能顯示，跟 candidate_pool_size 同一個 additive bucket。
+        "llm_total_tokens": snap.llm_total_tokens,
     }
     return SnapshotResponse(
         snapshot_date=snap.snapshot_date,

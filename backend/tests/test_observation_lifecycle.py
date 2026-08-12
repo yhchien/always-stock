@@ -159,6 +159,51 @@ def test_daily_review_does_not_require_candidate_rehit(db, monkeypatch):
     assert db.get(SignalObservation, observation.id).status == "OBSERVING"
 
 
+def test_daily_review_reports_token_usage_from_assessment_diagnostics(db, monkeypatch):
+    """2026-08-12（成本追蹤）：P4 每日複核也是 LLM stage 之一，tracking_summary
+    要能反映實際的 token 用量（供 pipeline.py 併入整次 run 的總量）。"""
+    observation = _observation(db)
+    _patch_evidence(monkeypatch, {observation.id: _healthy_evidence()})
+    external = _external()
+    external["_llm_diagnostic"] = {
+        "response_id": "resp-tracking-1",
+        "usage": {"total_tokens": 250},
+    }
+
+    result = lifecycle.run_daily_observation_reviews(
+        db,
+        review_date=DAY_1,
+        market_context={},
+        current_candidates=[],
+        assessment_runner=_runner_for({"2330": external}),
+        persist=True,
+    )
+
+    assert result["tracking_summary"]["token_usage"] == {
+        "call_count": 1,
+        "total_tokens": 250,
+    }
+
+
+def test_daily_review_token_usage_is_zero_when_diagnostics_absent(db, monkeypatch):
+    observation = _observation(db)
+    _patch_evidence(monkeypatch, {observation.id: _healthy_evidence()})
+
+    result = lifecycle.run_daily_observation_reviews(
+        db,
+        review_date=DAY_1,
+        market_context={},
+        current_candidates=[],
+        assessment_runner=_runner_for({"2330": _external()}),
+        persist=True,
+    )
+
+    assert result["tracking_summary"]["token_usage"] == {
+        "call_count": 0,
+        "total_tokens": 0,
+    }
+
+
 def test_same_day_new_recommendation_creates_observation_but_skips_review(db):
     sync = lifecycle.sync_recommendations(
         db,

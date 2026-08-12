@@ -1182,3 +1182,68 @@ def test_to_evidence_view_handles_already_serialized_date_string():
     }
     out = llm_caller._to_evidence_view([candidate])
     assert out[0]["tracking_status"]["first_seen_date"] == "2026-04-13"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# summarize_token_usage（2026-08-12 成本追蹤）
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _diag(response_id, total_tokens=None, input_tokens=None, output_tokens=None):
+    usage = {}
+    if total_tokens is not None:
+        usage["total_tokens"] = total_tokens
+    if input_tokens is not None:
+        usage["input_tokens"] = input_tokens
+    if output_tokens is not None:
+        usage["output_tokens"] = output_tokens
+    return {"response_id": response_id, "usage": usage}
+
+
+def test_summarize_token_usage_dedupes_by_response_id():
+    """一個 batch 呼叫的多檔候選共用同一個 response_id/usage；天真加總會把同一次
+    API 呼叫的 token 數重複算好幾次，這裡驗證去重後只算一次。"""
+    items = [
+        {"stock": "2330", "llm_diagnostic": _diag("resp-1", total_tokens=500)},
+        {"stock": "2317", "llm_diagnostic": _diag("resp-1", total_tokens=500)},
+        {"stock": "1301", "llm_diagnostic": _diag("resp-1", total_tokens=500)},
+        {"stock": "2454", "llm_diagnostic": _diag("resp-2", total_tokens=300)},
+    ]
+    result = llm_caller.summarize_token_usage(items)
+    assert result == {"call_count": 2, "total_tokens": 800}
+
+
+def test_summarize_token_usage_falls_back_to_input_plus_output():
+    items = [{"llm_diagnostic": _diag("resp-1", input_tokens=120, output_tokens=80)}]
+    result = llm_caller.summarize_token_usage(items)
+    assert result == {"call_count": 1, "total_tokens": 200}
+
+
+def test_summarize_token_usage_skips_items_without_usable_diagnostic():
+    items = [
+        {"stock": "2330"},  # 沒有 llm_diagnostic（例如 backend_pre_removed）
+        {"stock": "2317", "llm_diagnostic": {}},  # 有 key 但空 dict
+        {"stock": "1301", "llm_diagnostic": _diag("resp-1", total_tokens=None)},  # usage 缺 token 欄位
+    ]
+    result = llm_caller.summarize_token_usage(items)
+    assert result == {"call_count": 0, "total_tokens": 0}
+
+
+def test_summarize_token_usage_single_dict_wrapped_in_list():
+    """market_context／global_selection 是單一結果，呼叫端包成一元素 list。"""
+    market_context = {"market_state": "RANGE", "llm_diagnostic": _diag("resp-market", total_tokens=1000)}
+    result = llm_caller.summarize_token_usage([market_context])
+    assert result == {"call_count": 1, "total_tokens": 1000}
+
+
+def test_summarize_token_usage_custom_diagnostic_key():
+    """P4 tracking 用 `_llm_diagnostic`（底線開頭），跟其他 stage 的
+    `llm_diagnostic` key 名不同。"""
+    items = [{"stock": "2330", "_llm_diagnostic": _diag("resp-1", total_tokens=400)}]
+    result = llm_caller.summarize_token_usage(items, diagnostic_key="_llm_diagnostic")
+    assert result == {"call_count": 1, "total_tokens": 400}
+
+
+def test_summarize_token_usage_handles_empty_and_none_input():
+    assert llm_caller.summarize_token_usage([]) == {"call_count": 0, "total_tokens": 0}
+    assert llm_caller.summarize_token_usage(None) == {"call_count": 0, "total_tokens": 0}

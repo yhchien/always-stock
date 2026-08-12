@@ -860,6 +860,59 @@ def run_watch_reason_batch(
     return out
 
 
+def _extract_usage_total_tokens(usage: Any) -> Optional[int]:
+    """`_call_llm_json` 存進 diagnostic 的 usage 是 Responses API 的
+    `response.usage.model_dump()`；優先讀 `total_tokens`，缺的話退回
+    `input_tokens + output_tokens` 相加（涵蓋不同 SDK 版本欄位命名差異）。"""
+    if not isinstance(usage, dict):
+        return None
+    total = usage.get("total_tokens")
+    if isinstance(total, (int, float)):
+        return int(total)
+    input_tokens = usage.get("input_tokens")
+    output_tokens = usage.get("output_tokens")
+    if isinstance(input_tokens, (int, float)) and isinstance(output_tokens, (int, float)):
+        return int(input_tokens) + int(output_tokens)
+    return None
+
+
+def summarize_token_usage(
+    items: Any,
+    *,
+    diagnostic_key: str = "llm_diagnostic",
+) -> Dict[str, int]:
+    """2026-08-12：彙整某個 pipeline stage 的 token 用量。
+
+    `items` 可以是任意 dict 的可疊代集合（list、dict.values()...）；每個
+    item 若有 `diagnostic_key` 對應的 diagnostic dict（`_call_llm_json` 產出，
+    含 `response_id` + `usage`）才會被計入。同一個 batch 呼叫的多檔候選會共用
+    同一個 `response_id`，用它去重後才加總，避免同一次 API 呼叫的 token 數被
+    重複計算好幾次（batch size 8 的話，天真加總會膨脹成 8 倍）。`response_id`
+    缺失時（理論上不該發生）退化成不去重，寧可保守多算、不要漏算。單一 dict
+    （非可疊代集合，例如 market_context／global_selection 的單次結果）呼叫端
+    自行包成一元素 list 再傳入。
+    """
+    seen: Dict[str, int] = {}
+    fallback_index = 0
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        diagnostic = item.get(diagnostic_key)
+        if not isinstance(diagnostic, dict):
+            continue
+        tokens = _extract_usage_total_tokens(diagnostic.get("usage"))
+        if tokens is None:
+            continue
+        response_id = diagnostic.get("response_id")
+        if response_id:
+            key = str(response_id)
+        else:
+            fallback_index += 1
+            key = f"_no_response_id_{fallback_index}"
+        seen[key] = tokens
+    return {"call_count": len(seen), "total_tokens": sum(seen.values())}
+
+
 def assemble_final_output(
     market_context: Dict[str, Any],
     explanation: List[Dict[str, Any]],

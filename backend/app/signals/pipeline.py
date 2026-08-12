@@ -715,11 +715,27 @@ def run_signal_pipeline_sync(
                         "is_complete": False,
                     }
                 )
+                # 2026-08-12（成本追蹤）：全體比較這次雖然失敗，OpenAI 仍然真的收費
+                # 過（GlobalSelectionError 的 diagnostic 帶著那次失敗呼叫的 usage），
+                # 一併算進去才是這次 run 真正花費的完整數字。
+                selection_usage_diagnostic = selection_failure.get("diagnostic") or {}
+                p3_token_usage = _summarize_pipeline_token_usage(
+                    market_context=market_context,
+                    research_results=research_results,
+                    decision_results=assessed_items,
+                    global_selection_result=(
+                        {"llm_diagnostic": selection_usage_diagnostic}
+                        if selection_usage_diagnostic
+                        else None
+                    ),
+                )
                 failed_payload = llm_caller.assemble_final_output(
                     market_context,
                     removed_assessments,
                     candidate_pool_size=len(pool),
+                    total_tokens=p3_token_usage["total_tokens"],
                 )
+                processing_summary["token_usage"] = p3_token_usage
                 failed_payload["watchlist"] = []
                 failed_payload["not_selected"] = []
                 failed_payload["final_watchlist_size"] = 0
@@ -786,6 +802,21 @@ def run_signal_pipeline_sync(
                         "prompt_payload_metrics", []
                     )
                 )
+                token_usage = _summarize_pipeline_token_usage(
+                    market_context=market_context,
+                    research_results=research_results,
+                    decision_results=assessed_items,
+                    global_selection_result=(
+                        {"llm_diagnostic": selection_usage_diagnostic}
+                        if selection_usage_diagnostic
+                        else None
+                    ),
+                    tracking_token_usage=tracking_result.get(
+                        "tracking_summary", {}
+                    ).get("token_usage"),
+                )
+                processing_summary["token_usage"] = token_usage
+                failed_payload["llm_total_tokens"] = token_usage["total_tokens"]
                 failed_summary["technical_failures"] = technical_failures
                 failed_summary["selection_summary"][
                     "technical_failure_count"
@@ -895,9 +926,23 @@ def run_signal_pipeline_sync(
                 pct=95,
                 label="寫入 snapshot",
             )
-            final_payload = llm_caller.assemble_final_output(
-                market_context, explanation, candidate_pool_size=len(pool)
+            # 2026-08-12（成本追蹤）：先算 P3 段（market/research/decision/
+            # global_selection/reason）的 token 用量；P4（tracking）比 P3 晚跑完，
+            # 下面拿到 tracking_result 後會重算一次補上 tracking 那份、覆寫這裡的值。
+            p3_token_usage = _summarize_pipeline_token_usage(
+                market_context=market_context,
+                research_results=research_results,
+                decision_results=assessed_items,
+                global_selection_result=selection_result,
+                reason_results=enriched_watch,
             )
+            final_payload = llm_caller.assemble_final_output(
+                market_context,
+                explanation,
+                candidate_pool_size=len(pool),
+                total_tokens=p3_token_usage["total_tokens"],
+            )
+            processing_summary["token_usage"] = p3_token_usage
             technical_failures = [
                 *research_failures,
                 *decision_failures,
@@ -1083,6 +1128,21 @@ def run_signal_pipeline_sync(
                     "prompt_payload_metrics", []
                 )
             )
+            # 補上 P4（tracking）的 token 用量，覆寫成整次 run（P3+P4）的完整總量；
+            # final_payload["llm_total_tokens"] 在 assemble_final_output() 當下只
+            # 算了 P3，這裡是唯一需要再次覆寫它的地方。
+            token_usage = _summarize_pipeline_token_usage(
+                market_context=market_context,
+                research_results=research_results,
+                decision_results=assessed_items,
+                global_selection_result=selection_result,
+                reason_results=enriched_watch,
+                tracking_token_usage=tracking_result.get("tracking_summary", {}).get(
+                    "token_usage"
+                ),
+            )
+            processing_summary["token_usage"] = token_usage
+            final_payload["llm_total_tokens"] = token_usage["total_tokens"]
             final_summary["technical_failures"] = technical_failures
             final_summary["tracking_conflicts"] = tracking_conflicts
             final_summary["selection_summary"][
@@ -1265,10 +1325,21 @@ def _run_p4_tracking_only_day(
     ] = tracking_result.get("tracking_summary", {}).get(
         "prompt_payload_metrics", []
     )
+    # 2026-08-12（成本追蹤）：這天沒有 P3 候選，只有 market context + P4 複核兩段
+    # 真的呼叫過 LLM；tracking_result 這裡已經算好，跟其他兩個 call site 不同，
+    # 不需要分兩段算。
+    token_usage = _summarize_pipeline_token_usage(
+        market_context=market_context,
+        tracking_token_usage=tracking_result.get("tracking_summary", {}).get(
+            "token_usage"
+        ),
+    )
+    processing_summary["token_usage"] = token_usage
     payload = llm_caller.assemble_final_output(
         market_context,
         [],
         candidate_pool_size=0,
+        total_tokens=token_usage["total_tokens"],
     )
     payload["watchlist"] = []
     payload["not_selected"] = []
@@ -1436,6 +1507,46 @@ def _mark_failed(
     job_again.error_message = traceback_text[:2000]
     job_again.finished_at = datetime.utcnow()
     db.commit()
+
+
+def _summarize_pipeline_token_usage(
+    *,
+    market_context: Optional[Dict[str, Any]] = None,
+    research_results: Optional[list] = None,
+    decision_results: Optional[list] = None,
+    global_selection_result: Optional[Dict[str, Any]] = None,
+    reason_results: Optional[list] = None,
+    tracking_token_usage: Optional[Dict[str, int]] = None,
+) -> Dict[str, Any]:
+    """2026-08-12（成本追蹤）：彙整單次 pipeline run 各 LLM stage 的實際 token 用量。
+
+    每段吃的是「合併前」的原始 stage 結果（例如 decision 用 `assessed_items`，
+    不是後來跟 reason 合併過的 `explanation`／`selected_items`——合併時
+    `{**item, **watch_by_id[sid]}` 會讓 reason 的 `llm_diagnostic` 蓋掉 decision
+    的，用合併後的資料算會把 decision 的用量算成 reason 的，兩段都算錯）。
+    單一結果的 stage（market_context／global_selection）呼叫端直接傳整個 dict，
+    這裡統一包成一元素 list 再交給 `summarize_token_usage`。`tracking_token_usage`
+    來自 P4（`run_daily_observation_reviews` 回傳的 `tracking_summary.token_usage`），
+    P4 通常比 P3 晚才跑完，呼叫端可以先呼叫一次（不含 tracking）取得 P3 usage，
+    P4 跑完後再呼叫一次（補上 `tracking_token_usage`）覆蓋 processing_summary。
+    """
+    by_stage = {
+        "market": llm_caller.summarize_token_usage(
+            [market_context] if market_context else []
+        ),
+        "research": llm_caller.summarize_token_usage(research_results),
+        "decision": llm_caller.summarize_token_usage(decision_results),
+        "global_selection": llm_caller.summarize_token_usage(
+            [global_selection_result] if global_selection_result else []
+        ),
+        "reason": llm_caller.summarize_token_usage(reason_results),
+        "tracking": tracking_token_usage or {"call_count": 0, "total_tokens": 0},
+    }
+    return {
+        "by_stage": by_stage,
+        "total_tokens": sum(v["total_tokens"] for v in by_stage.values()),
+        "total_call_count": sum(v["call_count"] for v in by_stage.values()),
+    }
 
 
 def _persist_snapshot(
