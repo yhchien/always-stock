@@ -4240,3 +4240,64 @@ fail（與本輪無關），零新增失敗。
 - **判斷「filter 沒作用」類回報時記得先查真實資料**：這次跟上一輪的「排序看起來沒反應」
   是兩個獨立問題，不要因為都發生在同一天就假設同一個根因；本次是純粹去讀 GitHub Actions
   log 才找到的，不是靠推測
+
+## TRACKING_SELECTION_CONFLICT 不再觸發整天 partial_failure（2026-08-11）
+
+### 背景
+手動重跑 8/11 驗證上面那次 timeout 修法時，workflow 又 fail 了——但這次是完全不同、
+之前沒查過的問題。查 production 快照：`global_selection_status: "COMPLETED"`、
+`selection_complete: true`、`research_failed=0`、`decision_failed=0`，116 檔全部正常
+比較出 22 檔 RECOMMEND——timeout 修法確認有效。唯一的「失敗」是一筆
+`TRACKING_SELECTION_CONFLICT`（股票 2383 台光電）。
+
+### 這筆衝突本身是什麼
+2383 從 8/6 開始被 P4 追蹤，原始論點是「AI 伺服器材料升級直接受惠」。之後 8/9 CAUTION、
+8/10 STOP（連續兩次複核顯示 CATALYST_THESIS／MOMENTUM_STRUCTURE／PARTICIPATION 多維度
+持續失效）、8/11 STOP 確認——**P4 判斷的是「這幾天累積下來，開倉理由還站不站得住腳」**，
+是持續性/趨勢確認邏輯。同一天，**P3 完全不看歷史，只用今天收盤後的全市場最新數據重新
+比較一次**——2383 今天的 `quality_evidence` 7 項裡 6 項成立、`technical_status: breakout`，
+在 116 檔候選裡排第 8（22 檔入選中），所以 P3 照樣 RECOMMEND。
+
+**這不是資料錯誤或選股邏輯 bug**：兩套系統本來就用不同時間窗（P3=今天全市場快照／P4=
+從追蹤起點累積至今）跟不同哲學（P3=每天全新判斷／P4=論點持續性確認）評估同一檔股票，
+一天內給出相反結論是可能發生、且系統設計上**刻意會偵測**這種情境——`run_daily_
+observation_reviews()` 在判定 STOP 前會先查 `p3_recommended` 集合，命中就記一筆
+`TRACKING_SELECTION_CONFLICT`（純資訊性標記，供人工檢視），不是拿來否決任一邊的決策。
+
+**AskUserQuestion 讓使用者決定要不要讓兩邊互相影響決策**（3 個選項：維持現狀只記錄／
+P4 STOP 時 P3 當天不得推薦同一檔／P3 RECOMMEND 時 P4 當天不得對同一檔判 STOP），使用者
+選**維持現狀，只記錄不影響決策**——兩套系統的獨立性是刻意設計，不要因為單一案例去耦合。
+
+### 真正的 bug：衝突被錯誤分類成技術失敗
+`pipeline.py` 把 P4 回傳的 `conflicts`（資訊性標記）跟 `technical_failures`（research/
+decision/tracking review 真正處理失敗）合併進同一個清單，只要清單非空就
+`_mark_partial_failure`（job 狀態 = `partial_failure`，workflow FAIL，需人工重跑——而
+重跑要重新處理全部 116+ 檔、重打一次完整的 OpenAI 費用，但其實只是為了一個純資訊性的
+標記）。兩處重複的合併邏輯都有這個問題：`run_signal_pipeline_sync`（主流程，P3+P4 都跑）
+與 `_run_p4_tracking_only_day`（候選池為空、只跑 P4 複核的日子）。
+
+### 修法（[pipeline.py](backend/app/signals/pipeline.py)）
+兩處都把 `conflicts` 從 `technical_failures` 合併中拆開，改存進
+`processing_summary["tracking_conflicts"]`（+ `final_summary["tracking_conflicts"]`）；
+`technical_failures`／`failed_stock_ids`／`_mark_partial_failure` 觸發條件只看真正的
+技術失敗。`is_complete` 語意同步修正（衝突不影響「今天處理完了嗎」的判斷）。
+
+**前端零改動**：`/signals/observations` 的 `TRACKING_SELECTION_CONFLICT` 通知本來就是
+讀獨立的 `fetchSignalTrackingSummary().conflict_count`，不經過 `technical_failures`；
+`/signals/debug` 的「Processing Summary」面板本來就是把整個 `processing_summary` dump
+成 JSON，`tracking_conflicts` 新增的 key 自動出現在既有面板裡，不需要新增任何 UI。
+
+### 測試
+`test_signals_pipeline.py` 新增 2 個回歸測試（主流程一個、無候選日路徑一個），都用
+2383 這個真實案例當測試資料，斷言：`job.status == "done"`（不是 `partial_failure`）、
+`snapshot.summary.technical_failures == []`、`snapshot.summary.tracking_conflicts`
+完整保留衝突細節。全 backend suite 1275 pass（+2）+ 20 個既有 baseline fail（與本輪
+無關），零新增失敗。
+
+### Gotcha
+- **不是「修一個 bug」，是「先確認這不是 bug 再修分類邏輯」**：如果沒有先查清楚 P3/P4
+  各自的判斷依據，可能會誤以為某一邊算錯了，去改選股邏輯——實際上兩邊都算對，錯的是
+  workflow 層「有衝突標記 = 失敗」這個過度連坐的分類規則
+- **這類「重跑修好一個問題卻冒出另一個問題」的情境要分開處理**：本輪先確認 timeout 修法
+  本身有效（真的看到 116 檔完整跑完），再單獨處理這個新發現的分類 bug，不要把兩者混在
+  一起判斷「修法到底有沒有效」
