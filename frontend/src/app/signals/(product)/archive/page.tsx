@@ -23,14 +23,19 @@ import {
   type SignalArchiveSummaryResponse,
   type SignalClosureReason,
   type SignalObservationItem,
+  type SignalObservationStatus,
 } from "@/lib/api"
 
-// 4 個互斥分類（radio 式 chip）：排序純前端計算，一次抓全部後 client-side sort
+// 6 個互斥分類（radio 式 chip）：前 4 個是排序（純前端 client-side sort）；
+// 後 2 個（observing／caution）是依 P4 觀察狀態篩選，不是排序——選到其中一個時
+// 只保留該狀態的股票，並沿用「追蹤日期」的排序順序（沒有各自獨立的排序準則）。
 const VIEW_OPTIONS = [
   { value: "first_seen", label: "追蹤日期" },
   { value: "return_desc", label: "最多報酬率" },
   { value: "return_asc", label: "最低報酬率" },
   { value: "hit_count", label: "抓到次數" },
+  { value: "observing", label: "觀察中" },
+  { value: "caution", label: "警戒" },
 ] as const
 
 type ArchiveView = (typeof VIEW_OPTIONS)[number]["value"]
@@ -281,6 +286,57 @@ function resolveLiveReturnPct(
     return ((quote.price - item.baseline_price) / item.baseline_price) * 100
   }
   return item.return_pct
+}
+
+// 2026-08-12：追蹤中卡片改用底色反映 P4 觀察狀態，取代原本只有點開 popup 才看得到的
+// 小徽章。STOPPED 理論上不該出現在追蹤中清單（P4 確認停止觀察時魚尾會一併結算移出），
+// 這裡仍保留一個中性色分支防禦性處理，避免萬一資料不同步時卡片樣式失控。
+function observationCardTone(status: SignalObservationStatus | undefined): string {
+  if (status === "CAUTION") {
+    return "border-amber-500/60 bg-amber-500/10 hover:border-amber-400/80 hover:bg-amber-500/15"
+  }
+  if (status === "OBSERVING") {
+    return "border-sky-600/50 bg-sky-500/5 hover:border-sky-400/70 hover:bg-sky-500/10"
+  }
+  if (status === "STOPPED") {
+    return "border-slate-600 bg-slate-800/40 hover:border-slate-500"
+  }
+  return "border-slate-800 bg-slate-900/50 hover:border-sky-500/50 hover:bg-slate-800/60"
+}
+
+// 卡片上「排序關聯數值」那一行：依目前選的分類顯示對應資訊，不必點開 popup 才看得到
+// （2026-08-12：使用者反映排序後還要點開卡片才知道實際數字，故補上）。
+function ArchiveCardContextLine({
+  view,
+  item,
+  quote,
+}: {
+  view: ArchiveView
+  item: SignalArchiveSummaryItem
+  quote: RealtimeQuote | undefined
+}) {
+  if (view === "return_desc" || view === "return_asc") {
+    const value = resolveLiveReturnPct(item, quote)
+    if (value == null) {
+      return <span className="text-[11px] text-slate-500">報酬率 --</span>
+    }
+    const color = value > 0 ? "text-red-400" : value < 0 ? "text-green-400" : "text-slate-400"
+    const arrow = value > 0 ? "▲" : value < 0 ? "▼" : ""
+    return (
+      <span className={`text-[11px] font-medium ${color}`}>
+        報酬率 {arrow} {formatPct(value)}
+      </span>
+    )
+  }
+  if (view === "hit_count") {
+    return <span className="text-[11px] text-slate-400">抓到 {item.hit_count} 次</span>
+  }
+  // first_seen／observing／caution 都沒有各自獨立的排序準則，統一顯示首次抓到日期
+  return (
+    <span className="text-[11px] text-slate-400">
+      首次抓到 {formatShortDate(item.first_seen_date)}
+    </span>
+  )
 }
 
 function ExtremeReturnCell({
@@ -663,6 +719,33 @@ function SignalArchiveContent() {
     setShowAllActive(false)
   }, [view])
 
+  // 魚尾與每日觀察（P4）合併為單一入口：archive 卡片用底色標示 P4 觀察狀態
+  // （觀察中/警戒/已停止觀察）。兩套後端邏輯仍各自獨立運作，這裡只是把 P4 的
+  // 狀態拿來當底色與篩選條件；沒有對應觀察（archive 抓到但 P4 沒建立）就用中性色。
+  // 要放在 sortedActiveItems/filteredActiveItems 之前，因為「觀察中／警戒」這兩個
+  // 分類本身就是靠這份資料做篩選（不是排序）。
+  const [observations, setObservations] = useState<SignalObservationItem[]>([])
+  useEffect(() => {
+    let cancelled = false
+    fetchSignalObservations({ limit: 2000 })
+      .then((data) => {
+        if (!cancelled) setObservations(data.observations)
+      })
+      .catch(() => {
+        // 靜默失敗：P4 狀態是附加資訊，載入失敗不影響 archive 主要功能
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+  const observationByStock = useMemo(() => {
+    const latest = new Map<string, SignalObservationItem>()
+    observations.forEach((item) => {
+      if (!latest.has(item.stock)) latest.set(item.stock, item)
+    })
+    return latest
+  }, [observations])
+
   // 分類排序：純前端。null 報酬率（第一天抓到還沒 baseline）在兩種報酬排序都排最後
   const sortedActiveItems = useMemo(() => {
     const items = summary?.items ?? []
@@ -699,22 +782,32 @@ function SignalArchiveContent() {
     return copy
   }, [summary?.items, view])
 
+  const isStatusFilterView = view === "observing" || view === "caution"
+
   const filteredActiveItems = useMemo(() => {
+    let items = sortedActiveItems
+    if (view === "observing" || view === "caution") {
+      const targetStatus = view === "observing" ? "OBSERVING" : "CAUTION"
+      items = items.filter(
+        (item) => observationByStock.get(item.stock_id)?.status === targetStatus,
+      )
+    }
     const q = activeSearch.trim().toLowerCase()
-    if (!q) return sortedActiveItems
-    return sortedActiveItems.filter(
+    if (!q) return items
+    return items.filter(
       (item) =>
         item.stock_id.toLowerCase().includes(q) ||
         (item.stock_name ?? "").toLowerCase().includes(q),
     )
-  }, [sortedActiveItems, activeSearch])
+  }, [sortedActiveItems, activeSearch, view, observationByStock])
 
-  // 搜尋中直接搜全部（忽略前 15 限制）；未搜尋時依「查看更多」狀態截斷
+  // 搜尋中或「觀察中／警戒」狀態篩選時直接顯示全部符合的（忽略前 15 限制）；
+  // 其他情況依「查看更多」狀態截斷
   const isSearchingActive = activeSearch.trim() !== ""
-  const visibleActiveItems =
-    isSearchingActive || showAllActive
-      ? filteredActiveItems
-      : filteredActiveItems.slice(0, TOP_N)
+  const bypassTopNTruncation = isSearchingActive || isStatusFilterView || showAllActive
+  const visibleActiveItems = bypassTopNTruncation
+    ? filteredActiveItems
+    : filteredActiveItems.slice(0, TOP_N)
 
   const filteredCompletedItems = useMemo(() => {
     if (!completedSummary?.items) return []
@@ -744,31 +837,6 @@ function SignalArchiveContent() {
   useEffect(() => {
     void loadSummary()
   }, [loadSummary])
-
-  // 魚尾與每日觀察（P4）合併為單一入口：archive 卡片額外標示 P4 觀察狀態
-  // （觀察中/警戒/已停止觀察）。兩套後端邏輯仍各自獨立運作，這裡只是把 P4 的
-  // 狀態當一個徽章顯示；沒有對應觀察（archive 抓到但 P4 沒建立）就不顯示徽章。
-  const [observations, setObservations] = useState<SignalObservationItem[]>([])
-  useEffect(() => {
-    let cancelled = false
-    fetchSignalObservations({ limit: 2000 })
-      .then((data) => {
-        if (!cancelled) setObservations(data.observations)
-      })
-      .catch(() => {
-        // 靜默失敗：P4 狀態徽章是附加資訊，載入失敗不影響 archive 主要功能
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
-  const observationByStock = useMemo(() => {
-    const latest = new Map<string, SignalObservationItem>()
-    observations.forEach((item) => {
-      if (!latest.has(item.stock)) latest.set(item.stock, item)
-    })
-    return latest
-  }, [observations])
 
   useEffect(() => {
     let cancelled = false
@@ -872,6 +940,28 @@ function SignalArchiveContent() {
               </p>
               <p className="mt-1 text-slate-400">
                 同產業 LEADER 已先漲、該股漲幅落後、業務題材高度相關、法人或量能開始轉強、技術出現 early_turn 訊號。落後段位開始補漲的個股。
+              </p>
+            </div>
+          </div>
+          <div className="mt-2 rounded-lg border border-slate-800 bg-slate-900/60 p-3 text-xs leading-6 text-slate-400 sm:grid sm:grid-cols-2 sm:gap-3">
+            <div>
+              <p className="text-slate-200">
+                <span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-sky-400 align-middle" />
+                <span className="font-medium">觀察中</span>
+                <span className="ml-1.5 inline-block h-3 w-6 rounded border border-sky-600/50 bg-sky-500/5 align-middle" />
+              </p>
+              <p className="mt-1 text-slate-400">
+                每日觀察（P4）的關鍵條件目前持續成立，卡片維持藍色底。
+              </p>
+            </div>
+            <div>
+              <p className="text-slate-200">
+                <span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-amber-400 align-middle" />
+                <span className="font-medium">警戒</span>
+                <span className="ml-1.5 inline-block h-3 w-6 rounded border border-amber-500/60 bg-amber-500/10 align-middle" />
+              </p>
+              <p className="mt-1 text-slate-400">
+                部分關鍵條件今天開始不成立，卡片轉琥珀色底；值得留意但不是賣出訊號。若警戒持續到系統判定推薦論點已失效（停止觀察），並經過幾天複核確認，會自動從「追蹤中」移出，改記錄在下方「追蹤期滿移出紀錄」（顯示「觀察已停止」），同時結算當時的報酬率。
               </p>
             </div>
           </div>
@@ -981,7 +1071,7 @@ function SignalArchiveContent() {
                 </button>
               )}
               <span className="ml-auto text-xs text-slate-500">
-                {isSearchingActive
+                {bypassTopNTruncation
                   ? `${filteredActiveItems.length} / ${summary.items.length} 檔`
                   : `顯示 ${visibleActiveItems.length} / ${summary.items.length} 檔`}
               </span>
@@ -1000,22 +1090,29 @@ function SignalArchiveContent() {
                 找不到符合「{activeSearch}」的股票
               </p>
             )}
-            {/* 極簡卡片：只留代號+名稱 / 即時股價 / 當日漲跌幅；其餘資訊在點開的 popup */}
+            {filteredActiveItems.length === 0 && !isSearchingActive && isStatusFilterView && (
+              <p className="py-4 text-center text-sm text-slate-400">
+                目前沒有「{view === "observing" ? "觀察中" : "警戒"}」的股票
+              </p>
+            )}
+            {/* 極簡卡片：代號+名稱 / 依分類顯示對應數值 / 即時股價 / 當日漲跌幅；
+                底色依 P4 觀察狀態（觀察中=藍、警戒=琥珀、其餘中性）；其餘資訊在點開的 popup */}
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
               {visibleActiveItems.map((item) => {
                 const quote = liveQuotes.get(item.stock_id)
+                const status = observationByStock.get(item.stock_id)?.status
                 return (
                   <button
                     key={item.stock_id}
                     type="button"
                     onClick={() => setPopupStockId(item.stock_id)}
-                    className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-900/50 px-3 py-2.5 text-left transition hover:border-sky-500/50 hover:bg-slate-800/60"
+                    className={`flex items-center justify-between gap-3 rounded-lg border px-3 py-2.5 text-left transition ${observationCardTone(status)}`}
                   >
-                    <div className="flex min-w-0 flex-col">
+                    <div className="flex min-w-0 flex-col gap-0.5">
                       <span className="truncate text-sm font-semibold text-slate-100">
                         {item.stock_id} {item.stock_name}
                       </span>
-                      <span className="text-[11px] text-slate-500">查看更多 →</span>
+                      <ArchiveCardContextLine view={view} item={item} quote={quote} />
                     </div>
                     <div className="flex shrink-0 flex-col items-end">
                       <span className="font-mono text-sm text-slate-100">
@@ -1027,7 +1124,7 @@ function SignalArchiveContent() {
                 )
               })}
             </div>
-            {!isSearchingActive && filteredActiveItems.length > TOP_N && (
+            {!bypassTopNTruncation && filteredActiveItems.length > TOP_N && (
               <div className="mt-3 flex justify-center">
                 <button
                   type="button"
