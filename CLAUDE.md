@@ -4647,3 +4647,60 @@ Archive 頁「警戒」說明區塊下方新增一段「停止觀察的判斷依
   顯示那邊記得改、排序那邊忘了改——`resolveLiveReturnPct` 本來就是一個獨立
   函式，兩處呼叫同一個函式，之後只要改動一次就能同步影響顯示跟排序，不會再
   出現兩邊各自維護一份邏輯、其中一份忘記同步更新的問題
+
+## 首頁即時報價很慢/常出不來：短 TTL 快取 + 降低輪詢頻率（2026-08-13）
+
+### 查證
+`/api/realtime/quotes`（[realtime.py](backend/app/routers/realtime.py)）是
+同步阻塞呼叫 TWSE（`urllib.request.urlopen`），**完全沒有任何快取**；首頁
+`DailySignalsPanel` 呼叫 `useRealtimeQuotes(watchlistStockIds)` 沒帶
+interval 參數，走 hook 預設值 **15 秒**輪詢一次——明顯比 archive 頁等其他
+頁面已採用的 60 秒更頻繁。
+
+本機直連 TWSE 實測（[useRealtimeQuotes.ts](frontend/src/lib/useRealtimeQuotes.ts)
+同款 20 檔 batch）：
+- 單一請求循序打 6 次：穩定在 **0.6~1.7 秒**
+- 8 個並行請求（模擬多位使用者同時瀏覽首頁）：延遲直接拉到 **1.2~4.2 秒**
+
+確認「很慢很慢」在真實資料上是有感、可量測的，不是使用者主觀感受。「常常
+出不來」對應到程式碼裡的一個具體 bug：舊版任何 TWSE 呼叫失敗（單一次
+timeout／連線錯誤）都會讓**整批**（哪怕大多數股票明明拿得到資料）直接 502。
+
+### 修法
+1. **per-stock 短 TTL（8 秒）cache**（純 in-process dict + threading.Lock，
+   比照既有 [market_cache.py](backend/app/signals/market_cache.py) 4 小時
+   cache 的簡單模式）：不同使用者請求的股票集合通常有重疊（同一批熱門/自選
+   股），只有真正沒被任何人最近查過的股票才需要重打 TWSE。TTL 刻意設短，在
+   「大幅降低重複請求量」跟「維持接近即時的新鮮度」之間取平衡——比前端輪詢
+   間隔（15~60 秒視頁面而定）短很多，不會讓使用者覺得資料卡住不動
+2. **部分失敗不再拖累整批**：`_fetch_quotes` 對「快取沒有、需要重打 TWSE」
+   的那個子集包 try/except，失敗時記 warning 並回傳快取命中的部分，不因為
+   缺的那幾檔打不到就讓整個 response 一起噴掉（原本任何例外都直接 502）
+3. **首頁輪詢間隔從預設 15 秒降到 60 秒**（[DailySignalsPanel.tsx](frontend/src/components/DailySignalsPanel.tsx)），
+   跟 archive 頁等其他頁面已採用的頻率一致，從源頭減少請求量
+
+### 測試
+`test_realtime.py` 新增 5 個測試（`TestQuoteCache`）：cache 命中不重打
+TWSE、partial cache hit 只補缺的那幾檔、TTL 過期後重新打、TWSE 失敗時回傳
+快取命中的部分而非整包噴掉、完全沒快取又失敗時回空陣列（不是例外）。加
+`autouse` fixture 每個測試前後清空 module-level `_quote_cache`，避免測試
+互相污染（同一個 stock_id 在不同測試預期不同價格）。全 backend suite 1289
+pass（+5）+ 20 個既有 baseline fail（與本輪無關），零新增失敗。
+
+### Gotcha
+- **這個 cache 解決的是「時間點分散但落在同一個 8 秒窗口內」的重複請求，
+  不是「完全同一瞬間發生的第一次請求」**：驗證時發現對一批「全新、還沒有
+  任何人查過」的股票同時發出 8 個並行請求，8 個請求都會各自判定 cache miss、
+  各自獨立打 TWSE（因為 cache 只記錄「已完成」的結果，沒有做「正在進行中」
+  的請求合併/排隊機制）——這是刻意的範圍取捨：真正解決「完全同一瞬間的
+  burst」需要 in-flight request coalescing（用 `threading.Condition` 讓後到
+  的請求等前一個還在進行中的請求完成、共用結果），複雜度顯著提高，這次先用
+  較簡單的「完成後快取」處理最常見的情境（多位使用者各自獨立的輪詢計時器，
+  自然不會完全同步），未來若還有明顯的同一瞬間 burst 問題再考慮加
+- **重複測試觀察到 TWSE 本身在短時間內收到多輪高頻請求後似乎也會變慢**（不只
+  是本專案沒快取這一個因素）：這部分不在這次修法的可控範圍內，是使用未受
+  官方支援的公開 API 的既有風險；快取能大幅減少「多位使用者時間點分散但接近」
+  情境下打向 TWSE 的實際請求量，但無法完全消除 TWSE 端本身的不穩定性
+- **測試時避免對 TWSE 做過度激進的重複壓測**：本輪驗證只做了少量、間隔的
+  請求批次，沒有持續長時間對公開端點做高頻壓力測試，是刻意節制，避免對
+  TWSE 造成不必要的負擔或讓自己的來源 IP 被標記
