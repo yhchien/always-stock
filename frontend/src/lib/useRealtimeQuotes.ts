@@ -40,7 +40,14 @@ export function useRealtimeQuotes(
       try {
         const data = await fetchRealtimeQuotes(ids)
         if (active && data.length > 0) {
-          setQuotes(new Map(data.map((q) => [q.stock_id, q])))
+          // 2026-08-13：合併而非整包覆蓋——fetchRealtimeQuotes 內部改用
+          // Promise.allSettled 後，單一 batch 逾時只會讓「那批」這次沒有新資料，
+          // 不代表要把它們既有的（上一輪成功拿到的）報價也一起清空變成空白。
+          setQuotes((prev) => {
+            const next = new Map(prev)
+            for (const q of data) next.set(q.stock_id, q)
+            return next
+          })
         }
       } catch {
         // Silently ignore — market may be closed

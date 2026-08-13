@@ -29,9 +29,28 @@ export function resetClientCacheForTests(): void {
 /**
  * 統一的 fetch wrapper，帶上 session cookie（M18）。
  * 後端的 httpOnly session cookie 需要 credentials: 'include' 才會被帶上。
+ *
+ * `timeoutMs`（optional）：瀏覽器原生 fetch 沒有預設逾時，一個卡住的請求可能
+ * 掛著等到瀏覽器自己極長的預設值（有些情況下數十分鐘）才放棄。2026-08-13：
+ * 魚尾追蹤頁的即時股價回報「30 分鐘都跑不出來」，查證發現 `fetchRealtimeQuotes`
+ * 完全沒有逾時保護，且用 `Promise.all` 等全部 batch——只要其中一個 batch 卡住，
+ * 其餘明明已經成功的 batch 也會被一起卡住（`Promise.all` 全部 settle 才 resolve）。
+ * 需要逾時保護的呼叫點可傳入 `timeoutMs`，逾時後 fetch 會 abort（reject with
+ * AbortError），呼叫端可視需要 catch 掉當作這次失敗、下次輪詢再試。
  */
-export function apiFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
-  return fetch(input, { ...init, credentials: "include" })
+export function apiFetch(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+  timeoutMs?: number,
+): Promise<Response> {
+  if (!timeoutMs) {
+    return fetch(input, { ...init, credentials: "include" })
+  }
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  return fetch(input, { ...init, credentials: "include", signal: controller.signal }).finally(
+    () => clearTimeout(timer),
+  )
 }
 
 export interface IndustryFlowItem {
@@ -516,6 +535,10 @@ export interface RealtimeQuote {
   trade_time: string | null
 }
 
+// 2026-08-13：8 秒逾時，一輪輪詢（archive 頁 60 秒一次）內給單一 batch 足夠時間，
+// 又不至於卡住太久讓使用者長時間看不到任何價格。
+const REALTIME_FETCH_TIMEOUT_MS = 8000
+
 export async function fetchRealtimeQuotes(stockIds: string[]): Promise<RealtimeQuote[]> {
   if (stockIds.length === 0) return []
   const batches: string[][] = []
@@ -523,22 +546,37 @@ export async function fetchRealtimeQuotes(stockIds: string[]): Promise<RealtimeQ
     batches.push(stockIds.slice(i, i + REALTIME_BATCH_SIZE))
   }
 
-  const responses = await Promise.all(
+  // Promise.allSettled（非 Promise.all）：追蹤股票數多時會分成多個 batch 平行送出；
+  // 若用 Promise.all，其中一個 batch 逾時/卡住會讓「其餘明明已經成功的 batch」也
+  // 一起被卡住不 resolve（Promise.all 要全部 settle 才回傳）——這正是使用者回報
+  // 「即時股價 30 分鐘跑不出來」的根因之一：只要 50 檔裡有 1 批卡住，整批價格
+  // 都不會顯示。改用 allSettled + 逾時保護後，卡住的那個 batch 頂多讓「那 50 檔」
+  // 暫時沒有價格，其餘 batch 的價格照樣正常顯示。
+  const settled = await Promise.allSettled(
     batches.map(async (batch) => {
       const ids = batch.join(",")
       // no-store：這是輪詢端點，同一組 stock_ids 每次呼叫都要拿當下最新報價；
       // 沒有明確關掉快取的話，瀏覽器/中間層有機會把重複的 GET URL 當成可快取
       // 回應重複使用，造成畫面卡在某一次抓到的舊漲跌幅（2026-08-11 使用者回報
       // 「漲幅看起來像昨天的」）。
-      const res = await apiFetch(`${API_BASE}/api/realtime/quotes?stock_ids=${ids}`, {
-        cache: "no-store",
-      })
+      const res = await apiFetch(
+        `${API_BASE}/api/realtime/quotes?stock_ids=${ids}`,
+        { cache: "no-store" },
+        REALTIME_FETCH_TIMEOUT_MS,
+      )
       if (!res.ok) return []
       return res.json() as Promise<RealtimeQuote[]>
     })
   )
 
-  return responses.flat()
+  const results: RealtimeQuote[] = []
+  for (const outcome of settled) {
+    if (outcome.status === "fulfilled") {
+      results.push(...outcome.value)
+    }
+    // rejected（逾時 abort 或網路錯誤）：略過該 batch，不影響其他 batch 的結果。
+  }
+  return results
 }
 
 // ── Broker trades (M13) ─────────────────────────────────────────────────────

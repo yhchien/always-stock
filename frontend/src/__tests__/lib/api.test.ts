@@ -1,4 +1,5 @@
 import {
+  apiFetch,
   fetchBacktestAdvice,
   fetchBacktestCapabilities,
   interpretBacktest,
@@ -456,6 +457,62 @@ describe("fetchRealtimeQuotes", () => {
     expect(mockFetch.mock.calls[0][0]).toEqual(expect.stringContaining("stock_ids=1000,1001"))
     expect(mockFetch.mock.calls[1][0]).toEqual(expect.stringContaining("stock_ids=1050"))
     expect(result).toEqual([{ stock_id: "1101" }, { stock_id: "9999" }])
+  })
+
+  it("still returns data from batches that succeed even if another batch times out/fails (2026-08-13)", async () => {
+    // 修法前用 Promise.all：其中一個 batch reject 會讓整個 fetchRealtimeQuotes
+    // reject，即使有 batch 明明已經成功也拿不到任何資料——這正是使用者回報
+    // 「即時股價 30 分鐘跑不出來」的根因之一。改用 Promise.allSettled 後，
+    // 一個 batch 失敗不該影響其他 batch 的結果。
+    const mockFetch = jest.spyOn(global, "fetch")
+    mockFetch.mockClear()
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => [{ stock_id: "1101" }],
+      } as Response)
+      .mockRejectedValueOnce(new DOMException("The operation was aborted.", "AbortError"))
+
+    const ids = Array.from({ length: 51 }, (_, i) => String(1000 + i))
+    const result = await fetchRealtimeQuotes(ids)
+
+    expect(result).toEqual([{ stock_id: "1101" }])
+  })
+})
+
+describe("apiFetch timeout", () => {
+  afterEach(() => jest.restoreAllMocks())
+
+  it("attaches an AbortSignal when timeoutMs is provided", async () => {
+    const mockFetch = jest.spyOn(global, "fetch").mockResolvedValue({ ok: true } as Response)
+    mockFetch.mockClear()
+    await apiFetch("http://example.test/slow", {}, 1000)
+    const init = mockFetch.mock.calls[0][1] as RequestInit
+    expect(init.signal).toBeInstanceOf(AbortSignal)
+  })
+
+  it("does not attach a signal when timeoutMs is omitted (unchanged default behavior)", async () => {
+    const mockFetch = jest.spyOn(global, "fetch").mockResolvedValue({ ok: true } as Response)
+    mockFetch.mockClear()
+    await apiFetch("http://example.test/fast")
+    const init = mockFetch.mock.calls[0][1] as RequestInit
+    expect(init.signal).toBeUndefined()
+  })
+
+  it("rejects once timeoutMs elapses (real timer, short duration)", async () => {
+    jest.spyOn(global, "fetch").mockImplementation(
+      (_input, init) =>
+        new Promise((_resolve, reject) => {
+          const signal = (init as RequestInit | undefined)?.signal
+          signal?.addEventListener("abort", () => {
+            reject(new DOMException("The operation was aborted.", "AbortError"))
+          })
+        }),
+    )
+
+    await expect(apiFetch("http://example.test/slow", {}, 10)).rejects.toMatchObject({
+      name: "AbortError",
+    })
   })
 })
 
