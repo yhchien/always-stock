@@ -33,6 +33,7 @@ const VALUE_LABELS: Record<string, string> = {
   risk_off: "避險",
   long: "偏多",
   short: "偏空",
+  unavailable: "資料不足",
 }
 
 // 訊號清單表格用的欄位專屬標籤；同欄字數刻意對齊，避免 chip 寬度不一致。

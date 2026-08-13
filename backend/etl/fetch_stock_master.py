@@ -13,6 +13,7 @@ Classification logic (all stocks_master records marked source='finmind'):
 """
 import json
 import logging
+import re
 import urllib.parse
 import urllib.request
 
@@ -24,6 +25,14 @@ from etl.finmind_industry_chain_sdk import fetch_industry_chain
 logger = logging.getLogger(__name__)
 
 FINMIND_URL = "https://api.finmindtrade.com/api/v4/data"
+
+# 2026-08-13：只放行 TPEx 的指數佔位列（櫃買指數，stock_id="TPEx"，type="tpex"），
+# 不放行真正的上櫃個股——本系統的候選池/選股/分類 pipeline 從 FinMind 遷移起就刻意
+# 只涵蓋 TWSE 上市股（見本函式原本 `type != "twse": continue` 的過濾），要完整纳入
+# 上櫃個股是遠大於本次範圍的變動（見 CLAUDE.md「今日市場狀態」章節）。這裡只是讓
+# `/signals` 首頁「今日市場狀態」的櫃買指數（原本永遠 null）能拿到真實 ETL 資料，
+# 比照 stocks_master 已有的 TAIEX 佔位列（`stock_id` 非數字開頭）處理方式。
+_INDEX_PLACEHOLDER_ID_PATTERN = re.compile(r"^[A-Za-z]")
 
 
 def fetch_and_upsert_stock_master(db: Session, token: str = "") -> int:
@@ -57,9 +66,13 @@ def fetch_and_upsert_stock_master(db: Session, token: str = "") -> int:
 
     seen: "dict[str, dict]" = {}
     for row in rows:
-        if row.get("type") != "twse":
+        row_type = row.get("type")
+        sid = row.get("stock_id", "").strip()
+        is_tpex_index_placeholder = (
+            row_type == "tpex" and bool(_INDEX_PLACEHOLDER_ID_PATTERN.match(sid))
+        )
+        if row_type != "twse" and not is_tpex_index_placeholder:
             continue
-        sid = row["stock_id"].strip()
         if sid not in seen:
             seen[sid] = row
 
@@ -93,6 +106,8 @@ def fetch_and_upsert_stock_master(db: Session, token: str = "") -> int:
             industry_name = row.get("industry_category", "").strip() or "其他"
             sub_industry = None
 
+        market_value = row.get("type") or "twse"
+
         existing = db.get(StockMaster, sid)
         if existing:
             existing.stock_name = stock_name
@@ -101,6 +116,7 @@ def fetch_and_upsert_stock_master(db: Session, token: str = "") -> int:
             existing.sub_industry = sub_industry
             existing.is_active = True
             existing.source = "finmind"
+            existing.market = market_value
         else:
             db.add(StockMaster(
                 stock_id=sid,
@@ -110,6 +126,7 @@ def fetch_and_upsert_stock_master(db: Session, token: str = "") -> int:
                 sub_industry=sub_industry,
                 is_active=True,
                 source="finmind",
+                market=market_value,
             ))
         count += 1
 

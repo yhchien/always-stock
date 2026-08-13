@@ -10,7 +10,11 @@ from sqlalchemy.orm import Session
 from app.models import DailyPrice
 
 _TAIEX_SYMBOLS: Sequence[str] = ("TAIEX",)
-_OTC_SYMBOLS: Sequence[str] = ("OTCI", "OTC", "TWO", "TPEx", "TPEX")
+# 2026-08-13：確認過的正確 FinMind stock_id（見 CLAUDE.md「今日市場狀態」章節）——
+# 舊版猜測的 OTCI/OTC/TWO/TPEX 在 FinMind TaiwanStockInfo 裡都不存在，正確代碼是
+# 混合大小寫的 "TPEx"（`fetch_stock_master.py` 現在會把這個指數佔位列放進
+# stocks_master，讓每日 ETL 自動帶出它的收盤價）。
+_OTC_SYMBOLS: Sequence[str] = ("TPEx",)
 
 
 def _load_recent_closes(

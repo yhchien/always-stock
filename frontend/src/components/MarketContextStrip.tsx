@@ -1,5 +1,6 @@
 "use client"
 
+import Link from "next/link"
 import { type ReactNode } from "react"
 
 import CollapsibleSection from "@/components/CollapsibleSection"
@@ -89,9 +90,6 @@ export default function MarketContextStrip({
       <div className="min-w-0 flex-1 space-y-2">
         {!collapsible ? (
           <div className="flex items-center gap-2">
-            <span className="text-[11px] font-medium uppercase tracking-[0.28em] text-cyan-300/90">
-              Market Today
-            </span>
             <h2 className="text-lg font-black text-slate-100">今日市場狀態</h2>
           </div>
         ) : null}
@@ -139,12 +137,13 @@ export default function MarketContextStrip({
           <div className="flex flex-wrap items-center gap-1.5 pt-1">
             <span className="text-xs text-slate-500">主要熱門產業：</span>
             {mainHotIndustries.map((name) => (
-              <span
+              <Link
                 key={name}
-                className="rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2 py-0.5 text-xs font-medium text-cyan-200"
+                href={`/industries/${encodeURIComponent(name)}${snapshotDate ? `?date=${snapshotDate}` : ""}`}
+                className="rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2 py-0.5 text-xs font-medium text-cyan-200 transition hover:border-cyan-400/60 hover:bg-cyan-500/20"
               >
                 {name}
-              </span>
+              </Link>
             ))}
           </div>
         ) : null}

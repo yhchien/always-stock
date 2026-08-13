@@ -31,6 +31,10 @@ OTC_ROW = lambda sid, name: {
     "stock_id": sid, "stock_name": name,
     "industry_category": "其他", "type": "otc", "date": "2024-01-01"
 }
+TPEX_INDEX_ROW = {
+    "stock_id": "TPEx", "stock_name": "櫃買指數",
+    "industry_category": "大盤", "type": "tpex", "date": "2024-01-01",
+}
 
 
 def patch_finmind(info_rows: list[dict], chain_map: dict = None, status: int = 200):
@@ -62,6 +66,34 @@ class TestFetchAndUpsertStockMaster:
             count = fetch_and_upsert_stock_master(db, token="fake-token")
         assert count == 1
         assert db.get(StockMaster, "6488") is None
+
+    def test_filters_out_real_tpex_stocks_even_with_tpex_type(self, db):
+        """type='tpex' 的真實個股（數字代號）仍要被過濾，只有指數佔位列例外。"""
+        rows = [
+            TWSE_ROW("2330", "台積電", "半導體業"),
+            {"stock_id": "6488", "stock_name": "環球晶",
+             "industry_category": "半導體業", "type": "tpex", "date": "2024-01-01"},
+        ]
+        urlopen_patch, chain_patch = patch_finmind(rows)
+        with urlopen_patch, chain_patch:
+            count = fetch_and_upsert_stock_master(db, token="fake-token")
+        assert count == 1
+        assert db.get(StockMaster, "6488") is None
+
+    def test_admits_tpex_composite_index_placeholder(self, db):
+        """2026-08-13：櫃買指數（stock_id='TPEx'，type='tpex'）是唯一放行的例外，
+        讓 /signals 首頁『今日市場狀態』的 OTC 指數能拿到真實 ETL 資料。"""
+        rows = [TWSE_ROW("2330", "台積電", "半導體業"), TPEX_INDEX_ROW]
+        urlopen_patch, chain_patch = patch_finmind(rows)
+        with urlopen_patch, chain_patch:
+            count = fetch_and_upsert_stock_master(db, token="fake-token")
+        assert count == 2
+        row = db.get(StockMaster, "TPEx")
+        assert row is not None
+        assert row.stock_name == "櫃買指數"
+        assert row.industry_name == "大盤"
+        assert row.market == "tpex"
+        assert db.get(StockMaster, "2330").market == "twse"
 
     def test_deduplication_keeps_first_occurrence(self, db):
         rows = [

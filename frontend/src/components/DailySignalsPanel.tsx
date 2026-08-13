@@ -31,8 +31,6 @@ import { Dialog } from "@base-ui/react/dialog"
 import { CanonicalSectorTag } from "@/components/CanonicalSectorTag"
 import SignalAssetBadge from "@/components/SignalAssetBadge"
 import SignalEmotionCard, { type EmotionTone } from "@/components/SignalEmotionCard"
-import SignalNotSelectedSection from "@/components/SignalNotSelectedSection"
-import SignalRemovedSection from "@/components/SignalRemovedSection"
 import {
   isSignalProcessingIncomplete,
   SignalIncompleteWarning,
@@ -1355,11 +1353,6 @@ export default function DailySignalsPanel({
   }, [loadRegenerateQuota])
 
   const watchlist = useMemo(() => snapshot?.data.watchlist ?? [], [snapshot])
-  const notSelected = useMemo(
-    () => snapshot?.data.not_selected ?? [],
-    [snapshot],
-  )
-  const removed = useMemo(() => snapshot?.data.removed ?? [], [snapshot])
   const summary = snapshot?.data.summary
   const processingSummary = summary?.processing_summary
   const leaderCount = summary?.leader_count ?? watchlist.filter((w) => w.type === "LEADER").length
@@ -1547,8 +1540,6 @@ export default function DailySignalsPanel({
                 expectationByStock={expectationByStock}
                 emptyText="本日無訊號。"
               />
-              <SignalNotSelectedSection items={notSelected} />
-              <SignalRemovedSection items={removed} />
             </div>
           )}
         </div>
