@@ -4893,3 +4893,131 @@ reject 時其餘 batch 資料仍正常回傳（直接複刻修法前會整包失
 `npx jest` 套件 18 fail 維持既有 baseline（StockList/StockChart/BacktestPanel，
 零新增失敗，92 pass 較前一輪新增 4 個測試）；`npx tsc --noEmit`/`npx eslint`
 （僅改動檔案）全過。本輪未動後端程式碼，不需重跑 backend suite
+
+## 首頁大魚尾精簡 + 30 日追蹤新增「停止觀察的股票」表 + 動能分數歷史折線圖（2026-08-13）
+
+### 需求
+使用者對首頁「今日捕獲的大魚尾」與 30 日追蹤頁提出四項要求：
+1. 首頁拿掉「每日觀察」按鈕（改從 30 日追蹤頁進去）
+2. 首頁卡片拿掉 prompt 版本 tag（如 `v7_research`），header 拿掉「廣度」chip
+3. 30 日追蹤頁新建一張獨立表「停止觀察的股票」，格式與既有「追蹤期滿移出紀錄」
+   完全相同，但只從現在開始累積（不含策略大改版前的舊資料），紀錄現在 51 檔追蹤中
+   股票未來被移出追蹤的過程
+4. 追蹤中股票的詳情 popup，在 K 線圖/個股頁按鈕上方新增「動能分數變化」折線圖
+   （x 軸日期、y 軸分數）
+
+### 改動 1+2：首頁精簡（`DailySignalsPanel.tsx`）
+- 拿掉 `<Link href="/signals/observations">每日觀察</Link>` 按鈕（`30日追蹤` 按鈕
+  保留；30 日追蹤頁詳情 popup 本來就有「查看完整追蹤紀錄（推薦論點／每日檢查）→」
+  連到 `/signals/observations`，見更早一輪「追蹤紀錄與每日觀察合併成單一入口」的
+  工作，所以移除首頁按鈕不會少掉任何實際可達性）
+- `SignalCard` 拿掉 `promptVersion` chip（連同變數宣告一併刪除，非只藏起來）
+- header 拿掉 `<BreadthChip>` 呼叫；`BreadthChip` 函式本身也整段刪除（不是「保留
+  元件、只拔入口」的慣例——因為這是只在本檔案內部使用的小 local function，刪掉呼叫
+  後函式本身會變成 ESLint `no-unused-vars` 警告，跟 `SignalNotSelectedSection.tsx`
+  這類獨立元件檔案「可能被其他頁面重用」的情境不同）
+
+### 改動 3：「停止觀察的股票」獨立表
+
+**查證背景**：使用者一開始說「新建一張表」，先查了 `closure_reason` 現況（5 種：
+`completed_30_days`/`early_exit_stop_loss`/`early_exit_drawdown_from_peak`/
+`manual_reset`/`p4_stopped`，`p4_stopped` 目前已有 6 筆）確認既有機制長什麼樣子，
+再用兩題 `AskUserQuestion` 釐清範圍——(a) 只算 P4 判定停止觀察，還是任何原因移出
+都算：使用者選**任何原因都算**；(b) 用現有表加時間篩選，還是真的建新 DB 表：使用者
+選**真的新建一張獨立 DB 表**。
+
+**Schema**（`app/models.py`）：新增 `SignalWatchStoppedObservation`
+（table `signal_watch_stopped_observations`），欄位與 `SignalWatchCompletedArchive`
+逐一對應（同名同型別），`UniqueConstraint(stock_id, first_seen_date)` 同款。docstring
+明講「不要對這張表做歷史回填；若未來又要重新歸零，直接清空這張表重新開始即可」。
+`main.py` `_ensure_m23_tables()` 加入這個新 model，`Base.metadata.create_all()`
+啟動時自動建表（跟其他 M23 表一致，不需要手動 migration）——這張表因為是**全新表**
+（非既有表加欄位），從空白開始天然滿足「從現在開始」的要求，不需要任何 cutoff 日期
+邏輯或一次性 backfill 腳本。
+
+**寫入路徑**（`app/signals/archive.py`）：`_upsert_completed_archive` 目前有 3 個
+呼叫點（`refresh_completed_signal_cycles` 自然 30 日期滿 / `update_signal_watch_
+returns` 內兩條提前結算路徑 / `settle_stock_for_p4_stop` P4 確認停止）——新增平行的
+`_upsert_stopped_observation`（同一份 `CompletedArchiveItem`、同款 upsert-by-
+(stock_id, first_seen_date) 邏輯），在全部 3 個呼叫點緊接著 `_upsert_completed_
+archive` 之後呼叫。一次性的 `stop_all_active_signal_watch_cycles.py`（manual_reset，
+已於更早一輪執行過 `--execute`）**刻意不動**——那是歷史一次性事件，不屬於「從現在
+開始」的常態管線，不該出現在新表。
+
+**讀取路徑**：把 `list_completed_archive_summary`（含半年區間 group-by 邏輯，~90
+行）重構抽出 `_list_archive_style_table_summary(db, model_cls, ...)`，用
+SQLAlchemy model class 當參數（兩張表欄位名完全相同，query 邏輯可以直接參數化，不
+需要另外寫一份）；`list_completed_archive_summary` 與新增的
+`list_stopped_observations_summary` 都是這個 generic 函式的薄 wrapper。
+
+**API**：新增 `GET /api/signals/archive/stopped`，直接沿用既有的
+`SignalArchiveCompletedResponse` pydantic model（欄位形狀完全相同，不需要另建一份
+schema）。注意路由註冊順序：`/archive/stopped` 必須排在 `/archive/{stock_id}` **之
+前**（FastAPI 依註冊順序比對路由，若順序顛倒，"stopped" 會被吃成 `stock_id` 路徑參數）
+——這次剛好照抄既有 `/archive/completed` 緊接在同一批路由旁邊，順序天生正確，仍在
+本地起 server 驗證過一次避免遺漏。
+
+**前端**：`fetchStoppedObservations()`（`api.ts`，直接 reuse
+`SignalArchiveCompletedResponse` 型別）+ 新元件 `StoppedObservationsSection`
+（`archive/page.tsx`）——完整複刻既有「追蹤期滿移出紀錄」區塊的卡片版面（同一批
+共用元件：`ClosureReasonChip`/`SignalTypeChip`/`PipelineFlagChip`/`VersionChip`/
+`PeakMilestoneChip`/`Metric`/`ExtremeReturnCell`/`PredictionCell`/
+`formatPeriodLabel`，這些本來就是 module-level function，天然可以兩處共用），但
+**刻意用自己的 local state**（`collapsed`/`selectedPeriodStart`/`search`，非
+`useState`），不沿用既有「追蹤期滿」區塊靠 URL `period` query param 驅動半年區間選單
+的做法——避免兩個半年區間選單搶同一個 URL 參數。collapse 狀態用獨立 localStorage
+key（`always-stock:signals-archive:stopped-collapsed`）。
+
+### 改動 4：動能分數歷史折線圖
+
+**資料面完全零新增**：`signal_watch_hits.signal_metrics`（JSON 欄位）從 v2.1
+（2026-07-15，`momentum.build_signal_metrics`）就存在 `momentum_score`，每一筆
+snapshot_date 命中都有記錄——查證 production 94 筆目前活躍的 hits 全部都有這個欄位
+（confirm 過真實資料，不是理論上存在）。純粹是把既有資料曝光出去，不是新資料源。
+
+**後端**：`get_archive_detail()` 的 `reports` 陣列每筆加一個
+`"momentum_score": (row.signal_metrics or {}).get("momentum_score")`；
+`SignalArchiveReportResponse` pydantic model 加對應 optional 欄位。
+
+**前端**：新元件 `MomentumScoreChart`（`archive/page.tsx`），沿用 `StockChartDialog.
+tsx` 既有的 `dynamic(() => import("echarts-for-react"), { ssr: false })` 模式（
+ECharts 只在 popup 真的展開時載入，不進 initial bundle）；x 軸 category 型（日期字
+串陣列）、y 軸 0~100 固定範圍、單一 line series。**少於 2 個資料點時不渲染**（只抓
+到 1 天沒有趨勢可言，直接 `return null`）。插入位置：詳情 popup 的 Metric grid 之後、
+K線圖/個股頁按鈕列之前（使用者原話「放在 k線圖 個股頁那個 section 的上面」）。
+
+### Gotcha
+- **`import` 語句中間夾雜 `const` 宣告在 JS 語法上合法**（import 會被 hoist 到模組
+  最前面），但會讓 ESLint import 排序規則不滿意、閱讀體驗也差——第一次把
+  `dynamic(() => import(...))` 那段寫在兩個 `@/lib/api` import block 中間，肉眼看
+  沒發現異常（tsc/eslint 當下也沒抓到，因為那次還沒重新跑 lint），後來重新整理成
+  「全部 import 在最前面，動態 component 宣告在後面」才符合這個檔案原本的慣例
+- **本機起 server 驗證這輪撞到一個純環境問題**：直接對已在跑的 port 8000 再起一個
+  新 `uvicorn`，新程序因為 port 已被佔用直接 bind 失敗、靜默退出——但沒有先檢查
+  就送出的第一個 curl 打到的是「更早一輪工作階段遺留、從未關閉」的舊程序（完全沒有
+  這輪新程式碼），回傳一個完全不相關的 404 訊息，一度讓人以為是路由順序寫錯（懷疑
+  `/archive/{stock_id}` 攔截了 `/archive/stopped`）。用 `lsof -i :8000` 找出舊
+  PID 殺掉、乾淨重啟後才驗證到真正結果。**教訓（本 session 第二次遇到同類問題）**：
+  本機起驗證用 server 前，一律先 `lsof -i :<port>` 確認沒有殘留程序，尤其是同一個
+  session 內稍早可能有留下沒關的 server
+- `list_completed_archive_summary`/`list_stopped_observations_summary` 重構成
+  參數化 model class 後，兩者的 `expectation_price` 批次查詢（M26 保守價/夢想價）
+  邏輯完全共用，不需要額外處理——`_load_expectation_prices_map` 本來就是吃
+  `(stock_id, first_seen_date)` tuple list，跟資料來源是哪張表無關
+- 新表完全沒有做任何歷史 backfill，這是刻意的（「從現在開始」是這次需求的核心），
+  未來若要重新歸零，直接清空 `signal_watch_stopped_observations` 即可，不影響
+  `signal_watch_completed_archives`（兩表獨立、互不影響）
+
+### 測試
+後端新增/擴充：`test_fetch_stock_master.py` 系列不受影響；`test_signal_archive_
+returns.py` 擴充 3 個既有測試（30 日自然期滿／早退停損／P4 停止確認）驗證新表同步
+寫入，新增 2 個測試（`list_stopped_observations_summary` 與 `completed` 互不干擾／
+`get_archive_detail` 正確曝光 `momentum_score` 含缺值優雅處理）；`test_signals_
+router.py` 新增 1 個測試（`/archive/stopped` endpoint 獨立於 `/archive/completed`）。
+全 backend suite 20 fail/5 error 維持既有 baseline（零新增失敗，1298 pass，較本輪
+之前新增 3 個測試函式）。前端 `npx tsc --noEmit`/`npx eslint`（僅改動檔案）全過；
+`npx jest` 18 fail 維持既有 baseline（StockList/StockChart/BacktestPanel，零新增
+失敗，archive 頁本身從未有 jest 覆蓋，本輪比照既有慣例不新開測試檔案）。額外對本機
+啟動 server（連正式 Postgres）做端到端驗證：新表確認建立、`/archive/stopped` 回空
+陣列（符合「從現在開始」）、`/archive/{stock_id}` 對真實股票正確回傳
+`momentum_score`、`/archive/completed` 重構後行為不變，皆通過後乾淨關閉本機 server
