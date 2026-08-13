@@ -4826,3 +4826,70 @@ pattern）。
   失敗，1295 pass，較前一輪新增 6 個測試）；前端 `npx tsc --noEmit`/`npx eslint`
   （僅改動檔案）全過、`npx jest` 18 fail 維持既有 baseline（StockList/StockChart/
   BacktestPanel，零新增失敗）
+
+## 魚尾追蹤頁即時股價「30 分鐘跑不出來」：Promise.all 全卡死 + 無逾時保護（2026-08-13）
+
+### 症狀
+上一輪（同日稍早）修過首頁即時報價「很慢很慢」（per-stock 短 TTL 快取 + 輪詢頻率
+15s→60s），但使用者接著回報 `/signals/archive`（魚尾 30 日追蹤）頁的即時股價「還是
+會跑很慢很慢，已經 30 分鐘都沒有跑出來」——明顯不是「慢」，是「完全沒有結果」。
+
+### 查證：backend 本身其實很快，問題在前端
+- 直接 curl production `/api/realtime/quotes`（帶真實 51 檔目前追蹤中的股票代號）：
+  `1.18s`；`/api/signals/archive?limit=0`：`0.57s`。兩個關鍵 endpoint 當下實測都
+  正常快速——排除「backend 本身撐不住」的假設，問題必須在前端
+- `frontend/src/lib/api.ts` 的 `apiFetch()`（所有 API 呼叫的共用 wrapper）**完全沒有
+  任何逾時保護**——瀏覽器原生 `fetch()` 沒有預設 timeout，一個真的卡住的請求（TCP
+  連線建立但對方遲遲不回應、或中間某層代理吃掉封包）理論上可以掛著等到瀏覽器自己
+  極長的預設值才放棄，某些情況下可達數十分鐘
+- **真正的根因是 `fetchRealtimeQuotes()` 用 `Promise.all` 等全部 batch 完成**：追蹤
+  股票數多時會分成多個 50 檔一批的 batch 平行送出；`Promise.all` 語意是「全部
+  settle 才 resolve、任一個 reject 就整個 reject」——只要其中一個 batch 卡住或逾時
+  ，其餘明明已經成功、資料早就回來的 batch 也會被一起卡住，`useRealtimeQuotes` 的
+  `poll()` 永遠等不到 `await fetchRealtimeQuotes(ids)` 完成，`setQuotes` 永遠不會被
+  呼叫，畫面上的即時股價因此**完全空白**，不是「慢」而是「卡死等一個永遠不會來的
+  請求」
+
+### 修法（`frontend/src/lib/api.ts` + `frontend/src/lib/useRealtimeQuotes.ts`）
+- `apiFetch(input, init, timeoutMs?)` 新增第三個 optional 參數：帶入時用
+  `AbortController` + `setTimeout(() => controller.abort(), timeoutMs)` 包住，逾時
+  會讓該次 fetch 以 `AbortError` reject；不帶時行為完全不變（沿用既有數百個呼叫點，
+  不動任何既有呼叫的行為，只在明確需要的地方選擇性套用）
+- `fetchRealtimeQuotes()`：`Promise.all` → `Promise.allSettled`，每個 batch 呼叫
+  `apiFetch(..., REALTIME_FETCH_TIMEOUT_MS=8000)`；最後把所有 `fulfilled` 的 batch
+  結果攤平合併，`rejected`（逾時或網路錯誤）的 batch 直接略過——單一 batch 卡住/失敗
+  只會讓「那一批」這次沒有新資料，不會拖累其他明明已經成功的 batch
+- `useRealtimeQuotes.ts` 的 `poll()`：`setQuotes(new Map(data...))`（整包覆蓋）改成
+  `setQuotes((prev) => { const next = new Map(prev); for (q of data) next.set(...) ;
+  return next })`（合併）——若這輪只有部分 batch 成功，上一輪已經拿到的股票報價不會
+  被清空變成空白，只是暫時沒更新到最新值（stale-but-visible 優於突然消失）
+
+### 為何不直接調小 `REALTIME_BATCH_SIZE`（50→更小）
+50 檔一批在 curl 實測下是快的（1.18s），縮小批次數只會增加 batch 數量（更多平行
+請求），無助於解決「單一請求真的卡住時整批被拖死」這個根本的 `Promise.all` 語意
+問題；`Promise.allSettled` + 逾時才是對症下藥，不需要同時動批次大小
+
+### 首頁 `DailySignalsPanel` 自動受惠，無需另外修改
+首頁的 `SignalCard` 也是呼叫同一個 `useRealtimeQuotes`/`fetchRealtimeQuotes`/
+`apiFetch`，這次改動在共用層，兩個頁面（首頁「捕獲的大魚尾」與魚尾 30 日追蹤頁）
+同時受惠，不需要重複修改
+
+### 測試 gotcha：`jest.spyOn(global, "fetch")` 在這個專案裡不會給全新的 mock
+`src/__tests__/setup.ts` 對 jsdom（原生不含 `fetch`）在 module 載入時只設一次
+`global.fetch = jest.fn()`。之後任何測試 `jest.spyOn(global, "fetch")` 實際上是
+**重複 spy 在同一個底層 `jest.fn()` 上**，`jest.restoreAllMocks()` 之後再重新
+`spyOn` 並不會給一個全新、call 記錄歸零的 mock——`.mock.calls` 會**跨測試持續累積**
+（親自用 `console.log(mockFetch.mock.calls)` debug 才抓到，新測試沒加
+`mockFetch.mockClear()` 時，`mock.calls[0]` 抓到的其實是更早一個測試的呼叫紀錄，
+不是這次測試自己的）。這個檔案裡既有測試（如「splits requests into batches of
+50」）已經有 `mockFetch.mockClear()` 這個防禦動作，是必要的，不是多餘的
+保險——新增任何用 `jest.spyOn(global, "fetch")` 的測試都要記得加這一行
+
+### 測試
+`src/__tests__/lib/api.test.ts` 新增 4 個測試：`fetchRealtimeQuotes` 單一 batch
+reject 時其餘 batch 資料仍正常回傳（直接複刻修法前會整包失敗的情境）；`apiFetch`
+三個測試（`timeoutMs` 有帶時 signal 是 `AbortSignal` 實例／不帶時完全沒有 signal
+維持舊行為／短逾時真的會讓 promise reject）。全 38 個 api.test.ts 測試 pass；全
+`npx jest` 套件 18 fail 維持既有 baseline（StockList/StockChart/BacktestPanel，
+零新增失敗，92 pass 較前一輪新增 4 個測試）；`npx tsc --noEmit`/`npx eslint`
+（僅改動檔案）全過。本輪未動後端程式碼，不需重跑 backend suite
