@@ -1761,12 +1761,26 @@ export interface SignalArchiveReportItem {
   momentum_score: number | null
 }
 
+/**
+ * 2026-08-13：動能分數歷史單一資料點。P3（`signal_watch_hits`）跟 P4（每日複核）
+ * 用同一套公式／同一份市場快照算分數，數值可以直接放進同一條時間序列比較；
+ * `source` 標記這天的分數來自哪一邊——"p3" 代表當天再次被大盤選中（分數額外附帶
+ * 「贏過其他候選、通過 LLM 驗證」的訊號），"p4" 代表當天沒被選中、純粹是 P4 複核的
+ * 動能測量值。同一天兩者都有時，後端已經以 P3 為準只回一筆。
+ */
+export interface SignalMomentumScorePoint {
+  date: string
+  momentum_score: number
+  source: "p3" | "p4"
+}
+
 export interface SignalArchiveDetailResponse extends SignalArchiveSummaryItem {
   reports: SignalArchiveReportItem[]
   // 2026-08-11：正式推薦頁併入魚尾單一入口，取最新一筆命中的補充欄位；舊資料 = null
   recommendation_thesis?: string | null
   relative_advantage?: string | null
   margin_analysis?: SignalMarginAnalysis | null
+  momentum_score_history: SignalMomentumScorePoint[]
 }
 
 // ── P4 Observation Lifecycle ───────────────────────────────────────────────

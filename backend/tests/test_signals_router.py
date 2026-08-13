@@ -740,6 +740,69 @@ def test_archive_detail_returns_404_when_missing(api):
     assert res.status_code == 404
 
 
+def test_archive_detail_returns_momentum_score_history_merged_p3_p4(api, monkeypatch):
+    """2026-08-13：/archive/{stock_id} 要回傳合併 P3（signal_watch_hits）與 P4
+    （signal_observation_reviews）兩個來源的動能分數時間序列。"""
+    client, db, _ = api
+    db.add(
+        SignalWatchHit(
+            snapshot_date=date(2026, 8, 10),
+            stock_id="3231",
+            stock_name="緯創",
+            signal_type="LEADER",
+            industry_name="其他",
+            reason="第一次報告",
+            theme={},
+            group_info={},
+            leader_check={},
+            signals={},
+            signal_metrics={"momentum_score": 62.5},
+        )
+    )
+    observation = SignalObservation(
+        stock_id="3231",
+        stock_name="緯創",
+        asset_type="COMMON_STOCK",
+        episode_id="episode-3231-2026-08-09",
+        status="OBSERVING",
+        started_signal_date=date(2026, 8, 9),
+        baseline_quality="P3_COMPLETE",
+        initial_snapshot_json={},
+    )
+    db.add(observation)
+    db.flush()
+    db.add(
+        SignalObservationReview(
+            observation_id=observation.id,
+            review_date=date(2026, 8, 11),
+            decision="CONTINUE",
+            reason_codes=[],
+            reason="",
+            caution_dimensions=[],
+            failed_dimensions=[],
+            momentum_score=58.0,
+            prompt_version="v1",
+            state_machine_version="v1",
+        )
+    )
+    db.commit()
+
+    monkeypatch.setattr(
+        signals_router.signal_archive,
+        "resolve_archive_as_of_trade_date",
+        lambda db, now=None: date(2026, 8, 11),
+    )
+
+    res = client.get("/api/signals/archive/3231")
+    assert res.status_code == 200
+    body = res.json()
+    history = {p["date"]: p for p in body["momentum_score_history"]}
+    assert history["2026-08-10"]["momentum_score"] == 62.5
+    assert history["2026-08-10"]["source"] == "p3"
+    assert history["2026-08-11"]["momentum_score"] == 58.0
+    assert history["2026-08-11"]["source"] == "p4"
+
+
 def test_completed_archive_summary_returns_rows(api):
     client, db, _ = api
     db.add(

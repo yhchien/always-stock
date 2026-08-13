@@ -22,10 +22,10 @@ import {
   type SignalArchiveCompletedPeriod,
   type SignalArchiveCompletedResponse,
   type SignalArchiveDetailResponse,
-  type SignalArchiveReportItem,
   type SignalArchiveSummaryItem,
   type SignalArchiveSummaryResponse,
   type SignalClosureReason,
+  type SignalMomentumScorePoint,
   type SignalObservationItem,
   type SignalObservationStatus,
 } from "@/lib/api"
@@ -402,26 +402,31 @@ function Metric({ label, children }: { label: string; children: ReactNode }) {
 }
 
 // 2026-08-13：動能分數歷史折線圖——x 軸日期 / y 軸分數，讓使用者看「一開始抓到的動能
-// 分數，之後每天重新評估是變強還變弱」。資料早就存在 signal_metrics（v2.1 起），這裡
-// 純粹是視覺化，不打新的 API。少於 2 個資料點（只抓到 1 天）畫不出有意義的趨勢，不顯示。
-function MomentumScoreChart({ reports }: { reports: SignalArchiveReportItem[] }) {
-  const points = useMemo(() => {
-    return reports
-      .filter((r) => r.momentum_score != null)
-      .map((r) => ({ date: r.snapshot_date, score: r.momentum_score as number }))
-      .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
-  }, [reports])
+// 分數，之後每天重新評估是變強還變弱」。資料合併兩個來源：P3（signal_watch_hits，
+// 當天再次被大盤選中）跟 P4（每日複核，P3 沒選中但仍在追蹤時的獨立動能重算）——兩者
+// 用同一套公式算，數值可以放進同一條線比較，只是 P3 額外附帶「贏過其他候選、通過
+// LLM 驗證」的訊號。用實心圓標 P3 來源、空心圓標 P4 來源，讓使用者一眼看出差異。
+// 少於 2 個資料點畫不出有意義的趨勢，不顯示。
+function MomentumScoreChart({ history }: { history: SignalMomentumScorePoint[] }) {
+  const points = useMemo(
+    () => [...history].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)),
+    [history],
+  )
 
   if (points.length < 2) return null
+
+  const sourceLabel = (source: "p3" | "p4") => (source === "p3" ? "P3 選中" : "P4 複核")
 
   const option = {
     grid: { left: 36, right: 12, top: 16, bottom: 28 },
     tooltip: {
       trigger: "axis" as const,
       formatter: (params: unknown) => {
-        const arr = params as Array<{ axisValue: string; value: number }>
+        const arr = params as Array<{ axisValue: string; dataIndex: number }>
         const p = arr[0]
-        return p ? `${p.axisValue}<br/>動能分數 ${p.value}` : ""
+        if (!p) return ""
+        const point = points[p.dataIndex]
+        return `${p.axisValue}<br/>動能分數 ${point.momentum_score}（${sourceLabel(point.source)}）`
       },
     },
     xAxis: {
@@ -440,19 +445,26 @@ function MomentumScoreChart({ reports }: { reports: SignalArchiveReportItem[] })
     series: [
       {
         type: "line" as const,
-        data: points.map((p) => p.score),
+        data: points.map((p) => ({
+          value: p.momentum_score,
+          symbol: p.source === "p3" ? "circle" : "emptyCircle",
+          symbolSize: 7,
+          itemStyle: { color: "#38bdf8" },
+        })),
         smooth: true,
-        symbol: "circle",
-        symbolSize: 6,
         lineStyle: { color: "#38bdf8", width: 2 },
-        itemStyle: { color: "#38bdf8" },
       },
     ],
   }
 
   return (
     <div className="border-t border-slate-800 pt-3">
-      <h4 className="mb-2 text-sm font-medium text-slate-200">動能分數變化</h4>
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <h4 className="text-sm font-medium text-slate-200">動能分數變化</h4>
+        <span className="text-[11px] text-slate-500">
+          ● P3 選中　○ P4 複核（P3 未選中該股當天的獨立追蹤分數）
+        </span>
+      </div>
       <ReactECharts option={option} style={{ height: 160, width: "100%" }} />
     </div>
   )
@@ -587,7 +599,7 @@ function StockDetailDialog({
               </div>
 
               {detail && detail.stock_id === item.stock_id && (
-                <MomentumScoreChart reports={detail.reports} />
+                <MomentumScoreChart history={detail.momentum_score_history} />
               )}
 
               <div className="flex flex-wrap gap-2 border-t border-slate-800 pt-3">

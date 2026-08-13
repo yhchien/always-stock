@@ -159,6 +159,32 @@ def test_daily_review_does_not_require_candidate_rehit(db, monkeypatch):
     assert db.get(SignalObservation, observation.id).status == "OBSERVING"
 
 
+def test_daily_review_persists_momentum_score_from_evidence(db, monkeypatch):
+    """2026-08-13：P4 每日複核算出的 momentum_score（跟 P3 同一套公式／同一份
+    momentum_frame）要被存進 SignalObservationReview.momentum_score，讓動能分數
+    折線圖在 P3 沒有再次選中該股的那幾天也有資料點可用。"""
+    observation = _observation(db)
+    evidence = _healthy_evidence()
+    evidence["momentum_score"] = 72.5
+    _patch_evidence(monkeypatch, {observation.id: evidence})
+
+    lifecycle.run_daily_observation_reviews(
+        db,
+        review_date=DAY_1,
+        market_context={},
+        current_candidates=[],
+        assessment_runner=_runner_for({"2330": _external()}),
+        persist=True,
+    )
+
+    review = (
+        db.query(SignalObservationReview)
+        .filter_by(observation_id=observation.id, review_date=DAY_1)
+        .one()
+    )
+    assert review.momentum_score == 72.5
+
+
 def test_daily_review_reports_token_usage_from_assessment_diagnostics(db, monkeypatch):
     """2026-08-12（成本追蹤）：P4 每日複核也是 LLM stage 之一，tracking_summary
     要能反映實際的 token 用量（供 pipeline.py 併入整次 run 的總量）。"""

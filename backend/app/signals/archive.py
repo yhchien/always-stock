@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func
@@ -18,6 +18,8 @@ from sqlalchemy.orm import Session
 from app.models import (
     DailyPrice,
     SignalExpectationPrice,
+    SignalObservation,
+    SignalObservationReview,
     SignalSnapshot,
     SignalWatchCompletedArchive,
     SignalWatchHit,
@@ -339,6 +341,58 @@ def list_archive_summary(
     }
 
 
+def _load_p4_momentum_points(db: Session, stock_id: str) -> list[dict[str, Any]]:
+    """2026-08-13：P4 每日複核（`observation_lifecycle.build_current_tracking_evidence`）
+    用跟 P3 完全相同的 momentum_frame／公式重算一次 momentum_score（見
+    `SignalObservationReview.momentum_score` 註解），用來補上「P3 那天沒有再次選中
+    這檔股票、但 P4 仍在追蹤複核」的資料點。回傳 [{"date": date, "momentum_score": float}]，
+    未按日期去重（呼叫端負責跟 P3 的點合併時決定優先序）。
+    """
+    rows = (
+        db.query(SignalObservationReview.review_date, SignalObservationReview.momentum_score)
+        .join(
+            SignalObservation,
+            SignalObservationReview.observation_id == SignalObservation.id,
+        )
+        .filter(
+            SignalObservation.stock_id == stock_id,
+            SignalObservationReview.momentum_score.isnot(None),
+        )
+        .all()
+    )
+    return [{"date": review_date, "momentum_score": score} for review_date, score in rows]
+
+
+def _build_momentum_score_history(
+    rows: Sequence[SignalWatchHit],
+    p4_points: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """合併 P3（`signal_watch_hits.signal_metrics.momentum_score`）與 P4
+    （`signal_observation_reviews.momentum_score`）兩個來源，同一天兩者都有值時
+    以 P3 為準——P3 選中當天的分數額外附帶「當天贏過其他候選、通過 LLM 驗證」的
+    訊號，資訊量比單純的 P4 動能測量值更完整（見 CLAUDE.md 討論記錄）。
+    """
+    by_date: dict[Any, dict[str, Any]] = {}
+    for point in p4_points:
+        if point["momentum_score"] is None:
+            continue
+        by_date[point["date"]] = {
+            "date": point["date"],
+            "momentum_score": point["momentum_score"],
+            "source": "p4",
+        }
+    for row in rows:
+        score = (row.signal_metrics or {}).get("momentum_score")
+        if score is None:
+            continue
+        by_date[row.snapshot_date] = {
+            "date": row.snapshot_date,
+            "momentum_score": score,
+            "source": "p3",
+        }
+    return sorted(by_date.values(), key=lambda item: item["date"])
+
+
 def get_archive_detail(
     db: Session,
     stock_id: str,
@@ -393,6 +447,10 @@ def get_archive_detail(
     payload["recommendation_thesis"] = latest_row.recommendation_thesis
     payload["relative_advantage"] = latest_row.relative_advantage
     payload["margin_analysis"] = latest_row.margin_analysis
+    # 2026-08-13：動能分數歷史折線圖——合併 P3（signal_watch_hits）與 P4
+    # （signal_observation_reviews）兩個來源，讓 P3 沒有再次選中的那幾天也有資料點。
+    p4_points = _load_p4_momentum_points(db, stock_id)
+    payload["momentum_score_history"] = _build_momentum_score_history(rows, p4_points)
     return payload
 
 

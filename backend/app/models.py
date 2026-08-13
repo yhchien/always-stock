@@ -538,6 +538,13 @@ class SignalObservationReview(Base):
     market_context_json = Column(JSON, nullable=True)
     persistence_warning_json = Column(JSON, nullable=True)
     technical_status = Column(String(32), nullable=True)
+    # 2026-08-13：P4 每日複核時本來就會重算一次 momentum_score（build_current_
+    # tracking_evidence 內呼叫 momentum.compute_momentum_score，用跟 P3 完全相同的
+    # momentum_frame／公式），過去只拿來衍生 momentum_phase 等欄位，算完即丟。這裡
+    # 補存下來，讓「動能分數歷史折線圖」在 P3 沒有再次選中該股的那幾天也有資料點
+    # （P3 選中的那幾天仍以 signal_watch_hits.signal_metrics.momentum_score 為主，
+    # 兩者數值上是同一套公式，只是 P3 的分數額外附帶「當天贏過其他候選」的訊號）。
+    momentum_score = Column(Float, nullable=True)
     prompt_version = Column(String(32), nullable=False)
     state_machine_version = Column(String(32), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

@@ -10,6 +10,8 @@ from app.models import (
     Base,
     DailyPrice,
     SignalGenerationJob,
+    SignalObservation,
+    SignalObservationReview,
     SignalSnapshot,
     SignalWatchCompletedArchive,
     SignalWatchHit,
@@ -293,6 +295,126 @@ def test_get_archive_detail_exposes_momentum_score_per_report():
         detail = archive.get_archive_detail(db, "6505", now=datetime(2026, 8, 12, 20, 0))
         assert detail is not None
         assert detail["reports"][0]["momentum_score"] is None
+
+
+def _seed_observation_review(
+    db, *, stock_id: str, review_date: date, momentum_score: float
+) -> None:
+    observation = SignalObservation(
+        stock_id=stock_id,
+        stock_name=f"股{stock_id}",
+        asset_type="COMMON_STOCK",
+        episode_id=f"episode-{stock_id}-{review_date}",
+        status="OBSERVING",
+        started_signal_date=review_date - timedelta(days=1),
+        baseline_quality="P3_COMPLETE",
+        initial_snapshot_json={},
+    )
+    db.add(observation)
+    db.flush()
+    db.add(
+        SignalObservationReview(
+            observation_id=observation.id,
+            review_date=review_date,
+            decision="CONTINUE",
+            reason_codes=[],
+            reason="",
+            caution_dimensions=[],
+            failed_dimensions=[],
+            momentum_score=momentum_score,
+            prompt_version="v1",
+            state_machine_version="v1",
+        )
+    )
+    db.commit()
+
+
+def test_get_archive_detail_momentum_history_merges_p3_and_p4_sources():
+    """2026-08-13：P3（signal_watch_hits）沒有再次選中的那幾天，改用 P4（每日複核）
+    的 momentum_score 補上資料點；兩個來源合併成同一條時間序列，各自標記 source。"""
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+
+    with Session() as db:
+        job_id = _seed_job_and_snapshot(db, date(2026, 8, 10))
+        archive.persist_signal_watch_hits(
+            db,
+            date(2026, 8, 10),
+            {
+                "watchlist": [
+                    {
+                        "stock": "3231",
+                        "name": "緯創",
+                        "type": "LEADER",
+                        "signal_metrics": {"momentum_score": 62.5},
+                    },
+                ]
+            },
+            job_id,
+        )
+        # 8/11 P3 沒有再次選中，只有 P4 複核有分數
+        _seed_observation_review(
+            db, stock_id="3231", review_date=date(2026, 8, 11), momentum_score=58.0
+        )
+
+        detail = archive.get_archive_detail(db, "3231", now=datetime(2026, 8, 11, 20, 0))
+        assert detail is not None
+        history = {p["date"]: p for p in detail["momentum_score_history"]}
+        assert history[date(2026, 8, 10)] == {
+            "date": date(2026, 8, 10),
+            "momentum_score": 62.5,
+            "source": "p3",
+        }
+        assert history[date(2026, 8, 11)] == {
+            "date": date(2026, 8, 11),
+            "momentum_score": 58.0,
+            "source": "p4",
+        }
+        # 依日期排序
+        assert [p["date"] for p in detail["momentum_score_history"]] == [
+            date(2026, 8, 10),
+            date(2026, 8, 11),
+        ]
+
+
+def test_get_archive_detail_momentum_history_prefers_p3_when_both_exist_same_date():
+    """同一天 P3 跟 P4 都有分數時，以 P3 為準——P3 選中額外附帶『當天贏過其他候選、
+    通過 LLM 驗證』的訊號，資訊量比單純的 P4 動能測量值更完整。"""
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+
+    with Session() as db:
+        job_id = _seed_job_and_snapshot(db, date(2026, 8, 10))
+        archive.persist_signal_watch_hits(
+            db,
+            date(2026, 8, 10),
+            {
+                "watchlist": [
+                    {
+                        "stock": "3231",
+                        "name": "緯創",
+                        "type": "LEADER",
+                        "signal_metrics": {"momentum_score": 62.5},
+                    },
+                ]
+            },
+            job_id,
+        )
+        # 同一天 P4 也算了一次（理論上數值應該相同，這裡刻意給不同值驗證優先序）
+        _seed_observation_review(
+            db, stock_id="3231", review_date=date(2026, 8, 10), momentum_score=99.9
+        )
+
+        detail = archive.get_archive_detail(db, "3231", now=datetime(2026, 8, 10, 20, 0))
+        assert detail is not None
+        assert len(detail["momentum_score_history"]) == 1
+        assert detail["momentum_score_history"][0] == {
+            "date": date(2026, 8, 10),
+            "momentum_score": 62.5,
+            "source": "p3",
+        }
 
 
 def test_persist_recatch_after_cycle_completion_starts_fresh_cycle():

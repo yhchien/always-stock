@@ -497,6 +497,10 @@ def build_current_tracking_evidence(
             "watch_quality_state": candidate.get("watch_quality_state"),
             "quality_evidence": candidate.get("quality_evidence") or {},
             "momentum_phase": candidate.get("momentum_phase"),
+            # 2026-08-13：跟 P3 用同一個 momentum_frame／同一個 compute_momentum_score
+            # 算出來的分數（見本函式 425 行）；額外存進 SignalObservationReview.
+            # momentum_score，讓動能分數折線圖在 P3 沒有再次選中的那幾天也有資料點。
+            "momentum_score": candidate.get("momentum_score"),
             "risk_flags": candidate["deterministic_signals"].get("risk_flags")
             or [],
             "risk_warnings": hard.get("risk_warnings") or [],
@@ -2132,6 +2136,7 @@ def _upsert_review(
     row.market_context_json = market_context
     row.persistence_warning_json = backend_evidence.get("persistence_warning") or {}
     row.technical_status = decision.technical_status
+    row.momentum_score = backend_evidence.get("momentum_score")
     row.prompt_version = current_tracking_prompt_version()
     row.state_machine_version = STATE_MACHINE_VERSION
     row.updated_at = datetime.utcnow()

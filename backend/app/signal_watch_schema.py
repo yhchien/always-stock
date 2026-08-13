@@ -40,6 +40,10 @@ def ensure_signal_watch_hit_return_columns(engine: Engine) -> None:
             "closure_reason": "ALTER TABLE signal_watch_completed_archives ADD COLUMN closure_reason VARCHAR(32) NOT NULL DEFAULT 'completed_30_days'",
             "prompt_version": "ALTER TABLE signal_watch_completed_archives ADD COLUMN prompt_version VARCHAR(16) NOT NULL DEFAULT 'v1'",
         },
+        "signal_observation_reviews": {
+            # 2026-08-13：動能分數歷史折線圖用，見 models.py SignalObservationReview.momentum_score 註解
+            "momentum_score": "ALTER TABLE signal_observation_reviews ADD COLUMN momentum_score FLOAT",
+        },
     }
 
     for table_name, wanted in table_alters.items():

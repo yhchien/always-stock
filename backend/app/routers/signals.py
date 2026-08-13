@@ -246,12 +246,22 @@ class SignalArchiveReportResponse(BaseModel):
     momentum_score: Optional[float] = None
 
 
+class SignalMomentumScorePoint(BaseModel):
+    date: date
+    momentum_score: float
+    # "p3"：P3 當天再次選中，分數來自 signal_watch_hits；"p4"：P3 沒選中，分數來自
+    # P4 每日複核的獨立重算（同一套公式，但沒有「贏過其他候選」這層額外訊號）
+    source: str
+
+
 class SignalArchiveDetailResponse(SignalArchiveSummaryItemResponse):
     reports: List[SignalArchiveReportResponse]
     # 2026-08-11：正式推薦頁併入魚尾單一入口，取最新一筆命中的三個補充欄位；舊資料 = None
     recommendation_thesis: Optional[str] = None
     relative_advantage: Optional[str] = None
     margin_analysis: Optional[Dict[str, Any]] = None
+    # 2026-08-13：合併 P3/P4 兩個來源的動能分數歷史，供折線圖使用
+    momentum_score_history: List[SignalMomentumScorePoint] = []
 
 
 # ---------------------------------------------------------------------------
