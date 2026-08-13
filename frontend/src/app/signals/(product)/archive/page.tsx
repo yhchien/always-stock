@@ -65,6 +65,13 @@ const PERIOD_PATTERN = /^\d{4}-\d{2}-\d{2}$/
 const ACTIVE_COLLAPSED_KEY = "always-stock:signals-archive:active-collapsed"
 const COMPLETED_COLLAPSED_KEY = "always-stock:signals-archive:completed-collapsed"
 
+// 2026-08-13：使用者要求先在 UI 隱藏「追蹤期滿移出紀錄」——已被「停止觀察的股票」
+// 取代（同格式，格式跟資料來源都相同，只差在後者從 2026-08-13 起才開始累積、不含
+// 策略大改版前的舊資料）。這裡只拔 UI 入口，不動底層資料/fetch/state，backend 目前
+// 仍持續寫入這張舊表（`_upsert_completed_archive` 沒有被移除，只是新增了平行寫入
+// 新表），之後若確定不需要保留舊表資料，需要另外決定是否要停止寫入或做其他處理。
+const SHOW_COMPLETED_ARCHIVE_SECTION = false
+
 function formatPct(value: number | null): string {
   if (value == null) return "--"
   return `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`
@@ -1500,6 +1507,7 @@ function SignalArchiveContent() {
         )}
       </section>
 
+      {SHOW_COMPLETED_ARCHIVE_SECTION && (
       <section className="rounded-xl border border-slate-700 bg-slate-900/40 p-4">
         <header className="mb-4 flex flex-col gap-3">
           <div>
@@ -1665,6 +1673,7 @@ function SignalArchiveContent() {
         </>
         )}
       </section>
+      )}
 
       <StoppedObservationsSection
         onOpenChart={(stockId, stockName) => setChartStock({ stockId, stockName })}
