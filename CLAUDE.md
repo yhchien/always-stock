@@ -5021,3 +5021,93 @@ router.py` 新增 1 個測試（`/archive/stopped` endpoint 獨立於 `/archive/
 啟動 server（連正式 Postgres）做端到端驗證：新表確認建立、`/archive/stopped` 回空
 陣列（符合「從現在開始」）、`/archive/{stock_id}` 對真實股票正確回傳
 `momentum_score`、`/archive/completed` 重構後行為不變，皆通過後乾淨關閉本機 server
+
+## 動能分數折線圖補上 P4 來源，跟 P3 合併成同一條時間序列（2026-08-13 第二輪）
+
+### 背景
+上一輪做完動能分數折線圖後，使用者追問「P4 過程中會有 output 動能分數嗎？」——查證
+後回報：P4 每日複核（`build_current_tracking_evidence`）內部**確實會**用跟 P3 完全
+相同的 `momentum_frame`／`compute_momentum_score()` 重算一次分數，但只拿來衍生
+`momentum_phase`／`momentum_freshness` 等欄位，算完即丟，從未被持久化——所以上一輪
+做的折線圖只有 P3（`signal_watch_hits`）選中當天有資料點，P3 沒選中但 P4 仍在追蹤的
+那幾天完全是空的。
+
+使用者接著提出兩個問題請先討論再動手：
+1. 若 P3 隔天重複選到，能不能直接視為 P4 也通過了？有沒有「P3 沒選到但 P4 分數其實
+   很高」的情況？
+2. 若 P3 沒選到、股票落到 P4，P4 的分數要能輸出，但兩者「本質差異」要先定義清楚。
+
+### 討論結論（實作前，回覆給使用者確認）
+- **底層事實**：追到 `pipeline.py` 才發現 `momentum_frame` 每天只算一次，同一份物件
+  同時傳給 P3 的候選池建構跟 P4 的 `run_daily_observation_reviews`；`_compute_pool_
+  metrics` 也是兩邊共用同一支函式。也就是說 P3、P4 若在同一天對同一檔股票算分數，
+  數值理論上完全相同——不是兩套不同定義的分數，只是「有沒有被存下來」的差別
+- **問題 1 答案**：**會**，而且是 P3 選股機制設計本身會製造的落差，不是邊界情況。
+  P3 的「選中」從來不是動能分數 ≥ 門檻的絕對判斷，是多層淘汰機制：(a) 針對「已追蹤中」
+  股票的專屬硬剔除（`failed_follow_through`／`price_extended_inst_selling`，依據
+  該股**過去**追蹤表現，跟今天分數無關）、(b) LLM 否決（業務/題材不符，跟動能無關）、
+  (c) regime gate 依信心度砍低分候選、(d) global_selector 是**全市場相對比較**不是
+  絕對門檻、(e) `LLM_INPUT_HARD_LIMIT` 候選池截斷。所以「P3 選到」可以拿來當 P4 的
+  替代驗證（隱含額外通過競爭+LLM 驗證），但「P3 沒選到」不能反推「動能一定弱」——
+  P4 那幾天必須有自己獨立的分數輸出
+- **問題 2 答案**：本質差異不在公式（公式相同，已用 code 證實），在於**有沒有附帶
+  「贏過其他候選」這層額外訊號**——P3 的分數 = 原始測量值 + 通過競爭/LLM 驗證；
+  P4（若補上）的分數 = 單純原始測量值，沒有這層驗證。兩者數值上可以放進同一條時間
+  序列比較，但解讀時要記得這層差異
+
+使用者回覆「好，試試看」，確認照上述方向實作。
+
+### 實作
+- **`SignalObservationReview` 新增 `momentum_score` 欄位**（`app/models.py`）：P4 每日
+  複核本來就會算（`build_current_tracking_evidence` 內 `momentum.compute_momentum_
+  score(candidate)`），這次把它從「純中間變數」升級成「補進 evidence dict + 落地存
+  進獨立 column」——`result[observation.id]["momentum_score"] = candidate.get(...)`
+  緊接在既有的 `momentum_phase` 旁邊（沿用既有 pattern，minimal diff），`_upsert_
+  review()` 讀 `backend_evidence.get("momentum_score")` 寫入 `row.momentum_score`。
+  Schema migration 沿用既有 `signal_watch_schema.py` 的 idempotent ALTER TABLE dict
+  pattern（新增 `"signal_observation_reviews"` 條目），非新表不需要動 `main.py`
+- **合併邏輯**（`app/signals/archive.py`）：新增 `_load_p4_momentum_points(db,
+  stock_id)`（query `SignalObservationReview` join `SignalObservation`，過濾
+  `momentum_score IS NOT NULL`）+ `_build_momentum_score_history(rows, p4_points)`
+  （純函式，合併兩來源成 `{date, momentum_score, source}` 排序陣列；**同一天兩者都
+  有值時 P3 覆蓋 P4**，實作上是先塞 P4 進 dict 再塞 P3 覆寫，剛好對應優先序）。
+  `get_archive_detail()` 新增 `payload["momentum_score_history"]`，跟既有
+  `reports`（報告時間軸用，只有 P3 有 reason/business_summary 可顯示，P4 天沒有）
+  分開存放——刻意不共用一個陣列，因為兩者代表的東西不同（一個是「推薦報告」、一個是
+  「動能分數時間序列」），硬塞進同一個結構只會讓報告時間軸出現空白卡片
+- **API**：`SignalArchiveDetailResponse` 新增 `momentum_score_history:
+  List[SignalMomentumScorePoint]`（`{date, momentum_score, source}`，`source`
+  為 `"p3" | "p4"` 字串）
+- **前端**：`MomentumScoreChart` 改吃 `detail.momentum_score_history`（不再從
+  `reports` 衍生）；用 ECharts 的 per-data-point `symbol` 屬性區分來源——`circle`
+  （實心）＝ P3、`emptyCircle`（空心）＝ P4，圖表右上角加一行文字圖例「● P3 選中
+  　○ P4 複核」；tooltip 同步顯示來源標籤
+
+### Gotcha
+- **不要把 momentum_score 塞進既有的 `evidence` dict 之外的獨立參數**：一開始考慮
+  過另外傳一個 side-channel 給 `_upsert_review`，後來選擇直接加進 `evidence` dict
+  （跟 `momentum_phase` 相鄰）——理由是 `evidence` 本來就是「這天算出來的完整證據」，
+  `_upsert_review` 的 `backend_evidence` 參數本來就是同一個物件，加一個 key 進去是
+  最小改動；且 `evidence` 目前沒有被直接序列化進任何 LLM prompt（只有部分欄位被
+  萃取後使用），多一個 key 沒有 blast radius
+- **歷史 `SignalObservationReview` 資料 `momentum_score` 全部是 NULL**（這次上線
+  前的複核紀錄）——`_load_p4_momentum_points` 的 `isnot(None)` 過濾器天然把這些排除
+  掉，不會在折線圖上出現斷裂或錯誤的點；本機驗證時特地找了一檔「目前追蹤中 + 有歷史
+  P4 複核紀錄」的股票（2454）確認：折線圖只顯示 2 個 P3 來源的點，歷史 P4 複核紀錄
+  正確被過濾，沒有污染結果。要等下一次每日 pipeline 真正跑過，P4 側才會開始累積新的
+  資料點
+- **`_build_momentum_score_history` 用 dict 依日期覆寫實作優先序，不是顯式 if/else
+  判斷**：`by_date[date] = p4_point` 先執行，`by_date[date] = p3_point` 後執行，
+  同一個 key 後寫入的覆蓋前面——這個寫法比較精簡，但可讀性上要留意寫入順序本身就是
+  優先序邏輯，不是巧合
+
+### 測試
+`test_observation_lifecycle.py` 新增 1 個測試（`momentum_score` 從 evidence 正確
+持久化到 `SignalObservationReview`）；`test_signal_archive_returns.py` 新增 2 個
+測試（合併 P3+P4 兩來源／同一天兩者都有時 P3 優先）；`test_signals_router.py` 新增
+1 個測試（router 層正確回傳合併後的 `momentum_score_history`）。全 backend suite
+20 fail/5 error 維持既有 baseline（零新增失敗，1302 pass，較本輪之前新增 4 個測試
+函式）。前端 `npx tsc --noEmit`/`npx eslint`（僅改動檔案）全過；`npx jest` 18 fail
+維持既有 baseline（零新增失敗，92 pass 不變，本輪未新增前端測試）。額外對本機啟動
+server（連正式 Postgres）做端到端驗證：新 column 確認自動建立、純 P3 股票（2330）
+與「P3+歷史 P4（無分數）」混合股票（2454）皆正確回傳，驗證完畢後乾淨關閉本機 server
