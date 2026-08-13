@@ -5111,3 +5111,32 @@ router.py` 新增 1 個測試（`/archive/stopped` endpoint 獨立於 `/archive/
 維持既有 baseline（零新增失敗，92 pass 不變，本輪未新增前端測試）。額外對本機啟動
 server（連正式 Postgres）做端到端驗證：新 column 確認自動建立、純 P3 股票（2330）
 與「P3+歷史 P4（無分數）」混合股票（2454）皆正確回傳，驗證完畢後乾淨關閉本機 server
+
+## UI 隱藏「追蹤期滿移出紀錄」（2026-08-13 第三輪）
+
+### 背景
+使用者要求把 30 日追蹤頁的「追蹤期滿移出紀錄」區塊在 UI 上隱藏，理由是「這張表應該
+之後都不會更新」——已被同一天稍早新增的「停止觀察的股票」取代（格式與資料來源完全
+相同，差別只在後者從這次上線起才開始累積，不含策略大改版前的舊資料）。
+
+### 改動
+`archive/page.tsx` 新增 `const SHOW_COMPLETED_ARCHIVE_SECTION = false`（沿用本檔案
+既有的 `{false && riskNote ? (...) : null}` 隱藏慣例，2026-05-27 那次已經用過同款
+pattern），把整個「追蹤期滿移出紀錄」`<section>`（含 collapse 按鈕、半年區間 tab、
+搜尋框、卡片網格，約 165 行 JSX）包進 `{SHOW_COMPLETED_ARCHIVE_SECTION && (...)}`。
+**只拔 UI 入口，底層 state／fetch／useMemo／helper function 全部原封不動保留**——
+之後要復原只需要把常數改回 `true`。
+
+### 誠實揭露：使用者的假設跟目前 backend 實際行為不一致
+使用者說「這張表應該之後都不會更新」，但**這次改動完全沒有動到 backend**——上一輪
+（新增「停止觀察的股票」）是在既有 3 個 `_upsert_completed_archive` 呼叫點**旁邊
+新增**平行呼叫 `_upsert_stopped_observation`，不是取代。也就是說 `signal_watch_
+completed_archives`（追蹤期滿移出紀錄的底層表）目前**仍然持續在寫入**，只是畫面上
+看不到而已；使用者的假設如果真的成立需要額外去 backend 拿掉那 3 個舊呼叫（或至少
+確認要不要拿掉），本輪只處理了使用者明確要求的「UI 隱藏」，backend 寫入邏輯是否要
+一併停用留給使用者確認後再處理。
+
+### 測試
+純 JSX 條件渲染改動，沿用既有慣例判斷不需要新增測試（跟 2026-05-27 那次隱藏風險
+提示框的處理方式一致）。`npx tsc --noEmit`/`npx eslint`（僅改動檔案）全過；`npx
+jest` 18 fail 維持既有 baseline（零新增失敗，92 pass 不變）
