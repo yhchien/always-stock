@@ -734,6 +734,63 @@ class SignalWatchCompletedArchive(Base):
     )
 
 
+class SignalWatchStoppedObservation(Base):
+    """
+    2026-08-13：獨立的「停止觀察的股票」表——與 `SignalWatchCompletedArchive`（追蹤期滿
+    封存表）欄位格式完全一致，但這是一張全新的表，從建立當下才開始有資料（不回填任何
+    歷史結算紀錄）。
+
+    背景：既有 `signal_watch_completed_archives` 累積了策略大改版前後混雜的紀錄
+    （多次 prompt / regime gate / candidate pool 規則調整），拿來評估「目前這套策略的
+    停止觀察表現」會混進舊策略的雜訊。這張表刻意留一個乾淨的起點，任何原因（30 日期滿／
+    停損提前結算／回落停利提前結算／P4 判定停止觀察／未來若有其他人工重置）造成一檔股票
+    被移出追蹤，都會同時寫進這張表——`_upsert_completed_archive` 呼叫的地方都會同步呼叫
+    `_upsert_stopped_observation`，兩張表的資料來源與寫入時機完全相同，只差在這張表沒有
+    任何歷史資料。
+
+    不要對這張表做歷史回填；若未來又要重新「歸零」，直接清空這張表重新開始即可（欄位
+    unique constraint 保證重跑不會產生重複列）。
+    """
+    __tablename__ = "signal_watch_stopped_observations"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    stock_id = Column(String, nullable=False, index=True)
+    stock_name = Column(String, nullable=False)
+    industry_name = Column(String, nullable=True)
+    sub_industry = Column(String, nullable=True)
+    first_seen_date = Column(Date, nullable=False, index=True)
+    latest_hit_date = Column(Date, nullable=False)
+    hit_count = Column(Integer, nullable=False, default=1)
+    latest_signal_type = Column(String(16), nullable=False)
+    baseline_trade_date = Column(Date, nullable=True)
+    baseline_price = Column(Float, nullable=True)
+    return_day_10_pct = Column(Float, nullable=True)
+    return_day_20_pct = Column(Float, nullable=True)
+    return_day_30_pct = Column(Float, nullable=True)
+    max_positive_return_pct = Column(Float, nullable=True)
+    max_positive_return_trade_date = Column(Date, nullable=True)
+    max_negative_return_pct = Column(Float, nullable=True)
+    max_negative_return_trade_date = Column(Date, nullable=True)
+    completed_trade_date = Column(Date, nullable=False, index=True)
+    closure_reason = Column(
+        String(32),
+        nullable=False,
+        default="completed_30_days",
+        server_default="completed_30_days",
+    )
+    prompt_version = Column(
+        String(64), nullable=False, default="v1", server_default="v1"
+    )
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "stock_id", "first_seen_date", name="uq_signal_watch_stopped_observation_cycle"
+        ),
+    )
+
+
 class SignalExpectationPrice(Base):
     """M23 後續：個股「一個月內資金行情可期待價格區間」預測。
 

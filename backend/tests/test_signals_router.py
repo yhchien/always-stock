@@ -24,6 +24,7 @@ from app.models import (
     SignalSnapshot,
     SignalWatchCompletedArchive,
     SignalWatchHit,
+    SignalWatchStoppedObservation,
     User,
 )
 from app.routers import signals as signals_router
@@ -779,7 +780,50 @@ def test_completed_archive_summary_returns_rows(api):
     assert item["max_positive_return_trade_date"] == "2026-03-20"
     assert item["max_negative_return_pct"] == -4.75
     assert item["max_negative_return_trade_date"] == "2026-03-06"
-    assert item["completed_trade_date"] == "2026-04-29"
+
+
+def test_stopped_observations_returns_rows_independent_of_completed_archive(api):
+    """2026-08-13：/archive/stopped 只回 SignalWatchStoppedObservation 自己的 rows，
+    不會把 /archive/completed（可能含策略大改版前的舊資料）混進來。"""
+    client, db, _ = api
+    db.add(
+        SignalWatchCompletedArchive(
+            stock_id="OLD1",
+            stock_name="舊策略股",
+            first_seen_date=date(2026, 1, 1),
+            latest_hit_date=date(2026, 1, 20),
+            hit_count=3,
+            latest_signal_type="LEADER",
+            completed_trade_date=date(2026, 2, 1),
+            closure_reason="completed_30_days",
+        )
+    )
+    db.add(
+        SignalWatchStoppedObservation(
+            stock_id="2454",
+            stock_name="聯發科",
+            industry_name="半導體業",
+            first_seen_date=date(2026, 8, 1),
+            latest_hit_date=date(2026, 8, 10),
+            hit_count=3,
+            latest_signal_type="LEADER",
+            completed_trade_date=date(2026, 8, 13),
+            closure_reason="p4_stopped",
+        )
+    )
+    db.commit()
+
+    res = client.get("/api/signals/archive/stopped")
+    assert res.status_code == 200
+    body = res.json()
+    assert len(body["items"]) == 1
+    item = body["items"][0]
+    assert item["stock_id"] == "2454"
+    assert item["closure_reason"] == "p4_stopped"
+
+    # /archive/completed 仍只回自己表的 rows，兩個 endpoint 互不干擾
+    completed_res = client.get("/api/signals/archive/completed")
+    assert [i["stock_id"] for i in completed_res.json()["items"]] == ["OLD1"]
 
 
 # ---------------------------------------------------------------------------

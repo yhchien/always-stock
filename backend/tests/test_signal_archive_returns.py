@@ -13,6 +13,7 @@ from app.models import (
     SignalSnapshot,
     SignalWatchCompletedArchive,
     SignalWatchHit,
+    SignalWatchStoppedObservation,
 )
 from app.signals import archive
 
@@ -233,6 +234,65 @@ def test_get_archive_detail_returns_latest_recommendation_detail_fields():
         assert detail["recommendation_thesis"] == "第二天的論點"
         assert detail["relative_advantage"] == "第二天的優勢"
         assert detail["margin_analysis"] == {"weight_ratio": "個股 70% / 大盤 30%"}
+
+
+def test_get_archive_detail_exposes_momentum_score_per_report():
+    """2026-08-13：動能分數歷史折線圖用——每筆 report 帶出當天 signal_metrics.momentum_score。"""
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+
+    with Session() as db:
+        job_id_1 = _seed_job_and_snapshot(db, date(2026, 8, 10))
+        archive.persist_signal_watch_hits(
+            db,
+            date(2026, 8, 10),
+            {
+                "watchlist": [
+                    {
+                        "stock": "3231",
+                        "name": "緯創",
+                        "type": "LEADER",
+                        "signal_metrics": {"momentum_score": 62.5},
+                    },
+                ]
+            },
+            job_id_1,
+        )
+        job_id_2 = _seed_job_and_snapshot(db, date(2026, 8, 11))
+        archive.persist_signal_watch_hits(
+            db,
+            date(2026, 8, 11),
+            {
+                "watchlist": [
+                    {
+                        "stock": "3231",
+                        "name": "緯創",
+                        "type": "LEADER",
+                        "signal_metrics": {"momentum_score": 70.1},
+                    },
+                ]
+            },
+            job_id_2,
+        )
+        detail = archive.get_archive_detail(db, "3231", now=datetime(2026, 8, 11, 20, 0))
+        assert detail is not None
+        by_date = {r["snapshot_date"]: r["momentum_score"] for r in detail["reports"]}
+        assert by_date[date(2026, 8, 10)] == 62.5
+        assert by_date[date(2026, 8, 11)] == 70.1
+
+    with Session() as db:
+        # 舊快照沒有 signal_metrics（None）時，momentum_score 應優雅回 None，不噴例外
+        job_id = _seed_job_and_snapshot(db, date(2026, 8, 12))
+        archive.persist_signal_watch_hits(
+            db,
+            date(2026, 8, 12),
+            {"watchlist": [{"stock": "6505", "name": "台塑化", "type": "LEADER"}]},
+            job_id,
+        )
+        detail = archive.get_archive_detail(db, "6505", now=datetime(2026, 8, 12, 20, 0))
+        assert detail is not None
+        assert detail["reports"][0]["momentum_score"] is None
 
 
 def test_persist_recatch_after_cycle_completion_starts_fresh_cycle():
@@ -816,6 +876,14 @@ def test_refresh_completed_signal_cycles_upserts_full_cycle_archive_rows():
         assert row.baseline_trade_date == first_seen + timedelta(days=1)
         assert row.baseline_price == ((102.0 + 103.0) / 2.0)
         assert row.completed_trade_date == expected_completed
+
+        # 2026-08-13：「停止觀察的股票」新表——與 SignalWatchCompletedArchive 平行寫入，
+        # 內容完全一致
+        stopped = db.query(SignalWatchStoppedObservation).one()
+        assert stopped.stock_id == "2330"
+        assert stopped.first_seen_date == first_seen
+        assert stopped.completed_trade_date == expected_completed
+        assert stopped.closure_reason == row.closure_reason
         assert row.return_day_10_pct is not None
         assert row.return_day_20_pct is not None
         assert row.return_day_30_pct is not None
@@ -946,6 +1014,15 @@ def test_update_signal_watch_returns_early_exits_after_three_day_grace():
         assert completed.first_seen_date == first_seen
         assert completed.baseline_trade_date == date(2026, 4, 2)
         assert completed.baseline_price == 100.0
+
+        # 2026-08-13：早退結算也要同步寫進「停止觀察的股票」新表
+        stopped = (
+            db.query(SignalWatchStoppedObservation)
+            .filter(SignalWatchStoppedObservation.stock_id == "9999")
+            .one()
+        )
+        assert stopped.closure_reason == archive.CLOSURE_REASON_EARLY_EXIT_STOP_LOSS
+        assert stopped.completed_trade_date == date(2026, 4, 6)
 
 
 def test_update_signal_watch_returns_does_not_early_exit_when_grace_recovers():
@@ -1202,6 +1279,49 @@ def test_list_completed_archive_summary_period_filter_returns_only_matching_rows
         stock_ids = sorted(item["stock_id"] for item in first_half["items"])
         assert stock_ids == ["AAAA", "BBBB"]
         assert first_half["selected_period_start"] == date(2026, 5, 1)
+
+
+def test_list_stopped_observations_summary_is_independent_of_completed_archive():
+    """2026-08-13：「停止觀察的股票」是獨立的表，不會把 SignalWatchCompletedArchive
+    既有（策略大改版前）的舊資料一起列出來——只回這張新表自己的 rows。"""
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+
+    with Session() as db:
+        # 舊策略時代留下的歷史紀錄，只在 completed archive
+        db.add(
+            SignalWatchCompletedArchive(
+                stock_id="OLD1",
+                stock_name="舊策略股",
+                first_seen_date=date(2026, 1, 1),
+                latest_hit_date=date(2026, 1, 20),
+                hit_count=3,
+                latest_signal_type="LEADER",
+                completed_trade_date=date(2026, 2, 1),
+                closure_reason="completed_30_days",
+            )
+        )
+        # 新策略上線後才被停止觀察的股票，只在新表
+        db.add(
+            SignalWatchStoppedObservation(
+                stock_id="NEW1",
+                stock_name="新策略股",
+                first_seen_date=date(2026, 8, 10),
+                latest_hit_date=date(2026, 8, 12),
+                hit_count=3,
+                latest_signal_type="LEADER",
+                completed_trade_date=date(2026, 8, 13),
+                closure_reason="p4_stopped",
+            )
+        )
+        db.commit()
+
+        stopped_data = archive.list_stopped_observations_summary(db)
+        assert [item["stock_id"] for item in stopped_data["items"]] == ["NEW1"]
+
+        completed_data = archive.list_completed_archive_summary(db)
+        assert [item["stock_id"] for item in completed_data["items"]] == ["OLD1"]
 
 
 def test_update_signal_watch_returns_early_exit_commits_with_autoflush_false():
@@ -1464,6 +1584,17 @@ def test_settle_stock_for_p4_stop_archives_active_cycle():
         assert completed.first_seen_date == first_seen
         assert completed.baseline_trade_date == date(2026, 7, 21)
         assert completed.baseline_price == 100.0
+
+        # 2026-08-13：P4 判定停止觀察也要同步寫進「停止觀察的股票」新表——這是這張新表
+        # 最主要的資料來源（使用者要求的原始場景）
+        stopped = (
+            db.query(SignalWatchStoppedObservation)
+            .filter_by(stock_id="1234")
+            .one()
+        )
+        assert stopped.closure_reason == archive.CLOSURE_REASON_P4_STOPPED
+        assert stopped.completed_trade_date == date(2026, 7, 22)
+        assert stopped.first_seen_date == first_seen
 
 
 def test_settle_stock_for_p4_stop_no_active_cycle_is_noop():

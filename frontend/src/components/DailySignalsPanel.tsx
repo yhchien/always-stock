@@ -286,25 +286,6 @@ function MomentumChip({ item }: { item: SignalWatchlistItem }) {
   )
 }
 
-/** panel header 用：市場廣度 chip（v2.2；缺值不顯示）。 */
-function BreadthChip({ score }: { score?: number | null }) {
-  if (score == null) return null
-  const cls =
-    score >= 60
-      ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-200"
-      : score < 45
-        ? "border-rose-500/50 bg-rose-500/10 text-rose-200"
-        : "border-amber-500/50 bg-amber-500/10 text-amber-200"
-  return (
-    <span
-      className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[11px] font-medium ${cls}`}
-      title="市場廣度 0~100：全市場站上 MA20/60 比例、漲跌家數、20 日新高新低、強產業比的加權分數；低分代表少數股撐盤"
-    >
-      廣度 {score.toFixed(0)}
-    </span>
-  )
-}
-
 function MomentumMetric({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-lg border border-slate-700/60 bg-slate-800/40 px-2.5 py-1.5">
@@ -715,7 +696,6 @@ function SignalCard({
 }) {
   const [detailOpen, setDetailOpen] = useState(false)
   const themeFit = item.theme_fit
-  const promptVersion = item.prompt_version || "v1"
   // 首頁卡片只留產業名稱；資產類型徽章、子產業、canonical 分類 tag 移到詳情 popup 顯示
   const subtitle = item.industry != null ? <span>{item.industry}</span> : null
 
@@ -751,12 +731,6 @@ function SignalCard({
                 題材 {signalValueLabel(themeFit, "theme_fit")}
               </span>
             ) : null}
-            <span
-              className="inline-flex whitespace-nowrap rounded border border-slate-600 bg-slate-700/40 px-1.5 py-0.5 text-[11px] font-medium text-slate-300"
-              title="產生這檔的 prompt 版本"
-            >
-              {promptVersion}
-            </span>
           </div>
 
           {/* 觀察維度：只留判定為「強」的綠色 label，弱/中性/未知一律不顯示 */}
@@ -1445,16 +1419,9 @@ export default function DailySignalsPanel({
             label={snapshot?.data.market_context?.market_regime_label}
             reason={snapshot?.data.market_context?.market_regime_reason}
           />
-          <BreadthChip score={snapshot?.data.market_context?.breadth_score} />
           <span className="text-[11px] text-slate-500">每日將於晚上 21:30 更新</span>
         </div>
         <div className="flex items-center gap-2">
-          <Link
-            href="/signals/observations"
-            className="inline-flex items-center rounded border border-slate-600 bg-slate-800/50 px-3 py-1 text-xs font-medium text-slate-200 hover:bg-slate-700"
-          >
-            每日觀察
-          </Link>
           <Link
             href="/signals/archive"
             className="inline-flex items-center rounded border border-slate-600 bg-slate-800/50 px-3 py-1 text-xs font-medium text-slate-200 hover:bg-slate-700"

@@ -242,6 +242,8 @@ class SignalArchiveReportResponse(BaseModel):
     reason: str
     business_summary: Optional[str]
     snapshot_generated_at: Optional[datetime]
+    # 2026-08-13：動能分數歷史折線圖用；舊快照缺 signal_metrics 時 = None
+    momentum_score: Optional[float] = None
 
 
 class SignalArchiveDetailResponse(SignalArchiveSummaryItemResponse):
@@ -802,6 +804,38 @@ def get_completed_signal_archive(
         # 後端 normalize 到正確的 anchor（防使用者傳奇怪日期）
         period_start = signal_archive.half_year_period_start(period_start)
     payload = signal_archive.list_completed_archive_summary(
+        db,
+        limit=limit,
+        period_start=period_start,
+    )
+    return SignalArchiveCompletedResponse(**payload)
+
+
+@router.get("/archive/stopped", response_model=SignalArchiveCompletedResponse)
+def get_stopped_observations(
+    limit: int = Query(
+        default=0,
+        ge=0,
+        le=5000,
+        description="0 = 不限筆數",
+    ),
+    period_start: Optional[date] = Query(
+        default=None,
+        description=(
+            "半年區間起始日（YYYY-MM-DD）；必須對齊到 2026-05-01 起算的半年區間。"
+            "未指定時回所有 row（受 limit）。"
+        ),
+    ),
+    db: Session = Depends(get_db),
+) -> SignalArchiveCompletedResponse:
+    """「停止觀察的股票」——與 /archive/completed 格式完全相同，但資料來源是
+    2026-08-13 起才開始累積的獨立表（不含策略大改版前的舊紀錄）。任何原因
+    （30 日期滿／停損提前結算／回落停利提前結算／P4 判定停止觀察）造成一檔股票
+    被移出追蹤，都會同時寫進這張表。
+    """
+    if period_start is not None:
+        period_start = signal_archive.half_year_period_start(period_start)
+    payload = signal_archive.list_stopped_observations_summary(
         db,
         limit=limit,
         period_start=period_start,

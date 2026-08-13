@@ -186,6 +186,7 @@ def _ensure_m23_tables() -> None:
         SignalSnapshot,
         SignalWatchCompletedArchive,
         SignalWatchHit,
+        SignalWatchStoppedObservation,
         StockSharesOutstanding,
     )
 
@@ -204,6 +205,7 @@ def _ensure_m23_tables() -> None:
                 SignalSnapshot.__table__,
                 SignalWatchCompletedArchive.__table__,
                 SignalWatchHit.__table__,
+                SignalWatchStoppedObservation.__table__,
                 StockSharesOutstanding.__table__,
             ],
         )

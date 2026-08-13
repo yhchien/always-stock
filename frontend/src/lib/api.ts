@@ -1757,6 +1757,8 @@ export interface SignalArchiveReportItem {
   reason: string
   business_summary: string | null
   snapshot_generated_at: string | null
+  /** 2026-08-13：動能分數歷史折線圖用；舊快照缺 signal_metrics 時為 null。 */
+  momentum_score: number | null
 }
 
 export interface SignalArchiveDetailResponse extends SignalArchiveSummaryItem {
@@ -2453,6 +2455,28 @@ export async function fetchCompletedSignalArchive(
   const url = `${API_BASE}/api/signals/archive/completed${qs.toString() ? `?${qs.toString()}` : ""}`
   const res = await apiFetch(url, { signal: options?.signal })
   if (!res.ok) throw new Error(await buildErrorMessage(res, "40日移出紀錄載入失敗"))
+  return res.json()
+}
+
+/**
+ * 「停止觀察的股票」——2026-08-13 起才開始累積的獨立表，與 fetchCompletedSignalArchive
+ * 格式完全相同（同一個 SignalArchiveCompletedResponse），資料來源不同：任何原因（30 日
+ * 期滿／停損提前結算／回落停利提前結算／P4 判定停止觀察）造成一檔股票被移出追蹤都會
+ * 記錄在這裡，且不含策略大改版前的舊資料。
+ */
+export async function fetchStoppedObservations(
+  params?: {
+    limit?: number
+    periodStart?: string | null
+  },
+  options?: FetchOptions,
+): Promise<SignalArchiveCompletedResponse> {
+  const qs = new URLSearchParams()
+  if (params?.limit != null) qs.set("limit", String(params.limit))
+  if (params?.periodStart) qs.set("period_start", params.periodStart)
+  const url = `${API_BASE}/api/signals/archive/stopped${qs.toString() ? `?${qs.toString()}` : ""}`
+  const res = await apiFetch(url, { signal: options?.signal })
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "停止觀察的股票載入失敗"))
   return res.json()
 }
 

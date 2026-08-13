@@ -21,6 +21,7 @@ from app.models import (
     SignalSnapshot,
     SignalWatchCompletedArchive,
     SignalWatchHit,
+    SignalWatchStoppedObservation,
 )
 
 ARCHIVE_RETENTION_TRADE_DAYS = 30
@@ -377,6 +378,10 @@ def get_archive_detail(
             "reason": row.reason,
             "business_summary": row.business_summary,
             "snapshot_generated_at": row.snapshot_generated_at,
+            # 2026-08-13：動能分數歷史折線圖用——每筆 hit 當時的 momentum_score
+            # 早就存在 signal_metrics（v2.1 起，見 momentum.build_signal_metrics），
+            # 純粹補一個欄位曝光出去，不需要新的資料來源或欄位。
+            "momentum_score": (row.signal_metrics or {}).get("momentum_score"),
         }
         for row in sorted(rows, key=lambda row: row.snapshot_date, reverse=True)
     ]
@@ -423,13 +428,16 @@ def half_year_period_end(start: date) -> date:
     return next_start - timedelta(days=1)
 
 
-def list_completed_archive_summary(
+def _list_archive_style_table_summary(
     db: Session,
+    model_cls: Any,
     *,
     limit: int = 200,
     period_start: Optional[date] = None,
 ) -> dict[str, Any]:
-    """回封存表的 items + 半年期間 meta。
+    """`SignalWatchCompletedArchive` 與 `SignalWatchStoppedObservation` 共用的
+    listing 邏輯——兩張表欄位完全一致，差別只在資料本身（後者是 2026-08-13 起
+    才開始累積的乾淨表）。回 items + 半年期間 meta。
 
     period_start：若提供（必須對齊半年區間起始日），只回該區間 completed_trade_date
                   落在 [start, end] 的 rows；否則回全部（受 limit）。
@@ -437,7 +445,7 @@ def list_completed_archive_summary(
     periods：永遠回所有「有資料的半年區間」list（依 start 倒序），含每段 count，供前端做 tab。
     """
     # ── periods meta：對全表 group by half-year period ────────────────────────
-    all_completed_dates = db.query(SignalWatchCompletedArchive.completed_trade_date).all()
+    all_completed_dates = db.query(model_cls.completed_trade_date).all()
     period_counts: dict[date, int] = {}
     for (cdate,) in all_completed_dates:
         if cdate is None:
@@ -459,17 +467,17 @@ def list_completed_archive_summary(
     )
 
     # ── items：依 period_start filter ─────────────────────────────────────────
-    query = db.query(SignalWatchCompletedArchive)
+    query = db.query(model_cls)
     if period_start is not None:
         pend = half_year_period_end(period_start)
         query = query.filter(
-            SignalWatchCompletedArchive.completed_trade_date >= period_start,
-            SignalWatchCompletedArchive.completed_trade_date <= pend,
+            model_cls.completed_trade_date >= period_start,
+            model_cls.completed_trade_date <= pend,
         )
     query = query.order_by(
-        SignalWatchCompletedArchive.completed_trade_date.desc(),
-        SignalWatchCompletedArchive.first_seen_date.desc(),
-        SignalWatchCompletedArchive.stock_id.asc(),
+        model_cls.completed_trade_date.desc(),
+        model_cls.first_seen_date.desc(),
+        model_cls.stock_id.asc(),
     )
     if limit > 0:
         query = query.limit(limit)
@@ -516,6 +524,30 @@ def list_completed_archive_summary(
         "periods": periods,
         "selected_period_start": period_start,
     }
+
+
+def list_completed_archive_summary(
+    db: Session,
+    *,
+    limit: int = 200,
+    period_start: Optional[date] = None,
+) -> dict[str, Any]:
+    """回封存表（追蹤期滿移出紀錄）的 items + 半年期間 meta。"""
+    return _list_archive_style_table_summary(
+        db, SignalWatchCompletedArchive, limit=limit, period_start=period_start
+    )
+
+
+def list_stopped_observations_summary(
+    db: Session,
+    *,
+    limit: int = 200,
+    period_start: Optional[date] = None,
+) -> dict[str, Any]:
+    """回「停止觀察的股票」表（2026-08-13 起才開始累積）的 items + 半年期間 meta。"""
+    return _list_archive_style_table_summary(
+        db, SignalWatchStoppedObservation, limit=limit, period_start=period_start
+    )
 
 
 def resolve_archive_as_of_trade_date(
@@ -578,6 +610,7 @@ def refresh_completed_signal_cycles(
         # 走滿期路徑（retention 屆滿），顯式覆寫 closure_reason（避免被舊 early-exit 殘留錯標）。
         completed_item.closure_reason = CLOSURE_REASON_COMPLETED_30_DAYS
         _upsert_completed_archive(db, completed_item)
+        _upsert_stopped_observation(db, completed_item)
         # archive 寫入後清掉 active hits，與 early-exit 行為對齊：
         # 該股下次再被魚尾抓到時 first_seen_date = 那天的 snapshot_date，
         # 算「全新 cycle」而非繼續用舊基準。
@@ -1256,6 +1289,69 @@ def _upsert_completed_archive(
         existing.updated_at = datetime.utcnow()
 
 
+def _upsert_stopped_observation(
+    db: Session,
+    item: CompletedArchiveItem,
+) -> None:
+    """2026-08-13：獨立的「停止觀察的股票」表——與 `_upsert_completed_archive` 完全平行，
+    同一份 `CompletedArchiveItem`、同一個呼叫時機，唯一差別是這張表沒有任何歷史資料，
+    只從這次改動上線起才開始累積（見 `SignalWatchStoppedObservation` model docstring）。
+    """
+    existing = (
+        db.query(SignalWatchStoppedObservation)
+        .filter(
+            SignalWatchStoppedObservation.stock_id == item.stock_id,
+            SignalWatchStoppedObservation.first_seen_date == item.first_seen_date,
+        )
+        .one_or_none()
+    )
+    if existing is None:
+        db.add(
+            SignalWatchStoppedObservation(
+                stock_id=item.stock_id,
+                stock_name=item.stock_name,
+                industry_name=item.industry_name,
+                sub_industry=item.sub_industry,
+                first_seen_date=item.first_seen_date,
+                latest_hit_date=item.latest_hit_date,
+                hit_count=item.hit_count,
+                latest_signal_type=item.latest_signal_type,
+                baseline_trade_date=item.baseline_trade_date,
+                baseline_price=item.baseline_price,
+                return_day_10_pct=item.return_day_10_pct,
+                return_day_20_pct=item.return_day_20_pct,
+                return_day_30_pct=item.return_day_30_pct,
+                max_positive_return_pct=item.max_positive_return_pct,
+                max_positive_return_trade_date=item.max_positive_return_trade_date,
+                max_negative_return_pct=item.max_negative_return_pct,
+                max_negative_return_trade_date=item.max_negative_return_trade_date,
+                completed_trade_date=item.completed_trade_date,
+                closure_reason=item.closure_reason,
+                prompt_version=item.prompt_version or "v1",
+            )
+        )
+    else:
+        existing.stock_name = item.stock_name
+        existing.industry_name = item.industry_name
+        existing.sub_industry = item.sub_industry
+        existing.latest_hit_date = item.latest_hit_date
+        existing.hit_count = item.hit_count
+        existing.latest_signal_type = item.latest_signal_type
+        existing.baseline_trade_date = item.baseline_trade_date
+        existing.baseline_price = item.baseline_price
+        existing.return_day_10_pct = item.return_day_10_pct
+        existing.return_day_20_pct = item.return_day_20_pct
+        existing.return_day_30_pct = item.return_day_30_pct
+        existing.max_positive_return_pct = item.max_positive_return_pct
+        existing.max_positive_return_trade_date = item.max_positive_return_trade_date
+        existing.max_negative_return_pct = item.max_negative_return_pct
+        existing.max_negative_return_trade_date = item.max_negative_return_trade_date
+        existing.completed_trade_date = item.completed_trade_date
+        existing.closure_reason = item.closure_reason
+        existing.prompt_version = item.prompt_version or "v1"
+        existing.updated_at = datetime.utcnow()
+
+
 def update_signal_watch_returns(
     db: Session,
     *,
@@ -1407,6 +1503,7 @@ def update_signal_watch_returns(
             closure_reason=closure_reason,
         )
         _upsert_completed_archive(db, item)
+        _upsert_stopped_observation(db, item)
         # synchronize_session="evaluate"：這些 row 在 1170-1179 已被改寫成 dirty（待 UPDATE）。
         # session 為 autoflush=False，若用 False 不會把它們移出 session，commit flush 時會對
         # 已刪除的 row 發 UPDATE → StaleDataError。evaluate 會以 stock_id == X 在 Python 端
@@ -1466,6 +1563,7 @@ def settle_stock_for_p4_stop(
         closure_reason=CLOSURE_REASON_P4_STOPPED,
     )
     _upsert_completed_archive(db, item)
+    _upsert_stopped_observation(db, item)
     # synchronize_session="evaluate"：同一次 review 迴圈內，這批 row 可能已被
     # update_signal_watch_returns／同一輪其他邏輯改寫成 dirty；autoflush=False 下
     # 用 False 不會把它們移出 session，commit flush 時會對已刪除的 row 發 UPDATE

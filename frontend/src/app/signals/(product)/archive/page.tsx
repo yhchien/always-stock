@@ -1,6 +1,7 @@
 "use client"
 
 import Link from "next/link"
+import dynamic from "next/dynamic"
 import { Suspense, useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { Dialog } from "@base-ui/react/dialog"
@@ -8,6 +9,7 @@ import { Dialog } from "@base-ui/react/dialog"
 import { MarginAnalysisPanel } from "@/components/DailySignalsPanel"
 import ObservationStatusBadge from "@/components/ObservationStatusBadge"
 import StockChartDialog from "@/components/StockChartDialog"
+import { Skeleton } from "@/components/ui/skeleton"
 import { useRealtimeQuotes } from "@/lib/useRealtimeQuotes"
 
 import {
@@ -15,16 +17,24 @@ import {
   fetchSignalArchive,
   fetchSignalArchiveDetail,
   fetchSignalObservations,
+  fetchStoppedObservations,
   type RealtimeQuote,
   type SignalArchiveCompletedPeriod,
   type SignalArchiveCompletedResponse,
   type SignalArchiveDetailResponse,
+  type SignalArchiveReportItem,
   type SignalArchiveSummaryItem,
   type SignalArchiveSummaryResponse,
   type SignalClosureReason,
   type SignalObservationItem,
   type SignalObservationStatus,
 } from "@/lib/api"
+
+// 動能分數歷史折線圖用；只在詳情 popup 真的展開報告時才需要，不進 initial bundle
+const ReactECharts = dynamic(() => import("echarts-for-react"), {
+  ssr: false,
+  loading: () => <Skeleton className="h-40 w-full rounded-lg" />,
+})
 
 // 6 個互斥分類（radio 式 chip）：前 4 個是排序（純前端 client-side sort）；
 // 後 2 個（observing／caution）是依 P4 觀察狀態篩選，不是排序——選到其中一個時
@@ -391,6 +401,63 @@ function Metric({ label, children }: { label: string; children: ReactNode }) {
   )
 }
 
+// 2026-08-13：動能分數歷史折線圖——x 軸日期 / y 軸分數，讓使用者看「一開始抓到的動能
+// 分數，之後每天重新評估是變強還變弱」。資料早就存在 signal_metrics（v2.1 起），這裡
+// 純粹是視覺化，不打新的 API。少於 2 個資料點（只抓到 1 天）畫不出有意義的趨勢，不顯示。
+function MomentumScoreChart({ reports }: { reports: SignalArchiveReportItem[] }) {
+  const points = useMemo(() => {
+    return reports
+      .filter((r) => r.momentum_score != null)
+      .map((r) => ({ date: r.snapshot_date, score: r.momentum_score as number }))
+      .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
+  }, [reports])
+
+  if (points.length < 2) return null
+
+  const option = {
+    grid: { left: 36, right: 12, top: 16, bottom: 28 },
+    tooltip: {
+      trigger: "axis" as const,
+      formatter: (params: unknown) => {
+        const arr = params as Array<{ axisValue: string; value: number }>
+        const p = arr[0]
+        return p ? `${p.axisValue}<br/>動能分數 ${p.value}` : ""
+      },
+    },
+    xAxis: {
+      type: "category" as const,
+      data: points.map((p) => p.date),
+      axisLabel: { fontSize: 10, color: "#94a3b8" },
+      axisLine: { lineStyle: { color: "#475569" } },
+    },
+    yAxis: {
+      type: "value" as const,
+      min: 0,
+      max: 100,
+      axisLabel: { fontSize: 10, color: "#94a3b8" },
+      splitLine: { lineStyle: { color: "#334155" } },
+    },
+    series: [
+      {
+        type: "line" as const,
+        data: points.map((p) => p.score),
+        smooth: true,
+        symbol: "circle",
+        symbolSize: 6,
+        lineStyle: { color: "#38bdf8", width: 2 },
+        itemStyle: { color: "#38bdf8" },
+      },
+    ],
+  }
+
+  return (
+    <div className="border-t border-slate-800 pt-3">
+      <h4 className="mb-2 text-sm font-medium text-slate-200">動能分數變化</h4>
+      <ReactECharts option={option} style={{ height: 160, width: "100%" }} />
+    </div>
+  )
+}
+
 // 每檔股票的「查看更多」popup：卡片極簡化後，所有數據 + 報告時間軸都收進這裡
 function StockDetailDialog({
   item,
@@ -519,6 +586,10 @@ function StockDetailDialog({
                 </Metric>
               </div>
 
+              {detail && detail.stock_id === item.stock_id && (
+                <MomentumScoreChart reports={detail.reports} />
+              )}
+
               <div className="flex flex-wrap gap-2 border-t border-slate-800 pt-3">
                 <button
                   type="button"
@@ -602,6 +673,257 @@ function StockDetailDialog({
         </Dialog.Popup>
       </Dialog.Portal>
     </Dialog.Root>
+  )
+}
+
+const STOPPED_COLLAPSED_KEY = "always-stock:signals-archive:stopped-collapsed"
+
+/**
+ * 2026-08-13：「停止觀察的股票」——與「追蹤期滿移出紀錄」格式完全相同（同一批共用
+ * 元件：ClosureReasonChip / SignalTypeChip / Metric / ExtremeReturnCell /
+ * PredictionCell / formatPeriodLabel），資料來源是獨立的新表
+ * `fetchStoppedObservations`（2026-08-13 起才開始累積，不含策略大改版前的舊資料）。
+ *
+ * 刻意用自己的 local state（collapsed／selectedPeriodStart／search）而非沿用主頁面
+ * 「追蹤期滿」區塊的 URL `period` 參數——避免兩個半年期間選單搶同一個 URL 參數。
+ */
+function StoppedObservationsSection({
+  onOpenChart,
+}: {
+  onOpenChart: (stockId: string, stockName?: string | null) => void
+}) {
+  const [collapsed, setCollapsed] = useState(true)
+  const [selectedPeriodStart, setSelectedPeriodStart] = useState<string | null>(null)
+  const [search, setSearch] = useState("")
+  const [summary, setSummary] = useState<SignalArchiveCompletedResponse | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    try {
+      if (window.localStorage.getItem(STOPPED_COLLAPSED_KEY) === "false") setCollapsed(false)
+    } catch {
+      // ignore
+    }
+  }, [])
+
+  const toggleCollapsed = useCallback(() => {
+    setCollapsed((prev) => {
+      const next = !prev
+      try {
+        window.localStorage.setItem(STOPPED_COLLAPSED_KEY, String(next))
+      } catch {
+        // ignore
+      }
+      return next
+    })
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    async function run() {
+      setLoading(true)
+      setError(null)
+      try {
+        const data = await fetchStoppedObservations({
+          limit: 0,
+          periodStart: selectedPeriodStart,
+        })
+        if (!cancelled) {
+          setSummary(data)
+          if (selectedPeriodStart === null && data.periods.length > 0) {
+            setSelectedPeriodStart(data.periods[0].period_start)
+          }
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "停止觀察的股票載入失敗")
+        }
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+    void run()
+    return () => {
+      cancelled = true
+    }
+  }, [selectedPeriodStart])
+
+  const filteredItems = useMemo(() => {
+    if (!summary?.items) return []
+    const q = search.trim().toLowerCase()
+    if (!q) return summary.items
+    return summary.items.filter(
+      (item) =>
+        item.stock_id.toLowerCase().includes(q) ||
+        (item.stock_name ?? "").toLowerCase().includes(q),
+    )
+  }, [summary?.items, search])
+
+  return (
+    <section className="mx-auto mt-6 max-w-6xl rounded-xl border border-slate-800 bg-slate-900/40 p-4 sm:p-6">
+      <header className="mb-4 flex flex-col gap-3">
+        <div>
+          <button
+            type="button"
+            onClick={toggleCollapsed}
+            className="flex w-full items-center gap-2 text-left text-lg font-semibold text-slate-100 hover:text-sky-300"
+            aria-expanded={!collapsed}
+          >
+            <span aria-hidden className="text-slate-400">
+              {collapsed ? "▸" : "▾"}
+            </span>
+            <span>停止觀察的股票</span>
+          </button>
+          <p className="mt-1 text-sm text-slate-400">
+            這是一張全新的紀錄表，只從現在開始累積（不含策略大改版前「追蹤期滿移出紀錄」的舊資料）。
+            任何原因（追蹤期滿 / 跌破 -30% 提前結算 / 從高點回落 30% 提前結算 / 系統判定推薦論點失效）
+            造成一檔股票被移出追蹤，都會記錄在這裡；格式與「追蹤期滿移出紀錄」完全相同。
+          </p>
+        </div>
+        {!collapsed && summary && summary.periods.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-slate-400">半年區間：</span>
+            {summary.periods.map((p) => {
+              const isActive = selectedPeriodStart === p.period_start
+              return (
+                <button
+                  key={p.period_start}
+                  type="button"
+                  onClick={() => setSelectedPeriodStart(p.period_start)}
+                  className={
+                    "rounded border px-2.5 py-1 text-xs font-medium transition " +
+                    (isActive
+                      ? "border-sky-400 bg-sky-500/20 text-sky-100"
+                      : "border-slate-700 bg-slate-800/40 text-slate-300 hover:border-slate-500")
+                  }
+                >
+                  {formatPeriodLabel(p)}（{p.count}）
+                </button>
+              )
+            })}
+          </div>
+        )}
+        {!collapsed && summary && summary.items.length > 0 && (
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="搜尋股票代號或名稱…"
+              className="w-56 rounded border border-slate-600 bg-slate-800/40 px-2 py-1 text-sm text-slate-100 placeholder:text-slate-500 focus:border-sky-400 focus:outline-none"
+            />
+            {search && (
+              <button
+                type="button"
+                onClick={() => setSearch("")}
+                className="text-xs text-slate-400 hover:text-slate-200"
+              >
+                清除
+              </button>
+            )}
+            <span className="ml-auto text-xs text-slate-500">
+              {filteredItems.length} / {summary.items.length} 檔
+            </span>
+          </div>
+        )}
+      </header>
+      {!collapsed && (
+        <>
+          {loading && <p className="text-sm text-slate-400">載入中…</p>}
+          {error && !loading && <p className="text-sm text-rose-300">{error}</p>}
+          {!loading && !error && (summary?.items.length ?? 0) === 0 && (
+            <p className="text-sm text-slate-400">目前還沒有股票被移出追蹤</p>
+          )}
+          {!loading && !error && summary && summary.items.length > 0 && (
+            <>
+              {filteredItems.length === 0 && search.trim() !== "" && (
+                <p className="py-4 text-center text-sm text-slate-400">
+                  找不到符合「{search}」的股票
+                </p>
+              )}
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                {filteredItems.map((item) => {
+                  const hitPeak =
+                    (item.max_positive_return_pct ?? -Infinity) >= PEAK_MILESTONE_PCT
+                  return (
+                    <article
+                      key={`${item.stock_id}-${item.first_seen_date}`}
+                      className="flex flex-col gap-3 rounded-lg border border-slate-800 bg-slate-900/50 p-3"
+                    >
+                      <header className="flex flex-wrap items-start justify-between gap-2">
+                        <div className="flex min-w-0 flex-col">
+                          <span className="text-sm font-semibold text-slate-100">
+                            {item.stock_id} {item.stock_name}
+                          </span>
+                          <span className="text-xs text-slate-500">
+                            {item.industry_name ?? "—"}
+                            {item.sub_industry ? ` · ${item.sub_industry}` : ""}
+                          </span>
+                        </div>
+                        <div className="flex flex-wrap items-center justify-end gap-1">
+                          <SignalTypeChip type={item.latest_signal_type} />
+                          <PipelineFlagChip version={item.prompt_version} />
+                          <VersionChip version={item.prompt_version} />
+                        </div>
+                      </header>
+                      {hitPeak && (
+                        <div className="flex flex-wrap gap-1">
+                          <PeakMilestoneChip />
+                        </div>
+                      )}
+                      <div className="grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3">
+                        <Metric label="首次抓到">
+                          <span className="font-mono text-xs text-slate-300">
+                            {item.first_seen_date}
+                          </span>
+                        </Metric>
+                        <Metric label="抓到次數">
+                          <span className="text-sm text-slate-200">{item.hit_count} 次</span>
+                        </Metric>
+                        <Metric label="預測價（保 / 夢）">
+                          <PredictionCell
+                            conservative={item.conservative_price}
+                            dream={item.dream_price}
+                          />
+                        </Metric>
+                        <Metric label="最大正報酬">
+                          <ExtremeReturnCell
+                            value={item.max_positive_return_pct}
+                            tradeDate={item.max_positive_return_trade_date}
+                          />
+                        </Metric>
+                        <Metric label="最大負報酬">
+                          <ExtremeReturnCell
+                            value={item.max_negative_return_pct}
+                            tradeDate={item.max_negative_return_trade_date}
+                          />
+                        </Metric>
+                      </div>
+                      <div className="mt-auto flex flex-wrap items-center justify-between gap-2 border-t border-slate-800 pt-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <ClosureReasonChip reason={item.closure_reason} />
+                          <span className="font-mono text-[10px] text-slate-500">
+                            {item.completed_trade_date}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => onOpenChart(item.stock_id, item.stock_name)}
+                          className="rounded border border-sky-500/50 bg-sky-500/10 px-2 py-1 text-xs text-sky-200 hover:bg-sky-500/20"
+                        >
+                          K線圖
+                        </button>
+                      </div>
+                    </article>
+                  )
+                })}
+              </div>
+            </>
+          )}
+        </>
+      )}
+    </section>
   )
 }
 
@@ -1331,6 +1653,10 @@ function SignalArchiveContent() {
         </>
         )}
       </section>
+
+      <StoppedObservationsSection
+        onOpenChart={(stockId, stockName) => setChartStock({ stockId, stockName })}
+      />
 
       <StockDetailDialog
         item={popupItem}
