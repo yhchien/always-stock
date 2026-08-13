@@ -4704,3 +4704,125 @@ pass（+5）+ 20 個既有 baseline fail（與本輪無關），零新增失敗�
 - **測試時避免對 TWSE 做過度激進的重複壓測**：本輪驗證只做了少量、間隔的
   請求批次，沒有持續長時間對公開端點做高頻壓力測試，是刻意節制，避免對
   TWSE 造成不必要的負擔或讓自己的來源 IP 被標記
+
+## 首頁「今日市場狀態」四項修正：拿掉未列入推薦/已排除、櫃買指數真實 ETL 資料、熱門產業可點擊、全中文（2026-08-13）
+
+### 背景
+使用者對首頁「捕獲的大魚尾」（`DailySignalsPanel`）與其上方「今日市場狀態」
+（`MarketContextStrip`）提出四項要求：(1) 拿掉「未列入推薦」「已排除」兩個稽核區塊；
+(2) 櫃買（OTC）指數顯示 null、台指期顯示 `unavailable`，希望改成上網查；(3) 「主要
+熱門產業」tag 希望點下去能導到對應類股頁；(4) 希望全中文，除了 VIX/USD-TWD 這類超級
+專有名詞可以保留英文。
+
+### 改動 1：拿掉未列入推薦／已排除
+`DailySignalsPanel.tsx` 拿掉 `notSelected`/`removed` 兩個 `useMemo` 與
+`<SignalNotSelectedSection>`/`<SignalRemovedSection>` render 呼叫，連同兩個 import。
+**元件檔本身保留未刪**（沿用本專案一貫「隱藏入口、保留程式碼」慣例，這兩個元件已確認
+在本檔案外沒有其他呼叫端）。
+
+### 改動 2a：台指期 web search 可靠度加強
+`futures_bias` 本來就有 `use_web_search=True` 且 user_msg 已明確要求「你必須使用 web
+search 查詢...台指期」——查證後確認**不是沒有查，是查了但常常查不到精確數字就直接回
+`unavailable`**。修法：在 `assemble_market_context()`（`llm_caller.py`）的 user_msg 加
+一段查詢指引，教 LLM 用更具體的關鍵字（「台指期 即時」「台指期 最新走勢」）+ 來源
+建議（Yahoo奇摩股市/MoneyDJ/期交所），並允許在查不到台指期精確報價時改用美股期貨
+（S&P 500/那斯達克期貨）與亞股動向**推估**方向偏多或偏空，不需要一查不到精確數字就
+直接回 unavailable。只有連美股期貨與亞股動向都查不到才回 unavailable。
+
+### 改動 2b：櫃買（OTC）指數——查證後發現比原本設想的大得多的架構問題
+使用者一開始的原意是「櫃買也比照台指期一樣讓 LLM 上網查」，但這會直接違反既有 prompt
+硬規則「backend 提供的加權/櫃買數字是 authoritative，不可改寫、不可補 0、不可自行重
+算」（這條規則是為了避免 LLM 亂猜財務數字而刻意設計的）。用 `AskUserQuestion` 呈現
+「補 ETL 抓真實資料」vs「讓 LLM 查」兩個選項後，使用者選擇補 ETL。
+
+**深入查證發現比預期大得多的根因**：`market_snapshot.py` 的 `_OTC_SYMBOLS =
+("OTCI", "OTC", "TWO", "TPEx", "TPEX")` 是**五個全部猜錯**的 FinMind stock_id（DB 裡
+一筆都不存在）。追查 `stocks_master` 才發現：**整個系統的股票宇宙從 FinMind 遷移
+（2026-04-21）一開始就只有 TWSE 上市股，一檔上櫃股票都沒有**——
+`backend/etl/fetch_stock_master.py` 第 60 行 `if row.get("type") != "twse": continue`
+是刻意的範圍限制（模組 docstring 本來就寫「Fetch **TWSE listed** stock master data」），
+不是 bug。這代表若要完整支援上櫃股，範圍遠遠超過「修一個市場狀態欄位」——會讓所有
+下游 ETL（價格/法人/融資券/財報...）每天多掃過整個上櫃市場（800+ 檔），還會讓候選池
+/分類/動能排名/regime 判斷這些從未處理過上櫃股的既有邏輯暴露在未知風險下。
+
+第二次用 `AskUserQuestion` 把這個修正後的、大得多的範圍呈現給使用者，選項改成
+「只加櫃買指數本身一列」vs「全面納入上櫃市場（不建議這輪做）」，使用者選擇前者。
+
+**最終做法**（比照 `TAIEX` 本身在 `stocks_master` 的既有處理方式——`TAIEX` 也是一個
+非真實股票的指數佔位列，`stock_id` 非數字開頭，本來就被 Phase 1 canonical
+classification 的 `asset_type.py` 識別為 `INDEX_BENCHMARK`，不會進候選池/選股邏輯）：
+- 直接查詢 FinMind `TaiwanStockInfo` API（read-only，單次呼叫）確認正確 id：
+  `type breakdown: {'tpex': 1370, 'twse': 2394, 'emerging': 541}`，其中 `type=='tpex'`
+  裡唯一非數字開頭（指數佔位列 pattern）的只有一筆：`stock_id="TPEx"`（混合大小寫）、
+  `stock_name="櫃買指數"`、`industry_category="大盤"`——與 `TAIEX` 完全平行（`type=
+  "twse"`、`stock_id="TAIEX"`、`industry_category="大盤"`）
+- `fetch_stock_master.py` 加 `_INDEX_PLACEHOLDER_ID_PATTERN = re.compile(r"^[A-Za-z]")`，
+  篩選邏輯從單純 `type != "twse": continue` 改成「`type=="twse"` 或（`type=="tpex"`
+  且 `stock_id` 符合指數佔位列 pattern）才放行」——用 pattern 而非寫死
+  `stock_id=="TPEx"` 字串比對，是為了保留一定的前瞻性（若 FinMind 未來也對 TPEx
+  比照 TWSE 提供分產業指數佔位列，會自動一併放行），但**真正的個股**（數字開頭的
+  `stock_id`）在 `type=="tpex"` 下依然被擋下，不會意外洩漏進候選池
+- 同步補上 `market` 欄位的正確寫入（`market_value = row.get("type") or "twse"`）——
+  `StockMaster.market` 這個欄位其實從一開始就設計成支援 `twse | tpex | emerging`
+  三態（見 `models.py` column comment），但 `fetch_stock_master.py` 從未真正寫過
+  非 twse 的值，全部靠 column default 硬吃成 `"twse"`；這次一併修正為誠實反映
+  真實來源
+- `market_snapshot.py` 的 `_OTC_SYMBOLS` 從五個錯誤猜測改成確認過的單一正確值
+  `("TPEx",)`
+- 對 production DB 執行一次 `fetch_and_upsert_stock_master()`（與每日 ETL step 0
+  完全相同的 idempotent 呼叫，只是提早手動觸發一次來讓新增的 `TPEx` 列立刻生效）：
+  `upserted count: 1622`（1621 既有 TWSE 股 + 1 新增 `TPEx` 列）
+
+**歷史資料回補時意外發現的 FinMind 新坑**：一開始想用寬日期區間（120 天）一次呼叫
+`fetch_and_upsert_daily_price_finmind_sdk(stock_ids=["TPEx"], start_date=..., end_date=...)`
+省配額，結果只寫入 **1 筆**（剛好是 `start_date` 當天）。這證實 **`TaiwanStockPrice`
+dataset-level 呼叫（不帶 `data_id`）在多日區間下，也跟既有已知的 `margin_trade`/
+`TaiwanStockMonthRevenue`/`TaiwanStockShareholding` 一樣，只回傳 `start_date` 當日的
+資料**——先前 CLAUDE.md 記錄的「只回 start_date」名單不完整，`TaiwanStockPrice` 也
+中招。生產環境的每日 ETL 之所以從未踩到這個坑，是因為 cron 呼叫這個函式時
+`start_date == end_date`（單日呼叫），從來沒有測試過多日區間的路徑。修法：改用
+逐日迴圈（每天各打一次 `start_date=end_date=該日`），回補最近 20 個曆日（涵蓋約
+14~15 個交易日），與既有 `margin_trade` backfill 遇到同款坑時的處理方式一致
+（1 quota/天，20 天 = 20 quota，配額 6000/hour 完全負擔得起）。
+
+### 改動 3：主要熱門產業 tag 可點擊
+`MarketContextStrip.tsx` 的 `mainHotIndustries` 陣列原本渲染成純文字 `<span>`，改成
+`next/link` 的 `<Link href={"/industries/" + encodeURIComponent(name) + "?date=" +
+snapshotDate}>`，沿用既有 `/industries/[industryName]` 路由與
+`encodeURIComponent(name)` 慣例（首頁 `page.tsx` 既有的 `router.push` 已用同一個
+pattern）。
+
+### 改動 4：全中文
+- `VALUE_LABELS`（`signalPresentation.ts`）補上遺漏的 `"unavailable": "資料不足"`——
+  這是造成台指期顯示原始英文大寫 `"UNAVAILABLE"` 的根因：`signalValueLabel()` 對
+  查無字典的值會 fallback 到 `value.replaceAll("_", " ").toUpperCase()`，`unavailable`
+  剛好是這條路徑漏掉的合法 enum 值（`vix_status`/`futures_bias`/`us_market_bias`/
+  `fx_risk` 都共用這個值域）
+- `MarketContextStrip.tsx` 拿掉純裝飾性的英文 eyebrow 標籤「Market Today」（跟緊鄰的
+  中文標題「今日市場狀態」重複，且不是專有名詞，沒有保留必要）
+- `VIX`/`TAIEX` 兩個標籤維持原樣不動——這兩個是國際通用的金融代碼/指數簡稱，屬於
+  使用者說的「超級專有名詞」範疇
+
+### Gotcha
+- **這次的 OTC 根因查證過程，是本輪最值得記住的教訓**：使用者一開始的請求（「櫃買
+  顯示 null，改成上網找」）表面上看起來是一個小的資料來源調整，但深入查證後發現底層
+  是一個更大的架構事實（整個系統從未涵蓋過上櫃股）。**兩次用 `AskUserQuestion` 把
+  逐步發現的真實範圍呈現給使用者確認**，而不是照著使用者最初的字面請求直接動手（那樣
+  會不小心把 LLM 亂猜財務數字的風險引入一個原本被刻意防範的欄位，或誤以為只是加一個
+  ETL 小工作而不小心把整個上櫃市場拉進候選池/選股邏輯）
+- **FinMind dataset-level「只回 start_date」的坑不只發生在原本記錄的三個 dataset**
+  （margin_trade/monthly_revenue/shareholding）——`TaiwanStockPrice` 在多日區間、
+  不帶 `data_id` 時也一樣。**任何新的 dataset-level 多日區間呼叫，寫代碼前務必先用
+  小範圍實測驗證是否真的回傳了整個區間的資料**，不能假設「文件說是區間查詢」就真的是
+  區間查詢
+- `TPEx` 這個指數佔位列已經被既有 Phase 1 canonical classification（`asset_type.py`
+  的 `_INDEX_BENCHMARK_ID_PATTERN`，非數字開頭）與候選池排除邏輯自動識別為
+  `INDEX_BENCHMARK`，不需要額外改動選股/候選池程式碼去排除它——這正是選擇「只加索引
+  本身一列」這個做法的核心原因：新增的這一列會自動融入既有「指數佔位列不參與選股」的
+  處理路徑，不會有任何 blast radius 擴散到選股邏輯
+- 驗證：`tests/test_fetch_stock_master.py` 新增 2 個測試（放行指數佔位列 + 仍然過濾
+  真實上櫃個股）、新增 `tests/test_market_snapshot.py`（4 個測試，鎖住正確 symbol +
+  舊猜測不再被誤用）；全 backend suite 20 fail/5 error 維持既有 baseline（零新增
+  失敗，1295 pass，較前一輪新增 6 個測試）；前端 `npx tsc --noEmit`/`npx eslint`
+  （僅改動檔案）全過、`npx jest` 18 fail 維持既有 baseline（StockList/StockChart/
+  BacktestPanel，零新增失敗）
