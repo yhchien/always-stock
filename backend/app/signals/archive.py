@@ -363,6 +363,94 @@ def _load_p4_momentum_points(db: Session, stock_id: str) -> list[dict[str, Any]]
     return [{"date": review_date, "momentum_score": score} for review_date, score in rows]
 
 
+def _load_review_status_events(db: Session, stock_id: str) -> list[dict[str, Any]]:
+    """2026-08-14：從 `SignalObservationReview.decision` 的時間序列偵測狀態轉換點，
+    給動能分數折線圖標記「哪天進入警戒／哪天解除警戒／哪天停止觀察」。一檔股票可能
+    橫跨多個觀察 episode（`SignalObservation`），只在同一個 episode 內部偵測轉換，
+    不跨 episode 比較——新 episode 一律視為從乾淨狀態重新開始，不會把上一輪結束時的
+    狀態誤判成這一輪的轉換。
+    """
+    observation_ids = [
+        row[0]
+        for row in (
+            db.query(SignalObservation.id)
+            .filter(SignalObservation.stock_id == stock_id)
+            .all()
+        )
+    ]
+    if not observation_ids:
+        return []
+    reviews = (
+        db.query(SignalObservationReview)
+        .filter(SignalObservationReview.observation_id.in_(observation_ids))
+        .order_by(
+            SignalObservationReview.observation_id,
+            SignalObservationReview.review_date,
+        )
+        .all()
+    )
+    events: list[dict[str, Any]] = []
+    prev_observation_id: Optional[int] = None
+    prev_decision: Optional[str] = None
+    for review in reviews:
+        if review.observation_id != prev_observation_id:
+            prev_decision = None  # 新 episode，重置狀態
+        if review.decision == "CAUTION" and prev_decision != "CAUTION":
+            events.append({"date": review.review_date, "event": "entered_caution"})
+        elif review.decision == "CONTINUE" and prev_decision == "CAUTION":
+            events.append({"date": review.review_date, "event": "resolved_caution"})
+        elif review.decision == "STOP_OBSERVING" and prev_decision != "STOP_OBSERVING":
+            events.append({"date": review.review_date, "event": "stopped"})
+        prev_decision = review.decision
+        prev_observation_id = review.observation_id
+    events.sort(key=lambda e: e["date"])
+    return events
+
+
+def _load_snapshot_reports_for_stock(
+    db: Session, stock_id: str, start_date: date, end_date: date
+) -> list[dict[str, Any]]:
+    """2026-08-14：從 `SignalSnapshot.watchlist`（永久保留所有日期，見該 model
+    docstring）重建某檔股票在 [start_date, end_date] 這段期間、每天的報告內容——
+    用在紀錄區（已經結算、`signal_watch_hits` 已被硬刪除的股票）；`get_archive_detail`
+    走的 `signal_watch_hits` 路徑對這些股票會直接回 None，必須改走這條路徑。
+    """
+    snapshots = (
+        db.query(SignalSnapshot)
+        .filter(
+            SignalSnapshot.snapshot_date >= start_date,
+            SignalSnapshot.snapshot_date <= end_date,
+        )
+        .order_by(SignalSnapshot.snapshot_date.desc())
+        .all()
+    )
+    reports: list[dict[str, Any]] = []
+    for snap in snapshots:
+        for item in snap.watchlist or []:
+            if str(item.get("stock")) != stock_id:
+                continue
+            metrics = item.get("signal_metrics") or {}
+            reports.append(
+                {
+                    "snapshot_date": snap.snapshot_date,
+                    "signal_type": item.get("type"),
+                    "reason": item.get("reason") or "",
+                    "business_summary": item.get("business_summary"),
+                    "snapshot_generated_at": snap.generated_at,
+                    "momentum_score": metrics.get("momentum_score"),
+                    # 額外三個欄位不在 SignalArchiveReportResponse 契約內（response_model
+                    # 序列化時會自動忽略），只是方便呼叫端（get_stopped_observation_detail）
+                    # 從最新一筆 report 取出當時的一句話總結／相對優勢／融資融券分析，
+                    # 不需要另外重複查一次 SignalSnapshot。
+                    "recommendation_thesis": item.get("recommendation_thesis"),
+                    "relative_advantage": item.get("relative_advantage"),
+                    "margin_analysis": item.get("margin_analysis"),
+                }
+            )
+            break
+    return reports
+
+
 def _build_momentum_score_history(
     rows: Sequence[SignalWatchHit],
     p4_points: Sequence[dict[str, Any]],
@@ -451,7 +539,112 @@ def get_archive_detail(
     # （signal_observation_reviews）兩個來源，讓 P3 沒有再次選中的那幾天也有資料點。
     p4_points = _load_p4_momentum_points(db, stock_id)
     payload["momentum_score_history"] = _build_momentum_score_history(rows, p4_points)
+    # 2026-08-14：進入／解除警戒、停止觀察的日期標記，給折線圖畫 markLine 用。
+    payload["review_status_events"] = _load_review_status_events(db, stock_id)
     return payload
+
+
+def get_stopped_observation_detail(
+    db: Session,
+    stock_id: str,
+    first_seen_date: date,
+) -> Optional[dict[str, Any]]:
+    """紀錄區（「停止觀察的股票」）detail——`signal_watch_hits` 已在結算時被硬刪除，
+    `get_archive_detail` 對這類股票一律回 None（見該函式開頭 `if not rows: return
+    None`）。改從 `SignalSnapshot.watchlist`（永久保留所有日期，不受 30 日 retention
+    影響，見 model docstring）重建報告時間軸與動能分數歷史，讓已經移出追蹤的股票
+    detail 也能看到完整資料，不會因為 hits 被刪就整段消失。
+
+    一檔股票可能有多筆歷史停止紀錄（多個追蹤 cycle），用 `(stock_id, first_seen_date)`
+    複合鍵鎖定其中一筆——與 `SignalWatchStoppedObservation` 的 unique constraint 對齊。
+    """
+    record = (
+        db.query(SignalWatchStoppedObservation)
+        .filter(
+            SignalWatchStoppedObservation.stock_id == stock_id,
+            SignalWatchStoppedObservation.first_seen_date == first_seen_date,
+        )
+        .one_or_none()
+    )
+    if record is None:
+        return None
+
+    reports = _load_snapshot_reports_for_stock(
+        db, stock_id, record.first_seen_date, record.latest_hit_date
+    )
+
+    p4_points = _load_p4_momentum_points(db, stock_id)
+    by_date: dict[Any, dict[str, Any]] = {}
+    for point in p4_points:
+        if point["momentum_score"] is None:
+            continue
+        if not (record.first_seen_date <= point["date"] <= record.latest_hit_date):
+            continue
+        by_date[point["date"]] = {
+            "date": point["date"],
+            "momentum_score": point["momentum_score"],
+            "source": "p4",
+        }
+    for report in reports:
+        if report["momentum_score"] is None:
+            continue
+        by_date[report["snapshot_date"]] = {
+            "date": report["snapshot_date"],
+            "momentum_score": report["momentum_score"],
+            "source": "p3",
+        }
+    momentum_score_history = sorted(by_date.values(), key=lambda item: item["date"])
+
+    # review_status_events 是全時間軸（跨這檔股票所有 episode），裁到這筆紀錄涵蓋的
+    # 區間，避免顯示到不相干的其他次追蹤 cycle 的警戒/停止標記
+    events = [
+        event
+        for event in _load_review_status_events(db, stock_id)
+        if record.first_seen_date <= event["date"] <= record.completed_trade_date
+    ]
+
+    expectation_map = _load_expectation_prices_map(
+        db, [(stock_id, record.first_seen_date)]
+    )
+    conservative_price, dream_price = expectation_map.get(
+        (stock_id, record.first_seen_date), (None, None)
+    )
+
+    # reports 依 snapshot_date 降序排列（見 _load_snapshot_reports_for_stock），
+    # 第一筆即最新一筆——比照 get_archive_detail 用「最新一筆命中」帶出一句話總結／
+    # 相對優勢／融資融券分析
+    latest_report = reports[0] if reports else {}
+
+    return {
+        "stock_id": record.stock_id,
+        "stock_name": record.stock_name,
+        "industry_name": record.industry_name,
+        "sub_industry": record.sub_industry,
+        "first_seen_date": record.first_seen_date,
+        "latest_hit_date": record.latest_hit_date,
+        "hit_count": record.hit_count,
+        "latest_signal_type": record.latest_signal_type,
+        "baseline_trade_date": record.baseline_trade_date,
+        "baseline_price": record.baseline_price,
+        "return_day_10_pct": record.return_day_10_pct,
+        "return_day_20_pct": record.return_day_20_pct,
+        "return_day_30_pct": record.return_day_30_pct,
+        "max_positive_return_pct": record.max_positive_return_pct,
+        "max_positive_return_trade_date": record.max_positive_return_trade_date,
+        "max_negative_return_pct": record.max_negative_return_pct,
+        "max_negative_return_trade_date": record.max_negative_return_trade_date,
+        "completed_trade_date": record.completed_trade_date,
+        "closure_reason": record.closure_reason,
+        "prompt_version": record.prompt_version or "v1",
+        "conservative_price": conservative_price,
+        "dream_price": dream_price,
+        "recommendation_thesis": latest_report.get("recommendation_thesis"),
+        "relative_advantage": latest_report.get("relative_advantage"),
+        "margin_analysis": latest_report.get("margin_analysis"),
+        "reports": reports,
+        "momentum_score_history": momentum_score_history,
+        "review_status_events": events,
+    }
 
 
 def half_year_period_start(d: date) -> date:

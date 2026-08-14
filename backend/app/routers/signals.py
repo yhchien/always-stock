@@ -254,6 +254,28 @@ class SignalMomentumScorePoint(BaseModel):
     source: str
 
 
+class SignalReviewStatusEvent(BaseModel):
+    date: date
+    # entered_caution / resolved_caution / stopped
+    event: str
+
+
+class SignalStoppedObservationDetailResponse(SignalArchiveCompletedItemResponse):
+    """2026-08-14：紀錄區（「停止觀察的股票」）detail——signal_watch_hits 已被硬刪除，
+    從 SignalSnapshot 重建，回傳形狀比照 SignalArchiveCompletedItemResponse 加報告
+    時間軸/折線圖欄位（不含 tracking_day_index / latest_eval_price 等 active-only
+    欄位）。recommendation_thesis/relative_advantage/margin_analysis 取自最新一筆
+    重建報告，舊資料（改版前的股票）可能為 None。
+    """
+
+    reports: List[SignalArchiveReportResponse]
+    recommendation_thesis: Optional[str] = None
+    relative_advantage: Optional[str] = None
+    margin_analysis: Optional[Dict[str, Any]] = None
+    momentum_score_history: List[SignalMomentumScorePoint] = []
+    review_status_events: List[SignalReviewStatusEvent] = []
+
+
 class SignalArchiveDetailResponse(SignalArchiveSummaryItemResponse):
     reports: List[SignalArchiveReportResponse]
     # 2026-08-11：正式推薦頁併入魚尾單一入口，取最新一筆命中的三個補充欄位；舊資料 = None
@@ -262,6 +284,8 @@ class SignalArchiveDetailResponse(SignalArchiveSummaryItemResponse):
     margin_analysis: Optional[Dict[str, Any]] = None
     # 2026-08-13：合併 P3/P4 兩個來源的動能分數歷史，供折線圖使用
     momentum_score_history: List[SignalMomentumScorePoint] = []
+    # 2026-08-14：進入／解除警戒、停止觀察的日期標記，給折線圖畫 markLine 用
+    review_status_events: List[SignalReviewStatusEvent] = []
 
 
 # ---------------------------------------------------------------------------
@@ -851,6 +875,36 @@ def get_stopped_observations(
         period_start=period_start,
     )
     return SignalArchiveCompletedResponse(**payload)
+
+
+@router.get(
+    "/archive/stopped/{stock_id}/detail",
+    response_model=SignalStoppedObservationDetailResponse,
+)
+def get_stopped_observation_detail(
+    stock_id: str,
+    first_seen_date: date = Query(
+        ...,
+        description=(
+            "鎖定哪一次追蹤 cycle——一檔股票可能有多筆歷史停止紀錄，"
+            "須對齊 /archive/stopped 該筆的 first_seen_date"
+        ),
+    ),
+    db: Session = Depends(get_db),
+) -> SignalStoppedObservationDetailResponse:
+    """2026-08-14：紀錄區股票的 detail——signal_watch_hits 已被硬刪除，改從
+    SignalSnapshot 重建，讓「停止觀察的股票」清單也能點開看報告時間軸與動能分數折線圖
+    （含警戒/解除警戒/停止觀察標記）。
+    """
+    payload = signal_archive.get_stopped_observation_detail(
+        db, stock_id, first_seen_date
+    )
+    if payload is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No stopped observation record for {stock_id} at {first_seen_date}",
+        )
+    return SignalStoppedObservationDetailResponse(**payload)
 
 
 @router.get("/archive/{stock_id}", response_model=SignalArchiveDetailResponse)

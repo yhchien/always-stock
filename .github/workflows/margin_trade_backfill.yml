@@ -12,8 +12,11 @@ name: Margin Trade Backfill
 
 on:
   schedule:
-    # 台北 22:30（週一到週五）= UTC 14:30
-    - cron: '30 14 * * 1-5'
+    # 台北 22:30 = UTC 14:30。2026-08-14：從週一到週五改成每天——這支 workflow
+    # 現在是 daily_signals 的上游觸發來源（見 daily_signals.yml 的 workflow_run），
+    # 需要每天都跑才能涵蓋週末補班開盤；非交易日 run_margin_backfill.py 會 exit 5
+    # (holiday) 優雅結束，不會浪費資源或誤報失敗。
+    - cron: '30 14 * * *'
   workflow_dispatch:
     inputs:
       date:

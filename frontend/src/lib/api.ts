@@ -1774,6 +1774,16 @@ export interface SignalMomentumScorePoint {
   source: "p3" | "p4"
 }
 
+/**
+ * 2026-08-14：動能分數折線圖的狀態標記——哪天進入警戒、哪天解除警戒、哪天被判定
+ * 停止觀察。從 `SignalObservationReview.decision` 的時間序列偵測轉換點，同一個
+ * observation episode 內部才比較，不跨 episode。
+ */
+export interface SignalReviewStatusEvent {
+  date: string
+  event: "entered_caution" | "resolved_caution" | "stopped"
+}
+
 export interface SignalArchiveDetailResponse extends SignalArchiveSummaryItem {
   reports: SignalArchiveReportItem[]
   // 2026-08-11：正式推薦頁併入魚尾單一入口，取最新一筆命中的補充欄位；舊資料 = null
@@ -1781,6 +1791,21 @@ export interface SignalArchiveDetailResponse extends SignalArchiveSummaryItem {
   relative_advantage?: string | null
   margin_analysis?: SignalMarginAnalysis | null
   momentum_score_history: SignalMomentumScorePoint[]
+  review_status_events: SignalReviewStatusEvent[]
+}
+
+/**
+ * 2026-08-14：紀錄區（「停止觀察的股票」）detail——`signal_watch_hits` 已在結算時
+ * 被硬刪除，後端改從 `SignalSnapshot` 重建；回傳形狀比照 `SignalArchiveCompletedItem`
+ * 加報告時間軸／動能分數折線圖／狀態標記三個欄位。
+ */
+export interface SignalStoppedObservationDetailResponse extends SignalArchiveCompletedItem {
+  reports: SignalArchiveReportItem[]
+  recommendation_thesis?: string | null
+  relative_advantage?: string | null
+  margin_analysis?: SignalMarginAnalysis | null
+  momentum_score_history: SignalMomentumScorePoint[]
+  review_status_events: SignalReviewStatusEvent[]
 }
 
 // ── P4 Observation Lifecycle ───────────────────────────────────────────────
@@ -2491,6 +2516,26 @@ export async function fetchStoppedObservations(
   const url = `${API_BASE}/api/signals/archive/stopped${qs.toString() ? `?${qs.toString()}` : ""}`
   const res = await apiFetch(url, { signal: options?.signal })
   if (!res.ok) throw new Error(await buildErrorMessage(res, "停止觀察的股票載入失敗"))
+  return res.json()
+}
+
+/**
+ * 2026-08-14：紀錄區股票的 detail——signal_watch_hits 已被硬刪除，改從 SignalSnapshot
+ * 重建。一檔股票可能有多筆歷史停止紀錄，用 firstSeenDate 鎖定其中一筆（對齊
+ * /archive/stopped 該筆的 first_seen_date）。
+ */
+export async function fetchStoppedObservationDetail(
+  stockId: string,
+  firstSeenDate: string,
+  options?: FetchOptions,
+): Promise<SignalStoppedObservationDetailResponse | null> {
+  const qs = new URLSearchParams({ first_seen_date: firstSeenDate })
+  const url = `${API_BASE}/api/signals/archive/stopped/${encodeURIComponent(
+    stockId,
+  )}/detail?${qs.toString()}`
+  const res = await apiFetch(url, { signal: options?.signal })
+  if (res.status === 404) return null
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "停止觀察詳情載入失敗"))
   return res.json()
 }
 

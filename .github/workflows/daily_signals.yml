@@ -1,10 +1,23 @@
 name: Daily Signals Generation
 
 on:
-  schedule:
-    # 台北每天 19:23 = UTC 11:23。每天檢查才能涵蓋週末補班開盤；
-    # 國定假日／一般週末因當日無交易資料而 no_data pass，不呼叫選股 LLM。
-    - cron: '23 11 * * *'
+  # 2026-08-14：從固定 cron 時間改成接在 margin_trade_backfill 完成後觸發
+  # （workflow_run，跟 signal_expectation_prices 接在本 workflow 後面的做法一致）。
+  #
+  # 原本用固定 cron（19:23，後來一度改到 23:05）想跑在 margin_trade_backfill
+  # （22:30）之後，但實測 gh run list 發現：GitHub Actions 排定的 cron 實際觸發
+  # 時間普遍比表訂時間晚 40~80 分鐘（不論訂幾點、有沒有錯開整點），而且每個
+  # workflow 延遲幅度不同步——固定時間 + 猜一個緩衝，仍然可能撞回「margin 資料
+  # 還沒同步完就跑」的問題。改用 workflow_run 直接綁定「margin_trade_backfill
+  # 真的完成」這個事件，徹底消除這個時間差風險（signal_expectation_prices 這樣
+  # 接在本 workflow 後面，觀測到的額外延遲只有 2~3 秒，遠比 cron 猜時間可靠）。
+  #
+  # margin_trade_backfill 已改成每天跑（見該檔案），所以這裡連帶自動涵蓋週末補班
+  # 開盤，不需要額外的 schedule fallback。
+  workflow_run:
+    workflows: ["Margin Trade Backfill"]
+    types:
+      - completed
   workflow_dispatch:
     inputs:
       target_date:
@@ -31,6 +44,12 @@ jobs:
     runs-on: ubuntu-latest
     # v7 structured research 失敗時會二分重試，保留額外修復時間。
     timeout-minutes: 120
+
+    # 僅在 margin_trade_backfill 成功時跑（workflow_run 觸發時 conclusion 才有值）。
+    # workflow_dispatch 沒有 workflow_run，event 名稱判斷成立後 conclusion 為空 → 也允許跑。
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
 
     env:
       TZ: Asia/Taipei

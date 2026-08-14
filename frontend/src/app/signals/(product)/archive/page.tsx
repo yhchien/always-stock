@@ -17,8 +17,10 @@ import {
   fetchSignalArchive,
   fetchSignalArchiveDetail,
   fetchSignalObservations,
+  fetchStoppedObservationDetail,
   fetchStoppedObservations,
   type RealtimeQuote,
+  type SignalArchiveCompletedItem,
   type SignalArchiveCompletedPeriod,
   type SignalArchiveCompletedResponse,
   type SignalArchiveDetailResponse,
@@ -28,6 +30,8 @@ import {
   type SignalMomentumScorePoint,
   type SignalObservationItem,
   type SignalObservationStatus,
+  type SignalReviewStatusEvent,
+  type SignalStoppedObservationDetailResponse,
 } from "@/lib/api"
 
 // 動能分數歷史折線圖用；只在詳情 popup 真的展開報告時才需要，不進 initial bundle
@@ -316,7 +320,9 @@ function observationCardTone(status: SignalObservationStatus | undefined): strin
     return "border-sky-600/50 bg-sky-500/5 hover:border-sky-400/70 hover:bg-sky-500/10"
   }
   if (status === "STOPPED") {
-    return "border-slate-600 bg-slate-800/40 hover:border-slate-500"
+    // 2026-08-14：原本用中性灰（跟預設色系太接近，不容易一眼看出「已停止觀察」）
+    // 改用跟 StopLossWarnChip 一致的 rose 危險色系，讓卡片一眼就能辨識
+    return "border-rose-500/60 bg-rose-500/10 hover:border-rose-400/80 hover:bg-rose-500/15"
   }
   return "border-slate-800 bg-slate-900/50 hover:border-sky-500/50 hover:bg-slate-800/60"
 }
@@ -413,15 +419,45 @@ function Metric({ label, children }: { label: string; children: ReactNode }) {
 // 當天再次被大盤選中）跟 P4（每日複核，P3 沒選中但仍在追蹤時的獨立動能重算）——兩者
 // 用同一套公式算，數值可以放進同一條線比較，只是 P3 額外附帶「贏過其他候選、通過
 // LLM 驗證」的訊號。用實心圓標 P3 來源、空心圓標 P4 來源，讓使用者一眼看出差異。
-// 少於 2 個資料點畫不出有意義的趨勢，不顯示。
-function MomentumScoreChart({ history }: { history: SignalMomentumScorePoint[] }) {
+// 2026-08-14：新抓到的股票只有 1 個資料點也要顯示（使用者要求）——沒有前一天可比較
+// 畫不出「線」，但單一個點本身（今天的動能分數是多少）仍然是有用的資訊。
+// 2026-08-14：警戒/解除警戒/停止觀察的日期標記——用 markLine 疊在折線圖上。事件日期
+// 可能沒有對應的動能分數（P4 複核當天算分失敗等邊界情況），所以 x 軸類別要用
+// 「動能分數日期 ∪ 事件日期」的聯集，不能只依動能分數的日期，否則 markLine 對不到
+// x 軸類別會顯示不出來。
+const REVIEW_EVENT_META: Record<
+  SignalReviewStatusEvent["event"],
+  { label: string; color: string }
+> = {
+  entered_caution: { label: "進入警戒", color: "#f59e0b" },
+  resolved_caution: { label: "解除警戒", color: "#38bdf8" },
+  stopped: { label: "停止觀察", color: "#f43f5e" },
+}
+
+function MomentumScoreChart({
+  history,
+  events = [],
+}: {
+  history: SignalMomentumScorePoint[]
+  events?: SignalReviewStatusEvent[]
+}) {
   const points = useMemo(
     () => [...history].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)),
     [history],
   )
+  const sortedEvents = useMemo(
+    () => [...events].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)),
+    [events],
+  )
+  const categories = useMemo(() => {
+    const set = new Set<string>(points.map((p) => p.date))
+    for (const e of sortedEvents) set.add(e.date)
+    return Array.from(set).sort()
+  }, [points, sortedEvents])
 
-  if (points.length < 2) return null
+  if (categories.length < 1) return null
 
+  const scoreByDate = new Map(points.map((p) => [p.date, p]))
   const sourceLabel = (source: "p3" | "p4") => (source === "p3" ? "P3 選中" : "P4 複核")
 
   const option = {
@@ -432,13 +468,19 @@ function MomentumScoreChart({ history }: { history: SignalMomentumScorePoint[] }
         const arr = params as Array<{ axisValue: string; dataIndex: number }>
         const p = arr[0]
         if (!p) return ""
-        const point = points[p.dataIndex]
-        return `${p.axisValue}<br/>動能分數 ${point.momentum_score}（${sourceLabel(point.source)}）`
+        const date = categories[p.dataIndex]
+        const point = scoreByDate.get(date)
+        const lines = [date]
+        if (point) lines.push(`動能分數 ${point.momentum_score}（${sourceLabel(point.source)}）`)
+        for (const e of sortedEvents.filter((ev) => ev.date === date)) {
+          lines.push(REVIEW_EVENT_META[e.event].label)
+        }
+        return lines.join("<br/>")
       },
     },
     xAxis: {
       type: "category" as const,
-      data: points.map((p) => p.date),
+      data: categories,
       axisLabel: { fontSize: 10, color: "#94a3b8" },
       axisLine: { lineStyle: { color: "#475569" } },
     },
@@ -452,14 +494,36 @@ function MomentumScoreChart({ history }: { history: SignalMomentumScorePoint[] }
     series: [
       {
         type: "line" as const,
-        data: points.map((p) => ({
-          value: p.momentum_score,
-          symbol: p.source === "p3" ? "circle" : "emptyCircle",
-          symbolSize: 7,
-          itemStyle: { color: "#38bdf8" },
-        })),
+        data: categories.map((date) => {
+          const point = scoreByDate.get(date)
+          if (!point) return null
+          return {
+            value: point.momentum_score,
+            symbol: point.source === "p3" ? "circle" : "emptyCircle",
+            symbolSize: 7,
+            itemStyle: { color: "#38bdf8" },
+          }
+        }),
+        connectNulls: true,
         smooth: true,
         lineStyle: { color: "#38bdf8", width: 2 },
+        markLine: {
+          symbol: "none",
+          label: {
+            fontSize: 10,
+            formatter: (p: { name?: string }) => p.name ?? "",
+          },
+          data: sortedEvents.map((e) => ({
+            xAxis: e.date,
+            name: REVIEW_EVENT_META[e.event].label,
+            lineStyle: {
+              color: REVIEW_EVENT_META[e.event].color,
+              type: "dashed" as const,
+              width: 1.5,
+            },
+            label: { color: REVIEW_EVENT_META[e.event].color },
+          })),
+        },
       },
     ],
   }
@@ -472,6 +536,13 @@ function MomentumScoreChart({ history }: { history: SignalMomentumScorePoint[] }
           ● P3 選中　○ P4 複核（P3 未選中該股當天的獨立追蹤分數）
         </span>
       </div>
+      {sortedEvents.length > 0 && (
+        <div className="mb-2 flex flex-wrap gap-3 text-[11px]">
+          <span className="text-amber-300">┄ 進入警戒</span>
+          <span className="text-sky-300">┄ 解除警戒</span>
+          <span className="text-rose-300">┄ 停止觀察</span>
+        </div>
+      )}
       <ReactECharts option={option} style={{ height: 160, width: "100%" }} />
     </div>
   )
@@ -606,7 +677,10 @@ function StockDetailDialog({
               </div>
 
               {detail && detail.stock_id === item.stock_id && (
-                <MomentumScoreChart history={detail.momentum_score_history} />
+                <MomentumScoreChart
+                  history={detail.momentum_score_history}
+                  events={detail.review_status_events}
+                />
               )}
 
               <div className="flex flex-wrap gap-2 border-t border-slate-800 pt-3">
@@ -695,6 +769,197 @@ function StockDetailDialog({
   )
 }
 
+// 2026-08-14：紀錄區（「停止觀察的股票」）detail popup——signal_watch_hits 已被硬刪除，
+// 資料改從 SignalSnapshot 重建（見 fetchStoppedObservationDetail）；欄位形狀比照
+// SignalArchiveCompletedItem（無 tracking_day_index／latest_eval_price 等 active-only
+// 欄位），跟 StockDetailDialog 分開寫一個較輕量的版本，而非硬湊成同一個 union type。
+function StoppedObservationDetailDialog({
+  item,
+  detail,
+  detailLoading,
+  detailError,
+  onClose,
+  onOpenChart,
+}: {
+  item: SignalArchiveCompletedItem | null
+  detail: SignalStoppedObservationDetailResponse | null
+  detailLoading: boolean
+  detailError: string | null
+  onClose: () => void
+  onOpenChart: (stockId: string, stockName?: string | null) => void
+}) {
+  const hitPeak =
+    item != null && (item.max_positive_return_pct ?? -Infinity) >= PEAK_MILESTONE_PCT
+  const matches =
+    detail != null &&
+    item != null &&
+    detail.stock_id === item.stock_id &&
+    detail.first_seen_date === item.first_seen_date
+
+  return (
+    <Dialog.Root
+      open={item !== null}
+      onOpenChange={(open) => {
+        if (!open) onClose()
+      }}
+    >
+      <Dialog.Portal>
+        <Dialog.Backdrop className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm" />
+        <Dialog.Popup className="fixed left-1/2 top-1/2 z-50 max-h-[88vh] w-[min(96vw,56rem)] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl sm:p-6">
+          {item && (
+            <div className="flex flex-col gap-4">
+              <header className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-800 pb-3">
+                <div className="min-w-0">
+                  <Dialog.Title className="flex flex-wrap items-baseline gap-2 text-lg font-semibold text-slate-100">
+                    {item.stock_id} {item.stock_name}
+                  </Dialog.Title>
+                  <Dialog.Description className="mt-1 text-xs text-slate-400">
+                    {item.industry_name ?? "—"}
+                    {item.sub_industry ? ` · ${item.sub_industry}` : ""}
+                  </Dialog.Description>
+                  <div className="mt-2 flex flex-wrap items-center gap-1">
+                    <SignalTypeChip type={item.latest_signal_type} />
+                    <PipelineFlagChip version={item.prompt_version} />
+                    <VersionChip version={item.prompt_version} />
+                    {hitPeak && <PeakMilestoneChip />}
+                    <ClosureReasonChip reason={item.closure_reason} />
+                  </div>
+                </div>
+                <Dialog.Close className="rounded border border-slate-600 bg-slate-800/50 px-2 py-1 text-xs text-slate-300 hover:bg-slate-700">
+                  關閉 ✕
+                </Dialog.Close>
+              </header>
+
+              <div className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-3">
+                <Metric label="首次 / 最近抓到">
+                  <span className="font-mono text-xs text-slate-300">
+                    {formatShortDate(item.first_seen_date)} → {formatShortDate(item.latest_hit_date)}
+                  </span>
+                </Metric>
+                <Metric label="抓到次數">
+                  <span className="text-sm text-slate-200">{item.hit_count} 次</span>
+                </Metric>
+                <Metric label="移出日期">
+                  <span className="font-mono text-xs text-slate-300">
+                    {formatShortDate(item.completed_trade_date)}
+                  </span>
+                </Metric>
+                <Metric label="預測價（保 / 夢）">
+                  <PredictionCell
+                    conservative={item.conservative_price}
+                    dream={item.dream_price}
+                  />
+                </Metric>
+                <Metric label="最大正報酬">
+                  <ExtremeReturnCell
+                    value={item.max_positive_return_pct}
+                    tradeDate={item.max_positive_return_trade_date}
+                  />
+                </Metric>
+                <Metric label="最大負報酬">
+                  <ExtremeReturnCell
+                    value={item.max_negative_return_pct}
+                    tradeDate={item.max_negative_return_trade_date}
+                  />
+                </Metric>
+                <Metric label="基準價">
+                  <span className="font-mono text-sm text-slate-200">
+                    {formatPrice(item.baseline_price)}
+                    {item.baseline_trade_date ? ` (${formatShortDate(item.baseline_trade_date)})` : ""}
+                  </span>
+                </Metric>
+              </div>
+
+              {matches && detail && (
+                <MomentumScoreChart
+                  history={detail.momentum_score_history}
+                  events={detail.review_status_events}
+                />
+              )}
+
+              <div className="flex flex-wrap gap-2 border-t border-slate-800 pt-3">
+                <button
+                  type="button"
+                  onClick={() => onOpenChart(item.stock_id, item.stock_name)}
+                  className="rounded border border-sky-500/50 bg-sky-500/10 px-2 py-1 text-xs text-sky-200 hover:bg-sky-500/20"
+                >
+                  K線圖
+                </button>
+                <Link
+                  href={`/stocks/${encodeURIComponent(item.stock_id)}`}
+                  className="rounded border border-slate-600 bg-slate-800/50 px-2 py-1 text-xs text-slate-300 hover:bg-slate-700"
+                >
+                  個股頁 →
+                </Link>
+              </div>
+
+              {matches && detail && (detail.recommendation_thesis || detail.relative_advantage) && (
+                <div className="flex flex-col gap-2 border-t border-slate-800 pt-3 text-sm">
+                  {detail.recommendation_thesis && (
+                    <p>
+                      <span className="mr-1.5 text-xs text-slate-500">推薦論點</span>
+                      <span className="text-slate-200">{detail.recommendation_thesis}</span>
+                    </p>
+                  )}
+                  {detail.relative_advantage && (
+                    <p>
+                      <span className="mr-1.5 text-xs text-slate-500">相對優勢</span>
+                      <span className="text-slate-300">{detail.relative_advantage}</span>
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {matches && detail && detail.margin_analysis && (
+                <div className="border-t border-slate-800 pt-3">
+                  <MarginAnalysisPanel analysis={detail.margin_analysis} stockId={item.stock_id} />
+                </div>
+              )}
+
+              <div className="flex flex-col gap-3 border-t border-slate-800 pt-3">
+                <h4 className="text-sm font-medium text-slate-200">報告時間軸</h4>
+                {detailLoading && <p className="text-sm text-slate-400">載入報告中…</p>}
+                {detailError && !detailLoading && (
+                  <p className="text-sm text-rose-300">{detailError}</p>
+                )}
+                {!detailLoading &&
+                  !detailError &&
+                  matches &&
+                  detail &&
+                  detail.reports.map((report) => (
+                    <article
+                      key={`${report.snapshot_date}-${report.signal_type}`}
+                      className="rounded-lg border border-slate-800 bg-slate-800/30 p-4"
+                    >
+                      <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
+                        <span className="font-mono text-slate-200">{report.snapshot_date}</span>
+                        <span className="rounded border border-slate-600 px-1.5 py-0.5 text-[11px] text-slate-300">
+                          {report.signal_type}
+                        </span>
+                        {report.snapshot_generated_at && (
+                          <span>{report.snapshot_generated_at}</span>
+                        )}
+                      </div>
+                      {report.business_summary && (
+                        <p className="mt-2 text-xs text-slate-400">{report.business_summary}</p>
+                      )}
+                      <p className="mt-3 whitespace-pre-line text-sm leading-relaxed text-slate-200">
+                        {report.reason}
+                      </p>
+                    </article>
+                  ))}
+                {!detailLoading && !detailError && !matches && (
+                  <p className="text-sm text-slate-400">找不到 {item.stock_id} 的報告內容。</p>
+                )}
+              </div>
+            </div>
+          )}
+        </Dialog.Popup>
+      </Dialog.Portal>
+    </Dialog.Root>
+  )
+}
+
 const STOPPED_COLLAPSED_KEY = "always-stock:signals-archive:stopped-collapsed"
 
 /**
@@ -717,6 +982,13 @@ function StoppedObservationsSection({
   const [summary, setSummary] = useState<SignalArchiveCompletedResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  // 2026-08-14：detail popup——一檔股票可能有多筆歷史停止紀錄，用
+  // "stock_id::first_seen_date" 複合 key 鎖定其中一筆
+  const [popupKey, setPopupKey] = useState<string | null>(null)
+  const [detail, setDetail] = useState<SignalStoppedObservationDetailResponse | null>(null)
+  const [detailLoading, setDetailLoading] = useState(false)
+  const [detailError, setDetailError] = useState<string | null>(null)
 
   useEffect(() => {
     try {
@@ -778,6 +1050,42 @@ function StoppedObservationsSection({
         (item.stock_name ?? "").toLowerCase().includes(q),
     )
   }, [summary?.items, search])
+
+  useEffect(() => {
+    if (!popupKey) {
+      setDetail(null)
+      return
+    }
+    const sepIndex = popupKey.indexOf("::")
+    const stockId = popupKey.slice(0, sepIndex)
+    const firstSeenDate = popupKey.slice(sepIndex + 2)
+
+    let cancelled = false
+    async function run() {
+      setDetailLoading(true)
+      setDetailError(null)
+      try {
+        const data = await fetchStoppedObservationDetail(stockId, firstSeenDate)
+        if (!cancelled) setDetail(data)
+      } catch (err) {
+        if (!cancelled) {
+          setDetail(null)
+          setDetailError(err instanceof Error ? err.message : "停止觀察詳情載入失敗")
+        }
+      } finally {
+        if (!cancelled) setDetailLoading(false)
+      }
+    }
+    void run()
+    return () => {
+      cancelled = true
+    }
+  }, [popupKey])
+
+  const popupItem = useMemo(() => {
+    if (!popupKey) return null
+    return summary?.items.find((item) => `${item.stock_id}::${item.first_seen_date}` === popupKey) ?? null
+  }, [summary?.items, popupKey])
 
   return (
     <section className="mx-auto mt-6 max-w-6xl rounded-xl border border-slate-800 bg-slate-900/40 p-4 sm:p-6">
@@ -926,13 +1234,24 @@ function StoppedObservationsSection({
                             {item.completed_trade_date}
                           </span>
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => onOpenChart(item.stock_id, item.stock_name)}
-                          className="rounded border border-sky-500/50 bg-sky-500/10 px-2 py-1 text-xs text-sky-200 hover:bg-sky-500/20"
-                        >
-                          K線圖
-                        </button>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setPopupKey(`${item.stock_id}::${item.first_seen_date}`)
+                            }
+                            className="rounded border border-slate-600 bg-slate-800/50 px-2 py-1 text-xs text-slate-300 hover:bg-slate-700"
+                          >
+                            點我看更多分析結果
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onOpenChart(item.stock_id, item.stock_name)}
+                            className="rounded border border-sky-500/50 bg-sky-500/10 px-2 py-1 text-xs text-sky-200 hover:bg-sky-500/20"
+                          >
+                            K線圖
+                          </button>
+                        </div>
                       </div>
                     </article>
                   )
@@ -942,6 +1261,14 @@ function StoppedObservationsSection({
           )}
         </>
       )}
+      <StoppedObservationDetailDialog
+        item={popupItem}
+        detail={detail}
+        detailLoading={detailLoading}
+        detailError={detailError}
+        onClose={() => setPopupKey(null)}
+        onOpenChart={onOpenChart}
+      />
     </section>
   )
 }
@@ -1292,7 +1619,7 @@ function SignalArchiveContent() {
               </p>
             </div>
           </div>
-          <div className="mt-2 rounded-lg border border-slate-800 bg-slate-900/60 p-3 text-xs leading-6 text-slate-400 sm:grid sm:grid-cols-2 sm:gap-3">
+          <div className="mt-2 rounded-lg border border-slate-800 bg-slate-900/60 p-3 text-xs leading-6 text-slate-400 sm:grid sm:grid-cols-3 sm:gap-3">
             <div>
               <p className="text-slate-200">
                 <span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-sky-400 align-middle" />
@@ -1310,7 +1637,18 @@ function SignalArchiveContent() {
                 <span className="ml-1.5 inline-block h-3 w-6 rounded border border-amber-500/60 bg-amber-500/10 align-middle" />
               </p>
               <p className="mt-1 text-slate-400">
-                部分關鍵條件今天開始不成立，卡片轉琥珀色底；值得留意但不是賣出訊號。若系統判定推薦論點已失效（停止觀察），隔天就會自動從「追蹤中」移出，改記錄在下方「追蹤期滿移出紀錄」（顯示「觀察已停止」），同時結算當時的報酬率。
+                部分關鍵條件今天開始不成立，卡片轉琥珀色底；值得留意但不是賣出訊號。
+              </p>
+            </div>
+            <div>
+              <p className="text-slate-200">
+                <span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-rose-400 align-middle" />
+                <span className="font-medium">已停止觀察</span>
+                <span className="ml-1.5 inline-block h-3 w-6 rounded border border-rose-500/60 bg-rose-500/10 align-middle" />
+              </p>
+              <p className="mt-1 text-slate-400">
+                系統判定推薦論點已失效，卡片轉玫瑰色底。刻意保留一個觀察日先讓您在這裡看到這個狀態，
+                不會判定當下就直接消失、移到「停止觀察的股票」；下一次每日複核才會正式結算移出。
               </p>
             </div>
           </div>

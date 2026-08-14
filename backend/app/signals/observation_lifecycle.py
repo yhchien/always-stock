@@ -1189,12 +1189,15 @@ def run_daily_observation_reviews(
                 _finalize_observation_archive(
                     db, observation=observation, archived_date=review_date
                 )
-                # P4 確認停止觀察＝這檔的推薦論點已判定失效；魚尾（M23 signal_watch_hits）
-                # 的追蹤週期跟著結算，不用再等自然滿 30 天或價格觸發的提前結算規則。
-                # 找不到對應的魚尾進行中週期時是 no-op（兩套系統的候選範圍不保證完全重疊）。
-                archive.settle_stock_for_p4_stop(
-                    db, stock_id=sid, as_of_trade_date=review_date
-                )
+                # 2026-08-14：這裡刻意不再立即呼叫 archive.settle_stock_for_p4_stop。
+                # 過去 STOP 判定跟魚尾結算是同一晚原子性發生，使用者永遠看不到「已停止
+                # 觀察」這個狀態本身（隔天打開網站時，那檔股票已經從追蹤中消失，直接
+                # 出現在紀錄區），rose 底色卡片形同虛設。現在改成：P4 觀察本身（archive
+                # row）仍然當下就定案，但魚尾追蹤週期留到「下一個複核日」才結算——見本
+                # 函式後面的 _settle_pending_p4_fishtail_stops，用法跟既有
+                # _settle_pending_archive_exits（P4 archive 的 exit_price 延後一天補上）
+                # 是同一個「留一個觀察日才動作」的既有模式，不是新發明的機制。
+                pass
         observation.latest_snapshot_json = {
             "review_date": review_date.isoformat(),
             "decision": decision.decision,
@@ -1213,6 +1216,7 @@ def run_daily_observation_reviews(
         )
     db.flush()
     settled_exit_count = _settle_pending_archive_exits(db, review_date=review_date)
+    settled_fishtail_count = _settle_pending_p4_fishtail_stops(db, review_date=review_date)
     db.flush()
 
     summary = {
@@ -1229,6 +1233,7 @@ def run_daily_observation_reviews(
         "tracking_state_machine_version": STATE_MACHINE_VERSION,
         "prompt_payload_metrics": tracking_payload_metrics,
         "archived_exit_settled_count": settled_exit_count,
+        "fishtail_stop_settled_count": settled_fishtail_count,
         "token_usage": token_usage,
     }
     if persist:
@@ -1328,6 +1333,46 @@ def _settle_pending_archive_exits(db: Session, *, review_date: date) -> int:
             )
         archive.updated_at = datetime.utcnow()
         settled += 1
+    return settled
+
+
+def _settle_pending_p4_fishtail_stops(db: Session, *, review_date: date) -> int:
+    """2026-08-14：P4 判定 STOP 的當晚，先不結算魚尾追蹤週期——留到「下一個複核日」
+    才結算，讓使用者至少有一個觀察日能在追蹤中名單看到「已停止觀察」（rose 底色，
+    見 archive/page.tsx 的 observationCardTone）這個狀態，主要目的是告知，不是直接
+    消失進紀錄區。跟 `_settle_pending_archive_exits`（P4 archive 的 exit_price 延後
+    一天補上）是同一種「留一個觀察日才動作」的既有 self-healing pattern，不是新機制。
+
+    找「已有 SignalObservationArchive（代表 P4 那晚已經定案 STOP），但 archived_date
+    早於今天 review_date」的股票，若魚尾（signal_watch_hits）還有進行中週期，這次才
+    真的結算。self-healing：即使某天漏跑，下次呼叫一樣會抓到還沒結算的舊資料。
+    """
+    pending_stock_ids = {
+        row[0]
+        for row in (
+            db.query(SignalObservationArchive.stock_id)
+            .filter(SignalObservationArchive.archived_date < review_date)
+            .distinct()
+            .all()
+        )
+    }
+    if not pending_stock_ids:
+        return 0
+    still_active_ids = {
+        row[0]
+        for row in (
+            db.query(SignalWatchHit.stock_id)
+            .filter(SignalWatchHit.stock_id.in_(pending_stock_ids))
+            .distinct()
+            .all()
+        )
+    }
+    settled = 0
+    for stock_id in still_active_ids:
+        if archive.settle_stock_for_p4_stop(
+            db, stock_id=stock_id, as_of_trade_date=review_date
+        ):
+            settled += 1
     return settled
 
 

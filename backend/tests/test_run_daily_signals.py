@@ -113,11 +113,16 @@ def test_terminal_failed_job_reuses_error_classification(runner_module):
 
 
 def test_daily_signals_workflow_runs_daily_and_fails_partial_results():
+    """2026-08-14：daily_signals 從固定 cron 改成接在 margin_trade_backfill 完成後
+    觸發（workflow_run），理由是 GitHub Actions 排定的 cron 實際觸發時間普遍比
+    表訂時間晚 40~80 分鐘（gh run list 實測），固定時間 + 猜緩衝仍可能撞回融資
+    融券資料還沒同步完就跑的問題。margin_trade_backfill 本身已改成每天跑
+    （見 margin_trade_backfill.yml），所以這裡改用事件觸發仍然涵蓋「每天」。"""
     repo_root = Path(__file__).resolve().parents[2]
     workflow = (repo_root / ".github/workflows/daily_signals.yml").read_text(
         encoding="utf-8"
     )
-    assert "- cron: '23 11 * * *'" in workflow
+    assert 'workflows: ["Margin Trade Backfill"]' in workflow
     assert "SIGNALS_PIPELINE_MODE: phase2" in workflow
     assert "4) echo \"Status: partial_failure (FAIL; snapshot is incomplete)\"" in workflow
 

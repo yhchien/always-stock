@@ -1785,3 +1785,272 @@ def test_settle_stock_for_p4_stop_without_baseline_still_archives():
         assert completed.baseline_trade_date is None
         assert completed.max_positive_return_pct is None
         assert completed.max_negative_return_pct is None
+
+
+def _seed_review(
+    db, *, observation_id: int, review_date: date, decision: str
+) -> None:
+    db.add(
+        SignalObservationReview(
+            observation_id=observation_id,
+            review_date=review_date,
+            decision=decision,
+            reason_codes=[],
+            reason="",
+            caution_dimensions=[],
+            failed_dimensions=[],
+            prompt_version="v1",
+            state_machine_version="v1",
+        )
+    )
+
+
+def test_load_review_status_events_detects_transitions_within_one_episode():
+    """2026-08-14：CONTINUE→CAUTION→CAUTION→CONTINUE→STOP_OBSERVING 的時間序列，
+    只在真正的轉換點（第一次進入/離開某狀態）記一筆事件，連續同狀態不重複記錄。"""
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+
+    with Session() as db:
+        observation = SignalObservation(
+            stock_id="2330",
+            stock_name="台積電",
+            asset_type="COMMON_STOCK",
+            episode_id="episode-2330-1",
+            status="STOPPED",
+            started_signal_date=date(2026, 8, 1),
+            baseline_quality="P3_COMPLETE",
+            initial_snapshot_json={},
+        )
+        db.add(observation)
+        db.flush()
+        _seed_review(db, observation_id=observation.id, review_date=date(2026, 8, 2), decision="CONTINUE")
+        _seed_review(db, observation_id=observation.id, review_date=date(2026, 8, 3), decision="CAUTION")
+        _seed_review(db, observation_id=observation.id, review_date=date(2026, 8, 4), decision="CAUTION")
+        _seed_review(db, observation_id=observation.id, review_date=date(2026, 8, 5), decision="CONTINUE")
+        _seed_review(db, observation_id=observation.id, review_date=date(2026, 8, 6), decision="STOP_OBSERVING")
+        db.commit()
+
+        events = archive._load_review_status_events(db, "2330")
+        assert events == [
+            {"date": date(2026, 8, 3), "event": "entered_caution"},
+            {"date": date(2026, 8, 5), "event": "resolved_caution"},
+            {"date": date(2026, 8, 6), "event": "stopped"},
+        ]
+
+
+def test_load_review_status_events_resets_between_episodes():
+    """新 episode（重新開始觀察）不會把上一輪結束時的狀態誤判成這一輪的轉換——
+    第二個 episode 一開始就是 CAUTION 仍要記一筆 entered_caution，不因為上一輪
+    也曾經是這個狀態就被略過。"""
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+
+    with Session() as db:
+        first = SignalObservation(
+            stock_id="2330",
+            stock_name="台積電",
+            asset_type="COMMON_STOCK",
+            episode_id="episode-2330-1",
+            status="STOPPED",
+            started_signal_date=date(2026, 7, 1),
+            baseline_quality="P3_COMPLETE",
+            initial_snapshot_json={},
+        )
+        db.add(first)
+        db.flush()
+        _seed_review(db, observation_id=first.id, review_date=date(2026, 7, 2), decision="CAUTION")
+        _seed_review(db, observation_id=first.id, review_date=date(2026, 7, 3), decision="STOP_OBSERVING")
+
+        second = SignalObservation(
+            stock_id="2330",
+            stock_name="台積電",
+            asset_type="COMMON_STOCK",
+            episode_id="episode-2330-2",
+            status="OBSERVING",
+            started_signal_date=date(2026, 8, 1),
+            baseline_quality="P3_COMPLETE",
+            initial_snapshot_json={},
+        )
+        db.add(second)
+        db.flush()
+        _seed_review(db, observation_id=second.id, review_date=date(2026, 8, 2), decision="CAUTION")
+        db.commit()
+
+        events = archive._load_review_status_events(db, "2330")
+        assert events == [
+            {"date": date(2026, 7, 2), "event": "entered_caution"},
+            {"date": date(2026, 7, 3), "event": "stopped"},
+            {"date": date(2026, 8, 2), "event": "entered_caution"},
+        ]
+
+
+def test_get_archive_detail_includes_review_status_events():
+    """追蹤中（signal_watch_hits 還在）的股票 detail 也要帶出警戒/停止標記，
+    給折線圖畫 markLine 用。"""
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+
+    with Session() as db:
+        job_id = _seed_job_and_snapshot(db, date(2026, 8, 10))
+        archive.persist_signal_watch_hits(
+            db,
+            date(2026, 8, 10),
+            {"watchlist": [{"stock": "3231", "name": "緯創", "type": "LEADER"}]},
+            job_id,
+        )
+        observation = SignalObservation(
+            stock_id="3231",
+            stock_name="緯創",
+            asset_type="COMMON_STOCK",
+            episode_id="episode-3231-1",
+            status="CAUTION",
+            started_signal_date=date(2026, 8, 9),
+            baseline_quality="P3_COMPLETE",
+            initial_snapshot_json={},
+        )
+        db.add(observation)
+        db.flush()
+        _seed_review(db, observation_id=observation.id, review_date=date(2026, 8, 10), decision="CAUTION")
+        db.commit()
+
+        detail = archive.get_archive_detail(db, "3231", now=datetime(2026, 8, 10, 20, 0))
+        assert detail is not None
+        assert detail["review_status_events"] == [
+            {"date": date(2026, 8, 10), "event": "entered_caution"},
+        ]
+
+
+def test_get_stopped_observation_detail_reconstructs_from_snapshots():
+    """紀錄區股票：signal_watch_hits 已被硬刪除，改從 SignalSnapshot.watchlist
+    重建報告時間軸 + 動能分數歷史；review_status_events 裁到這筆紀錄涵蓋的區間。"""
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+
+    with Session() as db:
+        for d, score in [
+            (date(2026, 8, 1), 60.0),
+            (date(2026, 8, 2), 65.0),
+        ]:
+            db.add(
+                SignalSnapshot(
+                    snapshot_date=d,
+                    market_context={"market_state": "RANGE"},
+                    watchlist=[
+                        {
+                            "stock": "3231",
+                            "name": "緯創",
+                            "type": "LEADER",
+                            "reason": f"reason-{d.isoformat()}",
+                            "business_summary": "業務摘要",
+                            "signal_metrics": {"momentum_score": score},
+                        }
+                    ],
+                    removed=[],
+                    summary={},
+                )
+            )
+        db.commit()
+
+        observation = SignalObservation(
+            stock_id="3231",
+            stock_name="緯創",
+            asset_type="COMMON_STOCK",
+            episode_id="episode-3231-1",
+            status="STOPPED",
+            started_signal_date=date(2026, 8, 1),
+            baseline_quality="P3_COMPLETE",
+            initial_snapshot_json={},
+        )
+        db.add(observation)
+        db.flush()
+        _seed_review(db, observation_id=observation.id, review_date=date(2026, 8, 2), decision="CAUTION")
+        _seed_review(db, observation_id=observation.id, review_date=date(2026, 8, 3), decision="STOP_OBSERVING")
+        db.commit()
+
+        db.add(
+            SignalWatchStoppedObservation(
+                stock_id="3231",
+                stock_name="緯創",
+                first_seen_date=date(2026, 8, 1),
+                latest_hit_date=date(2026, 8, 2),
+                hit_count=2,
+                latest_signal_type="LEADER",
+                completed_trade_date=date(2026, 8, 3),
+                closure_reason="p4_stopped",
+            )
+        )
+        db.commit()
+
+        detail = archive.get_stopped_observation_detail(db, "3231", date(2026, 8, 1))
+        assert detail is not None
+        assert detail["closure_reason"] == "p4_stopped"
+        assert [r["snapshot_date"] for r in detail["reports"]] == [
+            date(2026, 8, 2),
+            date(2026, 8, 1),
+        ]
+        history_by_date = {p["date"]: p for p in detail["momentum_score_history"]}
+        assert history_by_date[date(2026, 8, 1)]["momentum_score"] == 60.0
+        assert history_by_date[date(2026, 8, 1)]["source"] == "p3"
+        assert history_by_date[date(2026, 8, 2)]["momentum_score"] == 65.0
+        assert detail["review_status_events"] == [
+            {"date": date(2026, 8, 2), "event": "entered_caution"},
+            {"date": date(2026, 8, 3), "event": "stopped"},
+        ]
+
+
+def test_get_stopped_observation_detail_returns_none_for_unknown_key():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+
+    with Session() as db:
+        assert archive.get_stopped_observation_detail(db, "9999", date(2026, 1, 1)) is None
+
+
+def test_get_stopped_observation_detail_disambiguates_multiple_cycles_by_first_seen_date():
+    """同一檔股票有兩次不同的停止觀察紀錄，用 first_seen_date 精準鎖定其中一筆，
+    不會把另一筆的資料混進來。"""
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+
+    with Session() as db:
+        db.add(
+            SignalWatchStoppedObservation(
+                stock_id="3231",
+                stock_name="緯創",
+                first_seen_date=date(2026, 6, 1),
+                latest_hit_date=date(2026, 6, 5),
+                hit_count=3,
+                latest_signal_type="LEADER",
+                completed_trade_date=date(2026, 6, 6),
+                closure_reason="completed_30_days",
+            )
+        )
+        db.add(
+            SignalWatchStoppedObservation(
+                stock_id="3231",
+                stock_name="緯創",
+                first_seen_date=date(2026, 8, 1),
+                latest_hit_date=date(2026, 8, 2),
+                hit_count=2,
+                latest_signal_type="LEADER",
+                completed_trade_date=date(2026, 8, 3),
+                closure_reason="p4_stopped",
+            )
+        )
+        db.commit()
+
+        detail = archive.get_stopped_observation_detail(db, "3231", date(2026, 8, 1))
+        assert detail is not None
+        assert detail["closure_reason"] == "p4_stopped"
+        assert detail["first_seen_date"] == date(2026, 8, 1)
+
+        other = archive.get_stopped_observation_detail(db, "3231", date(2026, 6, 1))
+        assert other is not None
+        assert other["closure_reason"] == "completed_30_days"

@@ -968,10 +968,12 @@ def test_first_stop_immediately_archives(db, monkeypatch):
     assert db.get(SignalObservation, observation.id).stop_confirm_count == 1
 
 
-def test_first_stop_settles_matching_signal_watch_hit_cycle(db, monkeypatch):
-    """2026-08-12：STOP_CONFIRM_THRESHOLD=1 之後，第一次 STOP 就要讓魚尾（M23
-    signal_watch_hits）對應的進行中追蹤週期同一天跟著結算，不用等 30 個交易日或
-    價格觸發規則，也不用等多日複核確認。"""
+def test_first_stop_defers_fishtail_settlement_by_one_review_day(db, monkeypatch):
+    """2026-08-14：使用者要求 STOP 判定當晚不要立即把魚尾追蹤週期結算移出——
+    要讓使用者至少有一個觀察日能在「追蹤中」名單看到「已停止觀察」狀態（archive
+    頁 rose 底色卡片），主要目的是告知，不是直接消失進紀錄區。所以 DAY_1（STOP
+    當天）魚尾週期應該還在，要到下一次複核（DAY_2）才會被
+    `_settle_pending_p4_fishtail_stops` 結算。"""
     observation = _observation(db)
     db.add(DailyPrice(stock_id="2330", trade_date=DAY_0, close_price=100.0))
     db.add(
@@ -998,7 +1000,7 @@ def test_first_stop_settles_matching_signal_watch_hit_cycle(db, monkeypatch):
     db.commit()
     _patch_evidence(monkeypatch, {observation.id: _hard_excluded_evidence()})
 
-    lifecycle.run_daily_observation_reviews(
+    result_day1 = lifecycle.run_daily_observation_reviews(
         db,
         review_date=DAY_1,
         market_context={},
@@ -1009,7 +1011,25 @@ def test_first_stop_settles_matching_signal_watch_hit_cycle(db, monkeypatch):
     row = db.get(SignalObservation, observation.id)
     assert row.status == "STOPPED"
     assert row.stop_confirm_count == 1
+    # P4 觀察本身當下就定案歸檔（archive row 已存在）……
+    assert db.query(SignalObservationArchive).filter_by(observation_id=observation.id).count() == 1
+    # ……但魚尾追蹤週期這天刻意還沒動：使用者隔天打開網站時仍能在「追蹤中」看到
+    # 這檔股票（rose 底色的「已停止觀察」卡片），不是直接消失進紀錄區。
+    assert db.query(SignalWatchHit).filter_by(stock_id="2330").count() == 1
+    assert db.query(SignalWatchCompletedArchive).filter_by(stock_id="2330").count() == 0
+    assert result_day1["tracking_summary"]["fishtail_stop_settled_count"] == 0
 
+    # 下一次複核（不論這檔股票本身有沒有東西要複核，STOPPED 觀察已經被查詢條件
+    # 排除在 reviewable 之外）——_settle_pending_p4_fishtail_stops 這次才動手。
+    result_day2 = lifecycle.run_daily_observation_reviews(
+        db,
+        review_date=DAY_2,
+        market_context={},
+        assessment_runner=_runner_for({}),
+        persist=True,
+    )
+
+    assert result_day2["tracking_summary"]["fishtail_stop_settled_count"] == 1
     active_hits = db.query(SignalWatchHit).filter_by(stock_id="2330").all()
     assert active_hits == []
 
@@ -1017,7 +1037,65 @@ def test_first_stop_settles_matching_signal_watch_hit_cycle(db, monkeypatch):
         db.query(SignalWatchCompletedArchive).filter_by(stock_id="2330").one()
     )
     assert completed.closure_reason == archive_module.CLOSURE_REASON_P4_STOPPED
-    assert completed.completed_trade_date == DAY_1
+    assert completed.completed_trade_date == DAY_2
+
+
+def test_settle_pending_p4_fishtail_stops_is_self_healing_across_gaps(db):
+    """跟 `_settle_pending_archive_exits` 同一種 self-healing 設計：即使中間漏跑
+    一次複核，之後任何一次呼叫都能抓到「archived_date 早於今天」但魚尾還沒結算的
+    股票，不會漏掉、也不會重複結算。"""
+    observation = _observation(db)
+    db.add(
+        SignalObservationArchive(
+            observation_id=observation.id,
+            episode_id=observation.episode_id,
+            stock_id="2330",
+            stock_name="Stock-2330",
+            started_signal_date=DAY_0,
+            first_stop_date=DAY_1,
+            archived_date=DAY_1,
+            stop_reason_code="STRUCTURE_DAMAGED",
+            stop_reason="test",
+            entry_price=100.0,
+        )
+    )
+    db.add(
+        SignalWatchHit(
+            snapshot_date=DAY_0,
+            stock_id="2330",
+            stock_name="Stock-2330",
+            signal_type="LEADER",
+            industry_name="半導體業",
+            sub_industry="x",
+            business_summary="a",
+            reason="a",
+            theme={},
+            group_info={},
+            leader_check={},
+            signals={},
+            baseline_trade_date=DAY_0,
+            baseline_price=100.0,
+            latest_eval_trade_date=DAY_0,
+            latest_eval_price=100.0,
+            return_pct=0.0,
+        )
+    )
+    db.commit()
+
+    # 假設中間漏跑好幾天，直接跳到很後面才複核——一樣要能抓到。
+    later = DAY_2 + timedelta(days=5)
+    settled = lifecycle._settle_pending_p4_fishtail_stops(db, review_date=later)
+    assert settled == 1
+    db.commit()
+
+    completed = (
+        db.query(SignalWatchCompletedArchive).filter_by(stock_id="2330").one()
+    )
+    assert completed.completed_trade_date == later
+
+    # 再呼叫一次不應該重複結算（已經沒有進行中的魚尾週期了）。
+    settled_again = lifecycle._settle_pending_p4_fishtail_stops(db, review_date=later)
+    assert settled_again == 0
 
 
 def test_settle_pending_archive_exits_uses_next_available_open_close_average(db):

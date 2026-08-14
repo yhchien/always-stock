@@ -1,9 +1,18 @@
 name: Signal Archive Returns Update
 
 on:
-  schedule:
-    # 台北 20:41（週一到週五）= UTC 12:41（刻意錯開整點，降低 GitHub schedule 被丟棄的機率）
-    - cron: '41 12 * * 1-5'
+  # 2026-08-14：從固定 cron 時間改成接在 daily_signals 完成後觸發（workflow_run，
+  # 跟 daily_signals 接在 margin_trade_backfill 後面的做法一致）。原因同
+  # daily_signals.yml 的說明：cron 表訂時間 vs 實際觸發時間普遍有 40~80 分鐘落差，
+  # 且各 workflow 延遲幅度不同步，固定時間 + 猜緩衝不夠可靠。
+  #
+  # run_signal_archive_returns.py 未帶日期時的預設邏輯本來就有處理「00:00-19:59
+  # 視為前一個交易日」，不論實際被觸發在幾點都能正確解析到 daily_signals 剛產生的
+  # 那個目標交易日，不需要额外調整。
+  workflow_run:
+    workflows: ["Daily Signals Generation"]
+    types:
+      - completed
   workflow_dispatch:
     inputs:
       target_date:
@@ -14,6 +23,12 @@ jobs:
   update_signal_returns:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+
+    # 僅在 daily_signals 成功時跑（workflow_run 觸發時 conclusion 才有值）。
+    # workflow_dispatch 沒有 workflow_run，event 名稱判斷成立後 conclusion 為空 → 也允許跑。
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
 
     env:
       TZ: Asia/Taipei
