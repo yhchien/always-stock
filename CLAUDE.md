@@ -1,5 +1,134 @@
 # always-stock 專案記憶
 
+## 30 日追蹤四項修復 + pipeline 排程改事件觸發 + 停止觀察延後結算 + 動能分數折線圖警戒/停止標記（2026-08-14）
+
+使用者對 30 日追蹤頁一次提出 4 個問題，逐一查證後發現前 3 個都不是表面猜測的原因，是各自
+獨立的真實 bug／資料缺口；緊接著兩輪追加需求把「停止觀察」的使用者體感與動能分數視覺化
+補完整。
+
+### Q1：判定停止觀察卻還留在追蹤中的股票——歷史結算缺口，非「前一晚判定」
+使用者原本猜是「因為那是前一晚最新判定的」，查證後**這個猜測是錯的**：真正原因是
+`settle_stock_for_p4_stop()`（P4 確認 STOP 時同步結算魚尾週期）是**這輪之前**才接上的新
+機制，接上之前已經處於 STOPPED 狀態的觀察，其對應魚尾週期從未被回溯結算過，永久卡在
+`signal_watch_hits`（追蹤中）。新增一次性腳本
+[backend/settle_stale_stopped_observations.py](backend/settle_stale_stopped_observations.py)
+（dry-run/--execute pattern，比照既有 `stop_legacy_incomplete_observations.py`）：對每檔
+仍在 `signal_watch_hits` 的股票，找其最新一筆 `SignalObservation`，若 `status=="STOPPED"`
+則呼叫既有 `archive.settle_stock_for_p4_stop()` 補結算。Production 執行結果：命中並結算
+**14 檔**（2049/2301/2359/2451/2605/2606/2618/4566/6177/6206/6533/6669/7740/9939），全數
+驗證 `settled=True` 且事後查無殘留。
+
+### Q2：研華等股票動能分數折線圖缺段——P4 分數欄位是新加的，歷史列從未回填
+`SignalObservationReview.momentum_score` 是本 session 較早才新增的欄位，新增當下只對
+「之後」的每日複核生效，既有歷史列全部是 NULL。新增一次性腳本
+[backend/backfill_p4_momentum_scores.py](backend/backfill_p4_momentum_scores.py)：對每個
+有 NULL `momentum_score` 的 `review_date`，重建當天的 `ingestion`（`candidate_pool.
+ingest_data`）與 `momentum_frame`（`momentum.compute_market_momentum_frame`，全市場計算，
+較慢），呼叫 `build_current_tracking_evidence()` 算出當天分數並寫回。**Dry-run**：16 個
+交易日、1498/1498 筆（100%）成功算出。**Production 執行**分兩段：
+- 第一次 `--execute`（背景任務）在處理完前 5 個交易日（07-20/21/30/31, 08-01）後，
+  `psycopg.OperationalError: consuming input failed: server closed the connection
+  unexpectedly`——遠端 Postgres 連線中途斷線（管理型 DB 對長時間佔用連線的常見不穩定）。
+  腳本設計本來就**逐日 commit**，已完成的 5 個交易日安全落地，未受影響
+- 直接重跑 `--execute`（`find_target_dates()` 只抓 `momentum_score IS NULL` 的日期，天生
+  對已完成的部分冪等跳過），剩餘 11 個交易日全部成功補齊，最終驗證 `missing
+  momentum_score` 歸零
+
+### Q3：部分股票融資融券缺資料——pipeline 排程時序問題，已在 Q4 一併處理
+
+### Q4：GitHub Actions 排程時序 + 提早結束的可行性評估
+使用者主動要求「盤點現在的 action 有幾個、幾點開始，並評估提早的可能性」。用
+`gh run list --json name,createdAt,updatedAt,conclusion,status` 查真實觸發時間，發現**所有
+cron 排定的 workflow，實際觸發時間普遍比表訂時間晚 40~80 分鐘**，且各 workflow 之間的延遲
+互不同步——這代表原本設計「daily_signals 訂在 margin_trade_backfill 表訂時間之後 X 分鐘」
+的固定時間差沒有意義，兩邊各自的實際延遲量不同，緩衝時間再怎麼抓都可能不夠或浪費。第一版
+先改成固定時間微調（並非最終方案，已被下面的事件觸發取代）。
+**最終方案**：改用 `workflow_run` 事件鏈接（同 [signal_expectation_prices.yml](.github/workflows/signal_expectation_prices.yml)
+已驗證過的低延遲模式，接在別的 workflow 完成後幾秒內觸發，不受 cron 延遲影響）：
+- [margin_trade_backfill.yml](.github/workflows/margin_trade_backfill.yml)：cron 從
+  `週一~五 22:30` 改成**每天** `22:30`（`30 14 * * *`），因為它現在是整條鏈最上游的觸發源，
+  需要涵蓋補班六
+- [daily_signals.yml](.github/workflows/daily_signals.yml)：觸發從固定 cron 改成
+  `workflow_run: workflows: ["Margin Trade Backfill"], types: [completed]`，job 加
+  `if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion
+  == 'success'`
+- [signal_archive_returns.yml](.github/workflows/signal_archive_returns.yml)：同樣改成
+  `workflow_run` 接在 `Daily Signals Generation` 完成後
+- 鏈路：ETL（18:00）→ margin_trade_backfill（22:30，每天）→ daily_signals（margin 完成後
+  立即）→ signal_archive_returns（daily_signals 完成後立即），Q3 的融資融券缺資料問題
+  （daily_signals 曾在 margin_trade_backfill 完成前就搶跑）隨這個改動一併解決
+- Regression：`test_run_daily_signals.py::test_daily_signals_workflow_runs_daily_and_fails_
+  partial_results` 原本斷言舊 cron 字面值，已改為斷言 `workflows: ["Margin Trade Backfill"]`
+
+### 停止觀察延後一個複核日才結算（同日追加需求）
+使用者發現「STOP 判定跟魚尾結算是同一晚原子性發生」導致 Q1 剛做好的 rose 底色卡片形同虛設——
+使用者永遠看不到「已停止觀察」這個過渡狀態，隔天打開網站那檔股票已經直接消失、出現在紀錄區。
+修法（[observation_lifecycle.py](backend/app/signals/observation_lifecycle.py)）：STOP
+判定當晚，`_finalize_observation_archive()`（P4 觀察本身的歸檔）**仍然**當下就定案，但魚尾
+追蹤週期的結算改延到**下一個複核日**才做——新增 `_settle_pending_p4_fishtail_stops(db,
+*, review_date)`，找「已有 `SignalObservationArchive`（P4 那晚已經定案 STOP）但
+`archived_date < 今天 review_date`」且魚尾仍有進行中週期的股票才真的結算。跟既有
+`_settle_pending_archive_exits`（P4 archive 的 `exit_price` 延後一天補上，因為隔天價格
+STOP 當下還不存在）是**同一種「留一個觀察日才動作」的既有 self-healing pattern**，不是
+新發明的機制——self-healing 代表即使某天漏跑，下次呼叫一樣會抓到還沒結算的舊資料。
+`run_daily_observation_reviews()` 的 `summary` 新增 `fishtail_stop_settled_count` 欄位。
+Regression test 改寫成兩階段驗證（STOP 當天 hits 還在、`fishtail_stop_settled_count==0`；
+隔天複核後 hits 才消失、`fishtail_stop_settled_count==1`），另新增
+`test_settle_pending_p4_fishtail_stops_is_self_healing_across_gaps`（模擬多日空窗一次補齊）。
+
+### 動能分數折線圖加警戒/解除警戒/停止觀察標記（追蹤中 + 紀錄區都要有）
+使用者要求：不管追蹤中還是紀錄區，點開股票都要看到動能分數折線圖，且要標記哪天進入警戒、
+哪天解除、哪天 STOP。
+
+**追蹤中（`signal_watch_hits` 還在）**：新增 `_load_review_status_events(db, stock_id)`
+（[archive.py](backend/app/signals/archive.py)）——從 `SignalObservationReview.decision`
+的時間序列偵測轉換點（`CONTINUE→CAUTION`＝進入警戒、`CAUTION→CONTINUE`＝解除、
+`→STOP_OBSERVING`＝停止），**只在同一個 observation episode 內部比較，不跨 episode**（新
+episode 一律視為從乾淨狀態重新開始，避免把上一輪結束時的狀態誤判成這一輪的轉換）。掛進
+`get_archive_detail()` 回傳的 `review_status_events`。
+
+**紀錄區（已結算，`signal_watch_hits` 已被硬刪除）**——這是本輪發現的一個既有架構限制：
+`get_archive_detail()` 開頭 `if not rows: return None`，對紀錄區股票一律回 404，**完全沒有
+detail 資料來源**。新增 `_load_snapshot_reports_for_stock(db, stock_id, start_date,
+end_date)`：從 `SignalSnapshot.watchlist`（永久保留所有日期，不受 30 日 retention 影響）
+重建報告時間軸——這張表本來就是設計成「歷史保留所有日期，給未來評估用」，紀錄區缺的資料它
+都還在。新增 `get_stopped_observation_detail(db, stock_id, first_seen_date)`：用
+`(stock_id, first_seen_date)` 複合鍵（對齊 `SignalWatchStoppedObservation` 的 unique
+constraint，因為一檔股票可能有多筆歷史停止紀錄）查記錄本體，報告時間軸與動能分數歷史都從
+snapshot 重建，`review_status_events` 裁到這筆紀錄涵蓋的區間（避免顯示到同一檔股票其他次
+追蹤 cycle 的標記）；`recommendation_thesis`/`relative_advantage`/`margin_analysis` 取自
+重建報告中最新一筆（`_load_snapshot_reports_for_stock` 內部多存這三個 key，不在
+`SignalArchiveReportResponse` 契約內，FastAPI response_model 序列化時自動忽略，純粹方便
+呼叫端讀取不用重複查詢）。新增 API `GET /api/signals/archive/stopped/{stock_id}/detail?
+first_seen_date=YYYY-MM-DD`。
+
+**前端**：`MomentumScoreChart` 加 `events` prop，x 軸類別改用「動能分數日期 ∪ 事件日期」的
+聯集（警戒/停止可能發生在沒有動能分數的日子，若只用分數日期當類別，markLine 會對不到 x 軸
+座標顯示不出來），markLine 三色（琥珀＝進入警戒／天藍＝解除／玫瑰＝停止觀察）+ tooltip 一併
+顯示當天事件。新增 `StoppedObservationDetailDialog`（獨立元件，非硬湊進 `StockDetailDialog`
+的 union type——欄位形狀不同，`SignalArchiveCompletedItem` 沒有 `tracking_day_index`／
+`latest_eval_price` 等 active-only 欄位，分開寫更乾淨），`StoppedObservationsSection` 卡片
+新增「點我看更多分析結果」按鈕（沿用既有按鈕文案慣例）開啟。
+
+### Gotcha
+- **`Bash run_in_background: true` + shell 內自己 `nohup ... &` 疊加會誤判完成**：外層
+  wrapper（`nohup ... & \n echo pid`）本身幾乎瞬間執行完（`&` 已把 python 行程丟到背景），
+  Bash 工具回報的「completed」是 wrapper 完成，**不是** python 腳本真正跑完；要追蹤真正的
+  長時間背景任務，應該用 Monitor 工具 `tail -f` 該行程的 log 檔，而非只信任 Bash
+  `run_in_background` 的完成通知
+- **一次性 backfill/settle 腳本務必逐筆或逐日 commit**：`backfill_p4_momentum_scores.py`
+  設計成逐日 commit，這次真的在第 6 個交易日撞到遠端連線中斷，若是單一大 transaction
+  會整批回滾、前面全部白做；逐日 commit 讓失敗只損失「這一天」，且重跑天生冪等（靠
+  `find_target_dates()` 只抓還缺值的日期）
+- **紀錄區沒有 detail 資料來源是架構性限制，不是 bug**：`SignalWatchHit` 硬刪除是既有
+  設計（30 日 retention／提前結算都會刪），`get_archive_detail()` 從一開始就只服務追蹤中
+  股票；`SignalSnapshot`「歷史保留所有日期」的既有設計原本就是為了這種情境存在，本輪只是
+  第一次真正用上它
+- **`_load_snapshot_reports_for_stock` 多存 3 個非契約內欄位是刻意的**：Pydantic v2 對
+  `response_model` 序列化預設忽略 dict 裡的額外 key（無 `model_config extra="forbid"`），
+  讓 `reports[]` 內部順便帶 `recommendation_thesis`/`relative_advantage`/`margin_analysis`
+  給呼叫端讀取「最新一筆」不會外洩進 API 回應，也不用另開一次查詢
+
 ## 正式推薦卡片 4 項改動 + 發現 P4 「legacy 基線不完整」永久卡在 CAUTION 的落差（2026-08-10 第五輪）
 
 ### UI 改動（`recommendations/page.tsx`）
