@@ -1346,12 +1346,45 @@ def _settle_pending_p4_fishtail_stops(db: Session, *, review_date: date) -> int:
     找「已有 SignalObservationArchive（代表 P4 那晚已經定案 STOP），但 archived_date
     早於今天 review_date」的股票，若魚尾（signal_watch_hits）還有進行中週期，這次才
     真的結算。self-healing：即使某天漏跑，下次呼叫一樣會抓到還沒結算的舊資料。
+
+    2026-08-16 修正（stale-episode mismatch bug）：舊版只用 `stock_id` +
+    `archived_date < review_date` 篩選，完全沒檢查這筆 archive 是不是該股票**目前
+    最新一輪**觀察——一檔股票只要「曾經」有任何一輪觀察被 STOP 過，之後只要重新進入
+    追蹤（全新一輪、可能還在健康的 OBSERVING/CAUTION），下次複核就會被這條規則誤判
+    成「該結算」，把目前正在進行、根本沒被判定失效的魚尾週期強制關掉。上線第一天
+    （2026-08-14）就誤殺了 9 檔其實仍在追蹤中的股票（含台積電/聯發科/萬海等）。
+    修法：用 subquery 找出每檔股票「最新一輪」觀察（`started_signal_date` 最大者），
+    只有當這筆 archive 對應的 observation **就是**該股票目前最新一輪、且該輪
+    `status == STOPPED` 時，才視為真正該結算——不再只憑「stock_id 曾經出現過」判斷。
     """
+    latest_observation_subq = (
+        db.query(
+            SignalObservation.stock_id.label("stock_id"),
+            func.max(SignalObservation.started_signal_date).label("max_started"),
+        )
+        .group_by(SignalObservation.stock_id)
+        .subquery()
+    )
     pending_stock_ids = {
         row[0]
         for row in (
             db.query(SignalObservationArchive.stock_id)
-            .filter(SignalObservationArchive.archived_date < review_date)
+            .join(
+                SignalObservation,
+                SignalObservationArchive.observation_id == SignalObservation.id,
+            )
+            .join(
+                latest_observation_subq,
+                (SignalObservation.stock_id == latest_observation_subq.c.stock_id)
+                & (
+                    SignalObservation.started_signal_date
+                    == latest_observation_subq.c.max_started
+                ),
+            )
+            .filter(
+                SignalObservationArchive.archived_date < review_date,
+                SignalObservation.status == "STOPPED",
+            )
             .distinct()
             .all()
         )

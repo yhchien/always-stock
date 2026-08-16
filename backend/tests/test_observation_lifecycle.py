@@ -1045,6 +1045,7 @@ def test_settle_pending_p4_fishtail_stops_is_self_healing_across_gaps(db):
     一次複核，之後任何一次呼叫都能抓到「archived_date 早於今天」但魚尾還沒結算的
     股票，不會漏掉、也不會重複結算。"""
     observation = _observation(db)
+    observation.status = "STOPPED"
     db.add(
         SignalObservationArchive(
             observation_id=observation.id,
@@ -1096,6 +1097,71 @@ def test_settle_pending_p4_fishtail_stops_is_self_healing_across_gaps(db):
     # 再呼叫一次不應該重複結算（已經沒有進行中的魚尾週期了）。
     settled_again = lifecycle._settle_pending_p4_fishtail_stops(db, review_date=later)
     assert settled_again == 0
+
+
+def test_settle_pending_p4_fishtail_stops_ignores_stale_episode_from_earlier_stopped_cycle(
+    db,
+):
+    """Regression（2026-08-16）：一檔股票很久以前有一輪觀察被 STOP 並封存
+    （archived_date 早於今天），但之後又重新進入一輪全新的追蹤（仍在
+    OBSERVING/CAUTION，沒被判定失效）。舊版只用 stock_id + archived_date 判斷，
+    會誤把「現在這輪根本沒被 STOP」的魚尾週期強制結算掉——這正是 2026-08-14 上線
+    當天誤殺台積電/聯發科/宏致/聯茂等 9 檔股票的真實 bug。修復後必須確認：只有當
+    archive 對應的觀察就是該股票「目前最新一輪」且該輪 status==STOPPED，才會結算；
+    舊一輪的 archive 紀錄不該影響仍在追蹤中的新一輪。"""
+    old_observation = _observation(db, started=DAY_0)
+    old_observation.status = "STOPPED"
+    db.add(
+        SignalObservationArchive(
+            observation_id=old_observation.id,
+            episode_id=old_observation.episode_id,
+            stock_id="2330",
+            stock_name="Stock-2330",
+            started_signal_date=DAY_0,
+            first_stop_date=DAY_1,
+            archived_date=DAY_1,
+            stop_reason_code="STRUCTURE_DAMAGED",
+            stop_reason="test",
+            entry_price=100.0,
+        )
+    )
+    # 一段時間後，同一檔股票重新被 P3 選中，開了全新一輪觀察——目前仍在追蹤中，
+    # 從未被判定 STOP。
+    new_observation = _observation(db, started=DAY_2 + timedelta(days=10))
+    new_observation.status = "CAUTION"
+    db.add(
+        SignalWatchHit(
+            snapshot_date=DAY_2 + timedelta(days=10),
+            stock_id="2330",
+            stock_name="Stock-2330",
+            signal_type="LEADER",
+            industry_name="半導體業",
+            sub_industry="x",
+            business_summary="a",
+            reason="a",
+            theme={},
+            group_info={},
+            leader_check={},
+            signals={},
+            baseline_trade_date=DAY_2 + timedelta(days=10),
+            baseline_price=100.0,
+            latest_eval_trade_date=DAY_2 + timedelta(days=10),
+            latest_eval_price=100.0,
+            return_pct=0.0,
+        )
+    )
+    db.commit()
+
+    settled = lifecycle._settle_pending_p4_fishtail_stops(
+        db, review_date=DAY_2 + timedelta(days=11)
+    )
+    assert settled == 0
+
+    active = db.query(SignalWatchHit).filter_by(stock_id="2330").all()
+    assert len(active) == 1
+    assert (
+        db.query(SignalWatchCompletedArchive).filter_by(stock_id="2330").count() == 0
+    )
 
 
 def test_settle_pending_archive_exits_uses_next_available_open_close_average(db):
