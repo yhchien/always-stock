@@ -1,5 +1,74 @@
 # always-stock 專案記憶
 
+## 延後結算功能上線首日誤殺 9 檔股票：stale-episode mismatch bug 修復 + 復原（2026-08-16）
+
+### 症狀
+使用者問「為什麼 3605 觀察停止？」「為什麼聯茂 8/14 停止觀察，但看起來當天又有抓到？」。
+查證後發現**兩檔股票目前這輪觀察的 P4 狀態都還是 CAUTION，從未被判定 STOP_OBSERVING**——
+使用者看到的「已停止觀察」，是上一輪（2026-08-14）剛做的「STOP 延後一個複核日才結算魚尾」
+功能上線第一天執行就撞到的真實 bug，不是 P4 真的判定失效。
+
+### 根因
+`_settle_pending_p4_fishtail_stops()`（[observation_lifecycle.py](backend/app/signals/observation_lifecycle.py)）
+判斷「這檔股票該不該結算魚尾」原本只用 `SignalObservationArchive.stock_id` +
+`archived_date < review_date`，**完全沒檢查這筆封存紀錄是不是該股票目前最新一輪觀察**。
+只要一檔股票**曾經**有任何一輪觀察被 STOP 過（哪怕是好幾週前、早已跟現在無關的舊 episode），
+之後只要重新進入追蹤（全新一輪，可能還健康得很），下次每日複核就會被這條規則誤判成
+「該結算」，把目前正在進行、根本沒被判定失效的魚尾週期強制關掉。這個函式是 2026-08-14
+才上線的新功能，當天執行就是它第一次在 production 跑，一次誤殺了 27 檔中的 **9 檔**
+（其餘 18 檔是真的該結算，判斷正確）：**2330 台積電、2454 聯發科、2615 萬海、2603 長榮、
+2357 華碩、9921 巨大、3605 宏致、6213 聯茂**，還有 **6669 緯穎** 甚至連警戒都沒進
+（純 OBSERVING）也被錯誤移出追蹤。「聯茂 8/14 停止觀察又同天被抓到」的矛盾畫面，是因為
+P3 每日選股本來就跟 P4 觀察狀態無關，同一次 cron 跑批裡先被 bug 誤關舊週期、後又被 P3
+獨立重新選中建立一筆全新命中，兩件事疊在一起看起來自相矛盾。
+
+### 修法（[observation_lifecycle.py](backend/app/signals/observation_lifecycle.py)）
+改用 subquery 找出每檔股票「最新一輪」觀察（`started_signal_date` 最大者），只有當
+archive 對應的 observation **就是**該股票目前最新一輪、且該輪 `status == STOPPED`
+時，才視為真正該結算——不再只憑「stock_id 曾經出現過某筆 archive」判斷。新增
+regression test `test_settle_pending_p4_fishtail_stops_ignores_stale_episode_from_
+earlier_stopped_cycle`：一檔股票有一輪很久以前的 STOPPED episode（已封存）+ 一輪全新
+的 CAUTION episode（仍在追蹤），驗證舊 episode 的封存紀錄不會誤觸發結算新 episode 的
+魚尾週期。既有 `test_settle_pending_p4_fishtail_stops_is_self_healing_across_gaps`
+補上 `observation.status = "STOPPED"`（該測試原本沒設這欄，修復前的舊邏輯不檢查所以
+沒發現，修復後這個欄位變成真正必要的前提條件）。
+
+### 復原 9 檔誤殺股票的追蹤紀錄
+新增一次性腳本 [restore_stale_episode_mismatch_fishtail_cycles.py](backend/restore_stale_episode_mismatch_fishtail_cycles.py)
+（dry-run/--execute pattern）。**刻意不呼叫** `persist_signal_watch_hits()` /
+`update_signal_watch_returns()`——這兩個都是遍歷「目前全市場所有活躍股票」的
+whole-market 函式（`persist_signal_watch_hits` 甚至會**整天**先 delete 再 insert，
+若只塞單一股票的 payload 會誤刪同一天其他無關股票的真實 hits；`update_signal_watch_
+returns` 也是遍歷 `_load_grouped_hits(db)` 全部目前活躍股票），對「只復原這 9 檔、
+其餘完全不能動」的場景不安全——這正是這次事故的教訓延伸：連「復原」腳本本身都要避開
+whole-market 函式，改成完全 scoped 到單一股票的邏輯。改用
+`SignalSnapshot.watchlist`（永久保留所有日期）逐股票直接重建 `SignalWatchHit`，
+baseline/報酬率/極值計算比照 `update_signal_watch_returns()` 的既有規則（baseline
+= first_seen 後第一個交易日的 (open+close)/2；as_of 用最新可用 snapshot 日期
+2026-08-14），但只呼叫其中天生 per-stock scoped、純讀取無副作用的
+`_resolve_return_extrema()` 與 `_carry_initial_selection_metrics()` 兩個 helper，
+其餘完全自己組裝、直接 `db.add(SignalWatchHit(...))`。Dry-run 驗證輸出（如 3605 的
+`max_positive_return_pct=21.379310344827587`）與事故當下錯誤封存紀錄裡的極值**完全
+一致**（同一段真實價格歷史算出來本來就該一樣），confirm 邏輯正確後才 `--execute`。
+執行後驗證：9 檔全部正確重建 `signal_watch_hits`（含正確 hit_count/baseline/
+return_pct），錯誤的 `signal_watch_stopped_observations` p4_stopped 紀錄全數清除，
+且全市場 active hits 總數（39 檔／70 筆）在合理範圍，未見其他無關股票被誤觸碰。
+
+### Gotcha
+- **「延後一天結算」這類功能上線第一天，處理範圍天生涵蓋所有歷史資料，不只是「今天」**：
+  `archived_date < review_date` 這種條件在功能剛上線時第一次執行，會一口氣把資料庫裡
+  「所有歷史上曾經發生過的封存」都掃過一遍，不是只處理「這幾天新產生」的——寫這類
+  self-healing/deferred 邏輯時，判斷條件必須夠精確（scope 到目前仍然相關的實體），
+  不能只用「時間早於」當唯一過濾條件，否則首次上線就是全庫掃描帶來的意外炸裂半徑
+- **一輪觀察（`SignalObservation`）的 `status` 欄位是該輪自己的終態，不代表股票「現在」
+  的狀態**：一檔股票可能同時存在多輪 `SignalObservation`（不同 `episode_id`），只有
+  `started_signal_date` 最大的那一輪才代表「現在」；任何要判斷「這檔股票現在是不是
+  STOPPED」的邏輯都必須先鎖定最新一輪，不能對 stock_id 底下任何一輪的紀錄一視同仁
+- **whole-market 函式不能拿來做「只復原幾檔」的 surgical fix**：`persist_signal_watch_
+  hits`／`update_signal_watch_returns` 的設計前提是「每天處理全市場」，這個前提在
+  「只想修正少數幾檔、其餘完全不動」的場景下是危險假設；復原腳本改成完全手動組裝單一
+  股票的資料，只借用真正 per-stock scoped、無副作用的 pure helper
+
 ## 30 日追蹤四項修復 + pipeline 排程改事件觸發 + 停止觀察延後結算 + 動能分數折線圖警戒/停止標記（2026-08-14）
 
 使用者對 30 日追蹤頁一次提出 4 個問題，逐一查證後發現前 3 個都不是表面猜測的原因，是各自
