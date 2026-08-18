@@ -80,12 +80,20 @@ CORE_DIMENSIONS = {
     "PARTICIPATION",
     "CATALYST_THESIS",
 }
+# 2026-08-18：假突破防誤殺（P4 Observation Lifecycle v2）——COMPOSITE_RISK_EXCLUDE
+# 從這個集合移除。原因：candidate selection（今天要不要「新」選這檔股票）跟
+# observation lifecycle（「既有」這輪觀察是否正式失效）是兩個不同問題，過去共用同一條
+# `distribution + institution_flow_reversal` 判斷，會把單日高檔換手/洗盤/獲利了結
+# 誤判成論點失效並立即終止觀察。`regime_gate.build_hard_exclusion_result()` 本身
+# （candidate selection 用）完全不受影響，COMPOSITE_RISK_EXCLUDE 仍是它的合法 hard
+# exclusion 理由——這裡只是 observation lifecycle 不再把它當「立即」處理，改走
+# STOP_CONFIRMATION_POLICY 的 CONFIRM_REQUIRED 分支（見 §COMPOSITE_RISK_EXCLUDE
+# pending 狀態機）。
 IMMEDIATE_HARD_REASONS = {
     "MANUAL_BLACKLIST",
     "FAILED_FOLLOW_THROUGH_CURRENT_EPISODE",
     "STRUCTURE_DAMAGED",
     "LIQUIDITY_FAILURE",
-    "COMPOSITE_RISK_EXCLUDE",
     "REVERSAL_FAILURE",
 }
 EXTERNAL_INVALIDATION_REASONS = {
@@ -100,6 +108,28 @@ MATERIAL_EVIDENCE_REASONS = {
     "DATA_CONTRADICTION",
 }
 
+# observation lifecycle 專屬 severity 分級——只記錄這裡實際用得到的兩級
+# （IMMEDIATE 沿用既有 `IMMEDIATE_HARD_REASONS` 判斷；CONFIRM_REQUIRED 目前只有
+# COMPOSITE_RISK_EXCLUDE 一種，用獨立的 pending 狀態機處理，不走 STOP_CONFIRM_
+# THRESHOLD 那條路）。刻意不做成會影響判斷分支的查表——目前只有一種
+# CONFIRM_REQUIRED 理由，用查表反而增加一層不必要的間接。這個 dict 只作為文件與
+# 未來擴充第二種 CONFIRM_REQUIRED 理由時的錨點。
+STOP_CONFIRMATION_POLICY = {
+    "MANUAL_BLACKLIST": "IMMEDIATE",
+    "FAILED_FOLLOW_THROUGH_CURRENT_EPISODE": "IMMEDIATE",
+    "STRUCTURE_DAMAGED": "IMMEDIATE",
+    "LIQUIDITY_FAILURE": "IMMEDIATE",
+    "REVERSAL_FAILURE": "IMMEDIATE",
+    "COMPOSITE_RISK_EXCLUDE": "CONFIRM_REQUIRED",
+}
+
+# COMPOSITE_RISK_EXCLUDE pending 狀態機常數
+COMPOSITE_RISK_REASON = "COMPOSITE_RISK_EXCLUDE"
+PENDING_STOP_STATUS_ACTIVE = "ACTIVE"
+# pending 建立後最多容忍幾次「既未恢復也未確認」的複核（第 3 次遇到同樣情況時過期
+# 清除，回到一般 lifecycle，不強制 STOP——「沒有證明恢復」不等於「證明失效」）。
+COMPOSITE_PENDING_MAX_REVIEWS = 2
+
 _PROMPT_PATH = (
     Path(__file__).resolve().parents[1] / "prompts" / "tracking-review-v1.md"
 )
@@ -110,6 +140,18 @@ def current_tracking_prompt_version(family: Optional[str] = None) -> str:
     return prompt_family.stage_version("tracking", family)
 
 
+def _skip_llm_research(hard: Dict[str, Any], evidence: Dict[str, Any]) -> bool:
+    """2026-08-18：LLM tracking-review research 只在「今天已確定立即失效」時才跳過
+    （省成本，反正這輪觀察當天就會被 STOP，查證外部事實已經沒有意義）。
+    COMPOSITE_RISK_EXCLUDE 不在 IMMEDIATE_HARD_REASONS 裡（見常數定義），所以進入
+    composite pending 狀態機的觀察，這裡不會跳過——它可能還要繼續觀察好幾天，LLM
+    外部查證跟一般觀察一樣照常需要。"""
+    hard_reason = str(hard.get("reason") or "").upper()
+    return (
+        bool(hard.get("excluded")) and hard_reason in IMMEDIATE_HARD_REASONS
+    ) or evidence.get("tracking_state") == tracking_state.TRACKING_INVALIDATED
+
+
 @dataclass(frozen=True)
 class ObservationDecision:
     decision: str
@@ -118,6 +160,15 @@ class ObservationDecision:
     caution_dimensions: List[str]
     failed_dimensions: List[str]
     technical_status: Optional[str] = None
+    # 2026-08-18：COMPOSITE_RISK_EXCLUDE pending 狀態機——告訴呼叫端要怎麼更新
+    # SignalObservation.pending_stop_* 欄位。None＝不動（如 REVIEW_FAILED）；
+    # "SET"＝建立全新 pending（需同時給 pending_stop_reason／trigger_snapshot）；
+    # "KEEP"＝pending 持續中，呼叫端把 review_count +1，其餘欄位不變；
+    # "CLEAR"＝清空 pending（不論是因為恢復、確認轉 STOP、過期，或走了跟 composite
+    # 無關的立即失效路徑，都一併清乾淨，避免殘留舊 pending 狀態）。
+    pending_stop_update: Optional[str] = None
+    pending_stop_reason: Optional[str] = None
+    pending_stop_trigger_snapshot: Optional[Dict[str, Any]] = None
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -451,6 +502,15 @@ def build_current_tracking_evidence(
             candidate,
             taiex_return_1d_pct=taiex_return,
         )
+        # 2026-08-18：`build_hard_exclusion_result` 依優先序找到第一個成立的理由就
+        # return（COMPOSITE_RISK_EXCLUDE 排在 REVERSAL_FAILURE 之前）——若某天兩者
+        # 剛好同時成立，只看 `hard["reason"]` 只會看到 COMPOSITE_RISK_EXCLUDE，較嚴格
+        # 的 REVERSAL_FAILURE 會被短路蓋掉。這裡獨立再呼叫一次 `_is_reversal_failure`
+        # （純函式、不影響 candidate selection 那條路徑的既有短路行為），讓 observation
+        # lifecycle 能判斷「今天是不是同時也符合更嚴格的真失敗證據」，composite risk
+        # pending 機制才不會反而繞過 REVERSAL_FAILURE 的 materiality 標準（P4 v2 spec
+        # §7）。
+        reversal_check = regime_gate._is_reversal_failure(candidate, taiex_return)
         current_hit_metrics = latest_metrics.get(sid) or {}
         persistence_warning = current_hit_metrics.get("persistence_warning")
         if not isinstance(persistence_warning, dict):
@@ -474,6 +534,19 @@ def build_current_tracking_evidence(
             "name": observation.stock_name,
             "asset_type": candidate["asset_type"],
             "current_price": candidate.get("close_1d"),
+            # 2026-08-18：composite risk pending 狀態機（trigger snapshot 建立、
+            # recovery 的 PRICE_RECLAIM 判斷）需要的當日原始 OHLC 與相對大盤報酬。
+            "open_1d": candidate.get("open_1d"),
+            "high_1d": candidate.get("high_1d"),
+            "low_1d": candidate.get("low_1d"),
+            "close_1d": candidate.get("close_1d"),
+            "price_change_1d": candidate.get("price_change_1d"),
+            "excess_return_vs_market": regime_gate._excess_return_vs_market(
+                candidate, taiex_return
+            ),
+            # 見上方 `reversal_check` 註解：independent 於 hard_exclusion 短路序，
+            # 供 composite risk pending 判斷是否應該直接視為 REVERSAL_FAILURE。
+            "reversal_failure_check": reversal_check,
             "episode_returns": returns_by_observation.get(observation.id) or {},
             "market_rs": candidate.get("rs_market_percentile_20d"),
             "peer_rs": candidate.get("rs_industry_percentile_20d"),
@@ -799,13 +872,31 @@ def decide_observation_action(
 
     hard = current_backend_evidence.get("hard_exclusion") or {}
     hard_reason = str(hard.get("reason") or "").upper()
-    if hard.get("excluded") and hard_reason in IMMEDIATE_HARD_REASONS:
+    hard_excluded = bool(hard.get("excluded"))
+    reversal_check = current_backend_evidence.get("reversal_failure_check") or {}
+    # 2026-08-18：`build_hard_exclusion_result` 找到第一個成立的理由就短路 return，
+    # COMPOSITE_RISK_EXCLUDE 排在 REVERSAL_FAILURE 之前，兩者同天成立時只會看到
+    # COMPOSITE_RISK_EXCLUDE。這裡獨立判斷「今天是否也真的符合更嚴格的
+    # REVERSAL_FAILURE materiality 標準」，避免較寬鬆的 composite 規則反而繞過較嚴格
+    # 的 reversal failure（P4 v2 spec §7）。
+    reversal_masked_by_composite = (
+        hard_excluded
+        and hard_reason == COMPOSITE_RISK_REASON
+        and bool(reversal_check.get("triggered"))
+    )
+    if hard_excluded and (
+        hard_reason in IMMEDIATE_HARD_REASONS or reversal_masked_by_composite
+    ):
+        effective_reason = (
+            hard_reason if hard_reason in IMMEDIATE_HARD_REASONS else "REVERSAL_FAILURE"
+        )
         return ObservationDecision(
             decision=DECISION_STOP,
-            reason_codes=[hard_reason],
-            reason=f"Backend 已確認 {hard_reason}，本 observation thesis 明確失效。",
+            reason_codes=[effective_reason],
+            reason=f"Backend 已確認 {effective_reason}，本 observation thesis 明確失效。",
             caution_dimensions=[],
             failed_dimensions=["MOMENTUM_STRUCTURE"],
+            pending_stop_update="CLEAR",
         )
 
     if (
@@ -818,6 +909,7 @@ def decide_observation_action(
             reason="Backend tracking state 已確認為 INVALIDATED。",
             caution_dimensions=[],
             failed_dimensions=["MOMENTUM_STRUCTURE"],
+            pending_stop_update="CLEAR",
         )
 
     external = external_thesis_assessment or {
@@ -834,6 +926,7 @@ def decide_observation_action(
                 reason=str(external.get("assessment_reason") or reason_code),
                 caution_dimensions=[],
                 failed_dimensions=["CATALYST_THESIS"],
+                pending_stop_update="CLEAR",
             )
 
     caution_dimensions, failed_dimensions, reason_codes = (
@@ -846,6 +939,97 @@ def decide_observation_action(
     if baseline_incomplete:
         caution_dimensions.append("DATA_QUALITY")
         reason_codes.append("LEGACY_BASELINE_INCOMPLETE")
+
+    # ---- COMPOSITE_RISK_EXCLUDE pending 狀態機（P4 Observation Lifecycle v2，
+    # 2026-08-18）---------------------------------------------------------
+    # 前面三個立即失效路徑都沒命中時才會走到這裡。跟一般「持續警戒轉停止」路徑
+    # （下面 `prior_decision == DECISION_CAUTION` 那段）是完全獨立的狀態機：composite
+    # risk 的 recovery／confirmation 比較基準是「觸發當天的 trigger snapshot」，不是
+    # 「上一次複核的 decision」。這段只讀 caution_dimensions/failed_dimensions/
+    # reason_codes，不 mutate，所以之後若沒有從這裡 return，原本的一般邏輯仍會用同一份
+    # 未受影響的 list 繼續判斷。
+    pending_status = str(current_observation.get("pending_stop_status") or "").upper()
+    pending_reason = str(current_observation.get("pending_stop_reason") or "").upper()
+    pending_active = (
+        pending_status == PENDING_STOP_STATUS_ACTIVE
+        and pending_reason == COMPOSITE_RISK_REASON
+    )
+    is_composite_today = hard_excluded and hard_reason == COMPOSITE_RISK_REASON
+
+    if pending_active:
+        trigger_snapshot = current_observation.get("pending_stop_trigger_snapshot")
+        if _has_composite_risk_recovery(
+            current_backend_evidence, external, trigger_snapshot
+        ):
+            # 4a：恢復——清 pending，落回下面一般 caution/continue 判斷（不再考慮
+            # composite risk），不得因為昨天的 composite risk 又 STOP。
+            pass
+        else:
+            participation_failed = "PARTICIPATION" in failed_dimensions
+            momentum_failed = "MOMENTUM_STRUCTURE" in failed_dimensions
+            if participation_failed and momentum_failed:
+                # 4b：確認惡化——資金參與與動能結構「這一天」同時仍然失效，判定
+                # composite risk 為真，STOP。
+                return ObservationDecision(
+                    decision=DECISION_STOP,
+                    reason_codes=["COMPOSITE_RISK_CONFIRMED"],
+                    reason=(
+                        "Composite Risk（出貨 + 法人資金反轉）經隔日複核確認："
+                        "資金參與與動能結構持續失效，非單日假突破。"
+                    ),
+                    caution_dimensions=sorted(set(caution_dimensions)),
+                    failed_dimensions=sorted(set(failed_dimensions)),
+                    pending_stop_update="CLEAR",
+                )
+            existing_reviews = int(
+                current_observation.get("pending_stop_review_count") or 0
+            )
+            if existing_reviews >= COMPOSITE_PENDING_MAX_REVIEWS:
+                # 4c 過期：連續 COMPOSITE_PENDING_MAX_REVIEWS 次複核都既未恢復也未
+                # 確認，「沒有證明恢復」不等於「證明失效」——清 pending，回到一般
+                # lifecycle，不強制 STOP。
+                pass
+            else:
+                # 4c 持續 pending：既非恢復也非確認，維持 CAUTION 繼續觀察下一個
+                # 複核日。
+                return ObservationDecision(
+                    decision=DECISION_CAUTION,
+                    reason_codes=_dedupe(reason_codes + ["COMPOSITE_RISK_PENDING"]),
+                    reason=(
+                        _caution_reason(caution_dimensions, external)
+                        if caution_dimensions
+                        else (
+                            "Composite Risk（出貨 + 法人資金反轉同時出現）尚在"
+                            "待確認狀態，尚未看到明確恢復或惡化訊號，繼續觀察。"
+                        )
+                    ),
+                    caution_dimensions=sorted(set(caution_dimensions)),
+                    failed_dimensions=sorted(set(failed_dimensions)),
+                    pending_stop_update="KEEP",
+                )
+    elif is_composite_today:
+        # 5：全新 composite risk 觸發——不立即 STOP，建立 pending 並先標警戒，等下一
+        # 個複核日才決定是恢復、確認、或繼續待定。
+        return ObservationDecision(
+            decision=DECISION_CAUTION,
+            reason_codes=_dedupe(reason_codes + ["COMPOSITE_RISK_PENDING"]),
+            reason=(
+                "今日出現 Composite Risk（出貨 + 法人資金反轉同時出現），"
+                "可能是高檔換手、洗盤或獲利了結，先列入警戒，"
+                "待下一個複核日確認是否為假突破。"
+            ),
+            caution_dimensions=sorted(set(caution_dimensions)),
+            failed_dimensions=sorted(set(failed_dimensions)),
+            pending_stop_update="SET",
+            pending_stop_reason=COMPOSITE_RISK_REASON,
+            pending_stop_trigger_snapshot=_build_composite_risk_trigger_snapshot(
+                current_backend_evidence
+            ),
+        )
+    # ---- composite risk 狀態機結束；若沒有從上面 return，代表：沒有進行中的
+    # pending、今天也沒有新的 composite 觸發，或剛剛的 pending 因為恢復/過期被清掉了
+    # ——一律回到原本既有（本次改版沒有更動）的一般 caution/continue 判斷。
+    pending_cleared_this_review = pending_active
 
     recovery = _has_recovery_evidence(current_backend_evidence, external)
     prior = latest_valid_reviews[-1] if latest_valid_reviews else None
@@ -894,6 +1078,7 @@ def decide_observation_action(
                 reason="連續兩次成功交易日 Review 顯示多個核心維度持續失效，且未見有效恢復。",
                 caution_dimensions=sorted(set(caution_dimensions)),
                 failed_dimensions=sorted(current_failed),
+                pending_stop_update="CLEAR" if pending_cleared_this_review else None,
             )
 
     caution_dimensions = sorted(set(caution_dimensions))
@@ -908,6 +1093,7 @@ def decide_observation_action(
             reason=_caution_reason(caution_dimensions, external),
             caution_dimensions=caution_dimensions,
             failed_dimensions=failed_dimensions,
+            pending_stop_update="CLEAR" if pending_cleared_this_review else None,
         )
 
     continue_code = _continue_reason_code(
@@ -921,6 +1107,7 @@ def decide_observation_action(
         reason="原始推薦 thesis 與目前動能／參與結構仍有效，繼續觀察。",
         caution_dimensions=[],
         failed_dimensions=[],
+        pending_stop_update="CLEAR" if pending_cleared_this_review else None,
     )
 
 
@@ -1033,10 +1220,12 @@ def run_daily_observation_reviews(
     for observation in reviewable:
         evidence = evidence_by_id[observation.id]
         hard = evidence.get("hard_exclusion") or {}
-        if hard.get("excluded") or (
-            evidence.get("tracking_state")
-            == tracking_state.TRACKING_INVALIDATED
-        ):
+        # 2026-08-18：只有「立即失效」的 hard reason 才跳過 LLM research——
+        # COMPOSITE_RISK_EXCLUDE 已經不再是 immediate stop，改進入多日 pending
+        # 狀態機（見 decide_observation_action），既然這輪觀察還可能繼續好幾天，
+        # LLM 外部查證（是否真的 THESIS_INVALIDATED）跟其他非 composite 觀察一樣
+        # 應該照常執行，不能因為 hard.excluded 是 True 就整段跳過。
+        if _skip_llm_research(hard, evidence):
             hard_skipped.add(observation.id)
             continue
         prompt_payloads.append(
@@ -1112,8 +1301,15 @@ def run_daily_observation_reviews(
             current_observation={
                 "status": observation.status,
                 "baseline_quality": observation.baseline_quality,
+                "pending_stop_status": observation.pending_stop_status,
+                "pending_stop_reason": observation.pending_stop_reason,
+                "pending_stop_review_count": observation.pending_stop_review_count,
+                "pending_stop_trigger_snapshot": observation.pending_stop_trigger_snapshot,
             },
             review_technical_failure=failure,
+        )
+        _apply_pending_stop_update(
+            observation, decision=decision, review_date=review_date
         )
         review = _upsert_review(
             db,
@@ -1674,6 +1870,13 @@ def replay_observation_lifecycle(
             "status": STATUS_OBSERVING,
             "consecutive_caution_count": 0,
             "stop_reason_code": None,
+            # 2026-08-18：composite risk pending 狀態機在 replay 也要走同一套邏輯，
+            # 用 in-memory state dict 取代真正的 ORM row（replay 本身是唯讀，不寫回
+            # signal_observations，見函式頂端說明）。
+            "pending_stop_status": None,
+            "pending_stop_reason": None,
+            "pending_stop_review_count": 0,
+            "pending_stop_trigger_snapshot": None,
         }
         for row in observations
     }
@@ -1727,10 +1930,7 @@ def replay_observation_lifecycle(
         for observation in active:
             evidence = evidence_by_id[observation.id]
             hard = evidence.get("hard_exclusion") or {}
-            if hard.get("excluded") or (
-                evidence.get("tracking_state")
-                == tracking_state.TRACKING_INVALIDATED
-            ):
+            if _skip_llm_research(hard, evidence):
                 continue
             history = valid_reviews[observation.id]
             prompt_payloads.append(
@@ -1765,10 +1965,25 @@ def replay_observation_lifecycle(
                 current_observation={
                     "status": previous_status,
                     "baseline_quality": observation.baseline_quality,
+                    "pending_stop_status": state[observation.id][
+                        "pending_stop_status"
+                    ],
+                    "pending_stop_reason": state[observation.id][
+                        "pending_stop_reason"
+                    ],
+                    "pending_stop_review_count": state[observation.id][
+                        "pending_stop_review_count"
+                    ],
+                    "pending_stop_trigger_snapshot": state[observation.id][
+                        "pending_stop_trigger_snapshot"
+                    ],
                 },
                 review_technical_failure=failure_by_stock.get(
                     observation.stock_id
                 ),
+            )
+            _apply_pending_stop_update_to_state(
+                state[observation.id], decision=decision, review_date=review_date
             )
             if decision.decision == DECISION_CAUTION:
                 state[observation.id]["status"] = STATUS_CAUTION
@@ -2138,6 +2353,101 @@ def _has_recovery_evidence(
     }
 
 
+def _build_composite_risk_trigger_snapshot(
+    backend: Dict[str, Any],
+) -> Dict[str, Any]:
+    """2026-08-18：COMPOSITE_RISK_EXCLUDE 第一次觸發當天存一份快照，讓下一個複核日
+    判斷「風險持續」還是「快速收復」時，比較的是觸發當天的原始 K 棒/籌碼，而不是
+    每天重新跑一次完全沒有記憶的單日公式（P4 v2 spec §9）。"""
+    reversal_check = backend.get("reversal_failure_check") or {}
+    risk_flags = backend.get("risk_flags") or []
+    return {
+        "trigger_date": backend.get("review_date"),
+        "open": backend.get("open_1d"),
+        "high": backend.get("high_1d"),
+        "low": backend.get("low_1d"),
+        "close": backend.get("close_1d"),
+        "return_1d": backend.get("price_change_1d"),
+        "excess_return_vs_market": backend.get("excess_return_vs_market"),
+        "institution_flow_1d": (backend.get("institution_flow") or {}).get("day_1"),
+        "institution_flow_3d": (backend.get("institution_flow") or {}).get("day_3"),
+        "institution_reversal_ratio": reversal_check.get(
+            "institution_reversal_ratio"
+        ),
+        "tracking_state": backend.get("tracking_state"),
+        "momentum_freshness": backend.get("momentum_freshness"),
+        "momentum_phase": backend.get("momentum_phase"),
+        "rs_rank_improvement_5d": backend.get("rs_rank_improvement"),
+        "distribution": "distribution" in risk_flags,
+        "failed_rotation": "failed_rotation" in risk_flags,
+    }
+
+
+def _has_composite_risk_recovery(
+    backend: Dict[str, Any],
+    external: Dict[str, Any],
+    trigger_snapshot: Optional[Dict[str, Any]],
+) -> bool:
+    """2026-08-18：COMPOSITE_RISK_EXCLUDE pending 專屬的恢復判斷（P4 v2 spec §11），
+    跟既有 `_has_recovery_evidence()` 分開——後者處理的是長期 CAUTION persistence，
+    這裡處理的是「前一天疑似假突破/洗盤，隔天是否快速收復」，比較基準是
+    `trigger_snapshot`（觸發當天）而非「前一次 review」。
+
+    recovery_score 三項各 1 分，>=2 分且 thesis 未被判定失效才算恢復：
+      - PRICE_RECLAIM：收盤站回觸發當天高低點中值，且當日漲幅 >=2% 或相對大盤
+        超額報酬 >=1.5%（避免只漲 0.5% 就被當恢復）
+      - MOMENTUM_RECOVERY：tracking_state 是 REACCELERATING/HEALTHY_PULLBACK，
+        或 momentum_freshness 是 FRESH_STRONG
+      - PARTICIPATION_RECOVERY：法人資金動能是 stable/accelerating
+    """
+    if str(external.get("assessment") or "").upper() == "THESIS_INVALIDATED":
+        return False
+    if not isinstance(trigger_snapshot, dict):
+        return False
+
+    score = 0
+
+    trigger_high = trigger_snapshot.get("high")
+    trigger_low = trigger_snapshot.get("low")
+    current_close = backend.get("close_1d")
+    return_1d = backend.get("price_change_1d")
+    excess_return = backend.get("excess_return_vs_market")
+    if (
+        trigger_high is not None
+        and trigger_low is not None
+        and current_close is not None
+    ):
+        midpoint = (trigger_high + trigger_low) / 2.0
+        reclaim_strength = (return_1d is not None and return_1d >= 2.0) or (
+            excess_return is not None and excess_return >= 1.5
+        )
+        if current_close >= midpoint and reclaim_strength:
+            score += 1
+
+    tracking = str(backend.get("tracking_state") or "").upper()
+    freshness = str(backend.get("momentum_freshness") or "").upper()
+    if (
+        tracking
+        in {
+            tracking_state.TRACKING_REACCELERATING,
+            tracking_state.TRACKING_HEALTHY_PULLBACK,
+        }
+        or freshness == "FRESH_STRONG"
+    ):
+        score += 1
+
+    flow_momentum = str(
+        (backend.get("deterministic_signals") or {}).get(
+            "institution_flow_momentum"
+        )
+        or ""
+    ).lower()
+    if flow_momentum in {"stable", "accelerating"}:
+        score += 1
+
+    return score >= 2
+
+
 def _sustained_stop_reason(dimensions: set[str]) -> str:
     if dimensions == {"MOMENTUM_STRUCTURE", "PARTICIPATION"}:
         return "SUSTAINED_MOMENTUM_AND_PARTICIPATION_FAILURE"
@@ -2175,6 +2485,66 @@ def _caution_reason(
     if external_reason:
         return f"目前 {dimension_text} 出現警戒；{external_reason}"
     return f"目前 {dimension_text} 出現弱化，但尚未達停止觀察條件。"
+
+
+def _apply_pending_stop_update(
+    observation: SignalObservation,
+    *,
+    decision: ObservationDecision,
+    review_date: date,
+) -> None:
+    """2026-08-18：把 `decide_observation_action()` 回傳的
+    `pending_stop_update`（SET／KEEP／CLEAR／None）套到真正的 ORM row 上。
+    `pending_stop_since`／`pending_stop_trigger_snapshot` 只在 SET（全新觸發）時
+    寫入，KEEP 時刻意不動——recovery 的比較基準要永遠是「原始觸發那天」，不能隨
+    每次複核往後挪。"""
+    action = decision.pending_stop_update
+    if action == "SET":
+        observation.pending_stop_status = PENDING_STOP_STATUS_ACTIVE
+        observation.pending_stop_reason = decision.pending_stop_reason
+        observation.pending_stop_since = review_date
+        observation.pending_stop_trigger_snapshot = (
+            decision.pending_stop_trigger_snapshot
+        )
+        observation.pending_stop_review_count = 1
+    elif action == "KEEP":
+        observation.pending_stop_review_count = (
+            observation.pending_stop_review_count or 0
+        ) + 1
+    elif action == "CLEAR":
+        observation.pending_stop_status = None
+        observation.pending_stop_reason = None
+        observation.pending_stop_since = None
+        observation.pending_stop_trigger_snapshot = None
+        observation.pending_stop_review_count = 0
+
+
+def _apply_pending_stop_update_to_state(
+    entry: Dict[str, Any],
+    *,
+    decision: ObservationDecision,
+    review_date: date,
+) -> None:
+    """`_apply_pending_stop_update()` 的 in-memory 版本，給唯讀 replay 用
+    （`replay_observation_lifecycle` 不寫回真正的 SignalObservation row，狀態全部
+    活在 `state` dict 裡）。"""
+    action = decision.pending_stop_update
+    if action == "SET":
+        entry["pending_stop_status"] = PENDING_STOP_STATUS_ACTIVE
+        entry["pending_stop_reason"] = decision.pending_stop_reason
+        entry["pending_stop_since"] = review_date
+        entry["pending_stop_trigger_snapshot"] = decision.pending_stop_trigger_snapshot
+        entry["pending_stop_review_count"] = 1
+    elif action == "KEEP":
+        entry["pending_stop_review_count"] = (
+            entry.get("pending_stop_review_count") or 0
+        ) + 1
+    elif action == "CLEAR":
+        entry["pending_stop_status"] = None
+        entry["pending_stop_reason"] = None
+        entry["pending_stop_since"] = None
+        entry["pending_stop_trigger_snapshot"] = None
+        entry["pending_stop_review_count"] = 0
 
 
 def _upsert_review(

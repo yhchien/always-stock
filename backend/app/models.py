@@ -459,6 +459,16 @@ class SignalObservation(Base):
     initial_snapshot_json = Column(JSON, nullable=False)
     latest_snapshot_json = Column(JSON, nullable=True)
     selection_version = Column(String(32), nullable=True)
+    # 2026-08-18：P4 Observation Lifecycle v2（假突破防誤殺）——COMPOSITE_RISK_EXCLUDE
+    # 不再立即 STOP，改進入「待確認」狀態，這幾欄記錄該狀態機的進度。
+    # `pending_stop_status` 只會是 "ACTIVE" 或 NULL（清空＝沒有進行中的待確認風險）。
+    # `pending_stop_since`／`pending_stop_trigger_snapshot` 固定停在第一次觸發那天，
+    # 不隨後續複核更新，讓 recovery 判斷永遠跟「原始觸發那天」的 K 棒/籌碼比較。
+    pending_stop_status = Column(String(16), nullable=True)
+    pending_stop_reason = Column(String(64), nullable=True)
+    pending_stop_since = Column(Date, nullable=True)
+    pending_stop_trigger_snapshot = Column(JSON, nullable=True)
+    pending_stop_review_count = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 

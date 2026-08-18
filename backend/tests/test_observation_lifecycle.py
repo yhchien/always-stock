@@ -269,7 +269,9 @@ def test_only_formal_p3_recommendation_starts_observation(db):
         "FAILED_FOLLOW_THROUGH_CURRENT_EPISODE",
         "STRUCTURE_DAMAGED",
         "LIQUIDITY_FAILURE",
-        "COMPOSITE_RISK_EXCLUDE",
+        # COMPOSITE_RISK_EXCLUDE 2026-08-18 起不再是 immediate stop——見
+        # test_composite_risk_exclude_creates_pending_instead_of_immediate_stop
+        # 與其他 test_composite_risk_* 案例。
         "REVERSAL_FAILURE",
     ],
 )
@@ -285,6 +287,324 @@ def test_immediate_hard_invalidation_stops_without_sell(reason):
     assert decision.decision == "STOP_OBSERVING"
     assert decision.reason_codes == [reason]
     assert "SELL" not in decision.reason.upper()
+
+
+# ---------------------------------------------------------------------------
+# P4 Observation Lifecycle v2（2026-08-18）：假突破防誤殺
+# COMPOSITE_RISK_EXCLUDE pending 狀態機
+# ---------------------------------------------------------------------------
+
+
+def _composite_evidence(stock: str = "2330", **overrides):
+    evidence = _healthy_evidence(stock)
+    evidence["hard_exclusion"] = {"excluded": True, "reason": "COMPOSITE_RISK_EXCLUDE"}
+    evidence["risk_flags"] = ["distribution", "institution_flow_reversal"]
+    evidence["open_1d"] = 274.0
+    evidence["high_1d"] = 286.5
+    evidence["low_1d"] = 253.0
+    evidence["close_1d"] = 259.0
+    evidence["price_change_1d"] = -4.95
+    evidence["excess_return_vs_market"] = -3.0
+    evidence["institution_flow"] = {"day_1": -943577922.0, "day_3": 1399536588.5}
+    evidence["reversal_failure_check"] = {
+        "triggered": False,
+        "institution_reversal_ratio": 0.403,
+        "excess_return_vs_market": -3.0,
+    }
+    evidence.update(overrides)
+    return evidence
+
+
+def test_composite_risk_exclude_creates_pending_instead_of_immediate_stop():
+    decision = lifecycle.decide_observation_action(
+        current_backend_evidence=_composite_evidence(),
+        external_thesis_assessment=_external(),
+        latest_valid_reviews=[],
+        current_observation={"baseline_quality": "P3_COMPLETE"},
+    )
+    assert decision.decision == "CAUTION"
+    assert "COMPOSITE_RISK_PENDING" in decision.reason_codes
+    assert decision.pending_stop_update == "SET"
+    assert decision.pending_stop_reason == "COMPOSITE_RISK_EXCLUDE"
+    snapshot = decision.pending_stop_trigger_snapshot
+    assert snapshot["high"] == 286.5
+    assert snapshot["low"] == 253.0
+    assert snapshot["institution_reversal_ratio"] == 0.403
+    assert snapshot["distribution"] is True
+
+
+def test_composite_risk_exclude_masked_reversal_failure_is_still_immediate_stop():
+    """P4 v2 spec §7：若同一天也獨立符合更嚴格的 REVERSAL_FAILURE，不能因為
+    `build_hard_exclusion_result` 優先序把它標成 COMPOSITE_RISK_EXCLUDE 就被
+    composite 的 pending 規則繞過。"""
+    evidence = _composite_evidence(
+        reversal_failure_check={
+            "triggered": True,
+            "institution_reversal_ratio": 0.65,
+            "excess_return_vs_market": -2.1,
+        }
+    )
+    decision = lifecycle.decide_observation_action(
+        current_backend_evidence=evidence,
+        external_thesis_assessment=_external(),
+        latest_valid_reviews=[],
+        current_observation={"baseline_quality": "P3_COMPLETE"},
+    )
+    assert decision.decision == "STOP_OBSERVING"
+    assert decision.reason_codes == ["REVERSAL_FAILURE"]
+    assert decision.pending_stop_update == "CLEAR"
+
+
+def test_composite_risk_pending_recovers_when_price_reclaims_and_momentum_returns():
+    trigger_snapshot = {
+        "trigger_date": "2026-08-17",
+        "high": 286.5,
+        "low": 253.0,
+    }
+    evidence = _healthy_evidence()
+    evidence["hard_exclusion"] = {"excluded": False, "reason": None}
+    evidence["close_1d"] = 275.0  # >= (286.5+253.0)/2 = 269.75
+    evidence["price_change_1d"] = 6.2  # >= 2.0
+    evidence["excess_return_vs_market"] = 4.0
+    evidence["tracking_state"] = "REACCELERATING"
+    evidence["deterministic_signals"]["institution_flow_momentum"] = "stable"
+    decision = lifecycle.decide_observation_action(
+        current_backend_evidence=evidence,
+        external_thesis_assessment=_external(),
+        latest_valid_reviews=[],
+        current_observation={
+            "baseline_quality": "P3_COMPLETE",
+            "pending_stop_status": "ACTIVE",
+            "pending_stop_reason": "COMPOSITE_RISK_EXCLUDE",
+            "pending_stop_review_count": 1,
+            "pending_stop_trigger_snapshot": trigger_snapshot,
+        },
+    )
+    assert decision.decision != "STOP_OBSERVING"
+    assert decision.pending_stop_update == "CLEAR"
+
+
+def test_composite_risk_pending_confirms_stop_when_participation_and_momentum_both_fail():
+    evidence = _healthy_evidence()
+    evidence["hard_exclusion"] = {"excluded": False, "reason": None}
+    evidence["tracking_state"] = "DETERIORATING"
+    evidence["deterministic_signals"] = {
+        "institution_flow_momentum": "reversal",
+        "chip_trend": "weakening",
+        "sector_rotation_status": "failed_rotation",
+    }
+    evidence["quality_evidence"] = {
+        "PARTICIPATION": False,
+        "INSTITUTION_CONFIRMATION": False,
+    }
+    decision = lifecycle.decide_observation_action(
+        current_backend_evidence=evidence,
+        external_thesis_assessment=_external(),
+        latest_valid_reviews=[],
+        current_observation={
+            "baseline_quality": "P3_COMPLETE",
+            "pending_stop_status": "ACTIVE",
+            "pending_stop_reason": "COMPOSITE_RISK_EXCLUDE",
+            "pending_stop_review_count": 1,
+            "pending_stop_trigger_snapshot": {"high": 286.5, "low": 253.0},
+        },
+    )
+    assert decision.decision == "STOP_OBSERVING"
+    assert decision.reason_codes == ["COMPOSITE_RISK_CONFIRMED"]
+    assert decision.pending_stop_update == "CLEAR"
+
+
+def test_composite_risk_pending_keeps_waiting_when_neither_recovered_nor_confirmed():
+    evidence = _healthy_evidence()
+    evidence["hard_exclusion"] = {"excluded": False, "reason": None}
+    # 中性：不觸發 recovery（沒有 reaccelerating/healthy_pullback/fresh_strong 或
+    # stable/accelerating 資金），也不觸發 confirm（PARTICIPATION 沒有兩個負面訊號）。
+    decision = lifecycle.decide_observation_action(
+        current_backend_evidence=evidence,
+        external_thesis_assessment=_external(),
+        latest_valid_reviews=[],
+        current_observation={
+            "baseline_quality": "P3_COMPLETE",
+            "pending_stop_status": "ACTIVE",
+            "pending_stop_reason": "COMPOSITE_RISK_EXCLUDE",
+            "pending_stop_review_count": 1,
+            "pending_stop_trigger_snapshot": {"high": 286.5, "low": 253.0},
+        },
+    )
+    assert decision.decision == "CAUTION"
+    assert "COMPOSITE_RISK_PENDING" in decision.reason_codes
+    assert decision.pending_stop_update == "KEEP"
+
+
+def test_composite_risk_pending_expires_after_max_reviews_without_forcing_stop():
+    evidence = _healthy_evidence()
+    evidence["hard_exclusion"] = {"excluded": False, "reason": None}
+    decision = lifecycle.decide_observation_action(
+        current_backend_evidence=evidence,
+        external_thesis_assessment=_external(),
+        latest_valid_reviews=[],
+        current_observation={
+            "baseline_quality": "P3_COMPLETE",
+            "pending_stop_status": "ACTIVE",
+            "pending_stop_reason": "COMPOSITE_RISK_EXCLUDE",
+            "pending_stop_review_count": lifecycle.COMPOSITE_PENDING_MAX_REVIEWS,
+            "pending_stop_trigger_snapshot": {"high": 286.5, "low": 253.0},
+        },
+    )
+    assert decision.decision != "STOP_OBSERVING"
+    assert decision.pending_stop_update == "CLEAR"
+
+
+def test_ac7_8039_20260817_composite_risk_becomes_pending_not_immediate_stop(
+    db, monkeypatch
+):
+    """P4 Observation Lifecycle v2 AC7：8039（台虹）2026-08-17 的真實 production
+    證據（盤中創高後尾盤翻黑收在接近全日低點形成 distribution K 棒，同時 3 日累計
+    法人買超轉為單日大幅賣超形成 institution_flow_reversal，但
+    institution_reversal_ratio≈0.403 < 0.5 不足以構成獨立的 REVERSAL_FAILURE）套進
+    新邏輯，必須是 CAUTION + 建立 pending，不能是立即 STOP_OBSERVING、也不能當下就
+    archive/結算魚尾。"""
+    observation = _observation(db, stock="8039", started=DAY_0)
+    evidence = _composite_evidence(stock="8039")
+    _patch_evidence(monkeypatch, {observation.id: evidence})
+
+    result = lifecycle.run_daily_observation_reviews(
+        db,
+        review_date=DAY_1,
+        market_context={},
+        current_candidates=[],
+        assessment_runner=_runner_for({"8039": _external(stock="8039")}),
+        persist=True,
+    )
+
+    assert result["tracking_summary"]["caution_count"] == 1
+    assert result["tracking_summary"]["stopped_count"] == 0
+    row = db.get(SignalObservation, observation.id)
+    assert row.status == "CAUTION"
+    assert row.pending_stop_status == "ACTIVE"
+    assert row.pending_stop_reason == "COMPOSITE_RISK_EXCLUDE"
+    assert row.pending_stop_review_count == 1
+    assert row.pending_stop_since == DAY_1
+    assert (
+        db.query(SignalObservationArchive)
+        .filter_by(observation_id=observation.id)
+        .count()
+        == 0
+    )
+
+
+def test_case_a_composite_pending_confirms_stop_on_second_day(db, monkeypatch):
+    """P4 v2 spec §19 Case A：Day 1 composite risk → pending/CAUTION；Day 2
+    participation 與 momentum structure 都仍然失效、也沒有恢復訊號 → STOP，reason
+    為 COMPOSITE_RISK_CONFIRMED（不是原本的 COMPOSITE_RISK_EXCLUDE）。"""
+    observation = _observation(db, started=DAY_0)
+    _patch_evidence(monkeypatch, {observation.id: _composite_evidence()})
+    lifecycle.run_daily_observation_reviews(
+        db,
+        review_date=DAY_1,
+        market_context={},
+        current_candidates=[],
+        assessment_runner=_runner_for({"2330": _external()}),
+        persist=True,
+    )
+    assert db.get(SignalObservation, observation.id).status == "CAUTION"
+
+    day2_evidence = _healthy_evidence()
+    day2_evidence["hard_exclusion"] = {"excluded": False, "reason": None}
+    day2_evidence["tracking_state"] = "DETERIORATING"
+    day2_evidence["deterministic_signals"] = {
+        "institution_flow_momentum": "reversal",
+        "chip_trend": "weakening",
+        "sector_rotation_status": "failed_rotation",
+    }
+    day2_evidence["quality_evidence"] = {
+        "PARTICIPATION": False,
+        "INSTITUTION_CONFIRMATION": False,
+    }
+    _patch_evidence(monkeypatch, {observation.id: day2_evidence})
+    result_day2 = lifecycle.run_daily_observation_reviews(
+        db,
+        review_date=DAY_2,
+        market_context={},
+        current_candidates=[],
+        assessment_runner=_runner_for({"2330": _external()}),
+        persist=True,
+    )
+
+    assert result_day2["tracking_summary"]["stopped_count"] == 1
+    row = db.get(SignalObservation, observation.id)
+    assert row.status == "STOPPED"
+    assert row.stop_reason_code == "COMPOSITE_RISK_CONFIRMED"
+    assert row.pending_stop_status is None
+
+
+def test_case_b_structure_damaged_on_pending_day2_bypasses_composite_confirmation(
+    db, monkeypatch
+):
+    """P4 v2 spec §19 Case B：Day 1 composite risk → pending/CAUTION；Day 2 若
+    出現真正的 STRUCTURE_DAMAGED（不同、更嚴重的 hard reason），要直接 immediate
+    STOP，不需要等待 composite risk 自己的 confirmation 判斷。"""
+    observation = _observation(db, started=DAY_0)
+    _patch_evidence(monkeypatch, {observation.id: _composite_evidence()})
+    lifecycle.run_daily_observation_reviews(
+        db,
+        review_date=DAY_1,
+        market_context={},
+        current_candidates=[],
+        assessment_runner=_runner_for({"2330": _external()}),
+        persist=True,
+    )
+    assert db.get(SignalObservation, observation.id).status == "CAUTION"
+
+    day2_evidence = _healthy_evidence()
+    day2_evidence["hard_exclusion"] = {
+        "excluded": True,
+        "reason": "STRUCTURE_DAMAGED",
+    }
+    _patch_evidence(monkeypatch, {observation.id: day2_evidence})
+    result_day2 = lifecycle.run_daily_observation_reviews(
+        db,
+        review_date=DAY_2,
+        market_context={},
+        current_candidates=[],
+        assessment_runner=_runner_for({"2330": _external()}),
+        persist=True,
+    )
+
+    assert result_day2["tracking_summary"]["stopped_count"] == 1
+    row = db.get(SignalObservation, observation.id)
+    assert row.status == "STOPPED"
+    assert row.stop_reason_code == "STRUCTURE_DAMAGED"
+    assert row.pending_stop_status is None
+
+
+def test_composite_pending_skips_llm_research_batch_when_composite_only(
+    db, monkeypatch
+):
+    """2026-08-18 修正：composite risk（不再是 immediate hard reason）不該讓 LLM
+    tracking-review research 被跳過——這輪觀察可能還要繼續好幾天，外部事實查證跟一般
+    觀察一樣需要照常執行。"""
+    observation = _observation(db, started=DAY_0)
+    _patch_evidence(monkeypatch, {observation.id: _composite_evidence()})
+
+    captured_batches: list = []
+
+    def _capturing_runner(payloads):
+        captured_batches.append(list(payloads))
+        return {"2330": _external()}, []
+
+    lifecycle.run_daily_observation_reviews(
+        db,
+        review_date=DAY_1,
+        market_context={},
+        current_candidates=[],
+        assessment_runner=_capturing_runner,
+        persist=True,
+    )
+
+    assert len(captured_batches) == 1
+    assert len(captured_batches[0]) == 1
+    assert captured_batches[0][0]["stock"] == "2330"
 
 
 def test_tracking_invalidated_stops():
