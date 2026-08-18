@@ -1547,3 +1547,81 @@ def test_ensure_observation_tables_backfills_stop_confirm_count_column(db):
     }
     # Idempotent second call must not raise (column already present).
     ensure_observation_tables(engine)
+
+
+def test_build_current_tracking_evidence_runs_without_mocking(db):
+    """2026-08-19 regression：`build_current_tracking_evidence()` 本身從未被真的呼叫過
+    （既有測試全部用 `_patch_evidence` monkeypatch 掉），導致 2026-08-18 那次 canonical
+    industry label 重構在 industry_flow 查表那行留了一個未重新命名的區域變數
+    （`industry_name` → 應為 `raw_industry_name`），直接讓 production 每日排程的 P4
+    複核階段以 `NameError` 整批失敗（job 標記 partial_failure）。本測試不 mock，直接呼叫
+    真正的函式本體，確保這類「只在真的執行到那行程式碼時才會噴」的錯誤能被測試抓到。"""
+    from app.models import DailyPrice, InstStockFlow, IndustryDailyFlow, StockMaster
+    from app.signals import observation_lifecycle as lifecycle_mod
+
+    stock = "2330"
+    industry = "半導體業"
+    dates = [date(2026, 7, d) for d in range(6, 21)]  # 10+ 個交易日
+    db.add(
+        StockMaster(
+            stock_id=stock,
+            stock_name="台積電",
+            industry_name=industry,
+            is_active=True,
+        )
+    )
+    for d in dates:
+        db.add(
+            DailyPrice(
+                trade_date=d,
+                stock_id=stock,
+                open_price=100.0,
+                high_price=101.0,
+                low_price=99.0,
+                close_price=100.0,
+                volume=1000.0,
+                turnover=1.0e8,
+            )
+        )
+        db.add(
+            InstStockFlow(
+                trade_date=d,
+                stock_id=stock,
+                inst_type="foreign",
+                buy_shares=0,
+                sell_shares=0,
+                net_shares=0,
+                buy_amount_est=1.0e8,
+                sell_amount_est=0.0,
+                net_amount_est=1.0e8,
+            )
+        )
+    for d in dates[-3:]:
+        db.add(
+            IndustryDailyFlow(
+                trade_date=d,
+                industry_name=industry,
+                total_buy_amount=5.0e9,
+                total_sell_amount=0.0,
+                total_net_amount=5.0e9,
+                foreign_net_amount=5.0e9,
+                trust_net_amount=0,
+                dealer_net_amount=0,
+            )
+        )
+    observation = _observation(db, stock, started=dates[0])
+    db.commit()
+
+    evidence_by_id = lifecycle_mod.build_current_tracking_evidence(
+        db,
+        observations=[observation],
+        review_date=dates[-1],
+        market_context={},
+    )
+
+    assert observation.id in evidence_by_id
+    evidence = evidence_by_id[observation.id]
+    assert evidence["stock"] == stock
+    assert "hard_exclusion" in evidence
+    assert "tracking_state" in evidence
+    assert "deterministic_signals" in evidence

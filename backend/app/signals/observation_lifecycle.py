@@ -474,7 +474,7 @@ def build_current_tracking_evidence(
             **tracking,
             **(
                 industry_flow.get(
-                    candidate_pool._normalized_industry(industry_name)
+                    candidate_pool._normalized_industry(raw_industry_name)
                 )
                 or {"industry_flow_1d": None, "industry_flow_3d": None}
             ),
