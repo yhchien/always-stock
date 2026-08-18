@@ -1,5 +1,74 @@
 # always-stock 專案記憶
 
+## 南亞（1303）永遠選不進推薦：LLM 看到的產業標籤從未接上 canonical 校正表（2026-08-19）
+
+### 症狀
+使用者問「南亞為什麼一直沒有被進到推薦？」查最近兩週資料發現三層原因疊在一起：
+(1) 大多數天沒進候選池（正常）；(2) 偶爾進候選池但卡在 `base_momentum_not_eligible`
+（deterministic 動能門檻，也正常）；(3) **真正異常**：8/7、8/8、8/9 三次成功通過所有
+deterministic 篩選、真的送進 LLM，**三次全部**被 `veto_reason=THEME_MISMATCH` /
+`BUSINESS_MISMATCH` 否決，理由完全一致：「公司實際業務為塑膠、化工、聚酯及電子材料，
+與輸入題材『電機機械』/『電控元件』不符」。
+
+### 根因
+`stocks_master.industry_name`（FinMind 原始標籤）把南亞分類成「電機機械」／「電控元件」
+——這是誤置分類（南亞塑膠是台塑集團核心成員，主力是塑膠加工/石化材料，不是電機機械）。
+查證發現 **2026-07-21 的 Phase 1 canonical classification 專案本來就是為了修這類問題**
+（漢翔/台化/台虹都是同一類案例），台化（1326，南亞的集團姊妹企業）當時就有被人工校正
+成 `PETROCHEMICAL`，但**南亞被漏掉了**，`security_classification.primary_sector` 仍是
+`ELECTRICAL_MACHINERY`，跟原始 FinMind 標籤一樣錯。
+
+更關鍵的是：**即使校正表當時有校正對，也救不了南亞**——查證 `candidate_pool.py` 發現
+LLM research/decision 階段看到的「industry」欄位**從一開始就直接讀
+`stocks_master.industry_name`（原始 FinMind 標籤），從未接上 `security_classification`
+校正表**。Phase 1 canonical classification 專案完成時明確記錄「純顯示層，`app/signals/*`
+零 diff」——校正表只用在 Phase 2 的同業相對強度計算（`sector_context.py`）跟前端顯示，
+從未真正解決「LLM 看到的文字本身是錯的」這個問題。這代表**任何**在校正表裡的股票，
+只要進了候選池被 LLM 研究，看到的都還是原始（可能錯誤）的 FinMind 標籤，不只南亞一檔
+會中招。
+
+### 修法（[docs/plans/P4觀察停止觀察條件說明.md](docs/plans/P4觀察停止觀察條件說明.md)
+上一輪剛好整理過 LLM prompt 的完整輸入結構，這輪直接沿用查證方法）
+1. **補上南亞的校正**（[stock_overrides.py](backend/app/classification/stock_overrides.py)）：
+   `1303 → PETROCHEMICAL`，比照 1326/6505 同集團企業，`sub_sector="塑膠加工/聚酯/
+   電子材料"`（同時涵蓋南亞塑膠本業與電子材料/軟板事業）
+2. **真正把校正表接上 LLM 輸入**（[candidate_pool.py](backend/app/signals/candidate_pool.py)
+   新增 `_load_canonical_industry_labels()`）：候選池組裝時，`industry`/`sub_industry`
+   欄位優先讀 `security_classification`（僅在 `classification_confidence` 為
+   HIGH/MEDIUM 且 `review_required=False` 時採用，避免把還沒查證過的猜測餵進 LLM
+   prompt），沒有校正或信心不足才 fallback 回原始 `stocks_master.industry_name`。
+   **刻意只影響 LLM 看到的文字**，不影響 `in_top_industries_3d`（熱門產業比對，跟
+   `compute_rankings()` 用同一套原始 FinMind 名稱算候選來源，兩邊要用同一套命名，
+   只改一邊會對不起來）
+3. 同步修
+   [observation_lifecycle.py](backend/app/signals/observation_lifecycle.py) 的
+   `build_current_tracking_evidence()`（P4 追蹤複核的候選 evidence 組裝）：一旦南亞
+   未來真的被推薦進 P4 觀察，複核階段看到的 industry 標籤要跟 P3 選股階段一致，不能
+   選股時看到「石化」、複核時又看到「電機機械」
+4. 重跑 `run_classification_backfill.py`（既有、官方支援的 backfill 工具）套用校正，
+   驗證 `security_classification.primary_sector` 正確變成 `PETROCHEMICAL`；連帶更新
+   `stocks_master` 目前總數 1613→1622（自然反映近期新掛牌證券，非本次改動內容）
+
+### 驗證
+直接呼叫 `_load_canonical_industry_labels(db, ["1303"])` 確認回傳
+`("石化", "塑膠加工/聚酯/電子材料")`（修復前是原始的「電機機械」/「電控元件」）；
+`build_candidate_pool()` 端到端驗證南亞候選 `industry="石化"`，對照組台積電（無 override）
+維持顯示原始 FinMind 標籤「半導體業」不受影響。3 個新 regression test 全過；全 backend
+suite 對齊既有 baseline（20 fail/5 error），零新增失敗。
+
+### Gotcha
+- **「校正表存在」不等於「校正表有被用到」**：Phase 1 canonical classification
+  上線快一個月，南亞被連續否決三次才發現這個落差——校正表本身的正確性跟「有沒有真的
+  接線到會影響決策的地方」是兩件獨立的事，前者做對了不保證後者也做對
+- **修「LLM 看到什麼文字」跟「候選池怎麼被找出來」要分開處理**：這次刻意不去動
+  `in_top_industries_3d` 的比對邏輯（那條路徑用原始 FinMind 產業名稱找熱門產業成分
+  股，是候選 sourcing 的一部分），只改「候選找到之後，秀給 LLM 看的文字標籤」——兩個
+  雖然都叫「industry」，但是不同階段用不同資料源比較安全，混在一起改容易牽一髮動全身
+- **同一個 helper function 兩處呼叫（P3 candidate_pool + P4 observation_lifecycle）**：
+  只修 P3 的話，未來南亞一旦真的被選中進 P4 追蹤，P4 複核階段看到的產業標籤又會跟 P3
+  選股階段的認知不一致——這類「同一份資料在 pipeline 不同階段被重複組裝」的欄位，
+  修的時候要找出所有組裝點一起改，不能只改使用者當下遇到問題的那一處
+
 ## P4 Observation Lifecycle v2：COMPOSITE_RISK_EXCLUDE 假突破防誤殺 + 8/17 重新判定（2026-08-19）
 
 ### 背景
