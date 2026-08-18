@@ -1,5 +1,113 @@
 # always-stock 專案記憶
 
+## P4 Observation Lifecycle v2：COMPOSITE_RISK_EXCLUDE 假突破防誤殺 + 8/17 重新判定（2026-08-19）
+
+### 背景
+使用者問「為什麼 8039 昨天會判定為停止觀察？」，查證後（見
+[docs/plans/P4觀察停止觀察條件說明.md](docs/plans/P4觀察停止觀察條件說明.md)）發現
+是路徑 1（backend 立即失效）裡的 `COMPOSITE_RISK_EXCLUDE`（出貨 K 棒 + 法人單日反轉
+同時出現）觸發——這條規則對「今天要不要新選這檔股票」（candidate selection）是合理
+的保守判斷，但套用在「既有觀察是否已經正式失效」（observation lifecycle）上過度
+敏感：8039 當天盤中創新高又尾盤翻黑、法人單日轉賣，可能只是高檔換手或洗盤，不代表
+原始推薦論點真的失效。使用者提供完整規格（P4 Observation Lifecycle v2），要求把
+COMPOSITE_RISK_EXCLUDE 從「立即 STOP」改成「待確認」的多日 pending 狀態機。
+
+### 核心設計：Entry Exclusion 與 Observation Invalidation 分離
+`COMPOSITE_RISK_EXCLUDE` 繼續留在 `regime_gate.build_hard_exclusion_result()`
+（candidate selection 用，P3 today 選股邏輯完全不動）；但
+`observation_lifecycle.IMMEDIATE_HARD_REASONS`（P4 用）把它移除，改走專屬的 pending
+狀態機（[observation_lifecycle.py](backend/app/signals/observation_lifecycle.py)）：
+
+- **第一次觸發**：CAUTION + 建立 pending，存一份 `trigger_snapshot`（觸發當天
+  OHLC／`institution_reversal_ratio`／`tracking_state`／`momentum_freshness` 等），
+  寫進 `SignalObservation` 新增的 5 個欄位（`pending_stop_status/reason/since/
+  trigger_snapshot/review_count`）
+- **下一個複核日**：
+  - 若同時符合更嚴格的 `REVERSAL_FAILURE`（法人反轉具實質性
+    `institution_reversal_ratio>=0.5` + 相對大盤明顯轉弱 + 第三個獨立佐證）→
+    不被 composite 繞過，直接立即 STOP（reason 改標 `REVERSAL_FAILURE`）——這是
+    獨立於 `build_hard_exclusion_result()` 優先序短路之外，額外呼叫一次
+    `regime_gate._is_reversal_failure()` 才能做到（該函式優先序把
+    COMPOSITE_RISK_EXCLUDE 排在 REVERSAL_FAILURE 之前，同天成立時原本會被短路蓋掉）
+  - **恢復**（`_has_composite_risk_recovery`）：收盤站回觸發區間中值 + 動能/資金
+    回穩（PRICE_RECLAIM／MOMENTUM_RECOVERY／PARTICIPATION_RECOVERY 三項算分，
+    `>=2` 分才算）→ 清 pending，回到一般 CAUTION/CONTINUE 判斷
+  - **確認惡化**：資金參與（PARTICIPATION）與動能結構（MOMENTUM_STRUCTURE）那天
+    仍同時失效 → STOP，reason 改標 `COMPOSITE_RISK_CONFIRMED`（不是原本的
+    `COMPOSITE_RISK_EXCLUDE`）
+  - 都不是 → 維持 CAUTION 繼續等，最多 `COMPOSITE_PENDING_MAX_REVIEWS=2` 輪複核
+    後自動過期清除 pending（不強制 STOP——「沒有證明恢復」不等於「證明失效」）
+- 真正的 `STRUCTURE_DAMAGED`／`LIQUIDITY_FAILURE`／`FAILED_FOLLOW_THROUGH_
+  CURRENT_EPISODE`／`MANUAL_BLACKLIST`／`TRACKING_INVALIDATED`／LLM 判定的
+  `THESIS_INVALIDATED` 完全不受影響，一律維持立即 STOP
+
+### 意外抓到並順手修的連帶 bug
+composite risk 進入 pending 後這輪觀察可能還要繼續好幾天，但舊版 LLM research 的
+skip 條件是「只要 `hard_exclusion.excluded` 就跳過」——COMPOSITE_RISK_EXCLUDE 改成
+非立即失效後，這個條件會讓這些觀察永遠拿不到 LLM 外部查證。新增 `_skip_llm_
+research()` helper，改成只有真正「立即失效」的理由（`IMMEDIATE_HARD_REASONS` 或
+`tracking_state==INVALIDATED`）才跳過，`run_daily_observation_reviews` 與
+`replay_observation_lifecycle` 兩處呼叫點都同步修正。
+
+### 用真實 8039 8/17 證據驗證（部署前）
+用 production 記錄的真實數值（開 274.0／高 286.5／低 253.0／收 259.0、3 日累計法人
+買超 +13.99 億轉單日賣超 -9.44 億、`institution_reversal_ratio=0.4027`，真的呼叫
+`regime_gate._is_reversal_failure()` 而非手算）直接呼叫新版
+`decide_observation_action()`：舊邏輯是 `STOP_OBSERVING`，新邏輯正確變成
+`CAUTION` + 建立 pending。確認 `institution_reversal_ratio=0.4027 < 0.5` 門檻，
+獨立驗證過不會被誤判成更嚴重的 `REVERSAL_FAILURE`，走的正是 pending 這條路。
+
+### 部署 + 8/17 全量重新判定
+使用者確認結果符合預期後：
+1. commit + push 上 main（觸發 Render 自動部署）
+2. 手動對 production 執行一次 `ensure_observation_tables()`（idempotent，立即讓
+   5 個新欄位在 production 生效，不用等 Render 重啟）
+3. 查證發現 8/17 當天不只 8039，共有 **6 檔**股票被 COMPOSITE_RISK_EXCLUDE 誤判
+   STOP：2357 華碩、2376 技嘉、3605 宏致、3661 世芯-KY、8039 台虹、9921 巨大（另有
+   00715L 是用完全不同的理由 `SUSTAINED_MOMENTUM_AND_CATALYST_FAILURE` 停止，
+   不受這次修復影響，刻意不動）
+4. 確認自 8/17 之後到現在都沒有任何一次每日複核跑過（`signal_generation_jobs`
+   最後一筆是 8/17）——代表這 6 檔的魚尾追蹤週期（`signal_watch_hits`）從未被
+   `_settle_pending_p4_fishtail_stops` 結算移出，不需要額外復原魚尾資料，只需要
+   修正 P4 觀察本身
+5. 新增一次性腳本
+   [backend/rerun_20260817_composite_risk_stops.py](backend/rerun_20260817_composite_risk_stops.py)（dry-run/--execute）：
+   重用當天已存下來的 `backend_evidence_json`／`market_context_json`（避免重算
+   全市場 momentum frame），只額外補新版邏輯需要的欄位（OHLC／`price_change_1d`／
+   `excess_return_vs_market`／`reversal_failure_check`），對需要外部查證的股票真的
+   呼叫一次 `run_tracking_assessments()`（真實 OpenAI 呼叫，6 檔一批），呼叫
+   `decide_observation_action()` 重新判定，**覆蓋**既有 2026-08-17 的
+   `SignalObservationReview` 那一列（使用者已確認可覆蓋），刪除因誤判產生的
+   `SignalObservationArchive` 紀錄
+6. 執行結果：6 檔全部正確變成 `CAUTION` + `pending_stop_status=ACTIVE`，8/17 的
+   誤判 archive 紀錄全數清除，00715L 與其他當天沒被 composite 誤判的股票（含
+   fishtail `signal_watch_hits`）完全未被觸碰
+
+### Gotcha
+- **candidate selection 跟 observation lifecycle 對同一個 deterministic signal
+  可以有不同的處理層級**：這次的核心設計原則就是這個——同一個 `COMPOSITE_RISK_
+  EXCLUDE` 訊號，「今天該不該新選這檔股票」跟「既有觀察該不該終止」是兩個不同的
+  問題，不需要共用同一套立即/延後判斷
+- **`build_hard_exclusion_result()` 找到第一個成立的理由就短路 return**：優先序把
+  `COMPOSITE_RISK_EXCLUDE` 排在 `REVERSAL_FAILURE` 之前，這代表若兩者同一天都
+  成立，只看 `hard["reason"]` 只會看到前者。任何「降級某個 hard reason 的處理方式」
+  的改動，都要檢查同一個優先序鏈裡有沒有更嚴格的理由被短路蓋住，需要獨立呼叫底層
+  判斷函式才能拿到完整資訊，不能只信任最終的單一 `reason` 欄位
+- **改「什麼時候該跳過 LLM 查證」這類判斷條件時，要同時檢查所有呼叫點**：這次
+  `_skip_llm_research()` 有兩個呼叫點（`run_daily_observation_reviews` 與
+  `replay_observation_lifecycle`），漏改任一個都會讓 replay 模式跟正式每日複核
+  的行為不一致
+- **重新判定歷史某一天的紀錄時，優先重用當天已經算好、存下來的 deterministic
+  evidence，只補新邏輯需要的新欄位**：不需要重新跑一次全市場 momentum frame
+  計算（`build_current_tracking_evidence()` 對歷史日期是 read-heavy 且較慢的
+  操作）——`backend_evidence_json`／`market_context_json` 這兩個既有欄位本來就是
+  為了「保留當時算出來的完整證據」而存在，這次的復原重跑正是它們的用途
+- **這類生產資料修正腳本，範圍要精確對應 bug 本身的觸發條件**：一開始曾考慮過
+  「重新跑整個 8/17 那天的完整每日複核批次」，但那樣會連帶重新處理所有無關股票
+  （多花不必要的 LLM 成本、也有誤傷已經正確判定的其他觀察的風險）。查清楚「哪些
+  observation 的 `stop_reason_code` 剛好等於這次要修的理由」才是正確的範圍界定
+  方式，不是「重跑那一天」這種時間維度的粗略範圍
+
 ## 延後結算功能上線首日誤殺 9 檔股票：stale-episode mismatch bug 修復 + 復原（2026-08-16）
 
 ### 症狀
