@@ -346,6 +346,11 @@ Winner，追問原因；同時要求 outcomes 頁「全中文＋每個 section �
 > [docs/plans/魚尾選股邏輯與排除規則說明.md](docs/plans/魚尾選股邏輯與排除規則說明.md)
 > （2026-07-22，含 legacy + Phase 2 兩條路徑完整對照，給要查「某天某檔股票被剔除在哪一關」的人）
 
+> **P4 停止觀察（STOP_OBSERVING）完整條件說明**：
+> [docs/plans/P4觀察停止觀察條件說明.md](docs/plans/P4觀察停止觀察條件說明.md)
+> （2026-08-18，逐條列出 4 條 STOP 觸發路徑的程式碼位置與門檻常數，附完整 tracking-review
+> prompt 全文（v7 現行版 + v1 legacy fallback），給要查「某檔股票為什麼被判定停止觀察」的人）
+
 ## 正式推薦借用魚尾 archive 資料顯示報酬率 + 結果分析收進工程版（2026-08-10 第二輪）
 
 ### 背景
