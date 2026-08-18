@@ -66,6 +66,13 @@ STOCK_OVERRIDES.update({
                ["台塑集團", "石化", "化纖"],
                "台化：核心業務為石化中間原料（PTA/AA/丙烯腈）與化纖絲，不宜與一般成衣/"
                "織布廠同 sub_sector；FinMind industry_name='紡織' 僅反映其化纖產品下游應用"),
+    "1303": _e("PETROCHEMICAL", "塑膠加工/聚酯/電子材料", CONFIDENCE_HIGH,
+               ["台塑集團", "石化", "塑膠加工", "電子材料"],
+               "南亞：台塑集團核心成員，主力為塑膠加工、聚酯（PET/EG）與電子材料"
+               "（軟板/銅箔基板），與集團內台化(1326)/台塑化(6505)同屬石化材料體系；"
+               "FinMind industry_name='電機機械'/sub_industry='電控元件' 為誤置分類，"
+               "與真實主力業務明顯不符（2026-08-19：連續三次被 LLM 以 THEME_MISMATCH/"
+               "BUSINESS_MISMATCH 否決才發現漏了這檔，見 CLAUDE.md 同日條目）"),
     "8039": _e("PCB_ELECTRONIC_MATERIALS", "軟板/FCCL/電子材料", CONFIDENCE_HIGH,
                ["PCB", "FCCL", "軟板材料", "電子材料"],
                "台虹：主力為軟性銅箔基板（FCCL）與軟板材料"),

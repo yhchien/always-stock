@@ -408,6 +408,10 @@ def build_current_tracking_evidence(
     )
     industry_flow = candidate_pool._load_industry_flow_totals(db, ingestion)
     asset_types = candidate_pool._load_asset_types(db, stock_ids, masters)
+    # 2026-08-19：跟 candidate_pool.build_candidate_pool() 同步——已追蹤股票的
+    # 「industry」欄位也優先讀人工校正過的 canonical 分類，避免 P4 複核／外部查證
+    # 看到跟 P3 選股階段不一致的錯誤產業標籤。
+    canonical_labels = candidate_pool._load_canonical_industry_labels(db, stock_ids)
     current_by_id = {
         str(item.get("stock_id") or item.get("stock") or ""): item
         for item in (current_candidates or [])
@@ -442,20 +446,22 @@ def build_current_tracking_evidence(
         raw_frame = momentum_frame.get(sid)
         frame = raw_frame or momentum.empty_momentum_features()
         current_candidate = current_by_id.get(sid) or {}
-        industry_name = (
+        canonical = canonical_labels.get(sid)
+        raw_industry_name = (
             master.industry_name
             if master is not None
             else current_candidate.get("industry")
         )
+        raw_sub_industry = (
+            master.sub_industry
+            if master is not None
+            else current_candidate.get("sub_industry")
+        )
         candidate = {
             "stock_id": sid,
             "name": observation.stock_name,
-            "industry": industry_name,
-            "sub_industry": (
-                master.sub_industry
-                if master is not None
-                else current_candidate.get("sub_industry")
-            ),
+            "industry": canonical[0] if canonical else raw_industry_name,
+            "sub_industry": (canonical[1] or raw_sub_industry) if canonical else raw_sub_industry,
             "asset_type": asset_types.get(sid)
             or observation.asset_type
             or "COMMON_STOCK",

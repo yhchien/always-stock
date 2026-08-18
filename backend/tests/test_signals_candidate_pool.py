@@ -16,6 +16,7 @@ from app.models import (
     IndustryDailyFlow,
     InstStockFlow,
     MarginTrade,
+    SecurityClassification,
     SignalWatchHit,
     StockMaster,
 )
@@ -792,6 +793,79 @@ def test_tracking_status_hit_count_counts_distinct_snapshot_dates(db):
     assert cand["hit_count"] == 3
     # first_seen 為最早的 snapshot
     assert cand["first_seen_date"] == date(2026, 4, 14)
+
+
+# ---------- 2026-08-19：LLM 看到的 industry 標籤優先讀 canonical 分類 ----------
+# 背景：南亞（1303）FinMind industry_name='電機機械' 是誤置分類（真實業務為塑膠/
+# 石化材料），導致 LLM 每次進候選池都用 THEME_MISMATCH 否決它。修法：候選池的
+# industry/sub_industry 欄位優先讀人工校正過的 security_classification，只有信心
+# 足夠（HIGH/MEDIUM 且不需人工複核）才採用，否則 fallback 回原始 industry_name。
+
+
+def test_load_canonical_industry_labels_prefers_high_confidence_override(db):
+    db.add(
+        SecurityClassification(
+            stock_id="1303",
+            asset_type="COMMON_STOCK",
+            source_industry="電機機械",
+            primary_sector="PETROCHEMICAL",
+            sub_sector="塑膠加工/聚酯/電子材料",
+            classification_confidence="HIGH",
+            review_required=False,
+        )
+    )
+    db.commit()
+
+    labels = cp_mod._load_canonical_industry_labels(db, ["1303"])
+    assert labels["1303"] == ("石化", "塑膠加工/聚酯/電子材料")
+
+
+def test_load_canonical_industry_labels_excludes_low_confidence_or_review_required(db):
+    db.add(
+        SecurityClassification(
+            stock_id="9999",
+            asset_type="COMMON_STOCK",
+            source_industry="其他",
+            primary_sector="DIVERSIFIED_OTHER",
+            sub_sector=None,
+            classification_confidence="LOW",
+            review_required=True,
+        )
+    )
+    db.commit()
+
+    labels = cp_mod._load_canonical_industry_labels(db, ["9999"])
+    assert "9999" not in labels
+
+
+def test_build_candidate_pool_uses_canonical_industry_label_when_available(db):
+    """1303 有人工校正（confidence=HIGH）→ 候選池顯示校正後的「石化」，不是原始
+    FinMind 的「電機機械」；沒有校正的股票（2330）維持顯示原始 industry_name。"""
+    _seed_min_candidate_for(db, "1303", industry="電機機械")
+    _seed_min_candidate_for(db, "2330", industry="半導體業")
+    db.add(
+        SecurityClassification(
+            stock_id="1303",
+            asset_type="COMMON_STOCK",
+            source_industry="電機機械",
+            primary_sector="PETROCHEMICAL",
+            sub_sector="塑膠加工/聚酯/電子材料",
+            classification_confidence="HIGH",
+            review_required=False,
+        )
+    )
+    db.commit()
+
+    ingestion = ingest_data(db, date(2026, 4, 22))
+    rankings = compute_rankings(db, date(2026, 4, 22), ingestion)
+    pool = build_candidate_pool(db, date(2026, 4, 22), ingestion, rankings)
+
+    nan_ya = next(c for c in pool if c["stock_id"] == "1303")
+    assert nan_ya["industry"] == "石化"
+    assert nan_ya["sub_industry"] == "塑膠加工/聚酯/電子材料"
+
+    tsmc = next(c for c in pool if c["stock_id"] == "2330")
+    assert tsmc["industry"] == "半導體業"  # 沒有 override，維持原始 FinMind 標籤
 
 
 # ---------- v2.1 fishtail momentum upgrade：B/C 通道 + momentum_score ----------

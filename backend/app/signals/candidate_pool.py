@@ -29,6 +29,7 @@ from app.models import (
     SignalWatchHit,
     StockMaster,
 )
+from app.classification.taxonomy import CONFIDENCE_HIGH, CONFIDENCE_MEDIUM, PRIMARY_SECTORS
 from app.signals import momentum
 from app.signals.exclusions import (
     find_group_for_stock,
@@ -136,6 +137,65 @@ def _load_asset_types(
             ",".join(fallback_ids[:20]),
         )
     return resolved
+
+
+def _load_canonical_industry_labels(
+    db: Session,
+    stock_ids: Sequence[str],
+) -> Dict[str, Tuple[str, Optional[str]]]:
+    """2026-08-19：LLM research/decision 看到的候選「industry」欄位，過去一律讀
+    `stocks_master.industry_name`（原始 FinMind 標籤）——這在漢翔/台化/台虹等案例
+    早就證實可能誤置（見 Phase 1 canonical classification 專案）。南亞（1303）是
+    再一次踩到同一個坑：`security_classification` 已有人工校正表可用，但候選池從未
+    接上，導致 LLM 每次看到「電機機械／電控元件」這種錯誤標籤，就用 THEME_MISMATCH/
+    BUSINESS_MISMATCH 否決南亞——不是股票不夠格，是我們餵給 LLM 的標籤本身是錯的。
+
+    只在 `classification_confidence` 為 HIGH/MEDIUM（不含 LOW/`review_required`）時
+    才採用校正結果，避免把還沒查證過的猜測餵進 LLM prompt。回傳
+    `{stock_id: (industry_label, sub_industry_label)}`；查無校正或信心不足的股票不會
+    出現在回傳值裡，呼叫端要 fallback 回 `stocks_master.industry_name`。
+
+    刻意只影響「LLM 看到的文字標籤」，不影響 `in_top_industries_3d`（熱門產業判斷，
+    比對的是 `compute_rankings()` 用同一套原始 FinMind 名稱算出的熱門產業清單，
+    兩邊要用同一套命名才對得起來，不能只改一邊）。
+    """
+    ids = list(dict.fromkeys(stock_ids))
+    if not ids:
+        return {}
+    resolved: Dict[str, Tuple[str, Optional[str]]] = {}
+    try:
+        with db.begin_nested():
+            rows = (
+                db.query(
+                    SecurityClassification.stock_id,
+                    SecurityClassification.primary_sector,
+                    SecurityClassification.sub_sector,
+                    SecurityClassification.classification_confidence,
+                    SecurityClassification.review_required,
+                )
+                .filter(
+                    SecurityClassification.stock_id.in_(ids),
+                    SecurityClassification.classification_confidence.in_(
+                        [CONFIDENCE_HIGH, CONFIDENCE_MEDIUM]
+                    ),
+                    SecurityClassification.review_required.is_(False),
+                    SecurityClassification.primary_sector.isnot(None),
+                )
+                .all()
+            )
+            for row in rows:
+                label = PRIMARY_SECTORS.get(row.primary_sector)
+                if label is None:
+                    continue
+                resolved[row.stock_id] = (label, row.sub_sector)
+    except SQLAlchemyError as exc:
+        logger.warning(
+            "Canonical industry label lookup failed; falling back to raw industry_name: %s",
+            exc,
+        )
+        resolved.clear()
+    return resolved
+
 
 # Spec §再偵測閘門（2026-05-26）：首次抓到後驗證失敗的閾值
 # 與 archive.py 的兩條 early-exit（-30% / drawdown 30%）是不同層級的早期警示
@@ -399,6 +459,10 @@ def build_candidate_pool(
         return []
 
     asset_types = _load_asset_types(db, filtered_ids, masters)
+    # 2026-08-19：LLM 看到的「industry」標籤優先用人工校正過的 canonical 分類，
+    # 沒有校正（或信心不足）的股票 fallback 回原始 FinMind industry_name——只影響
+    # LLM prompt 顯示的文字，不影響候選池 sourcing／熱門產業比對（見函式 docstring）。
+    canonical_labels = _load_canonical_industry_labels(db, filtered_ids)
 
     # 3. 計算每檔的 metrics（一次性 query，不 per-stock）
     metrics = _compute_pool_metrics(db, ingestion, filtered_ids)
@@ -435,11 +499,12 @@ def build_candidate_pool(
             "source_C": sid in acceleration_ids,
             "source_D": sid in fundamental_ids,
         }
+        canonical = canonical_labels.get(sid)
         candidate = {
             "stock_id": sid,
             "name": master.stock_name,
-            "industry": master.industry_name,
-            "sub_industry": master.sub_industry,
+            "industry": canonical[0] if canonical else master.industry_name,
+            "sub_industry": (canonical[1] or master.sub_industry) if canonical else master.sub_industry,
             "asset_type": asset_type,
             # is_etf / is_financial 保留給既有 caller 與 Phase 2 trace 相容。
             "is_etf": asset_type == ASSET_TYPE_ETF,

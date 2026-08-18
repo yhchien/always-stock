@@ -1,23 +1,32 @@
 ﻿stock_id,stock_name,asset_type,source_industry,primary_sector,confidence,reason
+2463,研揚,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,LOW,industry_name='電子工業' 無系統性映射也無個股 override，需人工複核
 2469,力信,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,LOW,力信：業務內容需人工查證
-6781,AES-KY,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,LOW,AES-KY：業務內容需人工查證
-4148,全宇生技-KY,COMMON_STOCK,化學生技醫療,BIOTECH_MEDICAL,LOW,全宇生技-KY：業務內容需人工查證
 6862,三集瑞-KY,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,LOW,三集瑞-KY：業務內容需人工查證
+2336,致伸,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,LOW,industry_name='電子工業' 無系統性映射也無個股 override，需人工複核
+3598,奕力,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,LOW,industry_name='電子工業' 無系統性映射也無個股 override，需人工複核
+2315,神達,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,LOW,industry_name='電子工業' 無系統性映射也無個股 override，需人工複核
+4148,全宇生技-KY,COMMON_STOCK,化學生技醫療,BIOTECH_MEDICAL,LOW,全宇生技-KY：業務內容需人工查證
+6781,AES-KY,COMMON_STOCK,電子零組件業,DIVERSIFIED_OTHER,LOW,AES-KY：業務內容需人工查證
+6933,AMAX-KY,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,LOW,industry_name='電子工業' 無系統性映射也無個股 override，需人工複核
 7818,溢泰實業,COMMON_STOCK,其他,DIVERSIFIED_OTHER,LOW,溢泰實業：業務內容需人工查證
-6863,永道-KY,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,LOW,永道-KY：業務內容需人工查證
-6921,嘉雨思-創,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,LOW,嘉雨思-創：業務內容需人工查證
+6863,永道-KY,COMMON_STOCK,通信網路業,DIVERSIFIED_OTHER,LOW,永道-KY：業務內容需人工查證
+7855,和運租車,COMMON_STOCK,其他,DIVERSIFIED_OTHER,LOW,industry_name='其他' 無系統性映射也無個股 override，需人工複核
+8078,華寶,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,LOW,industry_name='電子工業' 無系統性映射也無個股 override，需人工複核
+6921,嘉雨思-創,COMMON_STOCK,創新板股票,DIVERSIFIED_OTHER,LOW,嘉雨思-創：業務內容需人工查證
+6947,台鎔科技,COMMON_STOCK,其他,DIVERSIFIED_OTHER,LOW,industry_name='其他' 無系統性映射也無個股 override，需人工複核
 6958A,日盛台駿甲特,PREFERRED_STOCK,其他,DIVERSIFIED_OTHER,LOW,日盛台駿甲特：同日盛台駿
 1262,綠悅-KY,COMMON_STOCK,其他,SPORTING_GOODS,LOW,綠悅-KY：業務內容需人工查證
 1342,八貫,COMMON_STOCK,其他,TEXTILE_FIBER,LOW,八貫：業務內容需人工查證
 2236,百達-KY,COMMON_STOCK,汽車工業,AUTOMOTIVE,LOW,百達-KY：業務內容需人工查證
 2243,宏旭-KY,COMMON_STOCK,汽車工業,AUTOMOTIVE,LOW,宏旭-KY：業務內容需人工查證
 2358,廷鑫,COMMON_STOCK,其他,DIVERSIFIED_OTHER,LOW,廷鑫：業務內容需人工查證
+2381,華宇,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,LOW,industry_name='電子工業' 無系統性映射也無個股 override，需人工複核
 2443,昶虹,COMMON_STOCK,其他,COMPUTER_PERIPHERALS,LOW,昶虹：業務內容需人工查證
 2904,匯僑,COMMON_STOCK,其他,RETAIL_TRADE,LOW,匯僑：貿易相關，業務內容需人工查證
 3142,遠茂,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,LOW,遠茂：業務內容需人工查證
 3557,嘉威,COMMON_STOCK,其他,DIVERSIFIED_OTHER,LOW,嘉威：業務內容需人工查證
-3053,鼎營,COMMON_STOCK,電子工業,COMPUTER_PERIPHERALS,LOW,鼎營：業務內容需人工查證
-3063,飛信,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,LOW,飛信：業務內容需人工查證
+3063,飛信,COMMON_STOCK,半導體業,DIVERSIFIED_OTHER,LOW,飛信：業務內容需人工查證
+3053,鼎營,COMMON_STOCK,其他電子業,COMPUTER_PERIPHERALS,LOW,鼎營：業務內容需人工查證
 3271,其樂達,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,LOW,其樂達：業務內容需人工查證
 3315,宣昶,COMMON_STOCK,電子工業,COMPUTER_PERIPHERALS,LOW,宣昶：業務內容需人工查證
 3559,全智科,COMMON_STOCK,電子工業,COMPUTER_PERIPHERALS,LOW,全智科：業務內容需人工查證
@@ -27,12 +36,13 @@
 1443,立益,COMMON_STOCK,其他,TEXTILE_FIBER,LOW,立益：業務內容需人工查證
 2062,橋椿,COMMON_STOCK,其他,STEEL,LOW,橋椿：業務內容需人工查證
 1107,建台,COMMON_STOCK,其他,BUILDING_MATERIALS_CONSTRUCTION,LOW,建台：業務內容需人工查證
+2447,鼎新,COMMON_STOCK,電子工業,COMPUTER_PERIPHERALS,LOW,鼎新：業務內容需人工查證
+2403,友尚,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,LOW,industry_name='電子工業' 無系統性映射也無個股 override，需人工複核
 2350,環電,COMMON_STOCK,電子工業,PCB_ELECTRONIC_MATERIALS,LOW,環電：電子封裝，業務內容需人工查證
 2446,全懋,COMMON_STOCK,電子工業,COMPUTER_PERIPHERALS,LOW,全懋：業務內容需人工查證
-2447,鼎新,COMMON_STOCK,電子工業,COMPUTER_PERIPHERALS,LOW,鼎新：業務內容需人工查證
 1516,川飛,COMMON_STOCK,其他,DIVERSIFIED_OTHER,LOW,川飛：業務內容需人工查證
 2496,卓越,COMMON_STOCK,其他,DIVERSIFIED_OTHER,LOW,卓越：業務內容需人工查證
-6573,虹揚-KY,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,LOW,虹揚-KY：業務內容需人工查證
+6573,虹揚-KY,COMMON_STOCK,半導體業,DIVERSIFIED_OTHER,LOW,虹揚-KY：業務內容需人工查證
 6431,光麗-KY,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,LOW,光麗-KY：業務內容需人工查證
 6671,三能-KY,COMMON_STOCK,其他,DIVERSIFIED_OTHER,LOW,三能-KY：業務內容需人工查證
 6768,志強-KY,COMMON_STOCK,其他,DIVERSIFIED_OTHER,LOW,志強-KY：業務內容需人工查證
@@ -53,6 +63,7 @@
 8482,商億-KY,COMMON_STOCK,其他,DIVERSIFIED_OTHER,LOW,商億-KY：業務內容需人工查證
 8488,吉源-KY,COMMON_STOCK,其他,DIVERSIFIED_OTHER,LOW,吉源-KY：業務內容需人工查證
 8499,鼎炫-KY,COMMON_STOCK,其他,DIVERSIFIED_OTHER,LOW,鼎炫-KY：業務內容需人工查證
+7823,奧義賽博-KY創,COMMON_STOCK,創新板股票,DIVERSIFIED_OTHER,LOW,industry_name='創新板股票' 無系統性映射也無個股 override，需人工複核
 910069,新曄,DR,存託憑證,DIVERSIFIED_OTHER,LOW,新曄：TDR，業務內容需人工查證
 9101,福雷電,DR,存託憑證,DIVERSIFIED_OTHER,LOW,福雷電：TDR，業務內容需人工查證
 9102,東亞科,DR,存託憑證,DIVERSIFIED_OTHER,LOW,東亞科：TDR，業務內容需人工查證
