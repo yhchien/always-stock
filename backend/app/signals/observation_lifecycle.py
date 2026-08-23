@@ -683,6 +683,81 @@ def run_tracking_assessments(
         )
         return call_response, call_diagnostic or {}, call_expected
 
+    max_contract_retries = 2
+
+    def _retry_single_stock(
+        sid: str,
+        source_by_stock: Dict[str, Dict[str, Any]],
+        review_date: str,
+        *,
+        rejection_reason: str,
+        required_correction: str,
+    ) -> tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+        """對單一股票重新請求 tracking assessment。
+
+        2026-08-22：抽出共用——原本只有「契約驗證失敗」（ValueError）路徑有這段
+        單檔重試，「LLM 回應格式正確、但整批 items 裡漏答某一檔」
+        （TRACKING_OUTPUT_ALIGNMENT_FAILED）完全沒有重試就直接判失敗，導致單一
+        股票被 LLM 漏答就讓當天整個 pipeline 判 partial_failure（見 2026-08-21
+        00738U 案例）。兩種情況本質上都是「這一檔需要重新請求」，共用同一套
+        重試邏輯。
+        """
+        if not retry_enabled or sid not in source_by_stock:
+            return None, {}
+        current_reason = rejection_reason
+        retry_diagnostic: Dict[str, Any] = {}
+        for contract_attempt in range(1, max_contract_retries + 1):
+            try:
+                retry_response, retry_diagnostic, _ = call_tracking(
+                    [source_by_stock[sid]],
+                    contract_retry={
+                        "previous_rejection": current_reason[:1000],
+                        "required_correction": required_correction,
+                    },
+                )
+                retry_items = (
+                    retry_response.get("items")
+                    if isinstance(retry_response, dict)
+                    and retry_response.get("review_date") == review_date
+                    else None
+                )
+                retry_raw = (
+                    retry_items[0]
+                    if isinstance(retry_items, list)
+                    and len(retry_items) == 1
+                    and isinstance(retry_items[0], dict)
+                    and str(retry_items[0].get("stock") or "") == sid
+                    else None
+                )
+                if retry_raw is not None:
+                    validated = _validate_external_assessment(
+                        retry_raw,
+                        review_date=date.fromisoformat(review_date),
+                    )
+                    validated["_prompt_metadata"] = {
+                        **metadata,
+                        "stage_prompt_version": tracking_version,
+                        "assembled_prompt_sha256": metadata["prompt_sha256"][
+                            "tracking"
+                        ],
+                    }
+                    validated["_llm_diagnostic"] = {
+                        **retry_diagnostic,
+                        "contract_retry_attempt": contract_attempt,
+                        "previous_contract_error": current_reason[:500],
+                    }
+                    return validated, retry_diagnostic
+            except ValueError as retry_value_exc:
+                current_reason = str(retry_value_exc)
+                continue
+            except Exception as retry_exc:
+                retry_diagnostic = {
+                    **retry_diagnostic,
+                    "retry_exception": str(retry_exc)[:500],
+                }
+                break
+        return None, retry_diagnostic
+
     for offset in range(0, len(payloads), size):
         batch = list(payloads[offset : offset + size])
         review_date = str(batch[0].get("date") or "")
@@ -762,69 +837,21 @@ def run_tracking_assessments(
                 validated["_llm_diagnostic"] = diagnostic
                 successful[sid] = validated
             except ValueError as exc:
-                retry_diagnostic: Dict[str, Any] = diagnostic
-                validated_via_retry: Optional[Dict[str, Any]] = None
-                max_contract_retries = 2
-                previous_exc = exc
-                if retry_enabled and sid in source_by_stock:
-                    for contract_attempt in range(1, max_contract_retries + 1):
-                        try:
-                            retry_response, retry_diagnostic, _ = call_tracking(
-                                [source_by_stock[sid]],
-                                contract_retry={
-                                    "previous_rejection": str(previous_exc)[:1000],
-                                    "required_correction": (
-                                        "只重做這一檔並修正契約錯誤。若要使用 "
-                                        "MATERIAL_NEGATIVE_EVENT 或 DATA_CONTRADICTION "
-                                        "判定 THESIS_INVALIDATED，material_evidence 必須有"
-                                        "截至 review_date 可追溯的 summary、URL、"
-                                        "published_date；否則不得宣告失效，應依證據改為 "
-                                        "THESIS_WEAKENING 或 RESEARCH_UNAVAILABLE，且 "
-                                        "invalidation_reason_code 必須為 null。不可捏造來源。"
-                                    ),
-                                },
-                            )
-                            retry_items = (
-                                retry_response.get("items")
-                                if isinstance(retry_response, dict)
-                                and retry_response.get("review_date") == review_date
-                                else None
-                            )
-                            retry_raw = (
-                                retry_items[0]
-                                if isinstance(retry_items, list)
-                                and len(retry_items) == 1
-                                and isinstance(retry_items[0], dict)
-                                and str(retry_items[0].get("stock") or "") == sid
-                                else None
-                            )
-                            if retry_raw is not None:
-                                validated_via_retry = _validate_external_assessment(
-                                    retry_raw,
-                                    review_date=date.fromisoformat(review_date),
-                                )
-                                validated_via_retry["_prompt_metadata"] = {
-                                    **metadata,
-                                    "stage_prompt_version": tracking_version,
-                                    "assembled_prompt_sha256": metadata[
-                                        "prompt_sha256"
-                                    ]["tracking"],
-                                }
-                                validated_via_retry["_llm_diagnostic"] = {
-                                    **retry_diagnostic,
-                                    "contract_retry_attempt": contract_attempt,
-                                    "previous_contract_error": str(previous_exc)[:500],
-                                }
-                                break
-                        except ValueError as retry_value_exc:
-                            previous_exc = retry_value_exc
-                            continue
-                        except Exception as retry_exc:
-                            retry_diagnostic = {
-                                **retry_diagnostic,
-                                "retry_exception": str(retry_exc)[:500],
-                            }
-                            break
+                validated_via_retry, retry_diagnostic = _retry_single_stock(
+                    sid,
+                    source_by_stock,
+                    review_date,
+                    rejection_reason=str(exc),
+                    required_correction=(
+                        "只重做這一檔並修正契約錯誤。若要使用 "
+                        "MATERIAL_NEGATIVE_EVENT 或 DATA_CONTRADICTION "
+                        "判定 THESIS_INVALIDATED，material_evidence 必須有"
+                        "截至 review_date 可追溯的 summary、URL、"
+                        "published_date；否則不得宣告失效，應依證據改為 "
+                        "THESIS_WEAKENING 或 RESEARCH_UNAVAILABLE，且 "
+                        "invalidation_reason_code 必須為 null。不可捏造來源。"
+                    ),
+                )
                 if validated_via_retry is not None:
                     successful[sid] = validated_via_retry
                     continue
@@ -832,7 +859,7 @@ def run_tracking_assessments(
                     _review_failure(
                         sid,
                         "TRACKING_OUTPUT_INVALID",
-                        str(previous_exc),
+                        str(exc),
                         diagnostic=(
                             retry_diagnostic
                             if retry_enabled
@@ -841,11 +868,26 @@ def run_tracking_assessments(
                     )
                 )
         for sid in sorted(expected - seen):
+            validated_via_retry, retry_diagnostic = _retry_single_stock(
+                sid,
+                source_by_stock,
+                review_date,
+                rejection_reason="Tracking assessment omitted the stock.",
+                required_correction=(
+                    "上一輪回應完全漏掉了這一檔股票，請重新針對這一檔股票輸出"
+                    "完整的追蹤評估（tracking assessment），items 陣列裡不可再"
+                    "省略這一檔。"
+                ),
+            )
+            if validated_via_retry is not None:
+                successful[sid] = validated_via_retry
+                continue
             failures.append(
                 _review_failure(
                     sid,
                     "TRACKING_OUTPUT_ALIGNMENT_FAILED",
                     "Tracking assessment omitted the stock.",
+                    diagnostic=retry_diagnostic if retry_enabled else {},
                 )
             )
     return successful, failures

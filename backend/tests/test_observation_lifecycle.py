@@ -921,6 +921,84 @@ def test_v7_tracking_semantic_contract_retries_single_stock(monkeypatch):
     )
 
 
+def test_v7_tracking_alignment_failure_retries_omitted_stock(monkeypatch):
+    """2026-08-22 regression：批次回應格式正確（合法 dict／items list／review_date
+    對齊），但 LLM 直接漏答其中一檔（不是輸出格式錯誤，是根本沒把那一檔放進
+    items 陣列）——原本這種情況完全沒有重試（只有 ValueError 契約驗證失敗才有單檔
+    重試），單一股票被漏答就讓整批（乃至整天 pipeline）判定失敗。真實案例：
+    2026-08-21 排程 00738U 被漏答，導致 partial_failure 整包 fail。"""
+    calls = []
+
+    def fake_call(_system, user_msg, **kwargs):
+        payload = json.loads(user_msg)
+        calls.append(payload)
+        if len(payload["items"]) == 2:
+            # 第一次批次呼叫：LLM 只回了 2330，完全漏掉 2454。
+            return {
+                "review_date": DAY_1.isoformat(),
+                "items": [_external(stock="2330")],
+            }, {"status": "ok"}
+        # 針對漏答股票的單檔重試：這次正確回答。
+        return {
+            "review_date": DAY_1.isoformat(),
+            "items": [_external(stock="2454")],
+        }, {"status": "ok"}
+
+    monkeypatch.setattr(lifecycle.llm_caller, "_call_llm_json", fake_call)
+    successful, failures = lifecycle.run_tracking_assessments(
+        [
+            {"date": DAY_1.isoformat(), "stock": "2330"},
+            {"date": DAY_1.isoformat(), "stock": "2454"},
+        ],
+        batch_size=2,
+    )
+
+    assert failures == []
+    assert set(successful.keys()) == {"2330", "2454"}
+    assert len(calls) == 2
+    retry_body = calls[1]
+    assert retry_body["items"] == [{"date": DAY_1.isoformat(), "stock": "2454"}]
+    retry = retry_body["contract_retry"]
+    assert retry["previous_rejection"] == "Tracking assessment omitted the stock."
+    assert "省略" in retry["required_correction"]
+    assert (
+        successful["2454"]["_llm_diagnostic"]["contract_retry_attempt"] == 1
+    )
+
+
+def test_v7_tracking_alignment_failure_gives_up_after_retries_exhausted(monkeypatch):
+    """漏答重試仍然漏答（或持續格式不對）→ 用盡重試次數後才真的判
+    TRACKING_OUTPUT_ALIGNMENT_FAILED，不能無限重試。"""
+    calls = []
+
+    def fake_call(_system, user_msg, **kwargs):
+        payload = json.loads(user_msg)
+        calls.append(payload)
+        if len(payload["items"]) == 2:
+            return {
+                "review_date": DAY_1.isoformat(),
+                "items": [_external(stock="2330")],
+            }, {"status": "ok"}
+        # 單檔重試每次都繼續漏答同一檔（回傳空 items）。
+        return {"review_date": DAY_1.isoformat(), "items": []}, {"status": "ok"}
+
+    monkeypatch.setattr(lifecycle.llm_caller, "_call_llm_json", fake_call)
+    successful, failures = lifecycle.run_tracking_assessments(
+        [
+            {"date": DAY_1.isoformat(), "stock": "2330"},
+            {"date": DAY_1.isoformat(), "stock": "2454"},
+        ],
+        batch_size=2,
+    )
+
+    assert set(successful.keys()) == {"2330"}
+    assert len(failures) == 1
+    assert failures[0]["stock"] == "2454"
+    assert failures[0]["status"] == "TRACKING_OUTPUT_ALIGNMENT_FAILED"
+    # 1 次原始批次呼叫 + max_contract_retries(2) 次單檔重試 = 3 次總呼叫
+    assert len(calls) == 3
+
+
 def test_same_date_rerun_is_idempotent(db, monkeypatch):
     observation = _observation(db)
     evidence = _healthy_evidence()
