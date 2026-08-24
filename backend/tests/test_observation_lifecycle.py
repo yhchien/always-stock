@@ -1169,6 +1169,172 @@ def test_stopped_stock_restarts_immediately_without_waiting_for_gap(db):
     assert fresh.started_signal_date == DAY_1
 
 
+def test_sync_recommendations_revives_observation_stopped_on_prior_trading_day(db):
+    """2026-08-24：使用者要求——一檔股票在「上一個交易日」才剛被判定停止觀察，
+    今天又被 P3 重新選中時，直接復活同一輪觀察（回到 OBSERVING、刪掉那筆停止
+    封存紀錄），不建立新一輪、也不曾在追蹤中顯示「已停止觀察」。真實案例：5608／
+    3443 都是這個情境（8/20 停止、8/21 又被重新選中），修復前會卡成孤兒魚尾週期
+    （見 test_settle_pending_p4_fishtail_stops_settles_orphaned_cycle_even_
+    after_new_episode_starts）。"""
+    db.add(DailyPrice(stock_id="2330", trade_date=DAY_0, close_price=100.0))
+    observation = _observation(db, started=DAY_0)
+    observation.status = "STOPPED"
+    observation.stopped_at = datetime.utcnow()
+    observation.stop_reason_code = "REVERSAL_FAILURE"
+    observation.stop_reason = "test"
+    observation.stop_confirm_count = 1
+    archive = SignalObservationArchive(
+        observation_id=observation.id,
+        episode_id=observation.episode_id,
+        stock_id="2330",
+        stock_name="Stock-2330",
+        started_signal_date=DAY_0,
+        first_stop_date=DAY_0,
+        archived_date=DAY_0,
+        stop_reason_code="REVERSAL_FAILURE",
+        stop_reason="test",
+        entry_price=100.0,
+    )
+    db.add(archive)
+    db.add(
+        SignalWatchHit(
+            snapshot_date=DAY_0,
+            stock_id="2330",
+            stock_name="Stock-2330",
+            signal_type="LEADER",
+            industry_name="半導體業",
+            sub_industry="x",
+            business_summary="a",
+            reason="a",
+            theme={},
+            group_info={},
+            leader_check={},
+            signals={},
+            baseline_trade_date=DAY_0,
+            baseline_price=100.0,
+            latest_eval_trade_date=DAY_0,
+            latest_eval_price=100.0,
+            return_pct=0.0,
+        )
+    )
+    db.commit()
+    observation_id = observation.id
+
+    sync = lifecycle.sync_recommendations(
+        db, signal_date=DAY_1, watchlist=[_recommend()]
+    )
+    db.commit()
+
+    assert sync == {"created": [], "continued": [], "revived": ["2330"]}
+    assert db.query(SignalObservation).count() == 1
+    revived = db.get(SignalObservation, observation_id)
+    assert revived.status == "OBSERVING"
+    assert revived.started_signal_date == DAY_0  # 沿用同一輪，不重算開始日
+    assert revived.stopped_at is None
+    assert revived.stop_reason_code is None
+    assert revived.stop_confirm_count == 0
+    assert revived.consecutive_caution_count == 0
+    assert (
+        db.query(SignalObservationArchive)
+        .filter_by(observation_id=observation_id)
+        .count()
+        == 0
+    )
+    # 魚尾週期完全沒被動過——同一輪繼續，不是誤觸發結算。
+    assert db.query(SignalWatchHit).filter_by(stock_id="2330").count() == 1
+
+
+def test_sync_recommendations_does_not_revive_when_gap_is_more_than_one_trading_day(
+    db,
+):
+    """邊界：間隔超過一個交易日（不是「昨天才停、今天立刻重選」）一律視為全新一輪，
+    不能誤觸發復活——這正是既有
+    `test_stopped_stock_can_restart_after_existing_five_day_gap` 要保護的行為，
+    這裡額外用『真的有 archive 紀錄』的情境再驗證一次邊界精確性。"""
+    db.add(DailyPrice(stock_id="2330", trade_date=DAY_0, close_price=100.0))
+    db.add(DailyPrice(stock_id="2330", trade_date=DAY_1, close_price=101.0))
+    observation = _observation(db, started=DAY_0)
+    observation.status = "STOPPED"
+    observation.stopped_at = datetime.utcnow()
+    db.add(
+        SignalObservationArchive(
+            observation_id=observation.id,
+            episode_id=observation.episode_id,
+            stock_id="2330",
+            stock_name="Stock-2330",
+            started_signal_date=DAY_0,
+            first_stop_date=DAY_0,
+            archived_date=DAY_0,
+            stop_reason_code="REVERSAL_FAILURE",
+            stop_reason="test",
+            entry_price=100.0,
+        )
+    )
+    db.add(
+        SignalWatchHit(
+            snapshot_date=DAY_0,
+            stock_id="2330",
+            stock_name="Stock-2330",
+            signal_type="LEADER",
+            industry_name="半導體業",
+            sub_industry="x",
+            business_summary="a",
+            reason="a",
+            theme={},
+            group_info={},
+            leader_check={},
+            signals={},
+            baseline_trade_date=DAY_0,
+            baseline_price=100.0,
+            latest_eval_trade_date=DAY_0,
+            latest_eval_price=100.0,
+            return_pct=0.0,
+        )
+    )
+    db.commit()
+
+    # 重新選中發生在 DAY_2（archived_date=DAY_0，但 DAY_2 的上一個交易日是
+    # DAY_1，不是 DAY_0）——間隔超過一個交易日，不該復活。
+    sync = lifecycle.sync_recommendations(
+        db, signal_date=DAY_2, watchlist=[_recommend()]
+    )
+
+    assert sync["created"] == ["2330"]
+    assert sync["revived"] == []
+    assert db.query(SignalObservation).count() == 2
+
+
+def test_sync_recommendations_does_not_revive_when_fishtail_already_settled(db):
+    """archived_date 剛好是上一個交易日，但魚尾週期已經正常結算過（無 active
+    SignalWatchHit）——代表這輪已經走完正常流程進了紀錄區，不該被復活。"""
+    db.add(DailyPrice(stock_id="2330", trade_date=DAY_0, close_price=100.0))
+    observation = _observation(db, started=DAY_0)
+    observation.status = "STOPPED"
+    observation.stopped_at = datetime.utcnow()
+    db.add(
+        SignalObservationArchive(
+            observation_id=observation.id,
+            episode_id=observation.episode_id,
+            stock_id="2330",
+            stock_name="Stock-2330",
+            started_signal_date=DAY_0,
+            first_stop_date=DAY_0,
+            archived_date=DAY_0,
+            stop_reason_code="REVERSAL_FAILURE",
+            stop_reason="test",
+            entry_price=100.0,
+        )
+    )
+    db.commit()
+
+    sync = lifecycle.sync_recommendations(
+        db, signal_date=DAY_1, watchlist=[_recommend()]
+    )
+
+    assert sync["created"] == ["2330"]
+    assert sync["revived"] == []
+
+
 def test_asset_types_share_identical_state_machine():
     decisions = []
     for asset_type in ("COMMON_STOCK", "FINANCIAL", "ETF"):

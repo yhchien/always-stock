@@ -238,6 +238,7 @@ def sync_recommendations(
     result: Dict[str, List[str]] = {
         "created": [],
         "continued": [],
+        "revived": [],
     }
     for item in items:
         sid = str(item.get("stock") or item.get("stock_id") or "")
@@ -252,6 +253,13 @@ def sync_recommendations(
         )
         if active is not None:
             result["continued"].append(sid)
+            continue
+
+        revived = _revive_if_stopped_yesterday_and_reselected_today(
+            db, prior, stock_id=sid, signal_date=signal_date
+        )
+        if revived is not None:
+            result["revived"].append(sid)
             continue
 
         initial_snapshot, baseline_quality = _initial_snapshot_from_recommendation(
@@ -279,6 +287,69 @@ def sync_recommendations(
 
     db.flush()
     return result
+
+
+def _revive_if_stopped_yesterday_and_reselected_today(
+    db: Session,
+    prior: List[SignalObservation],
+    *,
+    stock_id: str,
+    signal_date: date,
+) -> Optional[SignalObservation]:
+    """2026-08-24：若一檔股票在「上一個交易日」才剛被判定停止觀察，今天又被 P3
+    重新選中，直接復活同一輪觀察（回到 OBSERVING、刪掉那筆停止封存紀錄），不建立
+    新一輪、也不會在追蹤中顯示過「已停止觀察」——使用者要求：這種情況視為從未真正
+    離開過，不要讓卡片經歷一次多餘的「停止→隔天又重新開始」畫面轉換，讓使用者誤以
+    為兩者是不相干的兩輪。
+
+    嚴格要求「archived_date 剛好是 signal_date 的上一個交易日」（真正意義上的
+    「隔天立刻」），間隔超過一個交易日一律視為全新一輪、不復活，交給既有的延後
+    結算機制（`_settle_pending_p4_fishtail_stops`）把舊資料正常結算進紀錄區——這是
+    刻意的邊界：`test_stopped_stock_can_restart_after_existing_five_day_gap` 驗證
+    過「間隔數個交易日的重新命中」應該視為全新一輪，這個新機制不能誤觸發那個既有
+    情境。
+    """
+    if not prior or prior[0].status != STATUS_STOPPED:
+        return None
+    candidate = prior[0]
+    archive_row = (
+        db.query(SignalObservationArchive)
+        .filter(SignalObservationArchive.observation_id == candidate.id)
+        .order_by(SignalObservationArchive.archived_date.desc())
+        .first()
+    )
+    if archive_row is None:
+        return None
+    prior_trade_date = (
+        db.query(func.max(DailyPrice.trade_date))
+        .filter(DailyPrice.trade_date < signal_date)
+        .scalar()
+    )
+    if prior_trade_date is None or archive_row.archived_date != prior_trade_date:
+        return None
+    has_active_fishtail = (
+        db.query(SignalWatchHit.stock_id)
+        .filter(SignalWatchHit.stock_id == stock_id)
+        .first()
+        is not None
+    )
+    if not has_active_fishtail:
+        return None
+
+    candidate.status = STATUS_OBSERVING
+    candidate.stopped_at = None
+    candidate.stop_reason_code = None
+    candidate.stop_reason = None
+    candidate.stop_confirm_count = 0
+    candidate.consecutive_caution_count = 0
+    candidate.pending_stop_status = None
+    candidate.pending_stop_reason = None
+    candidate.pending_stop_since = None
+    candidate.pending_stop_trigger_snapshot = None
+    candidate.pending_stop_review_count = 0
+    candidate.updated_at = datetime.utcnow()
+    db.delete(archive_row)
+    return candidate
 
 
 def bootstrap_legacy_observations(db: Session) -> int:
