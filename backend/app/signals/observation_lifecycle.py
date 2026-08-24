@@ -1592,60 +1592,60 @@ def _settle_pending_p4_fishtail_stops(db: Session, *, review_date: date) -> int:
     真的結算。self-healing：即使某天漏跑，下次呼叫一樣會抓到還沒結算的舊資料。
 
     2026-08-16 修正（stale-episode mismatch bug）：舊版只用 `stock_id` +
-    `archived_date < review_date` 篩選，完全沒檢查這筆 archive 是不是該股票**目前
-    最新一輪**觀察——一檔股票只要「曾經」有任何一輪觀察被 STOP 過，之後只要重新進入
-    追蹤（全新一輪、可能還在健康的 OBSERVING/CAUTION），下次複核就會被這條規則誤判
-    成「該結算」，把目前正在進行、根本沒被判定失效的魚尾週期強制關掉。上線第一天
+    `archived_date < review_date` 篩選，完全沒檢查這筆 archive 是不是該股票曾經最新
+    一輪觀察——一檔股票只要「曾經」有任何一輪觀察被 STOP 過，之後只要重新進入追蹤
+    （全新一輪、可能還在健康的 OBSERVING/CAUTION），下次複核就會被這條規則誤判成
+    「該結算」，把目前正在進行、根本沒被判定失效的魚尾週期強制關掉。上線第一天
     （2026-08-14）就誤殺了 9 檔其實仍在追蹤中的股票（含台積電/聯發科/萬海等）。
-    修法：用 subquery 找出每檔股票「最新一輪」觀察（`started_signal_date` 最大者），
-    只有當這筆 archive 對應的 observation **就是**該股票目前最新一輪、且該輪
-    `status == STOPPED` 時，才視為真正該結算——不再只憑「stock_id 曾經出現過」判斷。
+
+    2026-08-24 修正（deferred-settlement race condition）：2026-08-16 的修法改用
+    「這筆 archive 是不是該股票**目前最新一輪**觀察」判斷，但這個條件本身跟
+    `pipeline.py` 的呼叫順序（`sync_recommendations()` 先跑、才輪到本函式）產生新的
+    race condition——若一檔股票 STOP 之後，剛好在「延後結算」排定要執行的那一天，
+    又被 P3 重新推薦，`sync_recommendations()` 會先建立一輪全新 episode（因為此時
+    最新一輪已是 STOPPED，視為沒有進行中觀察）；等本函式接著跑時，「目前最新一輪」
+    已經變成那個全新 episode（非 STOPPED），join 條件永遠對不上，導致舊 episode 對應
+    的魚尾週期永久孤兒化、卡在「追蹤中」再也結算不到（真實案例：2026-08-24 發現
+    5608 等 13 檔卡在 8/18~8/19 的舊資料，動能分數圖顯示「停止觀察」但卡片底色卻是
+    最新 episode 的健康狀態，兩者對不起來）。
+
+    修法：不再依賴「目前最新一輪」這個會隨時間變動的狀態，改直接比較「這次 archive
+    的 archived_date」跟「目前魚尾週期最新一筆 snapshot_date」的先後關係——如果魚尾
+    週期裡所有命中都發生在 archived_date（含）之前，代表這個週期就是被那次 STOP
+    結束的那一輪，該結算；如果魚尾週期裡有命中發生在 archived_date 之後，代表已經是
+    全新一輪重新命中（不論 P4 那邊有沒有建立新 episode），不該被舊的 archive 誤殺。
+    這個條件同時保留 2026-08-16 要防的誤殺（新週期命中都在 archived_date 之後 →
+    不結算）與正確處理這次發現的孤兒化（舊週期命中都在 archived_date 之前 → 結算），
+    不再需要跟「目前最新一輪是誰」掛勾。
     """
-    latest_observation_subq = (
-        db.query(
-            SignalObservation.stock_id.label("stock_id"),
-            func.max(SignalObservation.started_signal_date).label("max_started"),
-        )
-        .group_by(SignalObservation.stock_id)
-        .subquery()
-    )
-    pending_stock_ids = {
-        row[0]
-        for row in (
-            db.query(SignalObservationArchive.stock_id)
-            .join(
-                SignalObservation,
-                SignalObservationArchive.observation_id == SignalObservation.id,
-            )
-            .join(
-                latest_observation_subq,
-                (SignalObservation.stock_id == latest_observation_subq.c.stock_id)
-                & (
-                    SignalObservation.started_signal_date
-                    == latest_observation_subq.c.max_started
-                ),
-            )
-            .filter(
-                SignalObservationArchive.archived_date < review_date,
-                SignalObservation.status == "STOPPED",
-            )
-            .distinct()
-            .all()
-        )
-    }
-    if not pending_stock_ids:
+    pending_by_stock: Dict[str, date] = {}
+    for stock_id, archived_date in db.query(
+        SignalObservationArchive.stock_id,
+        SignalObservationArchive.archived_date,
+    ).filter(SignalObservationArchive.archived_date < review_date):
+        current = pending_by_stock.get(stock_id)
+        if current is None or archived_date > current:
+            pending_by_stock[stock_id] = archived_date
+    if not pending_by_stock:
         return 0
-    still_active_ids = {
-        row[0]
-        for row in (
-            db.query(SignalWatchHit.stock_id)
-            .filter(SignalWatchHit.stock_id.in_(pending_stock_ids))
-            .distinct()
-            .all()
+    active_max_snapshot: Dict[str, date] = dict(
+        db.query(
+            SignalWatchHit.stock_id,
+            func.max(SignalWatchHit.snapshot_date),
         )
-    }
+        .filter(SignalWatchHit.stock_id.in_(pending_by_stock.keys()))
+        .group_by(SignalWatchHit.stock_id)
+        .all()
+    )
     settled = 0
-    for stock_id in still_active_ids:
+    for stock_id, archived_date in pending_by_stock.items():
+        max_snapshot = active_max_snapshot.get(stock_id)
+        if max_snapshot is None:
+            continue
+        if max_snapshot > archived_date:
+            # 這批魚尾命中都晚於這次 STOP 事件——已經是全新一輪重新命中，
+            # 不能被舊的 archive 誤殺（2026-08-16 要防的情境）。
+            continue
         if archive.settle_stock_for_p4_stop(
             db, stock_id=stock_id, as_of_trade_date=review_date
         ):

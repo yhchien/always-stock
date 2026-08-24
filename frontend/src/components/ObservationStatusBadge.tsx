@@ -15,6 +15,15 @@ const STATUS_STYLES: Record<SignalObservationStatus, string> = {
   STOPPED: "border-slate-600 bg-slate-800/80 text-slate-300",
 }
 
+// 2026-08-24：STOPPED 狀態的時機說明從只寫在 archive 頁頂部的說明卡挪一份到
+// badge 本身的 title（hover tooltip）——使用者實際看到「已停止觀察」徽章時最需要
+// 這個答案，不該只靠頁面上方的一段長文字說明碰運氣被看到。
+const DEFAULT_STATUS_TITLES: Partial<Record<SignalObservationStatus, string>> = {
+  STOPPED:
+    "系統已判定推薦論點失效，卡片會先在「追蹤中」保留一個複核日讓您看到這個狀態；" +
+    "下一次每日複核（通常是下一個交易日）才會正式結算、移到「停止觀察的股票」。",
+}
+
 const DECISION_LABELS: Record<SignalObservationDecision, string> = {
   CONTINUE: "繼續觀察",
   CAUTION: "警戒",
@@ -34,11 +43,14 @@ export function observationDecisionLabel(
 
 export default function ObservationStatusBadge({
   status,
+  title,
 }: {
   status: SignalObservationStatus
+  title?: string
 }) {
   return (
     <span
+      title={title ?? DEFAULT_STATUS_TITLES[status]}
       className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-medium ${STATUS_STYLES[status]}`}
     >
       {STATUS_LABELS[status]}

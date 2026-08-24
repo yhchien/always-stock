@@ -418,7 +418,9 @@ function Metric({ label, children }: { label: string; children: ReactNode }) {
 // 分數，之後每天重新評估是變強還變弱」。資料合併兩個來源：P3（signal_watch_hits，
 // 當天再次被大盤選中）跟 P4（每日複核，P3 沒選中但仍在追蹤時的獨立動能重算）——兩者
 // 用同一套公式算，數值可以放進同一條線比較，只是 P3 額外附帶「贏過其他候選、通過
-// LLM 驗證」的訊號。用實心圓標 P3 來源、空心圓標 P4 來源，讓使用者一眼看出差異。
+// LLM 驗證」的訊號。P3 用實心圓、P4 用菱形標示來源——2026-08-24 前原本用實心圓 vs
+// 空心圓，使用者反映兩者太像、不容易一眼分辨；改用完全不同的形狀（圓形 vs 菱形），
+// 而非只靠填色深淺區分。
 // 2026-08-14：新抓到的股票只有 1 個資料點也要顯示（使用者要求）——沒有前一天可比較
 // 畫不出「線」，但單一個點本身（今天的動能分數是多少）仍然是有用的資訊。
 // 2026-08-14：警戒/解除警戒/停止觀察的日期標記——用 markLine 疊在折線圖上。事件日期
@@ -499,8 +501,8 @@ function MomentumScoreChart({
           if (!point) return null
           return {
             value: point.momentum_score,
-            symbol: point.source === "p3" ? "circle" : "emptyCircle",
-            symbolSize: 7,
+            symbol: point.source === "p3" ? "circle" : "diamond",
+            symbolSize: point.source === "p3" ? 7 : 9,
             itemStyle: { color: "#38bdf8" },
           }
         }),
@@ -533,7 +535,7 @@ function MomentumScoreChart({
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <h4 className="text-sm font-medium text-slate-200">動能分數變化</h4>
         <span className="text-[11px] text-slate-500">
-          ● P3 選中　○ P4 複核（P3 未選中該股當天的獨立追蹤分數）
+          ● P3 選中　◆ P4 複核（P3 未選中該股當天的獨立追蹤分數）
         </span>
       </div>
       {sortedEvents.length > 0 && (
@@ -1106,6 +1108,10 @@ function StoppedObservationsSection({
             這是一張全新的紀錄表，只從現在開始累積（不含策略大改版前「追蹤期滿移出紀錄」的舊資料）。
             任何原因（追蹤期滿 / 跌破 -30% 提前結算 / 從高點回落 30% 提前結算 / 系統判定推薦論點失效）
             造成一檔股票被移出追蹤，都會記錄在這裡；格式與「追蹤期滿移出紀錄」完全相同。
+            <span className="text-slate-300">
+              若股票是因為「系統判定推薦論點失效」被移出：不會判定當下就出現在這裡，會先在上方「追蹤中」
+              保留一個觀察日（卡片轉玫瑰色底、標「已停止觀察」），下一次每日複核才會正式結算移到這裡。
+            </span>
           </p>
         </div>
         {!collapsed && summary && summary.periods.length > 0 && (
@@ -1648,7 +1654,8 @@ function SignalArchiveContent() {
               </p>
               <p className="mt-1 text-slate-400">
                 系統判定推薦論點已失效，卡片轉玫瑰色底。刻意保留一個觀察日先讓您在這裡看到這個狀態，
-                不會判定當下就直接消失、移到「停止觀察的股票」；下一次每日複核才會正式結算移出。
+                不會判定當下就直接消失、移到「停止觀察的股票」；<span className="text-slate-300">下一次每日複核（通常是下一個交易日，
+                若遇假日則順延到下一個交易日）</span>才會正式結算移出，屆時會出現在下方「停止觀察的股票」清單。
               </p>
             </div>
           </div>

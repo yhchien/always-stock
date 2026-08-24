@@ -1562,6 +1562,73 @@ def test_settle_pending_p4_fishtail_stops_ignores_stale_episode_from_earlier_sto
     )
 
 
+def test_settle_pending_p4_fishtail_stops_settles_orphaned_cycle_even_after_new_episode_starts(
+    db,
+):
+    """Regression（2026-08-24）：真實案例 5608——股票在 DAY_1 被判定 STOP
+    （archived_date=DAY_1），但延後結算排定要執行的那一天（DAY_2），該股票剛好又被
+    P3 重新推薦、`sync_recommendations()` 已經先建立了一輪全新 episode（此時最新一輪
+    已經不是 STOPPED）。舊版邏輯用「archive 是否對應目前最新一輪」判斷，這種情況下
+    永遠對不上，導致 DAY_0 那筆魚尾命中卡在「追蹤中」永遠結算不到，跟目前健康的新
+    episode 混在一起顯示，造成卡片底色（跟著新 episode 顯示 OBSERVING）跟動能分數圖
+    的「停止觀察」標記（屬於舊 episode）互相矛盾。修復後：只要魚尾週期的命中都發生在
+    archived_date（含）之前，不論當下 P4 是否已經有更新的 episode，都要正確結算。"""
+    old_observation = _observation(db, started=DAY_0)
+    old_observation.status = "STOPPED"
+    db.add(
+        SignalObservationArchive(
+            observation_id=old_observation.id,
+            episode_id=old_observation.episode_id,
+            stock_id="2330",
+            stock_name="Stock-2330",
+            started_signal_date=DAY_0,
+            first_stop_date=DAY_1,
+            archived_date=DAY_1,
+            stop_reason_code="REVERSAL_FAILURE",
+            stop_reason="test",
+            entry_price=100.0,
+        )
+    )
+    db.add(
+        SignalWatchHit(
+            snapshot_date=DAY_0,
+            stock_id="2330",
+            stock_name="Stock-2330",
+            signal_type="LEADER",
+            industry_name="半導體業",
+            sub_industry="x",
+            business_summary="a",
+            reason="a",
+            theme={},
+            group_info={},
+            leader_check={},
+            signals={},
+            baseline_trade_date=DAY_0,
+            baseline_price=100.0,
+            latest_eval_trade_date=DAY_0,
+            latest_eval_price=100.0,
+            return_pct=0.0,
+        )
+    )
+    # DAY_2（延後結算排定要執行的日子）當天，sync_recommendations 已經先建立了
+    # 一輪全新 episode（P3 重新推薦、此時最新一輪已是 STOPPED，視為沒有進行中觀察）。
+    new_observation = _observation(db, stock="2330", started=DAY_2)
+    new_observation.status = "OBSERVING"
+    db.commit()
+
+    settled = lifecycle._settle_pending_p4_fishtail_stops(db, review_date=DAY_2)
+
+    assert settled == 1
+    completed = (
+        db.query(SignalWatchCompletedArchive).filter_by(stock_id="2330").one()
+    )
+    assert completed.completed_trade_date == DAY_2
+    # 舊週期的魚尾命中已結算移除，但新 episode（OBSERVING）本身不受影響。
+    assert db.query(SignalWatchHit).filter_by(stock_id="2330").count() == 0
+    refreshed_new_observation = db.get(SignalObservation, new_observation.id)
+    assert refreshed_new_observation.status == "OBSERVING"
+
+
 def test_settle_pending_archive_exits_uses_next_available_open_close_average(db):
     observation = _observation(db)
     archive = SignalObservationArchive(
