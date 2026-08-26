@@ -537,10 +537,23 @@ def get_archive_detail(
     payload["margin_analysis"] = latest_row.margin_analysis
     # 2026-08-13：動能分數歷史折線圖——合併 P3（signal_watch_hits）與 P4
     # （signal_observation_reviews）兩個來源，讓 P3 沒有再次選中的那幾天也有資料點。
-    p4_points = _load_p4_momentum_points(db, stock_id)
+    # 2026-08-26：`_load_p4_momentum_points`／`_load_review_status_events` 本身回傳
+    # 這檔股票「所有」episode 的資料（跨越可能存在的、早已進過紀錄區的舊一輪追蹤），
+    # 這裡裁到 `>= summary.first_seen_date`（目前這輪 active fishtail 週期的起點）
+    # 才回傳——否則若一檔股票以前曾經被停止觀察過、現在重新被抓到，追蹤中的動能圖會
+    # 混進上一輪的警戒/停止標記與分數點，讓使用者誤以為是這一輪發生的事。
+    p4_points = [
+        point
+        for point in _load_p4_momentum_points(db, stock_id)
+        if point["date"] >= summary.first_seen_date
+    ]
     payload["momentum_score_history"] = _build_momentum_score_history(rows, p4_points)
     # 2026-08-14：進入／解除警戒、停止觀察的日期標記，給折線圖畫 markLine 用。
-    payload["review_status_events"] = _load_review_status_events(db, stock_id)
+    payload["review_status_events"] = [
+        event
+        for event in _load_review_status_events(db, stock_id)
+        if event["date"] >= summary.first_seen_date
+    ]
     return payload
 
 

@@ -1924,6 +1924,96 @@ def test_get_archive_detail_includes_review_status_events():
         ]
 
 
+def test_get_archive_detail_scopes_momentum_history_and_events_to_current_cycle():
+    """2026-08-26 regression：一檔股票以前曾經被停止觀察過（一輪完整的舊 episode，
+    有自己的動能分數與警戒/停止標記），後來重新被抓到、開了全新一輪追蹤——目前
+    active 的追蹤中 detail 不該把舊一輪的動能分數點與警戒/停止標記也顯示出來，
+    否則使用者會誤以為那些是這一輪發生的事。"""
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+
+    with Session() as db:
+        # 舊一輪：完整經歷警戒→停止，且 P4 複核當天有動能分數。
+        old_episode = SignalObservation(
+            stock_id="3231",
+            stock_name="緯創",
+            asset_type="COMMON_STOCK",
+            episode_id="episode-3231-old",
+            status="STOPPED",
+            started_signal_date=date(2026, 7, 1),
+            baseline_quality="P3_COMPLETE",
+            initial_snapshot_json={},
+        )
+        db.add(old_episode)
+        db.flush()
+        db.add(
+            SignalObservationReview(
+                observation_id=old_episode.id,
+                review_date=date(2026, 7, 2),
+                decision="CAUTION",
+                reason_codes=[],
+                reason="",
+                caution_dimensions=[],
+                failed_dimensions=[],
+                momentum_score=40.0,
+                prompt_version="v1",
+                state_machine_version="v1",
+            )
+        )
+        _seed_review(
+            db, observation_id=old_episode.id, review_date=date(2026, 7, 3), decision="STOP_OBSERVING"
+        )
+        db.commit()
+
+        # 新一輪：8/10 重新被抓到，目前仍在追蹤中。
+        job_id = _seed_job_and_snapshot(db, date(2026, 8, 10))
+        archive.persist_signal_watch_hits(
+            db,
+            date(2026, 8, 10),
+            {
+                "watchlist": [
+                    {
+                        "stock": "3231",
+                        "name": "緯創",
+                        "type": "LEADER",
+                        "signal_metrics": {"momentum_score": 70.0},
+                    },
+                ]
+            },
+            job_id,
+        )
+        new_episode = SignalObservation(
+            stock_id="3231",
+            stock_name="緯創",
+            asset_type="COMMON_STOCK",
+            episode_id="episode-3231-new",
+            status="CAUTION",
+            started_signal_date=date(2026, 8, 10),
+            baseline_quality="P3_COMPLETE",
+            initial_snapshot_json={},
+        )
+        db.add(new_episode)
+        db.flush()
+        _seed_review(
+            db, observation_id=new_episode.id, review_date=date(2026, 8, 11), decision="CAUTION"
+        )
+        db.commit()
+
+        detail = archive.get_archive_detail(db, "3231", now=datetime(2026, 8, 11, 20, 0))
+
+        assert detail is not None
+        # 動能分數歷史只有新一輪（8/10 P3 選中 + 8/11 P4 複核當天無分數，故只有一筆），
+        # 完全不含舊一輪 7/2 的 40.0。
+        assert [p["date"] for p in detail["momentum_score_history"]] == [date(2026, 8, 10)]
+        assert detail["momentum_score_history"][0]["momentum_score"] == 70.0
+        # 警戒/停止標記只有新一輪的 entered_caution（8/11），不含舊一輪的
+        # entered_caution（7/2）與 stopped（7/3）。
+        assert detail["review_status_events"] == [
+            {"date": date(2026, 8, 11), "event": "entered_caution"},
+        ]
+
+
 def test_get_stopped_observation_detail_reconstructs_from_snapshots():
     """紀錄區股票：signal_watch_hits 已被硬刪除，改從 SignalSnapshot.watchlist
     重建報告時間軸 + 動能分數歷史；review_status_events 裁到這筆紀錄涵蓋的區間。"""
