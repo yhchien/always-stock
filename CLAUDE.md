@@ -1,5 +1,116 @@
 # always-stock 專案記憶
 
+## P4 RISK_OFF 加速停止機制（方法 A）：從無效到過度敏感到收斂，用真實歷史資料反覆驗證（2026-08-27~28）
+
+### 背景
+使用者觀察到 7/16 那天大盤重挫（開盤 45234→收盤 42671，單日 -5.7%，到 7/30 累計
+跌幅 -11.7%），但套用現行 P4 邏輯 replay 那批候選，發現多達 16/26 檔到複核窗口
+最後一天都還沒被判定停止——既有「持續兩天核心維度失效才 STOP」設計在真正系統性
+下殺時反應太慢，要求討論怎麼加速。討論後決定：RISK_OFF 當天若核心維度
+（`MOMENTUM_STRUCTURE`/`PARTICIPATION`）已同時失效，不必等隔天複核確認即可直接
+STOP（方法 A）。
+
+### 第一版完全無效：模擬腳本忘了傳 market_context
+方法 A 寫好後第一次用真實 7/16 資料驗證，**0 檔透過新機制觸發**。查證發現用來跑
+replay 的 scratchpad 腳本（非 production code）從沒把 `market_context` 傳進
+`build_current_tracking_evidence()`，導致 `evidence["market_regime"]` 每天每檔
+股票永遠是 `None`——不只新機制沒被測到，連文件裡本來記錄的「7/20 全部 26 檔因
+regime=RISK_OFF 觸發 MARKET_CONTEXT 警戒」這個結論本身也是錯的（真正原因是
+`external_thesis_assessment=None` 觸發的 `DATA_QUALITY_WARNING`，跟 regime
+無關）。修好腳本（比照既有 `replay_observation_lifecycle()` 的正確寫法，逐日
+重算 `market_regime.compute_market_regime()`）後才是真正的驗證。
+
+### 第二版疊加 Composite Risk regime-aware bypass + participation 門檻降低：過度敏感
+修好腳本後發現另一個結構性問題：`COMPOSITE_RISK_EXCLUDE` 的「先觀察一天再確認」
+pending 狀態機排在方法 A 前面且優先權更高（`build_hard_exclusion_result()` 完全
+不看 regime，BULL_TREND 底下也會觸發，2026-08-18 設計成多日確認正是為了保護
+「大多頭健康換手不被誤殺」），導致很多股票整個下殺期間都卡在這個分支，方法 A
+沒機會執行。修法：RISK_OFF 當天讓 composite risk 直接併入核心維度證據（跳過
+pending 緩衝），**只在 RISK_OFF 生效，BULL_TREND/VOLATILE_RANGE 完全不動**。
+同時把 `PARTICIPATION` 判定為「failed」的門檻在 RISK_OFF 期間從「≥2 個負面旗標」
+降到「≥1 個」。用真實 7/16 資料重跑：第一個複核日（7/17，大盤重挫當天）就有
+14/26 檔直接觸發，最終 25/26 檔全部停止，整體隔天報酬命中率只有 62%——**兩個
+修改疊加後太敏感**。
+
+### 收斂：只回收 participation 門檻，保留 composite bypass
+逐一排查後判斷：`institution_flow_momentum=="reversal"` 這個旗標在系統性重挫
+當天幾乎是**全市場現象**（大盤重挫、法人普遍轉為淨流出），降到 1 旗標幾乎沒有
+鑑別力，這是過度敏感的主因；composite risk 型態本身仍是個股層級的具體技術訊號
+（出貨 K 棒 + 法人單日反轉），保留跳過 pending 緩衝是合理的加速。只回收
+participation 門檻改動（恢復 ≥2，不分 regime），保留 composite bypass。重新驗證：
+- 7/16 那 10 檔 LLM 選中股票，回收前後**結果完全一樣**——證實這批本來就是被
+  composite bypass（或既有 `LIQUIDITY_FAILURE`）觸發，回收 participation 門檻
+  沒有犧牲任何原本想抓到的效果
+- 全市場 26 檔：日 1 觸發數從 14 降到 10，整體隔天命中率從 62% 微幅提升到 64%
+- **6/22 這批（BULL_TREND 候選日，觀察窗口內只有 6/26、6/29 短暫 2 天轉
+  RISK_OFF）驗證出明顯落差**：整體命中率只有 28%（21 好/75 提早），13 檔 LLM
+  選中股票命中率更只有 22%（2 好/9 提早，4 檔未觸發）——機制在「真的連續下殺」
+  表現好，但在「大盤短暫回檔 1~2 天就穩住」會反應過度，還沒有能力區分「崩盤
+  開始」跟「正常回檔」。**這是已知、尚未解決的限制**，下一輪若要繼續調整，
+  方向可能是「RISK_OFF 要連續出現 N 天才加速」之類的門檻。
+
+### 順手修復：動能分數折線圖「隔天復活」情境會混入舊資料
+驗證過程中意外發現：3037 這類「8/25 被 P4 判定停止、8/26 又被 P3 重新選中、
+同一個 episode 復活」（2026-08-24 那次「隔天立刻重選就復活觀察」功能的預期
+行為）的股票，動能圖會把復活前（8/14~8/25）的舊分數與警戒/停止標記也顯示
+出來——因為復活機制刻意讓 fishtail 追蹤週期不重置（`signal_watch_hits` 從沒斷過），
+原本用來裁切圖表的 `summary.first_seen_date` 還是很久以前的舊日期，擋不住。
+新增 `_current_episode_revival_boundary()`：掃「目前這輪」episode 完整複核歷史，
+找最後一次「前一筆是 STOP_OBSERVING、後一筆不是」的轉換點，取跟 `first_seen_date`
+較晚者當圖表真正下界。查真實資料，目前 67 檔追蹤中的股票有 3 檔受影響（2383、
+2851、3037，都是 8/26 復活）。純 query-time 計算，不需要資料回填。
+
+### Gotcha
+- **改「什麼時候該加速判斷」這類機制時，要先確認測試腳本真的有把所有相關輸入
+  餵進去**——這次「完全無效」的第一版根因不是邏輯寫錯，是驗證管線本身缺一個
+  參數，導致辛苦調的邏輯從未被真正跑過；第二版之所以能發現「過度敏感」，正是
+  因為先抓出這個驗證管線的 bug 才讓真正的行為第一次曝光
+- **同一個 regime-gated 修改，疊加測試時很難拆解「哪個子修改造成了觀察到的
+  效果」**——這次靠比對「疊加版本」vs「只回收其中一個」的 10 檔 LLM 股票結果
+  完全相同，才確認 participation 門檻改動對這批股票是零貢獻，可以安心回收；
+  reason_codes 只記錄最終觸發的單一 accelerated code，不會記錄是哪個子機制
+  注入的證據，事後無法從 log 精確拆解，只能靠 A/B 比對
+  - **RISK_OFF 只是「回檔」還是「崩盤開始」，光看當天 regime 判斷不出來**——
+  這是本輪驗證留下的核心未解問題，6/22 那組數據具體證明了這一點；純粹「今天
+  regime 是不是 RISK_OFF」這個二元判斷天生無法區分兩種情境的差異
+- **這類「先做無效→發現 bug→改完過度敏感→收斂」的多輪迭代，每一輪都要用真實
+  歷史資料重新驗證，不能只看邏輯推導**——單靠程式碼審查完全看不出「大盤重挫
+  當天法人流向幾乎是全市場現象」這種只有跑過真實資料才會發現的訊號鑑別力問題
+
+## 魚尾頁（/signals/archive）5 項 UX 改動（2026-08-28）
+
+一次處理 5 個獨立但相關的使用者體驗問題：
+
+1. **紀錄區折線圖「只有點沒有線」查證後不是 bug**：抽樣 30 筆最近紀錄，63%
+   （19/30）本來就只有 1 個資料點（該股票只被抓到 1 天就被移出，數學上不可能
+   畫出線），37% 有多筆資料則正常顯示線。加一行提示文字說明原因，不是修「線
+   畫不出來」這件事本身
+2. **紀錄區多筆歷史紀錄的卡片標題加時間區間**：卡片本來就已各自獨立
+   （`(stock_id, first_seen_date)` 複合 key），這次補上標題顯示
+   「首次抓到～移出日期」，讓使用者能分辨相鄰的兩張同代號卡片是不同輪
+3. **大量說明文字收進「？」按鈕 popup**：6 大塊常駐說明（LEADER/FOLLOWER/
+   LAGGARD、觀察狀態、停止依據、報酬率規則、結算標注、即時報價說明）移出預設
+   畫面，改用 base-ui Dialog 觸發
+4. **新增「今天停止觀察」獨立區塊**：後端新增
+   `list_stopped_observations_for_date()` + `GET /api/signals/archive/stopped/today`
+   （依存活天數排序），前端新區塊放在「追蹤中」前面，預設收合只顯示前 3 檔
+5. **首頁隱藏「重新產生」整包每日訊號按鈕**：比照既有 `SHOW_MARGIN_ANALYSIS`
+   慣例加 `SHOW_REGENERATE_BUTTON: boolean = false`，保留邏輯與 quota 顯示，
+   改回顯示只要切常數；個股「重新預測」（M26 預測價）按鈕是不同功能不受影響
+
+### Gotcha
+- **同一個 Dialog.Title 樣式在檔案裡出現兩次時，Edit 工具的 old_string 必須
+  含足夠 context 才能鎖定正確那個**——這次改紀錄區 popup 標題時第一次 Edit
+  因為 old_string 太短同時匹配到 `StockDetailDialog`（追蹤中用）跟
+  `StoppedObservationDetailDialog`（紀錄區用）兩處，靠報錯訊息提示才發現要
+  擴大 old_string 範圍去唯一鎖定
+- **在既有測試檔案中間插入新測試，若 old_string 邊界沒有精確涵蓋到「這個測試
+  真正結束的地方」，容易誤把下一個測試的尾段內容切斷、錯位塞進新測試裡**——
+  這次新增 `test_stopped_observations_today_only_returns_todays_stops` 時
+  連續犯了兩次這個錯誤（原測試其實還有一段檢查 `/archive/completed` 獨立性
+  的尾段沒包進 old_string），靠跑測試看到 `NameError`/斷言失敗才發現，之後
+  修正時要完整看清楚原測試函式的真正結尾（下一個 `def test_` 之前）才動手
+
 ## 南亞（1303）永遠選不進推薦：LLM 看到的產業標籤從未接上 canonical 校正表（2026-08-19）
 
 ### 症狀
