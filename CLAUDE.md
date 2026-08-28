@@ -1,5 +1,76 @@
 # always-stock 專案記憶
 
+## 停止觀察改回立即結算 + 紀錄區動能圖三處真實資料範圍 bug（2026-08-28 第二輪）
+
+### 背景
+上一輪剛加完「今天停止觀察」獨立區塊，使用者發現兩個新問題：(1) 該區塊點開的
+動能圖一樣有線畫不出來，(2) 既然已經有獨立區塊呈現「今天被判定停止的股票」，
+「追蹤中」就不該再同時保留這些股票（延續 2026-08-14 那次「延後結算一天」的
+設計，讓 rose 底色卡片多留一天）。逐一查了兩個真實案例（1402、7711）後，發現
+不只是「延後結算」該不該存在的問題，動能圖本身有兩個獨立的真實資料範圍 bug。
+
+### 1. 停止觀察改回立即結算
+`_settle_pending_p4_fishtail_stops`（2026-08-14 上線）刻意讓魚尾追蹤週期延後
+一天結算，目的是讓使用者至少有一天能在「追蹤中」看到「已停止觀察」這個過渡
+狀態。現在「今天停止觀察」區塊已經專門負責這個資訊揭露，兩處同時顯示反而讓
+「追蹤中」不乾淨。修法：`run_daily_observation_reviews()` 裡 P4 確認 STOP 的
+當下（`_finalize_observation_archive` 之後）直接呼叫
+`archive.settle_stock_for_p4_stop(db, stock_id=sid, as_of_trade_date=
+review_date)`，同一晚立即結算移出。`_settle_pending_p4_fishtail_stops` 保留
+當防禦性 self-healing（篩選條件 `archived_date < review_date` 嚴格小於，跟
+立即結算不會撞在一起重複處理）。
+
+### 2. 動能圖上界用錯欄位：latest_hit_date 應該是 completed_trade_date
+`get_stopped_observation_detail()` 原本用 `record.latest_hit_date`（最後一次
+被 P3 抓到的日期）當動能圖／報告時間軸的資料上界。但 P4 每日複核不需要 P3
+當天重新選中才會跑——STOP 判定前後那幾天，P4 常常還在獨立複核，產生的
+momentum_score 合法存在，卻因為晚於 `latest_hit_date` 被濾掉。真實案例 1402：
+卡片標題顯示「8/20~8/26」，圖卻只到 8/21（P3 最後一次抓到日），8/24、8/25
+兩天 P4 複核的真實分數被誤刪。修法：改用 `record.completed_trade_date`
+（跟 `review_status_events` 欄位本來就用的上界一致，只有 `momentum_score_
+history` 那段沒改到）。
+
+### 3. 同一輪 episode 中途「假性停止又復活」，紀錄區圖表混進復活前的舊線
+真實案例 7711：8/21 被判定停止、8/24 又被 P3 重新選中在同一個 episode 復活
+（`_revive_if_stopped_yesterday_and_reselected_today`，2026-08-24 上線的
+功能），8/26 才真正確定停止結算。`get_stopped_observation_detail()` 原本只
+用 `[first_seen_date, latest_hit_date]` 這個外層時間範圍篩資料，沒有處理
+「範圍內部又有一次停止→復活」這個情況，導致圖表把 8/21 之前「上一輪」的線也
+畫出來。這其實跟 `get_archive_detail()`（追蹤中）在同一天稍早就修過的
+`_current_episode_revival_boundary()` 是同一種情境，差別只在：追蹤中用「目前
+最新一輪」鎖定 episode，紀錄區顯示的通常是**歷史上已經結束**的某一輪，不能
+用「目前最新一輪」（那樣會鎖到錯誤、更新的其他輪）。新增
+`_revival_boundary_within_range(db, stock_id, start_date, end_date)`：不分
+episode_id，直接在指定日期範圍內找 `SignalObservationReview` 時間序列裡最後
+一次「前一筆是 STOP_OBSERVING、後一筆不是」的轉換點，當作圖表真正的下界（跟
+`first_seen_date` 取較晚者）。
+
+### 4. 順手加的功能：occurrence_number（第幾次）
+使用者問「重複抓到的股票我怎麼知道是第幾次」——新增 `occurrence_number`／
+`occurrence_total`（依 `first_seen_date` 由舊到新排序，這筆紀錄是該股票第
+幾次進紀錄區、共有幾次），批次版本（`_resolve_occurrence_ranks_batch`）給
+列表 endpoint 用避免 N+1，單筆版本給 detail endpoint 用。卡片與 popup 標題
+都加「第 N 次（共 M 次）」小標籤。
+
+### Gotcha
+- **「延後結算」類設計的正當性會隨著其他功能上線而改變**：2026-08-14 延後
+  結算是因為當時沒有其他地方能看到「剛被停止」這個資訊，這輪加了「今天停止
+  觀察」區塊之後，原本的正當性就消失了、甚至變成兩處重複顯示的反效果。改動
+  UX 時要記得回頭檢查「這個設計當初解決的問題，現在是否已經被別的東西取代」
+- **同一份「找 revival boundary」邏輯，追蹤中跟紀錄區不能共用同一個函式**：
+  兩者都是「同一輪 episode 中途停止又復活，圖表該從復活日開始」的情境，但
+  「目前最新一輪」這個定義只對追蹤中（顯示現在進行式）有意義，紀錄區顯示的
+  是某一筆已經結束的歷史紀錄，必須改用「這筆紀錄自己的日期範圍」來界定，兩個
+  函式故意分開寫，不能硬套同一個
+- **`review_status_events` 跟 `momentum_score_history` 兩個並存的資料在同一支
+  函式裡，很容易只改到其中一個就以為修完了**——這次 `events` 欄位其實從一開始
+  就正確使用 `completed_trade_date` 當上界，只有 `momentum_score_history` 那段
+  沿用了錯誤的 `latest_hit_date`，兩段程式碼幾乎一樣但各自維護，容易漏改
+- **驗證這類「資料範圍」bug，直接對 production 真實資料跑一次 detail 函式最
+  快**——查 1402／7711 兩檔的完整 `SignalObservationReview` 歷史（review_date +
+  decision）比對 `SignalWatchStoppedObservation` 記錄的 first_seen/latest_hit/
+  completed 三個日期，幾分鐘內就精確定位到問題，不需要靠瀏覽器截圖或猜測
+
 ## P4 RISK_OFF 加速停止機制（方法 A）：從無效到過度敏感到收斂，用真實歷史資料反覆驗證（2026-08-27~28）
 
 ### 背景
