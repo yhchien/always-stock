@@ -45,12 +45,26 @@ episode_id，直接在指定日期範圍內找 `SignalObservationReview` 時間�
 一次「前一筆是 STOP_OBSERVING、後一筆不是」的轉換點，當作圖表真正的下界（跟
 `first_seen_date` 取較晚者）。
 
-### 4. 順手加的功能：occurrence_number（第幾次）
-使用者問「重複抓到的股票我怎麼知道是第幾次」——新增 `occurrence_number`／
-`occurrence_total`（依 `first_seen_date` 由舊到新排序，這筆紀錄是該股票第
-幾次進紀錄區、共有幾次），批次版本（`_resolve_occurrence_ranks_batch`）給
-列表 endpoint 用避免 N+1，單筆版本給 detail endpoint 用。卡片與 popup 標題
-都加「第 N 次（共 M 次）」小標籤。
+### 4. 順手加的功能：occurrence_number（第幾次）+ 內部復活要不要算多一輪的範圍釐清
+使用者問「重複抓到的股票我怎麼知道是第幾次」——第一版新增 `occurrence_number`／
+`occurrence_total`，單純依 `first_seen_date` 由舊到新排序、算這筆紀錄是該股票
+第幾筆 `SignalWatchStoppedObservation` row。但緊接著用 7711 案例驗證第 3 點
+（同一輪 episode 中途「假性停止又復活」）時，使用者指出這個名字本身就下錯了：
+「他這個不叫假性停止又復活，他是在 8/21 停止後，8/24 重新被抓到，所以需要視為
+全新一輪的觀察」——這直接牴觸 2026-08-24 那次明確要求的 revival 設計初衷（讓
+追蹤中卡片不要經歷一次多餘的「停止→隔天又重新開始」畫面轉換）。用
+`AskUserQuestion` 釐清範圍後，使用者選擇：**追蹤中／即時畫面的 revival 機制完全
+不動**（不能讓卡片閃爍），但「算第幾輪」跟紀錄區顯示要把這種「內部停止又在下一
+個交易日復活」的轉換點當成一次獨立的輪數分界——即使底層仍是同一筆
+`SignalWatchStoppedObservation` row，也要佔用 2 個（或更多）occurrence 名額。
+修法：`_resolve_occurrence_rank`／`_resolve_occurrence_ranks_batch` 從「單純數
+row」改成「每筆 row 的輪數貢獻 = 1 + 該 row 涵蓋時間範圍內
+`_revival_transitions_within_range()` 找到的內部復活次數」，累加起來才是真正的
+`occurrence_number`／`occurrence_total`。真實資料驗證：7711（1 筆 row、1 次內部
+復活）從舊版的 1/1 變成正確的 2/2；1402（1 筆 row、無內部復活）維持 1/1 不變。
+批次版本（`_resolve_occurrence_ranks_batch`）給列表 endpoint 用避免 N+1，單筆
+版本（`_resolve_occurrence_rank`）給 detail endpoint 用，兩者交叉驗證數字一致。
+卡片與 popup 標題都加「第 N 次（共 M 次）」小標籤。
 
 ### Gotcha
 - **「延後結算」類設計的正當性會隨著其他功能上線而改變**：2026-08-14 延後
@@ -70,6 +84,15 @@ episode_id，直接在指定日期範圍內找 `SignalObservationReview` 時間�
   快**——查 1402／7711 兩檔的完整 `SignalObservationReview` 歷史（review_date +
   decision）比對 `SignalWatchStoppedObservation` 記錄的 first_seen/latest_hit/
   completed 三個日期，幾分鐘內就精確定位到問題，不需要靠瀏覽器截圖或猜測
+- **「同一個底層機制，不同顯示層可以有不同語意」**：這次的 occurrence 範圍
+  釐清是本輪最重要的一課——使用者對同一個 revival 事件（8/21 停止、8/24 復活）
+  在兩個不同語境下給出看似矛盾的要求（「不要讓卡片閃爍」vs「這應該算新的一
+  輪」），但兩者其實不衝突：**底層資料模型（同一個 episode_id／同一筆
+  SignalWatchStoppedObservation row）不用因為顯示層語意不同就跟著拆分**，
+  真正該做的是讓「輪數計算」跟「即時畫面呈現」分別接住各自的需求，而不是為了
+  滿足新要求就去動已經明確定案的 revival 機制本身。遇到新需求疑似牴觸舊有
+  明確設計決策時，先用 `AskUserQuestion` 精確界定影響範圍，而不是直接照單
+  全收或直接拒絕
 
 ## P4 RISK_OFF 加速停止機制（方法 A）：從無效到過度敏感到收斂，用真實歷史資料反覆驗證（2026-08-27~28）
 

@@ -2441,6 +2441,11 @@ def test_get_stopped_observation_detail_excludes_data_before_mid_episode_revival
             e for e in detail["review_status_events"] if e["event"] == "stopped"
         ]
         assert stopped_events == [{"date": date(2026, 8, 26), "event": "stopped"}]
+        # 使用者明確要求：這種「內部曾經停止又在下一個交易日復活」的情況，
+        # 在「算第幾輪」跟紀錄區顯示上要算成多一輪——雖然底層只有一筆
+        # SignalWatchStoppedObservation row，占用了 2 個 occurrence 名額。
+        assert detail["occurrence_number"] == 2
+        assert detail["occurrence_total"] == 2
 
 
 def test_get_stopped_observation_detail_returns_none_for_unknown_key():

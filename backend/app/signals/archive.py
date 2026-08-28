@@ -525,20 +525,20 @@ def _current_episode_revival_boundary(
     return revival_date
 
 
-def _revival_boundary_within_range(
+def _revival_transitions_within_range(
     db: Session, stock_id: str, start_date: date, end_date: date
-) -> Optional[date]:
-    """2026-08-28：紀錄區（已結算、`SignalWatchStoppedObservation`）版本的復活
-    邊界偵測——跟 `_current_episode_revival_boundary` 是同一種情境（一輪 P4
-    episode 中途曾經 STOP_OBSERVING 又復活），差別是紀錄區顯示的通常是股票**歷史上
-    已經結束**的某一輪，不一定是該股票現在最新一輪，所以不能用「目前最新一輪」
-    去鎖定 episode（那樣會找錯到更新的其他輪）。改用這筆紀錄自己的
-    `[first_seen_date, completed_trade_date]` 區間直接篩 `SignalObservationReview`
-    （不分 episode_id——同一檔股票的不同輪在時間上本來就不會重疊，用日期範圍篩
-    效果等同於篩到正確的那個 episode），找範圍內最後一次「前一筆是
-    STOP_OBSERVING、後一筆不是」的轉換點。真實案例：7711 這一輪（8/7~8/27）內部
-    在 8/21 被判定停止、8/24 又復活、8/26 才真正確定停止結算——復活前
-    （8/8~8/21）的資料不該出現在這筆紀錄的圖表裡。
+) -> list[date]:
+    """2026-08-28：找出 `[start_date, end_date]` 範圍內，`SignalObservationReview`
+    時間序列裡所有「前一筆是 STOP_OBSERVING、後一筆不是」的轉換點（依日期升序），
+    即「假性停止又復活」事件的復活日清單。不分 episode_id——同一檔股票的不同輪
+    在時間上本來就不會重疊，用日期範圍篩效果等同於篩到正確的那個 episode。
+
+    真實案例：7711 這一輪（8/7~8/27）內部在 8/21 被判定停止、8/24 又復活、
+    8/26 才真正確定停止結算——回傳 `[date(2026,8,24)]`。使用者明確要求：這種
+    「停止後隔天／隔幾個交易日內又被重新抓到」的事件，即使 P4 那邊為了即時追蹤
+    畫面的無縫接軌而沿用同一個 episode_id（`_revive_if_stopped_yesterday_and_
+    reselected_today`），在「算第幾輪」跟紀錄區顯示上仍然要當成一次獨立的
+    分界，不能因為底層是同一個 episode 就完全隱形。
     """
     observation_ids = [
         row[0]
@@ -547,7 +547,7 @@ def _revival_boundary_within_range(
         .all()
     ]
     if not observation_ids:
-        return None
+        return []
     reviews = (
         db.query(SignalObservationReview.review_date, SignalObservationReview.decision)
         .filter(
@@ -558,13 +558,28 @@ def _revival_boundary_within_range(
         .order_by(SignalObservationReview.review_date.asc())
         .all()
     )
-    revival_date: Optional[date] = None
+    transitions: list[date] = []
     prev_decision: Optional[str] = None
     for review_date, decision in reviews:
         if prev_decision == "STOP_OBSERVING" and decision != "STOP_OBSERVING":
-            revival_date = review_date
+            transitions.append(review_date)
         prev_decision = decision
-    return revival_date
+    return transitions
+
+
+def _revival_boundary_within_range(
+    db: Session, stock_id: str, start_date: date, end_date: date
+) -> Optional[date]:
+    """紀錄區（已結算、`SignalWatchStoppedObservation`）版本的復活邊界偵測——
+    跟 `_current_episode_revival_boundary` 是同一種情境（一輪 P4 episode 中途
+    曾經 STOP_OBSERVING 又復活），差別是紀錄區顯示的通常是股票**歷史上已經
+    結束**的某一輪，不一定是該股票現在最新一輪，所以不能用「目前最新一輪」去
+    鎖定 episode（那樣會找錯到更新的其他輪）。只取最後一次轉換點，給圖表下界
+    用（只該顯示最近這一段的資料）；若要完整的轉換點清單（給 occurrence 計數
+    用），改叫 `_revival_transitions_within_range`。
+    """
+    transitions = _revival_transitions_within_range(db, stock_id, start_date, end_date)
+    return transitions[-1] if transitions else None
 
 
 def get_archive_detail(
@@ -934,21 +949,33 @@ def _resolve_occurrence_rank(
     db: Session, *, stock_id: str, first_seen_date: date
 ) -> tuple[Optional[int], Optional[int]]:
     """回 (occurrence_number, occurrence_total)：這筆 (stock_id, first_seen_date)
-    在 `SignalWatchStoppedObservation` 裡，依 first_seen_date 由舊到新排序，
-    是該股票第幾次進紀錄區、總共有幾次。單筆查詢版本，給 detail endpoint 用。"""
-    dates = sorted(
-        row[0]
-        for row in db.query(SignalWatchStoppedObservation.first_seen_date)
+    在該股票所有 `SignalWatchStoppedObservation` 記錄裡是第幾輪、總共有幾輪。
+
+    每一筆 row 本身若內部曾經「停止觀察又在下一個交易日被重新抓到」（見
+    `_revival_transitions_within_range`），使用者明確要求把這種情況算成
+    多一輪——所以輪數不是單純「第幾筆 row」，是「累積到這筆 row 為止，
+    包含它自己內部復活次數的總輪數」。單筆查詢版本，給 detail endpoint 用。"""
+    rows = (
+        db.query(
+            SignalWatchStoppedObservation.first_seen_date,
+            SignalWatchStoppedObservation.completed_trade_date,
+        )
         .filter(SignalWatchStoppedObservation.stock_id == stock_id)
+        .order_by(SignalWatchStoppedObservation.first_seen_date.asc())
         .all()
     )
-    total = len(dates)
-    if total == 0:
+    if not rows:
         return None, None
-    try:
-        return dates.index(first_seen_date) + 1, total
-    except ValueError:
-        return None, total
+    cumulative = 0
+    target_number: Optional[int] = None
+    for row_first_seen, row_completed in rows:
+        transitions = _revival_transitions_within_range(
+            db, stock_id, row_first_seen, row_completed
+        )
+        cumulative += 1 + len(transitions)
+        if row_first_seen == first_seen_date:
+            target_number = cumulative
+    return target_number, cumulative
 
 
 def _resolve_occurrence_ranks_batch(
@@ -964,6 +991,7 @@ def _resolve_occurrence_ranks_batch(
         db.query(
             SignalWatchStoppedObservation.stock_id,
             SignalWatchStoppedObservation.first_seen_date,
+            SignalWatchStoppedObservation.completed_trade_date,
         )
         .filter(SignalWatchStoppedObservation.stock_id.in_(unique_ids))
         .order_by(
@@ -972,14 +1000,22 @@ def _resolve_occurrence_ranks_batch(
         )
         .all()
     )
-    by_stock: dict[str, list[date]] = {}
-    for sid, fsd in rows:
-        by_stock.setdefault(sid, []).append(fsd)
+    by_stock: dict[str, list[tuple[date, date]]] = {}
+    for sid, fsd, ctd in rows:
+        by_stock.setdefault(sid, []).append((fsd, ctd))
     result: dict[tuple[str, date], tuple[int, int]] = {}
-    for sid, dates in by_stock.items():
-        total = len(dates)
-        for idx, d in enumerate(dates, start=1):
-            result[(sid, d)] = (idx, total)
+    for sid, entries in by_stock.items():
+        cumulative = 0
+        per_row_number: dict[date, int] = {}
+        for row_first_seen, row_completed in entries:
+            transitions = _revival_transitions_within_range(
+                db, sid, row_first_seen, row_completed
+            )
+            cumulative += 1 + len(transitions)
+            per_row_number[row_first_seen] = cumulative
+        total = cumulative
+        for row_first_seen, _row_completed in entries:
+            result[(sid, row_first_seen)] = (per_row_number[row_first_seen], total)
     return result
 
 
