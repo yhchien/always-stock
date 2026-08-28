@@ -830,6 +830,11 @@ function StoppedObservationDetailDialog({
                     <span className="font-mono text-sm font-normal text-sky-300">
                       （{item.first_seen_date} ～ {item.completed_trade_date}）
                     </span>
+                    {item.occurrence_number != null && item.occurrence_total != null && (
+                      <span className="rounded border border-slate-600 bg-slate-800/60 px-1.5 py-0.5 text-xs font-normal text-slate-300">
+                        第 {item.occurrence_number} 次（共 {item.occurrence_total} 次）
+                      </span>
+                    )}
                   </Dialog.Title>
                   <Dialog.Description className="mt-1 text-xs text-slate-400">
                     {item.industry_name ?? "—"}
@@ -1143,6 +1148,11 @@ function TodayStoppedSection({
                     </span>
                     <span className="font-mono text-[11px] text-sky-300">
                       {item.first_seen_date} ～ {item.completed_trade_date}（存活 {survivalDays} 天）
+                      {item.occurrence_number != null && item.occurrence_total != null && (
+                        <span className="ml-1.5 text-slate-400">
+                          （第 {item.occurrence_number}/{item.occurrence_total} 次）
+                        </span>
+                      )}
                     </span>
                   </div>
                   <SignalTypeChip type={item.latest_signal_type} />
@@ -1406,6 +1416,11 @@ function StoppedObservationsSection({
                           <span className="font-mono text-[11px] text-sky-300">
                             {formatShortDate(item.first_seen_date)} ～{" "}
                             {formatShortDate(item.completed_trade_date)}
+                            {item.occurrence_number != null && item.occurrence_total != null && (
+                              <span className="ml-1.5 text-slate-400">
+                                （第 {item.occurrence_number}/{item.occurrence_total} 次）
+                              </span>
+                            )}
                           </span>
                           <span className="text-xs text-slate-500">
                             {item.industry_name ?? "—"}

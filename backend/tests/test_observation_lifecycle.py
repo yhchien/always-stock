@@ -14,6 +14,7 @@ from app.models import (
     SignalObservationReview,
     SignalWatchCompletedArchive,
     SignalWatchHit,
+    SignalWatchStoppedObservation,
 )
 from app.signals import archive as archive_module
 from app.signals import observation_lifecycle as lifecycle
@@ -1677,12 +1678,11 @@ def test_first_stop_immediately_archives(db, monkeypatch):
     assert db.get(SignalObservation, observation.id).stop_confirm_count == 1
 
 
-def test_first_stop_defers_fishtail_settlement_by_one_review_day(db, monkeypatch):
-    """2026-08-14：使用者要求 STOP 判定當晚不要立即把魚尾追蹤週期結算移出——
-    要讓使用者至少有一個觀察日能在「追蹤中」名單看到「已停止觀察」狀態（archive
-    頁 rose 底色卡片），主要目的是告知，不是直接消失進紀錄區。所以 DAY_1（STOP
-    當天）魚尾週期應該還在，要到下一次複核（DAY_2）才會被
-    `_settle_pending_p4_fishtail_stops` 結算。"""
+def test_first_stop_settles_fishtail_immediately(db, monkeypatch):
+    """2026-08-28：撤銷 2026-08-14 那次「延後一天結算」的設計——魚尾頁現在有獨立
+    的「今天停止觀察」區塊專門呈現這個資訊，不再需要靠「追蹤中」多留一天 rose
+    底色卡片來補這個缺口；同一天兩處都顯示反而讓「追蹤中」看起來不乾淨。所以
+    STOP 判定當下（DAY_1）魚尾追蹤週期就該立即結算移出，不必等到 DAY_2。"""
     observation = _observation(db)
     db.add(DailyPrice(stock_id="2330", trade_date=DAY_0, close_price=100.0))
     db.add(
@@ -1722,31 +1722,21 @@ def test_first_stop_defers_fishtail_settlement_by_one_review_day(db, monkeypatch
     assert row.stop_confirm_count == 1
     # P4 觀察本身當下就定案歸檔（archive row 已存在）……
     assert db.query(SignalObservationArchive).filter_by(observation_id=observation.id).count() == 1
-    # ……但魚尾追蹤週期這天刻意還沒動：使用者隔天打開網站時仍能在「追蹤中」看到
-    # 這檔股票（rose 底色的「已停止觀察」卡片），不是直接消失進紀錄區。
-    assert db.query(SignalWatchHit).filter_by(stock_id="2330").count() == 1
-    assert db.query(SignalWatchCompletedArchive).filter_by(stock_id="2330").count() == 0
-    assert result_day1["tracking_summary"]["fishtail_stop_settled_count"] == 0
-
-    # 下一次複核（不論這檔股票本身有沒有東西要複核，STOPPED 觀察已經被查詢條件
-    # 排除在 reviewable 之外）——_settle_pending_p4_fishtail_stops 這次才動手。
-    result_day2 = lifecycle.run_daily_observation_reviews(
-        db,
-        review_date=DAY_2,
-        market_context={},
-        assessment_runner=_runner_for({}),
-        persist=True,
-    )
-
-    assert result_day2["tracking_summary"]["fishtail_stop_settled_count"] == 1
-    active_hits = db.query(SignalWatchHit).filter_by(stock_id="2330").all()
-    assert active_hits == []
-
+    # ……魚尾追蹤週期也同一晚立即結算移出，不再等到隔天。
+    assert db.query(SignalWatchHit).filter_by(stock_id="2330").count() == 0
     completed = (
         db.query(SignalWatchCompletedArchive).filter_by(stock_id="2330").one()
     )
     assert completed.closure_reason == archive_module.CLOSURE_REASON_P4_STOPPED
-    assert completed.completed_trade_date == DAY_2
+    assert completed.completed_trade_date == DAY_1
+    stopped_record = (
+        db.query(SignalWatchStoppedObservation).filter_by(stock_id="2330").one()
+    )
+    assert stopped_record.closure_reason == archive_module.CLOSURE_REASON_P4_STOPPED
+    assert stopped_record.completed_trade_date == DAY_1
+    # _settle_pending_p4_fishtail_stops 這次沒有東西可結算（沒有 archived_date <
+    # review_date 的殘留），純防禦性 self-healing 沒被觸發。
+    assert result_day1["tracking_summary"]["fishtail_stop_settled_count"] == 0
 
 
 def test_settle_pending_p4_fishtail_stops_is_self_healing_across_gaps(db):

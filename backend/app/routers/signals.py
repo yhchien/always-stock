@@ -163,6 +163,11 @@ class SignalArchiveCompletedItemResponse(BaseModel):
     # M26：對應 (stock_id, first_seen_date) 的 SignalExpectationPrice 預測;舊資料 = None
     conservative_price: Optional[float] = None
     dream_price: Optional[float] = None
+    # 2026-08-28：同一檔股票可能有多筆歷史停止紀錄，標示「這是第幾次」；只有
+    # /archive/stopped 系列（SignalWatchStoppedObservation）會填，/archive/completed
+    # （舊策略時代的 SignalWatchCompletedArchive）維持 None。
+    occurrence_number: Optional[int] = None
+    occurrence_total: Optional[int] = None
 
 
 class SignalArchiveCompletedPeriodMeta(BaseModel):

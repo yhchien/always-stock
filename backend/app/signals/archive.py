@@ -123,6 +123,10 @@ class CompletedArchiveItem:
     # M26：對應 (stock_id, first_seen_date) 的 SignalExpectationPrice 預測；舊資料無 → None
     conservative_price: Optional[float] = None
     dream_price: Optional[float] = None
+    # 2026-08-28：同一檔股票可能有多筆歷史停止紀錄，標示「這是第幾次」；只有
+    # list_stopped_observations_summary／list_stopped_observations_for_date 會填。
+    occurrence_number: Optional[int] = None
+    occurrence_total: Optional[int] = None
 
 
 def _distinct_versions(rows: list[SignalWatchHit]) -> str:
@@ -521,6 +525,48 @@ def _current_episode_revival_boundary(
     return revival_date
 
 
+def _revival_boundary_within_range(
+    db: Session, stock_id: str, start_date: date, end_date: date
+) -> Optional[date]:
+    """2026-08-28：紀錄區（已結算、`SignalWatchStoppedObservation`）版本的復活
+    邊界偵測——跟 `_current_episode_revival_boundary` 是同一種情境（一輪 P4
+    episode 中途曾經 STOP_OBSERVING 又復活），差別是紀錄區顯示的通常是股票**歷史上
+    已經結束**的某一輪，不一定是該股票現在最新一輪，所以不能用「目前最新一輪」
+    去鎖定 episode（那樣會找錯到更新的其他輪）。改用這筆紀錄自己的
+    `[first_seen_date, completed_trade_date]` 區間直接篩 `SignalObservationReview`
+    （不分 episode_id——同一檔股票的不同輪在時間上本來就不會重疊，用日期範圍篩
+    效果等同於篩到正確的那個 episode），找範圍內最後一次「前一筆是
+    STOP_OBSERVING、後一筆不是」的轉換點。真實案例：7711 這一輪（8/7~8/27）內部
+    在 8/21 被判定停止、8/24 又復活、8/26 才真正確定停止結算——復活前
+    （8/8~8/21）的資料不該出現在這筆紀錄的圖表裡。
+    """
+    observation_ids = [
+        row[0]
+        for row in db.query(SignalObservation.id)
+        .filter(SignalObservation.stock_id == stock_id)
+        .all()
+    ]
+    if not observation_ids:
+        return None
+    reviews = (
+        db.query(SignalObservationReview.review_date, SignalObservationReview.decision)
+        .filter(
+            SignalObservationReview.observation_id.in_(observation_ids),
+            SignalObservationReview.review_date >= start_date,
+            SignalObservationReview.review_date <= end_date,
+        )
+        .order_by(SignalObservationReview.review_date.asc())
+        .all()
+    )
+    revival_date: Optional[date] = None
+    prev_decision: Optional[str] = None
+    for review_date, decision in reviews:
+        if prev_decision == "STOP_OBSERVING" and decision != "STOP_OBSERVING":
+            revival_date = review_date
+        prev_decision = decision
+    return revival_date
+
+
 def get_archive_detail(
     db: Session,
     stock_id: str,
@@ -635,12 +681,34 @@ def get_stopped_observation_detail(
         db, stock_id, record.first_seen_date, record.latest_hit_date
     )
 
+    # 2026-08-28 修正兩個問題：
+    # (1) 原本用 record.latest_hit_date（最後一次被 P3 抓到的日期）當動能圖上界，
+    #     但 P4 複核不需要 P3 當天重新選中才會跑，STOP 判定前後這幾天的複核資料
+    #     （momentum_score）常常晚於 latest_hit_date，卻早於真正結算的
+    #     completed_trade_date——用 latest_hit_date 當上界會把這些合法資料切掉，
+    #     讓圖表看起來比卡片標題宣稱的日期範圍還短（真實案例：1402 標題顯示
+    #     8/20~8/26，圖卻只到 8/21）。改用 completed_trade_date，跟下面
+    #     review_status_events 本來就用的上界一致。
+    # (2) 這筆紀錄涵蓋的期間內，P4 那一輪 episode 可能中途「停止觀察→隔天復活」
+    #     過（`_revive_if_stopped_yesterday_and_reselected_today`）——復活前的
+    #     資料不該混進「這一輪紀錄」的圖表（真實案例：7711 這筆 8/7~8/27 的紀錄，
+    #     中間 8/21 曾被判定停止、8/24 復活、8/26 才真正確定停止，圖表應該只從
+    #     8/24 開始，不該看到 8/21 之前『上一輪停止觀察』的線）。
+    revival_boundary = _revival_boundary_within_range(
+        db, stock_id, record.first_seen_date, record.completed_trade_date
+    )
+    effective_start_date = (
+        max(record.first_seen_date, revival_boundary)
+        if revival_boundary is not None
+        else record.first_seen_date
+    )
+
     p4_points = _load_p4_momentum_points(db, stock_id)
     by_date: dict[Any, dict[str, Any]] = {}
     for point in p4_points:
         if point["momentum_score"] is None:
             continue
-        if not (record.first_seen_date <= point["date"] <= record.latest_hit_date):
+        if not (effective_start_date <= point["date"] <= record.completed_trade_date):
             continue
         by_date[point["date"]] = {
             "date": point["date"],
@@ -650,6 +718,8 @@ def get_stopped_observation_detail(
     for report in reports:
         if report["momentum_score"] is None:
             continue
+        if report["snapshot_date"] < effective_start_date:
+            continue
         by_date[report["snapshot_date"]] = {
             "date": report["snapshot_date"],
             "momentum_score": report["momentum_score"],
@@ -658,11 +728,12 @@ def get_stopped_observation_detail(
     momentum_score_history = sorted(by_date.values(), key=lambda item: item["date"])
 
     # review_status_events 是全時間軸（跨這檔股票所有 episode），裁到這筆紀錄涵蓋的
-    # 區間，避免顯示到不相干的其他次追蹤 cycle 的警戒/停止標記
+    # 區間（並排除復活前的舊事件，理由同上），避免顯示到不相干的其他次追蹤 cycle
+    # 或同一輪復活前的警戒/停止標記
     events = [
         event
         for event in _load_review_status_events(db, stock_id)
-        if record.first_seen_date <= event["date"] <= record.completed_trade_date
+        if effective_start_date <= event["date"] <= record.completed_trade_date
     ]
 
     expectation_map = _load_expectation_prices_map(
@@ -676,6 +747,12 @@ def get_stopped_observation_detail(
     # 第一筆即最新一筆——比照 get_archive_detail 用「最新一筆命中」帶出一句話總結／
     # 相對優勢／融資融券分析
     latest_report = reports[0] if reports else {}
+
+    # 2026-08-28：同一檔股票可能有多筆歷史停止紀錄（不同輪），標出「這是第幾次」
+    # 讓使用者能分辨——依 first_seen_date 由舊到新排序，這筆紀錄排第幾個。
+    occurrence_number, occurrence_total = _resolve_occurrence_rank(
+        db, stock_id=stock_id, first_seen_date=record.first_seen_date
+    )
 
     return {
         "stock_id": record.stock_id,
@@ -706,6 +783,8 @@ def get_stopped_observation_detail(
         "reports": reports,
         "momentum_score_history": momentum_score_history,
         "review_status_events": events,
+        "occurrence_number": occurrence_number,
+        "occurrence_total": occurrence_total,
     }
 
 
@@ -851,6 +930,59 @@ def list_completed_archive_summary(
     )
 
 
+def _resolve_occurrence_rank(
+    db: Session, *, stock_id: str, first_seen_date: date
+) -> tuple[Optional[int], Optional[int]]:
+    """回 (occurrence_number, occurrence_total)：這筆 (stock_id, first_seen_date)
+    在 `SignalWatchStoppedObservation` 裡，依 first_seen_date 由舊到新排序，
+    是該股票第幾次進紀錄區、總共有幾次。單筆查詢版本，給 detail endpoint 用。"""
+    dates = sorted(
+        row[0]
+        for row in db.query(SignalWatchStoppedObservation.first_seen_date)
+        .filter(SignalWatchStoppedObservation.stock_id == stock_id)
+        .all()
+    )
+    total = len(dates)
+    if total == 0:
+        return None, None
+    try:
+        return dates.index(first_seen_date) + 1, total
+    except ValueError:
+        return None, total
+
+
+def _resolve_occurrence_ranks_batch(
+    db: Session, stock_ids: Sequence[str]
+) -> dict[tuple[str, date], tuple[int, int]]:
+    """`_resolve_occurrence_rank` 的批次版本，給列表 endpoint 用（避免對每個
+    stock_id 各查一次）。回 {(stock_id, first_seen_date): (occurrence_number,
+    occurrence_total)}。"""
+    unique_ids = sorted(set(stock_ids))
+    if not unique_ids:
+        return {}
+    rows = (
+        db.query(
+            SignalWatchStoppedObservation.stock_id,
+            SignalWatchStoppedObservation.first_seen_date,
+        )
+        .filter(SignalWatchStoppedObservation.stock_id.in_(unique_ids))
+        .order_by(
+            SignalWatchStoppedObservation.stock_id,
+            SignalWatchStoppedObservation.first_seen_date.asc(),
+        )
+        .all()
+    )
+    by_stock: dict[str, list[date]] = {}
+    for sid, fsd in rows:
+        by_stock.setdefault(sid, []).append(fsd)
+    result: dict[tuple[str, date], tuple[int, int]] = {}
+    for sid, dates in by_stock.items():
+        total = len(dates)
+        for idx, d in enumerate(dates, start=1):
+            result[(sid, d)] = (idx, total)
+    return result
+
+
 def list_stopped_observations_summary(
     db: Session,
     *,
@@ -858,9 +990,19 @@ def list_stopped_observations_summary(
     period_start: Optional[date] = None,
 ) -> dict[str, Any]:
     """回「停止觀察的股票」表（2026-08-13 起才開始累積）的 items + 半年期間 meta。"""
-    return _list_archive_style_table_summary(
+    result = _list_archive_style_table_summary(
         db, SignalWatchStoppedObservation, limit=limit, period_start=period_start
     )
+    ranks = _resolve_occurrence_ranks_batch(
+        db, [item["stock_id"] for item in result["items"]]
+    )
+    for item in result["items"]:
+        occurrence_number, occurrence_total = ranks.get(
+            (item["stock_id"], item["first_seen_date"]), (None, None)
+        )
+        item["occurrence_number"] = occurrence_number
+        item["occurrence_total"] = occurrence_total
+    return result
 
 
 def list_stopped_observations_for_date(
@@ -914,6 +1056,11 @@ def list_stopped_observations_for_date(
         key=lambda item: (item.completed_trade_date - item.first_seen_date),
         reverse=True,
     )
+    ranks = _resolve_occurrence_ranks_batch(db, [item.stock_id for item in items])
+    for item in items:
+        item.occurrence_number, item.occurrence_total = ranks.get(
+            (item.stock_id, item.first_seen_date), (None, None)
+        )
     return {
         "items": [_serialize_completed_archive_item(item) for item in items],
         "completed_trade_date": completed_trade_date,
@@ -1996,6 +2143,8 @@ def _serialize_completed_archive_item(item: CompletedArchiveItem) -> dict[str, A
         "prompt_version": item.prompt_version or "v1",
         "conservative_price": item.conservative_price,
         "dream_price": item.dream_price,
+        "occurrence_number": item.occurrence_number,
+        "occurrence_total": item.occurrence_total,
     }
 
 

@@ -1730,6 +1730,10 @@ export interface SignalArchiveCompletedItem {
   // M26：對應 (stock_id, first_seen_date) 的 expectation price 預測；舊資料 = null
   conservative_price?: number | null
   dream_price?: number | null
+  // 2026-08-28：同一檔股票可能有多筆歷史停止紀錄，標示「這是第幾次」；只有
+  // /archive/stopped 系列會填，/archive/completed（舊策略時代）維持 null。
+  occurrence_number?: number | null
+  occurrence_total?: number | null
 }
 
 export type SignalClosureReason =

@@ -2281,6 +2281,168 @@ def test_get_stopped_observation_detail_reconstructs_from_snapshots():
         ]
 
 
+def test_get_stopped_observation_detail_includes_p4_data_after_last_fishtail_hit():
+    """2026-08-28 regression（真實案例 1402）：`latest_hit_date`（最後一次被 P3
+    抓到的日期）常常早於 `completed_trade_date`（P4 真正確認停止並結算的日期）
+    ——P4 複核不需要 P3 當天重新選中才會跑。舊版用 latest_hit_date 當動能圖上界，
+    會把 STOP 判定前後這幾天的合法 P4 複核資料切掉，讓圖表比卡片標題宣稱的日期
+    範圍還短。改用 completed_trade_date 當上界後，這幾天的資料應該要出現。"""
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+
+    with Session() as db:
+        observation = SignalObservation(
+            stock_id="1402",
+            stock_name="測試股",
+            asset_type="COMMON_STOCK",
+            episode_id="episode-1402-1",
+            status="STOPPED",
+            started_signal_date=date(2026, 8, 20),
+            baseline_quality="P3_COMPLETE",
+            initial_snapshot_json={},
+        )
+        db.add(observation)
+        db.flush()
+        db.add(
+            SignalObservationReview(
+                observation_id=observation.id,
+                review_date=date(2026, 8, 21),
+                decision="CAUTION",
+                reason_codes=[],
+                reason="",
+                caution_dimensions=[],
+                failed_dimensions=[],
+                momentum_score=85.9,
+                prompt_version="v1",
+                state_machine_version="v1",
+            )
+        )
+        db.add(
+            SignalObservationReview(
+                observation_id=observation.id,
+                review_date=date(2026, 8, 24),
+                decision="CAUTION",
+                reason_codes=[],
+                reason="",
+                caution_dimensions=[],
+                failed_dimensions=[],
+                momentum_score=82.3,
+                prompt_version="v1",
+                state_machine_version="v1",
+            )
+        )
+        db.add(
+            SignalObservationReview(
+                observation_id=observation.id,
+                review_date=date(2026, 8, 25),
+                decision="STOP_OBSERVING",
+                reason_codes=[],
+                reason="",
+                caution_dimensions=[],
+                failed_dimensions=[],
+                momentum_score=72.2,
+                prompt_version="v1",
+                state_machine_version="v1",
+            )
+        )
+        db.add(
+            SignalWatchStoppedObservation(
+                stock_id="1402",
+                stock_name="測試股",
+                first_seen_date=date(2026, 8, 20),
+                latest_hit_date=date(2026, 8, 21),  # P3 只抓到 8/20~8/21 兩天
+                hit_count=2,
+                latest_signal_type="LEADER",
+                completed_trade_date=date(2026, 8, 26),  # 但 P4 到 8/25 才真正 STOP
+                closure_reason="p4_stopped",
+            )
+        )
+        db.commit()
+
+        detail = archive.get_stopped_observation_detail(db, "1402", date(2026, 8, 20))
+        assert detail is not None
+        history_dates = [p["date"] for p in detail["momentum_score_history"]]
+        # 8/24 跟 8/25（STOP 當天）都晚於 latest_hit_date(8/21)，但早於
+        # completed_trade_date(8/26)，應該要出現在圖表裡。
+        assert date(2026, 8, 24) in history_dates
+        assert date(2026, 8, 25) in history_dates
+
+
+def test_get_stopped_observation_detail_excludes_data_before_mid_episode_revival():
+    """2026-08-28 regression（真實案例 7711）：同一輪 P4 episode 中途曾經
+    STOP_OBSERVING 又復活（`_revive_if_stopped_yesterday_and_reselected_today`），
+    最後才真正結算——復活前那一段（上一次「假的」停止觀察）不該出現在這筆紀錄的
+    圖表裡，只該顯示復活之後到真正結算為止的資料。"""
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+
+    with Session() as db:
+        observation = SignalObservation(
+            stock_id="7711",
+            stock_name="測試股",
+            asset_type="COMMON_STOCK",
+            episode_id="episode-7711-1",
+            status="STOPPED",
+            started_signal_date=date(2026, 8, 7),
+            baseline_quality="P3_COMPLETE",
+            initial_snapshot_json={},
+        )
+        db.add(observation)
+        db.flush()
+        reviews = [
+            (date(2026, 8, 8), "CAUTION", 55.0),
+            (date(2026, 8, 21), "STOP_OBSERVING", 65.6),  # 第一次「假的」停止
+            (date(2026, 8, 24), "CAUTION", 85.8),  # 隔天立刻重選復活
+            (date(2026, 8, 25), "CAUTION", 77.4),
+            (date(2026, 8, 26), "STOP_OBSERVING", 59.8),  # 真正結算的停止
+        ]
+        for review_date, decision, score in reviews:
+            db.add(
+                SignalObservationReview(
+                    observation_id=observation.id,
+                    review_date=review_date,
+                    decision=decision,
+                    reason_codes=[],
+                    reason="",
+                    caution_dimensions=[],
+                    failed_dimensions=[],
+                    momentum_score=score,
+                    prompt_version="v1",
+                    state_machine_version="v1",
+                )
+            )
+        db.add(
+            SignalWatchStoppedObservation(
+                stock_id="7711",
+                stock_name="測試股",
+                first_seen_date=date(2026, 8, 7),
+                latest_hit_date=date(2026, 8, 24),
+                hit_count=6,
+                latest_signal_type="LEADER",
+                completed_trade_date=date(2026, 8, 27),
+                closure_reason="p4_stopped",
+            )
+        )
+        db.commit()
+
+        detail = archive.get_stopped_observation_detail(db, "7711", date(2026, 8, 7))
+        assert detail is not None
+        history_dates = [p["date"] for p in detail["momentum_score_history"]]
+        # 復活前（8/8、8/21）不該出現；復活後（8/24、8/25、8/26）應該出現。
+        assert date(2026, 8, 8) not in history_dates
+        assert date(2026, 8, 21) not in history_dates
+        assert date(2026, 8, 24) in history_dates
+        assert date(2026, 8, 25) in history_dates
+        assert date(2026, 8, 26) in history_dates
+        # 事件也一樣：復活前的 stopped 標記不該出現，只留下復活後真正結算那次。
+        stopped_events = [
+            e for e in detail["review_status_events"] if e["event"] == "stopped"
+        ]
+        assert stopped_events == [{"date": date(2026, 8, 26), "event": "stopped"}]
+
+
 def test_get_stopped_observation_detail_returns_none_for_unknown_key():
     engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
     Base.metadata.create_all(bind=engine)
@@ -2328,7 +2490,12 @@ def test_get_stopped_observation_detail_disambiguates_multiple_cycles_by_first_s
         assert detail is not None
         assert detail["closure_reason"] == "p4_stopped"
         assert detail["first_seen_date"] == date(2026, 8, 1)
+        # 2026-08-28：兩筆紀錄依 first_seen_date 由舊到新排序，8/1 這筆是第 2 次（共 2 次）。
+        assert detail["occurrence_number"] == 2
+        assert detail["occurrence_total"] == 2
 
         other = archive.get_stopped_observation_detail(db, "3231", date(2026, 6, 1))
         assert other is not None
         assert other["closure_reason"] == "completed_30_days"
+        assert other["occurrence_number"] == 1
+        assert other["occurrence_total"] == 2

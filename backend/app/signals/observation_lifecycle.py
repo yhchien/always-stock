@@ -1547,15 +1547,20 @@ def run_daily_observation_reviews(
                 _finalize_observation_archive(
                     db, observation=observation, archived_date=review_date
                 )
-                # 2026-08-14：這裡刻意不再立即呼叫 archive.settle_stock_for_p4_stop。
-                # 過去 STOP 判定跟魚尾結算是同一晚原子性發生，使用者永遠看不到「已停止
-                # 觀察」這個狀態本身（隔天打開網站時，那檔股票已經從追蹤中消失，直接
-                # 出現在紀錄區），rose 底色卡片形同虛設。現在改成：P4 觀察本身（archive
-                # row）仍然當下就定案，但魚尾追蹤週期留到「下一個複核日」才結算——見本
-                # 函式後面的 _settle_pending_p4_fishtail_stops，用法跟既有
-                # _settle_pending_archive_exits（P4 archive 的 exit_price 延後一天補上）
-                # 是同一個「留一個觀察日才動作」的既有模式，不是新發明的機制。
-                pass
+                # 2026-08-28：改回當下立即結算（撤銷 2026-08-14 那次「延後一天」的
+                # 設計）。當時延後是因為 STOP 判定跟魚尾結算同一晚原子性發生，使用者
+                # 永遠看不到「已停止觀察」這個過渡狀態；但現在魚尾頁已經有獨立的
+                # 「今天停止觀察」區塊（archive.list_stopped_observations_for_date）
+                # 專門呈現這個資訊，不再需要靠「追蹤中」多留一天 rose 底色卡片來補這個
+                # 缺口——兩個地方同時顯示同一件事反而讓「追蹤中」不乾淨（使用者反映
+                # 明明已經在獨立區塊看得到，追蹤中卻還留著一筆）。`_settle_pending_
+                # p4_fishtail_stops`（下面 db.flush() 之後那行）保留當防禦性 self-
+                # healing 機制，不會跟這裡的立即結算衝突——它的篩選條件是
+                # `archived_date < review_date`（嚴格小於），今天才 archive 的不會
+                # 被那條路徑重複處理。
+                archive.settle_stock_for_p4_stop(
+                    db, stock_id=sid, as_of_trade_date=review_date
+                )
         observation.latest_snapshot_json = {
             "review_date": review_date.isoformat(),
             "decision": decision.decision,
