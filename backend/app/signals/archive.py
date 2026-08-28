@@ -481,6 +481,46 @@ def _build_momentum_score_history(
     return sorted(by_date.values(), key=lambda item: item["date"])
 
 
+def _current_episode_revival_boundary(
+    db: Session, stock_id: str
+) -> Optional[date]:
+    """2026-08-28：找出「目前這一輪」P4 episode 內，最近一次『STOP_OBSERVING →
+    隔天復活（`_revive_if_stopped_yesterday_and_reselected_today`）』的復活日。
+
+    復活機制刻意讓卡片狀態「無縫接軌」（不顯示曾經停止過），但這代表 fishtail
+    （`signal_watch_hits`）的週期也不會重置——`summary.first_seen_date` 對這種
+    情況仍然是很久以前的舊日期，用它當動能圖／狀態事件的下界完全篩不掉復活前的
+    舊資料。這裡改成掃同一個 episode（`SignalObservation.id` 不變）的完整
+    `SignalObservationReview` 時間序列，找最後一次「前一筆是 STOP_OBSERVING、
+    後一筆不是」的轉換點，回傳後一筆的 `review_date` 當作圖表該從哪天開始顯示。
+
+    只在「目前這一輪」episode 內找（用 `started_signal_date` 最大者，跟
+    `sync_recommendations()` 判斷「目前這一輪」的既有慣例一致）——真正跨 episode
+    的舊資料本來就已經被 `first_seen_date` 擋掉，不在這個函式處理範圍。找不到
+    復活事件（從未被停止過，或目前就是 STOPPED、還沒被復活）回傳 None，呼叫端
+    fallback 用原本的 `first_seen_date` 當邊界，行為不變。
+    """
+    current_episode = (
+        db.query(SignalObservation)
+        .filter(SignalObservation.stock_id == stock_id)
+        .order_by(SignalObservation.started_signal_date.desc())
+        .first()
+    )
+    if current_episode is None:
+        return None
+    reviews = (
+        db.query(SignalObservationReview)
+        .filter(SignalObservationReview.observation_id == current_episode.id)
+        .order_by(SignalObservationReview.review_date.asc())
+        .all()
+    )
+    revival_date: Optional[date] = None
+    for prev, current in zip(reviews, reviews[1:]):
+        if prev.decision == "STOP_OBSERVING" and current.decision != "STOP_OBSERVING":
+            revival_date = current.review_date
+    return revival_date
+
+
 def get_archive_detail(
     db: Session,
     stock_id: str,
@@ -542,17 +582,26 @@ def get_archive_detail(
     # 這裡裁到 `>= summary.first_seen_date`（目前這輪 active fishtail 週期的起點）
     # 才回傳——否則若一檔股票以前曾經被停止觀察過、現在重新被抓到，追蹤中的動能圖會
     # 混進上一輪的警戒/停止標記與分數點，讓使用者誤以為是這一輪發生的事。
+    # 2026-08-28：`first_seen_date` 對「隔天立刻復活」的情況救不了——復活機制刻意
+    # 不重置 fishtail 週期（見 `_current_episode_revival_boundary` docstring），
+    # 這裡額外抓「目前這輪 episode 內最近一次復活日」，取兩者較晚的當真正下界。
+    revival_boundary = _current_episode_revival_boundary(db, stock_id)
+    effective_start_date = (
+        max(summary.first_seen_date, revival_boundary)
+        if revival_boundary is not None
+        else summary.first_seen_date
+    )
     p4_points = [
         point
         for point in _load_p4_momentum_points(db, stock_id)
-        if point["date"] >= summary.first_seen_date
+        if point["date"] >= effective_start_date
     ]
     payload["momentum_score_history"] = _build_momentum_score_history(rows, p4_points)
     # 2026-08-14：進入／解除警戒、停止觀察的日期標記，給折線圖畫 markLine 用。
     payload["review_status_events"] = [
         event
         for event in _load_review_status_events(db, stock_id)
-        if event["date"] >= summary.first_seen_date
+        if event["date"] >= effective_start_date
     ]
     return payload
 
@@ -812,6 +861,63 @@ def list_stopped_observations_summary(
     return _list_archive_style_table_summary(
         db, SignalWatchStoppedObservation, limit=limit, period_start=period_start
     )
+
+
+def list_stopped_observations_for_date(
+    db: Session, *, completed_trade_date: date
+) -> dict[str, Any]:
+    """2026-08-28：只回「這一天」剛被結算移出、寫進 `SignalWatchStoppedObservation`
+    的股票——給魚尾頁新增的「今天停止觀察」獨立區塊用，跟半年分頁的完整紀錄表
+    （`list_stopped_observations_summary`）是不同的查詢用途，不共用同一個 API。
+
+    依「存活時間」（`completed_trade_date - first_seen_date`，追蹤了幾個日曆天
+    才被停止）由長到短排序，讓最久的排最前面，方便前端「預設只顯示前 3 個」。
+    """
+    rows = (
+        db.query(SignalWatchStoppedObservation)
+        .filter(SignalWatchStoppedObservation.completed_trade_date == completed_trade_date)
+        .all()
+    )
+    expectation_map = _load_expectation_prices_map(
+        db, [(row.stock_id, row.first_seen_date) for row in rows]
+    )
+    items: list[CompletedArchiveItem] = []
+    for row in rows:
+        item = CompletedArchiveItem(
+            stock_id=row.stock_id,
+            stock_name=row.stock_name,
+            industry_name=row.industry_name,
+            sub_industry=row.sub_industry,
+            first_seen_date=row.first_seen_date,
+            latest_hit_date=row.latest_hit_date,
+            hit_count=row.hit_count,
+            latest_signal_type=row.latest_signal_type,
+            baseline_trade_date=row.baseline_trade_date,
+            baseline_price=row.baseline_price,
+            return_day_10_pct=row.return_day_10_pct,
+            return_day_20_pct=row.return_day_20_pct,
+            return_day_30_pct=row.return_day_30_pct,
+            max_positive_return_pct=row.max_positive_return_pct,
+            max_positive_return_trade_date=row.max_positive_return_trade_date,
+            max_negative_return_pct=row.max_negative_return_pct,
+            max_negative_return_trade_date=row.max_negative_return_trade_date,
+            completed_trade_date=row.completed_trade_date,
+            closure_reason=(row.closure_reason or CLOSURE_REASON_COMPLETED_30_DAYS),
+            prompt_version=row.prompt_version or "v1",
+        )
+        prediction = expectation_map.get((row.stock_id, row.first_seen_date))
+        if prediction is not None:
+            item.conservative_price, item.dream_price = prediction
+        items.append(item)
+
+    items.sort(
+        key=lambda item: (item.completed_trade_date - item.first_seen_date),
+        reverse=True,
+    )
+    return {
+        "items": [_serialize_completed_archive_item(item) for item in items],
+        "completed_trade_date": completed_trade_date,
+    }
 
 
 def resolve_archive_as_of_trade_date(

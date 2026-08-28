@@ -177,6 +177,15 @@ class SignalArchiveCompletedResponse(BaseModel):
     selected_period_start: Optional[date] = None
 
 
+class SignalStoppedTodayResponse(BaseModel):
+    """2026-08-28：只回「今天」剛被結算移出的股票，給魚尾頁的獨立「今天停止觀察」
+    區塊用；跟半年分頁的完整紀錄表（`/archive/stopped`）用途不同，故不共用同一個
+    response model（沒有 periods/selected_period_start 這種分頁 meta）。"""
+
+    items: List[SignalArchiveCompletedItemResponse]
+    completed_trade_date: Optional[date] = None
+
+
 class ExpectationPriceItemResponse(BaseModel):
     """個股「資金行情可期待價格區間」單筆 row。"""
     stock_id: str
@@ -875,6 +884,22 @@ def get_stopped_observations(
         period_start=period_start,
     )
     return SignalArchiveCompletedResponse(**payload)
+
+
+@router.get("/archive/stopped/today", response_model=SignalStoppedTodayResponse)
+def get_stopped_observations_today(
+    db: Session = Depends(get_db),
+) -> SignalStoppedTodayResponse:
+    """2026-08-28：只回「今天」（最新評估交易日）剛被結算移出追蹤的股票——魚尾頁
+    新增的獨立區塊用，跟 /archive/stopped 的半年分頁完整紀錄表不同用途。
+    """
+    as_of_trade_date = signal_archive.resolve_archive_as_of_trade_date(db)
+    if as_of_trade_date is None:
+        return SignalStoppedTodayResponse(items=[], completed_trade_date=None)
+    payload = signal_archive.list_stopped_observations_for_date(
+        db, completed_trade_date=as_of_trade_date
+    )
+    return SignalStoppedTodayResponse(**payload)
 
 
 @router.get(

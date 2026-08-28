@@ -889,6 +889,53 @@ def test_stopped_observations_returns_rows_independent_of_completed_archive(api)
     assert [i["stock_id"] for i in completed_res.json()["items"]] == ["OLD1"]
 
 
+def test_stopped_observations_today_only_returns_todays_stops(api, monkeypatch):
+    """2026-08-28：/archive/stopped/today 只回「今天」（as_of_trade_date）剛結算
+    移出的股票，不含其他天的歷史紀錄，也不含 periods/selected_period_start
+    這種分頁 meta（跟 /archive/stopped 是不同用途的獨立 endpoint）。"""
+    client, db, _ = api
+    db.add(
+        SignalWatchStoppedObservation(
+            stock_id="2454",
+            stock_name="聯發科",
+            first_seen_date=date(2026, 8, 1),
+            latest_hit_date=date(2026, 8, 13),
+            hit_count=5,
+            latest_signal_type="LEADER",
+            completed_trade_date=date(2026, 8, 14),
+            closure_reason="p4_stopped",
+        )
+    )
+    db.add(
+        SignalWatchStoppedObservation(
+            stock_id="2330",
+            stock_name="台積電",
+            first_seen_date=date(2026, 8, 13),
+            latest_hit_date=date(2026, 8, 13),
+            hit_count=1,
+            latest_signal_type="LEADER",
+            completed_trade_date=date(2026, 8, 13),
+            closure_reason="early_exit_stop_loss",
+        )
+    )
+    db.commit()
+
+    from app.routers import signals as signals_router
+
+    monkeypatch.setattr(
+        signals_router.signal_archive,
+        "resolve_archive_as_of_trade_date",
+        lambda db, now=None: date(2026, 8, 14),
+    )
+
+    res = client.get("/api/signals/archive/stopped/today")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["completed_trade_date"] == "2026-08-14"
+    assert [item["stock_id"] for item in body["items"]] == ["2454"]
+    assert "periods" not in body
+
+
 # ---------------------------------------------------------------------------
 # helper unit tests
 # ---------------------------------------------------------------------------

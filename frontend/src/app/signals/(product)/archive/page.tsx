@@ -19,6 +19,7 @@ import {
   fetchSignalObservations,
   fetchStoppedObservationDetail,
   fetchStoppedObservations,
+  fetchStoppedObservationsToday,
   type RealtimeQuote,
   type SignalArchiveCompletedItem,
   type SignalArchiveCompletedPeriod,
@@ -32,6 +33,7 @@ import {
   type SignalObservationStatus,
   type SignalReviewStatusEvent,
   type SignalStoppedObservationDetailResponse,
+  type SignalStoppedTodayResponse,
 } from "@/lib/api"
 
 // 動能分數歷史折線圖用；只在詳情 popup 真的展開報告時才需要，不進 initial bundle
@@ -499,11 +501,12 @@ function MomentumScoreChart({
         data: categories.map((date) => {
           const point = scoreByDate.get(date)
           if (!point) return null
+          const color = point.source === "p3" ? "#38bdf8" : "#c084fc"
           return {
             value: point.momentum_score,
             symbol: point.source === "p3" ? "circle" : "diamond",
             symbolSize: point.source === "p3" ? 7 : 9,
-            itemStyle: { color: "#38bdf8" },
+            itemStyle: { color, borderColor: color },
           }
         }),
         connectNulls: true,
@@ -534,8 +537,11 @@ function MomentumScoreChart({
     <div className="border-t border-slate-800 pt-3">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <h4 className="text-sm font-medium text-slate-200">動能分數變化</h4>
-        <span className="text-[11px] text-slate-500">
-          ● P3 選中　◆ P4 複核（P3 未選中該股當天的獨立追蹤分數）
+        <span className="text-[11px]">
+          <span className="text-sky-400">● P3 選中</span>
+          <span className="text-slate-500">　</span>
+          <span className="text-purple-400">◆ P4 複核</span>
+          <span className="text-slate-500">（P3 未選中該股當天的獨立追蹤分數）</span>
         </span>
       </div>
       {sortedEvents.length > 0 && (
@@ -544,6 +550,11 @@ function MomentumScoreChart({
           <span className="text-sky-300">┄ 解除警戒</span>
           <span className="text-rose-300">┄ 停止觀察</span>
         </div>
+      )}
+      {points.length <= 1 && (
+        <p className="mb-1 text-[11px] text-slate-500">
+          只有 {points.length} 天有動能分數資料，還不足以畫出趨勢線。
+        </p>
       )}
       <ReactECharts option={option} style={{ height: 160, width: "100%" }} />
     </div>
@@ -814,6 +825,11 @@ function StoppedObservationDetailDialog({
                 <div className="min-w-0">
                   <Dialog.Title className="flex flex-wrap items-baseline gap-2 text-lg font-semibold text-slate-100">
                     {item.stock_id} {item.stock_name}
+                    {/* 2026-08-28：同一檔股票可能有多筆歷史紀錄，標題附上這筆紀錄的
+                        時間區間，避免使用者搞混是哪一輪。 */}
+                    <span className="font-mono text-sm font-normal text-sky-300">
+                      （{item.first_seen_date} ～ {item.completed_trade_date}）
+                    </span>
                   </Dialog.Title>
                   <Dialog.Description className="mt-1 text-xs text-slate-400">
                     {item.industry_name ?? "—"}
@@ -973,6 +989,201 @@ const STOPPED_COLLAPSED_KEY = "always-stock:signals-archive:stopped-collapsed"
  * 刻意用自己的 local state（collapsed／selectedPeriodStart／search）而非沿用主頁面
  * 「追蹤期滿」區塊的 URL `period` 參數——避免兩個半年期間選單搶同一個 URL 參數。
  */
+const TODAY_STOPPED_COLLAPSED_KEY = "always-stock:signals-archive:today-stopped-collapsed"
+const TODAY_STOPPED_PREVIEW_COUNT = 3
+
+/**
+ * 2026-08-28：獨立於「追蹤中」與下方半年分頁「停止觀察的股票」紀錄表之外的新區塊，
+ * 只顯示「今天」剛被結算移出追蹤的股票（`/archive/stopped/today`，後端已依存活天數
+ * 由長到短排序）。預設收合，收合狀態下也顯示存活最久的前 3 檔（不是完全隱藏），
+ * 展開才看得到今天全部。位置刻意放在「追蹤中」前面，讓使用者一打開頁面就能先看到
+ * 「今天有誰被移出」，不用先展開追蹤中或紀錄區去找。
+ */
+function TodayStoppedSection({
+  onOpenChart,
+}: {
+  onOpenChart: (stockId: string, stockName?: string | null) => void
+}) {
+  const [collapsed, setCollapsed] = useState(true)
+  const [data, setData] = useState<SignalStoppedTodayResponse | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  // 自己獨立管理 detail popup（不共用 StoppedObservationsSection 的 state，避免
+  // 兩者的 summary 分頁範圍不同步——這裡點開的股票一定在自己的 `items` 裡，直接拿
+  // 現成的 item 物件即可，不需要再去別的 state 查找）。
+  const [popupItem, setPopupItem] = useState<SignalArchiveCompletedItem | null>(null)
+  const [detail, setDetail] = useState<SignalStoppedObservationDetailResponse | null>(null)
+  const [detailLoading, setDetailLoading] = useState(false)
+  const [detailError, setDetailError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!popupItem) {
+      setDetail(null)
+      return
+    }
+    let cancelled = false
+    async function run() {
+      setDetailLoading(true)
+      setDetailError(null)
+      try {
+        const result = await fetchStoppedObservationDetail(
+          popupItem!.stock_id,
+          popupItem!.first_seen_date,
+        )
+        if (!cancelled) setDetail(result)
+      } catch (err) {
+        if (!cancelled) {
+          setDetail(null)
+          setDetailError(err instanceof Error ? err.message : "停止觀察詳情載入失敗")
+        }
+      } finally {
+        if (!cancelled) setDetailLoading(false)
+      }
+    }
+    void run()
+    return () => {
+      cancelled = true
+    }
+  }, [popupItem])
+
+  useEffect(() => {
+    try {
+      if (window.localStorage.getItem(TODAY_STOPPED_COLLAPSED_KEY) === "false") {
+        setCollapsed(false)
+      }
+    } catch {
+      // ignore
+    }
+  }, [])
+
+  const toggleCollapsed = useCallback(() => {
+    setCollapsed((prev) => {
+      const next = !prev
+      try {
+        window.localStorage.setItem(TODAY_STOPPED_COLLAPSED_KEY, String(next))
+      } catch {
+        // ignore
+      }
+      return next
+    })
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    async function run() {
+      setLoading(true)
+      setError(null)
+      try {
+        const result = await fetchStoppedObservationsToday()
+        if (!cancelled) setData(result)
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "今天停止觀察的股票載入失敗")
+        }
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+    void run()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const items = data?.items ?? []
+  const visibleItems = collapsed ? items.slice(0, TODAY_STOPPED_PREVIEW_COUNT) : items
+
+  return (
+    <section className="rounded-xl border border-rose-900/40 bg-rose-950/10 p-4">
+      <button
+        type="button"
+        onClick={toggleCollapsed}
+        className="flex w-full items-center gap-2 text-left text-base font-semibold text-slate-100 hover:text-sky-300"
+        aria-expanded={!collapsed}
+      >
+        <span aria-hidden className="text-slate-400">
+          {collapsed ? "▸" : "▾"}
+        </span>
+        <span>今天停止觀察</span>
+        {items.length > 0 && (
+          <span className="text-xs font-normal text-slate-500">
+            {items.length} 檔{data?.completed_trade_date ? `（${data.completed_trade_date}）` : ""}
+          </span>
+        )}
+      </button>
+      {collapsed && items.length > TODAY_STOPPED_PREVIEW_COUNT && (
+        <p className="mt-1 text-xs text-slate-500">
+          只顯示存活時間最久的前 {TODAY_STOPPED_PREVIEW_COUNT} 檔，點上方展開看今天全部 {items.length} 檔。
+        </p>
+      )}
+      {loading && <p className="mt-3 text-sm text-slate-400">載入中…</p>}
+      {error && !loading && <p className="mt-3 text-sm text-rose-300">{error}</p>}
+      {!loading && !error && items.length === 0 && (
+        <p className="mt-3 text-sm text-slate-400">今天還沒有股票被判定停止觀察。</p>
+      )}
+      {!loading && !error && visibleItems.length > 0 && (
+        <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
+          {visibleItems.map((item) => {
+            const survivalDays =
+              Math.round(
+                (new Date(item.completed_trade_date).getTime() -
+                  new Date(item.first_seen_date).getTime()) /
+                  86400000,
+              ) + 1
+            return (
+              <article
+                key={`${item.stock_id}-${item.first_seen_date}`}
+                className="flex flex-col gap-2 rounded-lg border border-slate-800 bg-slate-900/60 p-3"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="flex min-w-0 flex-col">
+                    <span className="text-sm font-semibold text-slate-100">
+                      {item.stock_id} {item.stock_name}
+                    </span>
+                    <span className="font-mono text-[11px] text-sky-300">
+                      {item.first_seen_date} ～ {item.completed_trade_date}（存活 {survivalDays} 天）
+                    </span>
+                  </div>
+                  <SignalTypeChip type={item.latest_signal_type} />
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <ClosureReasonChip reason={item.closure_reason} />
+                  <span className="text-xs text-slate-400">抓到 {item.hit_count} 次</span>
+                </div>
+                <div className="mt-auto flex flex-wrap gap-2 border-t border-slate-800 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setPopupItem(item)}
+                    className="rounded border border-slate-600 bg-slate-800/50 px-2 py-1 text-xs text-slate-300 hover:bg-slate-700"
+                  >
+                    點我看更多分析結果
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onOpenChart(item.stock_id, item.stock_name)}
+                    className="rounded border border-sky-500/50 bg-sky-500/10 px-2 py-1 text-xs text-sky-200 hover:bg-sky-500/20"
+                  >
+                    K線圖
+                  </button>
+                </div>
+              </article>
+            )
+          })}
+        </div>
+      )}
+      <StoppedObservationDetailDialog
+        item={popupItem}
+        detail={detail}
+        detailLoading={detailLoading}
+        detailError={detailError}
+        onClose={() => setPopupItem(null)}
+        onOpenChart={onOpenChart}
+      />
+    </section>
+  )
+}
+
 function StoppedObservationsSection({
   onOpenChart,
 }: {
@@ -1189,6 +1400,13 @@ function StoppedObservationsSection({
                           <span className="text-sm font-semibold text-slate-100">
                             {item.stock_id} {item.stock_name}
                           </span>
+                          {/* 2026-08-28：一檔股票可能在紀錄區有多筆歷史紀錄（進紀錄區→
+                              重新被抓到→再進紀錄區），每筆各自是獨立卡片；標題加時間區間
+                              讓使用者一眼分辨這是哪一輪，不會誤以為是重複資料。 */}
+                          <span className="font-mono text-[11px] text-sky-300">
+                            {formatShortDate(item.first_seen_date)} ～{" "}
+                            {formatShortDate(item.completed_trade_date)}
+                          </span>
                           <span className="text-xs text-slate-500">
                             {item.industry_name ?? "—"}
                             {item.sub_industry ? ` · ${item.sub_industry}` : ""}
@@ -1283,6 +1501,8 @@ function SignalArchiveContent() {
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
+  // 2026-08-28：頁面說明文字太多，預設收起來，改用「？」按鈕開 popup 顯示。
+  const [helpOpen, setHelpOpen] = useState(false)
 
   // view（分類）+ selectedPeriodStart 由 URL 驅動，瀏覽器 back 自動還原
   const viewParam = searchParams.get("view")
@@ -1592,125 +1812,20 @@ function SignalArchiveContent() {
     <main className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-8">
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight text-slate-100">抓到的股票觀察總覽（30 個交易日）</h1>
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="text-xl font-semibold tracking-tight text-slate-100">抓到的股票觀察總覽（30 個交易日）</h1>
+            <button
+              type="button"
+              onClick={() => setHelpOpen(true)}
+              aria-label="顯示頁面說明"
+              className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-slate-600 text-[11px] font-semibold text-slate-400 hover:border-sky-400 hover:text-sky-300"
+            >
+              ?
+            </button>
+          </div>
           <p className="mt-1 text-sm text-slate-400">
             追蹤最近 {summary?.retention_trade_days ?? 30} 個交易日內，被納入每日大魚尾清單的股票。
           </p>
-          <div className="mt-3 grid gap-2 rounded-lg border border-slate-800 bg-slate-900/60 p-3 text-xs leading-6 text-slate-400 sm:grid-cols-3">
-            <div>
-              <p className="text-slate-200">
-                <span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-emerald-400 align-middle" />
-                <span className="font-medium">領漲（LEADER）</span>
-              </p>
-              <p className="mt-1 text-slate-400">
-                產業裡最早上漲、漲幅領先、資金排名靠前、法人連續買超、量能放大且題材明確的個股。市場帶頭往上的火車頭。
-              </p>
-            </div>
-            <div>
-              <p className="text-slate-200">
-                <span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-sky-400 align-middle" />
-                <span className="font-medium">跟漲（FOLLOWER）</span>
-              </p>
-              <p className="mt-1 text-slate-400">
-                與 LEADER 同產業或同供應鏈、已同步上漲但漲幅不如 LEADER、籌碼仍支持。題材擴散下被資金接力推升的個股。
-              </p>
-            </div>
-            <div>
-              <p className="text-slate-200">
-                <span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-amber-400 align-middle" />
-                <span className="font-medium">補漲（LAGGARD）</span>
-              </p>
-              <p className="mt-1 text-slate-400">
-                同產業 LEADER 已先漲、該股漲幅落後、業務題材高度相關、法人或量能開始轉強、技術出現 early_turn 訊號。落後段位開始補漲的個股。
-              </p>
-            </div>
-          </div>
-          <div className="mt-2 rounded-lg border border-slate-800 bg-slate-900/60 p-3 text-xs leading-6 text-slate-400 sm:grid sm:grid-cols-3 sm:gap-3">
-            <div>
-              <p className="text-slate-200">
-                <span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-sky-400 align-middle" />
-                <span className="font-medium">觀察中</span>
-                <span className="ml-1.5 inline-block h-3 w-6 rounded border border-sky-600/50 bg-sky-500/5 align-middle" />
-              </p>
-              <p className="mt-1 text-slate-400">
-                每日觀察（P4）的關鍵條件目前持續成立，卡片維持藍色底。
-              </p>
-            </div>
-            <div>
-              <p className="text-slate-200">
-                <span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-amber-400 align-middle" />
-                <span className="font-medium">警戒</span>
-                <span className="ml-1.5 inline-block h-3 w-6 rounded border border-amber-500/60 bg-amber-500/10 align-middle" />
-              </p>
-              <p className="mt-1 text-slate-400">
-                部分關鍵條件今天開始不成立，卡片轉琥珀色底；值得留意但不是賣出訊號。
-              </p>
-            </div>
-            <div>
-              <p className="text-slate-200">
-                <span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-rose-400 align-middle" />
-                <span className="font-medium">已停止觀察</span>
-                <span className="ml-1.5 inline-block h-3 w-6 rounded border border-rose-500/60 bg-rose-500/10 align-middle" />
-              </p>
-              <p className="mt-1 text-slate-400">
-                系統判定推薦論點已失效，卡片轉玫瑰色底。刻意保留一個觀察日先讓您在這裡看到這個狀態，
-                不會判定當下就直接消失、移到「停止觀察的股票」；<span className="text-slate-300">下一次每日複核（通常是下一個交易日，
-                若遇假日則順延到下一個交易日）</span>才會正式結算移出，屆時會出現在下方「停止觀察的股票」清單。
-              </p>
-            </div>
-          </div>
-          <div className="mt-2 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs leading-6 text-slate-400">
-            <p>停止觀察的判斷依據：</p>
-            <p>
-              不是單靠 AI 主觀認定——系統每天用固定規則綜合評估兩種資訊，任一項明確確認就會停止：
-            </p>
-            <p>
-              ① 技術面／資金面數據出現結構性問題（例如流動性驟降、股價結構明顯損壞），或動能與資金參與度連續複核都未見回穩。
-            </p>
-            <p>
-              ② AI 上網查證公司業務、題材、供應鏈後，發現原本的推薦論點已被事實推翻（例如業務不符、題材不成立、供應鏈關聯是假的、出現重大負面消息、資料前後矛盾）。
-            </p>
-            <p>
-              AI 只負責②這一項的事實查證，本身不會單獨決定要不要停止；最終是否停止，是這套固定規則整合技術面數據與 AI 查證結果一起判斷的。
-            </p>
-          </div>
-          <div className="mt-2 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs leading-6 text-slate-400">
-            <p>報酬率規則說明：</p>
-            <p>第一個交易日抓到：報酬率顯示 `--`，當天不計算。</p>
-            <p>第二個交易日：以當日 `(開盤價 + 收盤價) / 2` 建立 baseline 基準價，當天報酬率固定顯示 `0.00%`。</p>
-            <p>第三個交易日起：才開始用最新評估日的收盤價，相對這個 baseline 基準價計算報酬率。</p>
-          </div>
-          <div className="mt-2 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs leading-6 text-slate-400">
-            <p>結算與標注規則：</p>
-            <p>
-              <span className="mr-1 inline-flex items-center rounded border border-rose-500/60 bg-rose-500/15 px-1 py-0 text-[11px] text-rose-200">
-                ⚠ 跌破 -30%
-              </span>
-              期間曾跌破 -30%；若首次跌破後再 3 個交易日仍 &lt; -30%，會
-              <span className="mx-1 inline-flex items-center rounded border border-rose-500/60 bg-rose-500/20 px-1 py-0 text-[11px] text-rose-100">
-                提前結算（跌破 -30%）
-              </span>
-              並移到下方「永久紀錄」，不必等追蹤期滿。
-            </p>
-            <p>
-              <span className="mr-1 inline-flex items-center rounded border border-orange-500/60 bg-orange-500/20 px-1 py-0 text-[11px] text-orange-100">
-                提前結算（高點回落 30%）
-              </span>
-              若曾漲過正報酬，又回落到負區且高低差 ≥ 30%，後續 3 個交易日仍未縮小差距至 30% 以內，也會提前結算（停利紀律）。
-            </p>
-            <p>
-              <span className="mr-1 inline-flex items-center rounded border border-amber-400/70 bg-amber-400/15 px-1 py-0 text-[11px] text-amber-200">
-                ⭐ +45% 達標
-              </span>
-              期間曾達 +45% 報酬率里程碑；僅標注、不結算。
-            </p>
-          </div>
-          <div className="mt-2 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs leading-6 text-slate-400">
-            <p>
-              <span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-emerald-400 align-middle" />
-              「追蹤中」的股價與報酬率在開盤期間（09:00–13:30）每 1 分鐘自動更新一次，資料來源為證交所盤中即時報價；收盤後或非交易日顯示最後一次的即時或前一交易日收盤數字。移出紀錄區不會即時更新。
-            </p>
-          </div>
           {summary?.as_of_trade_date && (
             <p className="mt-1 text-xs text-slate-500">最新評估交易日：{summary.as_of_trade_date}</p>
           )}
@@ -1719,6 +1834,141 @@ function SignalArchiveContent() {
           Phase 2 Debug View →
         </Link>
       </header>
+
+      <Dialog.Root open={helpOpen} onOpenChange={setHelpOpen}>
+        <Dialog.Portal>
+          <Dialog.Backdrop className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm" />
+          <Dialog.Popup className="fixed left-1/2 top-1/2 z-50 max-h-[85vh] w-[min(94vw,42rem)] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl">
+            <div className="mb-3 flex items-center justify-between border-b border-slate-800 pb-2">
+              <Dialog.Title className="text-base font-semibold text-slate-100">頁面說明</Dialog.Title>
+              <Dialog.Close className="rounded border border-slate-600 bg-slate-800/50 px-2 py-1 text-xs text-slate-300 hover:bg-slate-700">
+                關閉 ✕
+              </Dialog.Close>
+            </div>
+            <div className="flex flex-col gap-2">
+              <div className="grid gap-2 rounded-lg border border-slate-800 bg-slate-900/60 p-3 text-xs leading-6 text-slate-400 sm:grid-cols-3">
+                <div>
+                  <p className="text-slate-200">
+                    <span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-emerald-400 align-middle" />
+                    <span className="font-medium">領漲（LEADER）</span>
+                  </p>
+                  <p className="mt-1 text-slate-400">
+                    產業裡最早上漲、漲幅領先、資金排名靠前、法人連續買超、量能放大且題材明確的個股。市場帶頭往上的火車頭。
+                  </p>
+                </div>
+                <div>
+                  <p className="text-slate-200">
+                    <span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-sky-400 align-middle" />
+                    <span className="font-medium">跟漲（FOLLOWER）</span>
+                  </p>
+                  <p className="mt-1 text-slate-400">
+                    與 LEADER 同產業或同供應鏈、已同步上漲但漲幅不如 LEADER、籌碼仍支持。題材擴散下被資金接力推升的個股。
+                  </p>
+                </div>
+                <div>
+                  <p className="text-slate-200">
+                    <span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-amber-400 align-middle" />
+                    <span className="font-medium">補漲（LAGGARD）</span>
+                  </p>
+                  <p className="mt-1 text-slate-400">
+                    同產業 LEADER 已先漲、該股漲幅落後、業務題材高度相關、法人或量能開始轉強、技術出現 early_turn 訊號。落後段位開始補漲的個股。
+                  </p>
+                </div>
+              </div>
+              <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3 text-xs leading-6 text-slate-400 sm:grid sm:grid-cols-3 sm:gap-3">
+                <div>
+                  <p className="text-slate-200">
+                    <span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-sky-400 align-middle" />
+                    <span className="font-medium">觀察中</span>
+                    <span className="ml-1.5 inline-block h-3 w-6 rounded border border-sky-600/50 bg-sky-500/5 align-middle" />
+                  </p>
+                  <p className="mt-1 text-slate-400">
+                    每日觀察（P4）的關鍵條件目前持續成立，卡片維持藍色底。
+                  </p>
+                </div>
+                <div>
+                  <p className="text-slate-200">
+                    <span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-amber-400 align-middle" />
+                    <span className="font-medium">警戒</span>
+                    <span className="ml-1.5 inline-block h-3 w-6 rounded border border-amber-500/60 bg-amber-500/10 align-middle" />
+                  </p>
+                  <p className="mt-1 text-slate-400">
+                    部分關鍵條件今天開始不成立，卡片轉琥珀色底；值得留意但不是賣出訊號。
+                  </p>
+                </div>
+                <div>
+                  <p className="text-slate-200">
+                    <span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-rose-400 align-middle" />
+                    <span className="font-medium">已停止觀察</span>
+                    <span className="ml-1.5 inline-block h-3 w-6 rounded border border-rose-500/60 bg-rose-500/10 align-middle" />
+                  </p>
+                  <p className="mt-1 text-slate-400">
+                    系統判定推薦論點已失效，卡片轉玫瑰色底。刻意保留一個觀察日先讓您在這裡看到這個狀態，
+                    不會判定當下就直接消失、移到「停止觀察的股票」；<span className="text-slate-300">下一次每日複核（通常是下一個交易日，
+                    若遇假日則順延到下一個交易日）</span>才會正式結算移出，屆時會出現在下方「停止觀察的股票」清單。
+                  </p>
+                </div>
+              </div>
+              <div className="rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs leading-6 text-slate-400">
+                <p>停止觀察的判斷依據：</p>
+                <p>
+                  不是單靠 AI 主觀認定——系統每天用固定規則綜合評估兩種資訊，任一項明確確認就會停止：
+                </p>
+                <p>
+                  ① 技術面／資金面數據出現結構性問題（例如流動性驟降、股價結構明顯損壞），或動能與資金參與度連續複核都未見回穩。
+                </p>
+                <p>
+                  ② AI 上網查證公司業務、題材、供應鏈後，發現原本的推薦論點已被事實推翻（例如業務不符、題材不成立、供應鏈關聯是假的、出現重大負面消息、資料前後矛盾）。
+                </p>
+                <p>
+                  AI 只負責②這一項的事實查證，本身不會單獨決定要不要停止；最終是否停止，是這套固定規則整合技術面數據與 AI 查證結果一起判斷的。
+                </p>
+              </div>
+              <div className="rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs leading-6 text-slate-400">
+                <p>報酬率規則說明：</p>
+                <p>第一個交易日抓到：報酬率顯示 `--`，當天不計算。</p>
+                <p>第二個交易日：以當日 `(開盤價 + 收盤價) / 2` 建立 baseline 基準價，當天報酬率固定顯示 `0.00%`。</p>
+                <p>第三個交易日起：才開始用最新評估日的收盤價，相對這個 baseline 基準價計算報酬率。</p>
+              </div>
+              <div className="rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs leading-6 text-slate-400">
+                <p>結算與標注規則：</p>
+                <p>
+                  <span className="mr-1 inline-flex items-center rounded border border-rose-500/60 bg-rose-500/15 px-1 py-0 text-[11px] text-rose-200">
+                    ⚠ 跌破 -30%
+                  </span>
+                  期間曾跌破 -30%；若首次跌破後再 3 個交易日仍 &lt; -30%，會
+                  <span className="mx-1 inline-flex items-center rounded border border-rose-500/60 bg-rose-500/20 px-1 py-0 text-[11px] text-rose-100">
+                    提前結算（跌破 -30%）
+                  </span>
+                  並移到下方「永久紀錄」，不必等追蹤期滿。
+                </p>
+                <p>
+                  <span className="mr-1 inline-flex items-center rounded border border-orange-500/60 bg-orange-500/20 px-1 py-0 text-[11px] text-orange-100">
+                    提前結算（高點回落 30%）
+                  </span>
+                  若曾漲過正報酬，又回落到負區且高低差 ≥ 30%，後續 3 個交易日仍未縮小差距至 30% 以內，也會提前結算（停利紀律）。
+                </p>
+                <p>
+                  <span className="mr-1 inline-flex items-center rounded border border-amber-400/70 bg-amber-400/15 px-1 py-0 text-[11px] text-amber-200">
+                    ⭐ +45% 達標
+                  </span>
+                  期間曾達 +45% 報酬率里程碑；僅標注、不結算。
+                </p>
+              </div>
+              <div className="rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs leading-6 text-slate-400">
+                <p>
+                  <span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-emerald-400 align-middle" />
+                  「追蹤中」的股價與報酬率在開盤期間（09:00–13:30）每 1 分鐘自動更新一次，資料來源為證交所盤中即時報價；收盤後或非交易日顯示最後一次的即時或前一交易日收盤數字。移出紀錄區不會即時更新。
+                </p>
+              </div>
+            </div>
+          </Dialog.Popup>
+        </Dialog.Portal>
+      </Dialog.Root>
+
+      <TodayStoppedSection
+        onOpenChart={(stockId, stockName) => setChartStock({ stockId, stockName })}
+      />
 
       <section className="rounded-xl border border-slate-700 bg-slate-900/40 p-4">
         <button

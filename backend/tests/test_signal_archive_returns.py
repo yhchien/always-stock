@@ -1446,6 +1446,74 @@ def test_list_stopped_observations_summary_is_independent_of_completed_archive()
         assert [item["stock_id"] for item in completed_data["items"]] == ["OLD1"]
 
 
+def test_list_stopped_observations_for_date_filters_and_sorts_by_survival_duration():
+    """2026-08-28：新增「今天停止觀察」區塊用的查詢——只回 `completed_trade_date`
+    剛好等於指定日的 rows（不含其他天的歷史紀錄），依存活天數（completed - first_seen）
+    由長到短排序，讓「存活最久」的排最前面。"""
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+
+    with Session() as db:
+        # 今天（8/28）停止：三檔存活天數不同
+        db.add(
+            SignalWatchStoppedObservation(
+                stock_id="SHORT",
+                stock_name="短命股",
+                first_seen_date=date(2026, 8, 27),
+                latest_hit_date=date(2026, 8, 27),
+                hit_count=1,
+                latest_signal_type="LEADER",
+                completed_trade_date=date(2026, 8, 28),
+                closure_reason="p4_stopped",
+            )
+        )
+        db.add(
+            SignalWatchStoppedObservation(
+                stock_id="LONG",
+                stock_name="長命股",
+                first_seen_date=date(2026, 8, 1),
+                latest_hit_date=date(2026, 8, 27),
+                hit_count=10,
+                latest_signal_type="LEADER",
+                completed_trade_date=date(2026, 8, 28),
+                closure_reason="completed_30_days",
+            )
+        )
+        db.add(
+            SignalWatchStoppedObservation(
+                stock_id="MID",
+                stock_name="中等股",
+                first_seen_date=date(2026, 8, 15),
+                latest_hit_date=date(2026, 8, 27),
+                hit_count=5,
+                latest_signal_type="LEADER",
+                completed_trade_date=date(2026, 8, 28),
+                closure_reason="early_exit_stop_loss",
+            )
+        )
+        # 昨天（8/27）停止的：不該出現在 8/28 的結果裡
+        db.add(
+            SignalWatchStoppedObservation(
+                stock_id="YESTERDAY",
+                stock_name="昨天股",
+                first_seen_date=date(2026, 8, 20),
+                latest_hit_date=date(2026, 8, 26),
+                hit_count=4,
+                latest_signal_type="LEADER",
+                completed_trade_date=date(2026, 8, 27),
+                closure_reason="p4_stopped",
+            )
+        )
+        db.commit()
+
+        result = archive.list_stopped_observations_for_date(
+            db, completed_trade_date=date(2026, 8, 28)
+        )
+        assert result["completed_trade_date"] == date(2026, 8, 28)
+        assert [item["stock_id"] for item in result["items"]] == ["LONG", "MID", "SHORT"]
+
+
 def test_update_signal_watch_returns_early_exit_commits_with_autoflush_false():
     """Regression：production session 為 autoflush=False。
 
@@ -2011,6 +2079,126 @@ def test_get_archive_detail_scopes_momentum_history_and_events_to_current_cycle(
         # entered_caution（7/2）與 stopped（7/3）。
         assert detail["review_status_events"] == [
             {"date": date(2026, 8, 11), "event": "entered_caution"},
+        ]
+
+
+def test_get_archive_detail_scopes_to_revival_date_within_same_episode():
+    """2026-08-28 regression：`_revive_if_stopped_yesterday_and_reselected_today()`
+    刻意讓卡片狀態無縫接軌（同一個 episode_id，不建立新一輪），但這代表 fishtail
+    週期也不會重置——`first_seen_date` 還是很久以前的舊日期，單靠它擋不住復活前的
+    舊動能分數與警戒/停止標記混進來。真實案例：3037 在 8/14 開始追蹤，8/25 被判定
+    停止，8/26 又被 P3 重新選中、同一個 episode 復活（不是新 episode）——動能圖應該
+    只從 8/26 開始顯示，8/24 的警戒與 8/25 的停止標記都不該出現。"""
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+
+    with Session() as db:
+        job_id_first = _seed_job_and_snapshot(db, date(2026, 8, 14))
+        archive.persist_signal_watch_hits(
+            db,
+            date(2026, 8, 14),
+            {
+                "watchlist": [
+                    {"stock": "3037", "name": "欣興", "type": "LEADER", "signal_metrics": {}},
+                ]
+            },
+            job_id_first,
+        )
+        job_id_latest = _seed_job_and_snapshot(db, date(2026, 8, 27))
+        archive.persist_signal_watch_hits(
+            db,
+            date(2026, 8, 27),
+            {
+                "watchlist": [
+                    {"stock": "3037", "name": "欣興", "type": "LEADER", "signal_metrics": {}},
+                ]
+            },
+            job_id_latest,
+        )
+
+        episode = SignalObservation(
+            stock_id="3037",
+            stock_name="欣興",
+            asset_type="COMMON_STOCK",
+            episode_id="episode-3037-revived",
+            status="CAUTION",
+            started_signal_date=date(2026, 8, 14),
+            baseline_quality="P3_COMPLETE",
+            initial_snapshot_json={},
+        )
+        db.add(episode)
+        db.flush()
+        db.add(
+            SignalObservationReview(
+                observation_id=episode.id,
+                review_date=date(2026, 8, 24),
+                decision="CAUTION",
+                reason_codes=[],
+                reason="",
+                caution_dimensions=[],
+                failed_dimensions=[],
+                momentum_score=72.7,
+                prompt_version="v1",
+                state_machine_version="v1",
+            )
+        )
+        db.add(
+            SignalObservationReview(
+                observation_id=episode.id,
+                review_date=date(2026, 8, 25),
+                decision="STOP_OBSERVING",
+                reason_codes=[],
+                reason="",
+                caution_dimensions=[],
+                failed_dimensions=[],
+                momentum_score=72.9,
+                prompt_version="v1",
+                state_machine_version="v1",
+            )
+        )
+        db.add(
+            SignalObservationReview(
+                observation_id=episode.id,
+                review_date=date(2026, 8, 26),
+                decision="CONTINUE",
+                reason_codes=[],
+                reason="",
+                caution_dimensions=[],
+                failed_dimensions=[],
+                momentum_score=77.7,
+                prompt_version="v1",
+                state_machine_version="v1",
+            )
+        )
+        db.add(
+            SignalObservationReview(
+                observation_id=episode.id,
+                review_date=date(2026, 8, 27),
+                decision="CAUTION",
+                reason_codes=[],
+                reason="",
+                caution_dimensions=[],
+                failed_dimensions=[],
+                momentum_score=76.9,
+                prompt_version="v1",
+                state_machine_version="v1",
+            )
+        )
+        db.commit()
+
+        detail = archive.get_archive_detail(db, "3037", now=datetime(2026, 8, 27, 20, 0))
+
+        assert detail is not None
+        assert detail["first_seen_date"] == date(2026, 8, 14)  # fishtail 沒有重置
+        # 動能分數只剩復活日（8/26）之後：不含 8/24（72.7）跟 8/25（72.9）。
+        assert [p["date"] for p in detail["momentum_score_history"]] == [
+            date(2026, 8, 26),
+            date(2026, 8, 27),
+        ]
+        # 事件只剩 8/27 的 entered_caution：不含 8/24 的 entered_caution、8/25 的 stopped。
+        assert detail["review_status_events"] == [
+            {"date": date(2026, 8, 27), "event": "entered_caution"},
         ]
 
 

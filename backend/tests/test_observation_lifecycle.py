@@ -333,6 +333,47 @@ def test_composite_risk_exclude_creates_pending_instead_of_immediate_stop():
     assert snapshot["distribution"] is True
 
 
+def test_risk_off_composite_risk_skips_pending_and_accelerates_stop():
+    """2026-08-27 方法 A 延伸：同一份 composite risk 證據，regime 若是 RISK_OFF，
+    不該走「先觀察一天」的 pending 緩衝，應直接視為 MOMENTUM_STRUCTURE +
+    PARTICIPATION 同時失效，透過方法 A 立即 STOP——對照上一個測試（BULL_TREND
+    下同樣證據只會建立 pending，維持 CAUTION）。"""
+    evidence = _composite_evidence(market_regime="RISK_OFF")
+    decision = lifecycle.decide_observation_action(
+        current_backend_evidence=evidence,
+        external_thesis_assessment=_external(),
+        latest_valid_reviews=[],
+        current_observation={"baseline_quality": "P3_COMPLETE"},
+    )
+    assert decision.decision == "STOP_OBSERVING"
+    assert decision.reason_codes == [
+        "RISK_OFF_ACCELERATED_MOMENTUM_AND_PARTICIPATION_FAILURE"
+    ]
+    assert decision.pending_stop_update is None
+
+
+def test_risk_off_bypasses_existing_composite_pending_and_accelerates_stop():
+    """既有的 pending（例如大盤在 BULL_TREND 時觸發、隔天market_regime 轉為
+    RISK_OFF）也應該直接繞過 pending 確認邏輯，走加速停止判斷。"""
+    evidence = _composite_evidence(market_regime="RISK_OFF")
+    decision = lifecycle.decide_observation_action(
+        current_backend_evidence=evidence,
+        external_thesis_assessment=_external(),
+        latest_valid_reviews=[],
+        current_observation={
+            "baseline_quality": "P3_COMPLETE",
+            "pending_stop_status": "ACTIVE",
+            "pending_stop_reason": "COMPOSITE_RISK_EXCLUDE",
+            "pending_stop_review_count": 0,
+            "pending_stop_trigger_snapshot": {"close": 259.0, "high": 286.5, "low": 253.0},
+        },
+    )
+    assert decision.decision == "STOP_OBSERVING"
+    assert decision.reason_codes == [
+        "RISK_OFF_ACCELERATED_MOMENTUM_AND_PARTICIPATION_FAILURE"
+    ]
+
+
 def test_composite_risk_exclude_masked_reversal_failure_is_still_immediate_stop():
     """P4 v2 spec §7：若同一天也獨立符合更嚴格的 REVERSAL_FAILURE，不能因為
     `build_hard_exclusion_result` 優先序把它標成 COMPOSITE_RISK_EXCLUDE 就被
@@ -764,6 +805,110 @@ def test_second_successful_review_can_stop_sustained_two_dimension_failure():
     assert decision.reason_codes == [
         "SUSTAINED_MOMENTUM_AND_PARTICIPATION_FAILURE"
     ]
+
+
+def test_risk_off_regime_accelerates_stop_without_waiting_second_day():
+    """2026-08-27 方法 A：RISK_OFF 當天若核心維度已同時出現 >=2 個失效（交集含
+    MOMENTUM_STRUCTURE 或 PARTICIPATION），不必等隔天複核確認即可直接 STOP——
+    對照既有 `test_second_successful_review_can_stop_sustained_two_dimension_failure`
+    需要兩次 review 才會 STOP，這裡第一次 review（`latest_valid_reviews=[]`）就要 STOP。"""
+    evidence = _healthy_evidence()
+    evidence["market_regime"] = "RISK_OFF"
+    evidence["tracking_state"] = "DETERIORATING"
+    evidence["deterministic_signals"].update(
+        {
+            "institution_flow_momentum": "reversal",
+            "chip_trend": "distribution",
+        }
+    )
+    decision = lifecycle.decide_observation_action(
+        current_backend_evidence=evidence,
+        external_thesis_assessment=_external(),
+        latest_valid_reviews=[],
+        current_observation={"baseline_quality": "P3_COMPLETE"},
+    )
+    assert decision.decision == "STOP_OBSERVING"
+    assert decision.reason_codes == [
+        "RISK_OFF_ACCELERATED_MOMENTUM_AND_PARTICIPATION_FAILURE"
+    ]
+
+
+def test_bull_trend_regime_does_not_accelerate_stop_with_same_evidence():
+    """同一份「2 個核心維度失效」證據，regime 若不是 RISK_OFF（這裡用預設的
+    BULL_TREND）就不該加速——加速只限 RISK_OFF，範圍刻意窄。"""
+    evidence = _healthy_evidence()
+    evidence["tracking_state"] = "DETERIORATING"
+    evidence["deterministic_signals"].update(
+        {
+            "institution_flow_momentum": "reversal",
+            "chip_trend": "distribution",
+        }
+    )
+    decision = lifecycle.decide_observation_action(
+        current_backend_evidence=evidence,
+        external_thesis_assessment=_external(),
+        latest_valid_reviews=[],
+        current_observation={"baseline_quality": "P3_COMPLETE"},
+    )
+    assert decision.decision == "CAUTION"
+
+
+def test_risk_off_with_only_one_core_dimension_failing_does_not_accelerate():
+    """RISK_OFF 但只有 1 個核心維度失效（未達 >=2 門檻）——維持 CAUTION，不加速。"""
+    evidence = _healthy_evidence()
+    evidence["market_regime"] = "RISK_OFF"
+    evidence["tracking_state"] = "DETERIORATING"
+    decision = lifecycle.decide_observation_action(
+        current_backend_evidence=evidence,
+        external_thesis_assessment=_external(),
+        latest_valid_reviews=[],
+        current_observation={"baseline_quality": "P3_COMPLETE"},
+    )
+    assert decision.decision == "CAUTION"
+    assert decision.failed_dimensions == ["MOMENTUM_STRUCTURE"]
+
+
+def test_recovery_evidence_overrides_risk_off_acceleration():
+    """就算 RISK_OFF 且今天技術面一度出現 2 個核心維度失效訊號，只要同時滿足既有
+    `_has_recovery_evidence` 的恢復條件，仍應維持既有「恢復優先」的行為——加速停止
+    不能繞過既有的 recovery 保護機制。"""
+    evidence = _healthy_evidence()
+    evidence["market_regime"] = "RISK_OFF"
+    evidence["momentum_phase"] = "weakening"
+    evidence["momentum_freshness"] = "FRESH_STRONG"
+    evidence["deterministic_signals"]["chip_trend"] = "distribution"
+    evidence["quality_evidence"]["PARTICIPATION"] = False
+    decision = lifecycle.decide_observation_action(
+        current_backend_evidence=evidence,
+        external_thesis_assessment=_external(),
+        latest_valid_reviews=[],
+        current_observation={"baseline_quality": "P3_COMPLETE"},
+    )
+    assert decision.decision == "CAUTION"
+    assert decision.failed_dimensions == []
+    assert "RISK_OFF_ACCELERATED_MOMENTUM_AND_PARTICIPATION_FAILURE" not in decision.reason_codes
+
+
+def test_participation_still_requires_two_flags_to_fail_even_in_risk_off():
+    """2026-08-27：曾經試過 RISK_OFF 期間把 PARTICIPATION 的 failed 門檻降到
+    1 個旗標，但用真實 7/16 資料驗證後發現 `institution_flow_momentum==reversal`
+    在系統性重挫當天幾乎是全市場現象，降到 1 旗標會讓大多數候選同一天一起被判定
+    失效、鑑別力太低，已回收。這裡鎖住回收後的行為：只給 1 個 participation 旗標
+    + 動能轉弱，不論 RISK_OFF 或 BULL_TREND，都只停在 CAUTION（PARTICIPATION 不算
+    failed），不會觸發方法 A 加速停止。"""
+    for regime in ("RISK_OFF", "BULL_TREND"):
+        evidence = _healthy_evidence()
+        evidence["market_regime"] = regime
+        evidence["tracking_state"] = "DETERIORATING"
+        evidence["deterministic_signals"]["institution_flow_momentum"] = "reversal"
+        decision = lifecycle.decide_observation_action(
+            current_backend_evidence=evidence,
+            external_thesis_assessment=_external(),
+            latest_valid_reviews=[],
+            current_observation={"baseline_quality": "P3_COMPLETE"},
+        )
+        assert decision.decision == "CAUTION", regime
+        assert decision.failed_dimensions == ["MOMENTUM_STRUCTURE"], regime
 
 
 def test_market_and_persistence_do_not_count_as_core_dimensions():

@@ -57,6 +57,11 @@ const REALTIME_INTERVAL_MS = 60_000
 // 明確標型別 boolean（不能用 const false literal，否則 TS 會把三元 truthy branch narrow 成 unreachable）
 const SHOW_MARGIN_ANALYSIS: boolean = false
 
+// 2026-08-28：首頁隱藏「重新產生」整包每日訊號的按鈕（保留 handleRegenerate／
+// regenerateSignals 呼叫與 quota 顯示邏輯，改回顯示時把這個常數改成 true 即可）。
+// 注意這跟 ExpectationPricePanel 裡「重新預測」單檔股票的按鈕是不同功能，不受影響。
+const SHOW_REGENERATE_BUTTON: boolean = false
+
 function formatTpeDateTime(iso: string | null | undefined): string {
   if (!iso) return ""
   try {
@@ -1428,18 +1433,22 @@ export default function DailySignalsPanel({
           >
             30日追蹤
           </Link>
-          <button
-            type="button"
-            onClick={handleRegenerate}
-            disabled={regenerateDisabled}
-            className="inline-flex items-center rounded border border-sky-500/50 bg-sky-500/10 px-3 py-1 text-xs font-medium text-sky-200 hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {regenerateLabel}
-          </button>
-          {isAuthed && regenerateQuota && (
-            <span className="text-[11px] text-slate-400">
-              今日剩餘 {regenerateQuota.remaining_count}/{regenerateQuota.daily_limit}
-            </span>
+          {SHOW_REGENERATE_BUTTON && (
+            <>
+              <button
+                type="button"
+                onClick={handleRegenerate}
+                disabled={regenerateDisabled}
+                className="inline-flex items-center rounded border border-sky-500/50 bg-sky-500/10 px-3 py-1 text-xs font-medium text-sky-200 hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {regenerateLabel}
+              </button>
+              {isAuthed && regenerateQuota && (
+                <span className="text-[11px] text-slate-400">
+                  今日剩餘 {regenerateQuota.remaining_count}/{regenerateQuota.daily_limit}
+                </span>
+              )}
+            </>
           )}
         </div>
       </header>

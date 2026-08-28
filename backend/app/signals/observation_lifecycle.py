@@ -1074,8 +1074,25 @@ def decide_observation_action(
         and pending_reason == COMPOSITE_RISK_REASON
     )
     is_composite_today = hard_excluded and hard_reason == COMPOSITE_RISK_REASON
+    regime_now = str(current_backend_evidence.get("market_regime") or "").upper()
 
-    if pending_active:
+    # 2026-08-27 方法 A 延伸：RISK_OFF 當天不給 Composite Risk「可能是洗盤，先觀察
+    # 一天」的緩衝——這套 pending 機制本身完全不看大盤 regime（`build_hard_exclusion_
+    # result()` 純個股層級判斷，BULL_TREND 底下同樣會觸發），2026-08-18 設計成多日
+    # 確認正是為了保護「大多頭健康換手」不被誤殺；但退潮盤沒有必要給這個benefit of the
+    # doubt。RISK_OFF 時直接把 composite risk 訊號併入核心維度證據（等同於同時判定
+    # MOMENTUM_STRUCTURE + PARTICIPATION 失效），交給下面統一的核心維度判斷（方法 A
+    # 加速停止 / 既有兩天持續失效）處理，不再單獨走 pending 狀態機。BULL_TREND /
+    # VOLATILE_RANGE 完全不受影響，維持原本的多日觀察緩衝。
+    if regime_now == "RISK_OFF" and (is_composite_today or pending_active):
+        failed_dimensions = sorted(
+            set(failed_dimensions) | {"MOMENTUM_STRUCTURE", "PARTICIPATION"}
+        )
+        caution_dimensions = sorted(
+            set(caution_dimensions) | {"MOMENTUM_STRUCTURE", "PARTICIPATION"}
+        )
+        reason_codes = _dedupe(reason_codes + ["COMPOSITE_RISK_TREATED_AS_CORE_FAILURE"])
+    elif pending_active:
         trigger_snapshot = current_observation.get("pending_stop_trigger_snapshot")
         if _has_composite_risk_recovery(
             current_backend_evidence, external, trigger_snapshot
@@ -1177,28 +1194,54 @@ def decide_observation_action(
             }
         ]
 
-    if not recovery and not baseline_incomplete and prior_decision == DECISION_CAUTION:
-        prior_failed = {
-            str(value)
-            for value in (prior.get("failed_dimensions") or [])
-            if value in CORE_DIMENSIONS
-        }
-        current_failed = {
+    if not recovery and not baseline_incomplete:
+        current_core_failed = {
             value for value in failed_dimensions if value in CORE_DIMENSIONS
         }
-        persistent = prior_failed & current_failed
+        # regime_now 已在上面 composite risk 分支前算好，這裡沿用同一份，不重算。
+        # 2026-08-27：RISK_OFF 當天加速停止（方法 A）——7/16 那種真實系統性下殺（大盤
+        # 單日重挫且連續多日累計 -11.7%）曾讓多檔核心維度當天就已同時失效的股票，仍要
+        # 多等一天複核確認才判定 STOP，錯過提前止血的機會。這裡新增：只要「今天」
+        # regime=RISK_OFF 且核心維度已同時出現 >=2 個失效（交集含 MOMENTUM_STRUCTURE
+        # 或 PARTICIPATION），不必等隔天複核確認即可直接 STOP。刻意只限 RISK_OFF（不含
+        # VOLATILE_RANGE）——震盪盤不必然是趨勢性下殺，範圍太寬會提高誤殺健康股的風險。
+        # 未觸發時退回原本既有的「連續兩天複核都失效」判斷，行為完全不變。
         if (
-            len(persistent) >= 2
-            and persistent & {"MOMENTUM_STRUCTURE", "PARTICIPATION"}
+            regime_now == "RISK_OFF"
+            and len(current_core_failed) >= 2
+            and current_core_failed & {"MOMENTUM_STRUCTURE", "PARTICIPATION"}
         ):
             return ObservationDecision(
                 decision=DECISION_STOP,
-                reason_codes=[_sustained_stop_reason(persistent)],
-                reason="連續兩次成功交易日 Review 顯示多個核心維度持續失效，且未見有效恢復。",
+                reason_codes=[_risk_off_accelerated_stop_reason(current_core_failed)],
+                reason=(
+                    "大盤風險退潮（RISK_OFF）期間，今日核心維度已同時出現多重失效訊號，"
+                    "不等待隔日複核確認即判定失效（風險退潮加速停止）。"
+                ),
                 caution_dimensions=sorted(set(caution_dimensions)),
-                failed_dimensions=sorted(current_failed),
+                failed_dimensions=sorted(current_core_failed),
                 pending_stop_update="CLEAR" if pending_cleared_this_review else None,
             )
+
+        if prior_decision == DECISION_CAUTION:
+            prior_failed = {
+                str(value)
+                for value in (prior.get("failed_dimensions") or [])
+                if value in CORE_DIMENSIONS
+            }
+            persistent = prior_failed & current_core_failed
+            if (
+                len(persistent) >= 2
+                and persistent & {"MOMENTUM_STRUCTURE", "PARTICIPATION"}
+            ):
+                return ObservationDecision(
+                    decision=DECISION_STOP,
+                    reason_codes=[_sustained_stop_reason(persistent)],
+                    reason="連續兩次成功交易日 Review 顯示多個核心維度持續失效，且未見有效恢復。",
+                    caution_dimensions=sorted(set(caution_dimensions)),
+                    failed_dimensions=sorted(current_core_failed),
+                    pending_stop_update="CLEAR" if pending_cleared_this_review else None,
+                )
 
     caution_dimensions = sorted(set(caution_dimensions))
     failed_dimensions = sorted(set(failed_dimensions))
@@ -2382,6 +2425,7 @@ def _current_caution_evidence(
     caution: List[str] = []
     failed: List[str] = []
     codes: List[str] = []
+    regime = str(backend.get("market_regime") or "").upper()
     tracking = str(backend.get("tracking_state") or "").upper()
     freshness = str(backend.get("momentum_freshness") or "").upper()
     phase = str(backend.get("momentum_phase") or "").lower()
@@ -2410,6 +2454,11 @@ def _current_caution_evidence(
             if signals.get("institution_flow_momentum") == "reversal"
             else "PARTICIPATION_WEAKENING"
         )
+        # 2026-08-27：曾經試過 RISK_OFF 期間把這個門檻降到 >=1（見 git 歷史），
+        # 但用真實 7/16 資料驗證後發現 `institution_flow_momentum=="reversal"`
+        # 在系統性重挫當天幾乎是全市場現象（大盤重挫、法人普遍轉為淨流出，不是
+        # 個股特有的惡化訊號），降到 1 旗標幾乎沒有鑑別力，會讓大多數候選同一天
+        # 一起被判定失效。已回收，維持原本「至少 2 個負面旗標同時成立」不分 regime。
         if negative_participation >= 2:
             failed.append("PARTICIPATION")
 
@@ -2427,7 +2476,6 @@ def _current_caution_evidence(
         caution.append("CATALYST_THESIS")
         codes.append("CATALYST_UNCONFIRMED")
 
-    regime = str(backend.get("market_regime") or "").upper()
     if regime in {"RISK_OFF", "VOLATILE_RANGE"}:
         caution.append("MARKET_CONTEXT")
         codes.append("MARKET_RISK_ELEVATED")
@@ -2575,6 +2623,19 @@ def _sustained_stop_reason(dimensions: set[str]) -> str:
     if dimensions == {"PARTICIPATION", "CATALYST_THESIS"}:
         return "SUSTAINED_PARTICIPATION_AND_CATALYST_FAILURE"
     return "SUSTAINED_MULTI_DIMENSION_FAILURE"
+
+
+def _risk_off_accelerated_stop_reason(dimensions: set[str]) -> str:
+    """2026-08-27 方法 A：RISK_OFF 當天加速停止的 reason code，與既有
+    `_sustained_stop_reason`（需連續兩天）用不同前綴區分，方便事後歸因統計
+    「這次 STOP 是加速觸發還是原本的兩天持續失效觸發」。"""
+    if dimensions == {"MOMENTUM_STRUCTURE", "PARTICIPATION"}:
+        return "RISK_OFF_ACCELERATED_MOMENTUM_AND_PARTICIPATION_FAILURE"
+    if dimensions == {"MOMENTUM_STRUCTURE", "CATALYST_THESIS"}:
+        return "RISK_OFF_ACCELERATED_MOMENTUM_AND_CATALYST_FAILURE"
+    if dimensions == {"PARTICIPATION", "CATALYST_THESIS"}:
+        return "RISK_OFF_ACCELERATED_PARTICIPATION_AND_CATALYST_FAILURE"
+    return "RISK_OFF_ACCELERATED_MULTI_DIMENSION_FAILURE"
 
 
 def _continue_reason_code(

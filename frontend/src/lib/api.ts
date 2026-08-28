@@ -2539,6 +2539,26 @@ export async function fetchStoppedObservationDetail(
   return res.json()
 }
 
+export interface SignalStoppedTodayResponse {
+  items: SignalArchiveCompletedItem[]
+  completed_trade_date: string | null
+}
+
+/**
+ * 2026-08-28：只回「今天」（最新評估交易日）剛被結算移出追蹤的股票——魚尾頁新增的
+ * 獨立「今天停止觀察」區塊用，跟 fetchStoppedObservations（半年分頁完整紀錄表）
+ * 是不同用途的獨立 endpoint，沒有 periods/selected_period_start。
+ */
+export async function fetchStoppedObservationsToday(
+  options?: FetchOptions,
+): Promise<SignalStoppedTodayResponse> {
+  const res = await apiFetch(`${API_BASE}/api/signals/archive/stopped/today`, {
+    signal: options?.signal,
+  })
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "今天停止觀察的股票載入失敗"))
+  return res.json()
+}
+
 export async function regenerateSignals(): Promise<SignalRegenerateResponse> {
   const res = await apiFetch(`${API_BASE}/api/signals/regenerate`, {
     method: "POST",
