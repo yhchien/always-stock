@@ -1,5 +1,57 @@
 # always-stock 專案記憶
 
+## M27 Market Regime v2：market_resilience 欄位在最終 watchlist 遺失修復（2026-09-04 第三輪）
+
+### 症狀
+使用者確認上一輪 Production Integration 上線後，問「現在跑應該就會是新邏輯了吧，
+可以重跑一次 9/3 的嗎」。重跑後查 `signal_snapshots.watchlist`：
+`market_regime_v2_mode="production"`、`market_stress="CAUTION"`、
+`effective_market_state="BULL_CAUTION"` 都正確算出真實值，但**全部 16 檔
+watchlist item 完全沒有 `market_resilience` 這個 key**（不是值為 `None`，是
+key 本身不存在）——`global_selection_status="COMPLETED"` 且無任何驗證失敗
+紀錄，代表 LLM 端與契約驗證都正常，問題出在驗證通過之後的某個環節把欄位弄丟了。
+
+### 根因
+`validate_global_selection()`（[global_selector.py](backend/app/signals/global_selector.py)
+970-971 行）對**每一筆** item 都無條件執行
+`item["market_resilience"] = resilience`／`item["market_context_reason"] =
+raw.get(...)`，且下游 `merge_selection_items()`（`{**source, **selected}`）與
+reason stage 合併（`{**item, **watch_by_id[sid]}`）都是透傳 spread，兩個欄位
+理論上會一路存活到 `assemble_final_output()` 之前。
+
+但 `assemble_final_output()` 內部真正組裝每筆最終 watchlist entry 的
+`_format_watch_entry()`／`_format_selection_audit_entry()`
+（[llm_caller.py](backend/app/signals/llm_caller.py)）**不是**透傳合併，是
+逐欄位列舉的顯式白名單建構式（`entry = {"stock": ..., "name": ..., ...}`）——
+上一輪把 `market_resilience`／`market_context_reason` 加進 Global Selector
+契約時，只確認了「這兩個欄位能流到 `merge_selection_items()` 輸出」與
+「`SnapshotResponse.data` 是 raw passthrough、API 層不用額外改」兩件事，但
+**沒有實際重跑一次 production 資料檢查最終持久化的 dict**，漏看了中間這個
+白名單建構式從未同步更新——算出來的值在最後一步被整個丟棄，不是變成 `None`，
+是連 key 都不存在。
+
+### 修法
+`_format_watch_entry()`（RECOMMEND／WATCH 用）與 `_format_selection_audit_entry()`
+（NOT_SELECTED／REMOVE 用）都補上
+`"market_resilience": item.get("market_resilience")`／
+`"market_context_reason": item.get("market_context_reason")` 兩行。缺欄位（
+shadow/off 模式或舊快照）時 `.get()` 回 `None`，key 仍存在，向後相容。
+
+### 教訓
+- **「查證過資料流會通過某個 spread/透傳步驟」不能證明「資料真的到得了終點」**：
+  這條資料流有 3 段合併（`validate_global_selection` 內建構 → `merge_selection_
+  items` spread → reason stage spread），中間任何一段只要不是純 spread（例如
+  這次撞到的顯式白名單重建），欄位就會消失，且不會報錯——白名單建構式對
+  「多出來的未知欄位」是靜默忽略，不是 `KeyError`。新增契約欄位時，最後一定要
+  直接查一次**真實持久化資料**（不是只看程式碼路徑推論），才能確認欄位真的
+  活著抵達終點
+- **這個 bug 只有在 `market_environment_provided=True` 時才有機會被
+  contract-invalid 檢查抓到**（因為 `validate_global_selection` 的強制檢查在
+  `item["market_resilience"] = resilience` 賦值**之前**執行，賦值本身永遠
+  成功，不會因為後面某處沒收到這個值而回頭失敗）——換句話說，這類「驗證通過
+  但最終沒被用到」的 bug，`GlobalSelectionError` 這層防線天生看不到，必須靠
+  直接檢查最終輸出資料才抓得到，寫更多契約驗證測試也無法覆蓋
+
 ## M27 Market Regime v2 Production Integration：正式接入 P3 選股與 P4 每日 Review（2026-09-04 第二輪）
 
 ### 背景
