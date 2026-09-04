@@ -2007,6 +2007,14 @@ def _format_watch_entry(item: Dict[str, Any]) -> Dict[str, Any]:
         "recommendation_thesis": item.get("recommendation_thesis"),
         "relative_advantage": item.get("relative_advantage"),
         "recommendation_basis": item.get("recommendation_basis") or [],
+        # M27 Market Regime v2（2026-09-04）：`validate_global_selection()` 對每筆
+        # item 都設定這兩個欄位（shadow/off 模式下為 None），但這裡原本沒有把它們
+        # 抄進最終 watchlist entry——`merge_selection_items()`／reason stage 的
+        # `{**item, **watch_by_id[sid]}` 都是透傳合併，唯獨這個 whitelist 建構式
+        # 漏掉，導致 production 模式下 market_resilience/market_context_reason
+        # 一路算到底，最後卻沒進 signal_snapshots.watchlist／signal_watch_hits。
+        "market_resilience": item.get("market_resilience"),
+        "market_context_reason": item.get("market_context_reason"),
         "rank_override": item.get("rank_override"),
         "rank_override_reason": item.get("rank_override_reason"),
         "theme_cluster": item.get("theme_cluster")
@@ -2057,6 +2065,10 @@ def _format_selection_audit_entry(item: Dict[str, Any]) -> Dict[str, Any]:
         "overlap_reason": item.get("overlap_reason"),
         "veto_reason": item.get("veto_reason"),
         "short_reason": item.get("short_reason"),
+        # M27 Market Regime v2：見 _format_watch_entry 同名欄位註解——
+        # validate_global_selection() 對 NOT_SELECTED 一樣會設這兩個欄位。
+        "market_resilience": item.get("market_resilience"),
+        "market_context_reason": item.get("market_context_reason"),
     }
 
 

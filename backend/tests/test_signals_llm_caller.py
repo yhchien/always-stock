@@ -689,6 +689,49 @@ def test_format_watch_entry_defaults_missing_sections_to_empty_list():
         assert out[key] == []
 
 
+def test_format_watch_entry_carries_market_resilience_fields():
+    """M27 Market Regime v2 regression（2026-09-04）：real production run 上
+    validate_global_selection() 已經對每筆 item 設定 market_resilience／
+    market_context_reason（見 global_selector.py 970-971 行），但
+    _format_watch_entry 的欄位白名單建構式漏抄，導致這兩個欄位在
+    production 模式下一路算到 None 以外的真實值，最後卻消失在
+    signal_snapshots.watchlist／signal_watch_hits 裡（真實 9/3 production
+    rerun 觀察到的症狀：key 完全不存在於持久化 dict，不是存在但為 None）。
+    """
+    item = {
+        "stock": "2330",
+        "name": "台積電",
+        "decision": "RECOMMEND",
+        "market_resilience": "STRONG",
+        "market_context_reason": "個股基本面穩健，大盤壓力對其影響有限。",
+    }
+    out = llm_caller._format_watch_entry(item)
+    assert out["market_resilience"] == "STRONG"
+    assert out["market_context_reason"] == "個股基本面穩健，大盤壓力對其影響有限。"
+
+
+def test_format_watch_entry_market_resilience_defaults_to_none():
+    """shadow/off 模式（或缺欄位的舊資料）：key 仍存在，值為 None，向後相容。"""
+    out = llm_caller._format_watch_entry({"stock": "2330", "name": "台積電", "decision": "WATCH"})
+    assert out["market_resilience"] is None
+    assert out["market_context_reason"] is None
+
+
+def test_format_selection_audit_entry_carries_market_resilience_fields():
+    """M27 Market Regime v2 regression：NOT_SELECTED/REMOVE 條目同樣不該遺漏。"""
+    item = {
+        "stock": "2317",
+        "name": "鴻海",
+        "decision": "NOT_SELECTED",
+        "selection_reason_code": "THESIS_OVERLAP",
+        "market_resilience": "WEAK",
+        "market_context_reason": "同產業已有更強勢標的入選。",
+    }
+    out = llm_caller._format_selection_audit_entry(item)
+    assert out["market_resilience"] == "WEAK"
+    assert out["market_context_reason"] == "同產業已有更強勢標的入選。"
+
+
 # ---------- assemble_final_output ----------
 
 
