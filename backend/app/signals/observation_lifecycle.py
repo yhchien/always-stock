@@ -881,16 +881,45 @@ def run_tracking_assessments(
         seen: set[str] = set()
         for raw in response["items"]:
             sid = str(raw.get("stock") or "") if isinstance(raw, dict) else ""
-            if sid not in expected or sid in seen:
-                if sid in expected:
-                    failures.append(
-                        _review_failure(
-                            sid,
-                            "TRACKING_OUTPUT_ALIGNMENT_FAILED",
-                            "Duplicate tracking assessment.",
-                        )
+            if sid not in expected:
+                continue
+            if sid in seen:
+                # 2026-09-04：LLM 對同一批 tracking review 的回應裡，同一檔股票
+                # 出現兩次（真實案例 6226）。舊版一律直接判失敗，完全沒有重試，
+                # 且會蓋掉第一次可能已經驗證成功的結果（`decide_observation_
+                # action()` 只要 review_technical_failure 非 None 就無條件回
+                # DECISION_FAILED，不會去看 external_thesis_assessment 是否
+                # 其實有效）——這正是 2026-08-22 那次「LLM 漏答」修法想統一解決
+                # 的同一類問題（「這一檔需要重新請求」），當時漏掉了「重複」這
+                # 個情境。若第一次已經成功驗證，重複只是雜訊直接忽略；只有第
+                # 一次沒能成功時，才需要對這一檔單獨重試。
+                if sid in successful:
+                    continue
+                validated_via_retry, retry_diagnostic = _retry_single_stock(
+                    sid,
+                    source_by_stock,
+                    review_date,
+                    rejection_reason=(
+                        "Tracking assessment returned duplicate entries for "
+                        "this stock in the same batch."
+                    ),
+                    required_correction=(
+                        "上一輪回應對同一檔股票輸出了兩筆（或以上）tracking "
+                        "assessment，請重新針對這一檔股票只輸出一筆完整、正確"
+                        "的評估。"
+                    ),
+                )
+                if validated_via_retry is not None:
+                    successful[sid] = validated_via_retry
+                    continue
+                failures.append(
+                    _review_failure(
+                        sid,
+                        "TRACKING_OUTPUT_ALIGNMENT_FAILED",
+                        "Duplicate tracking assessment.",
+                        diagnostic=retry_diagnostic if retry_enabled else {},
                     )
-                    seen.add(sid)
+                )
                 continue
             seen.add(sid)
             try:

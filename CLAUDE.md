@@ -1,5 +1,68 @@
 # always-stock 專案記憶
 
+## P4 每日複核「重複輸出同一檔股票」讓整包 Daily Signals Generation FAIL（2026-09-04）
+
+### 症狀
+使用者回報「昨天 github action 有錯，魚尾有問題」。查 `gh run list` 發現
+2026-09-03 的 `Daily Signals Generation` 排程狀態是 `failure`（exit_code=4，
+`partial_failure`），連帶讓 `workflow_run` 接在它後面的
+`Signal Archive Returns Update`／`Signal Expectation Prices` 兩個下游 workflow
+當天整個被 `skipped`（因為觸發條件是「上游 workflow 完成且 conclusion==success」，
+`failure` 不算數）。查 `SignalGenerationJob`／`SignalSnapshot.summary` 發現 P3
+（85/85 候選研究/決策 0 失敗）完全正常，唯一的問題出在 P4 每日觀察複核：
+`technical_failures` 裡有 1 筆 `{"stock": "6226", "error_code":
+"TRACKING_OUTPUT_ALIGNMENT_FAILED", "error_summary": "Duplicate tracking
+assessment."}`。
+
+### 根因
+`run_tracking_assessments()`（`observation_lifecycle.py`）批次呼叫 LLM 做 P4
+每日追蹤複核，同一批 8 檔一次 prompt。LLM 對這批的回應裡，6226 這檔的
+tracking assessment **被重複輸出了兩次**。舊版偵測邏輯（`sid in seen`）看到
+第二次出現就**無條件**直接判定 `TRACKING_OUTPUT_ALIGNMENT_FAILED`，完全沒有
+重試——這正是 2026-08-22 那次「LLM 漏答某一檔」修法（真實案例 00738U）想統一
+解決的同一類問題（docstring 當時就寫「兩種情況本質上都是『這一檔需要重新
+請求』，共用同一套重試邏輯」），但那次只涵蓋了「漏答」，沒涵蓋「重複」這個
+鏡像情境，這次才第一次真的在 production 命中。
+
+更嚴重的是：`decide_observation_action()` 只要 `review_technical_failure`
+非 `None` 就**無條件**直接回 `DECISION_FAILED`（完全不看
+`external_thesis_assessment` 是否其實有效）——所以即使 6226 的**第一次**出現
+早就成功通過驗證、存進 `successful["6226"]`，只要後面又出現一次重複，這筆
+早就驗證成功的結果會被整個蓋掉，單一股票的雜訊足以讓當天整個 P4 複核（進而
+整個 pipeline job）被標記為 `partial_failure`，觸發 workflow FAIL。
+
+### 修法（`observation_lifecycle.py` 的 `run_tracking_assessments`）
+把「重複偵測」拆成兩種情況分開處理，不再一律直接放棄：
+- **第一次已經驗證成功**（`sid in successful`）：後面的重複純粹是雜訊，直接
+  忽略，不觸發任何重試或失敗判定——這是本次真實案例的情境
+- **第一次還沒有成功結果**（第一次驗證失敗、且其既有 ValueError 重試路徑也
+  失敗）：對這一檔補一次獨立的單檔重試（沿用既有 `_retry_single_stock`，
+  比照 2026-08-22 「漏答」修法的邏輯），重試仍失敗才最終判定
+  `TRACKING_OUTPUT_ALIGNMENT_FAILED`
+
+### 手動重跑昨天的批次
+`_settle_pending_p4_fishtail_stops` 之類的「留到下一個複核日」self-healing
+機制這次派不上用場——今天的正式排程還沒跑，決定直接**手動觸發一次
+`gh workflow run daily_signals.yml`**，帶 `target_date=2026-09-03`，讓昨天
+缺失的那一天用修好的程式碼重新跑一次完整 pipeline（P3+P4）。
+
+### Gotcha
+- **同一個 `TRACKING_OUTPUT_ALIGNMENT_FAILED` 錯誤碼，可能對應兩種完全不同
+  的根因（漏答 vs 重複）**：修其中一種時，要記得回頭檢查另一種鏡像情境是否
+  也該套用同一套修法——這次「重複」情境放著沒修整整兩週才第一次在真實資料
+  命中，暴露出「同一個 docstring 講的統一原則」跟「實際程式碼是否真的涵蓋
+  所有鏡像情境」可能對不起來
+- **`review_technical_failure` 這種「非 None 就無條件蓋過其他結果」的短路
+  設計，任何上游只要誤判出一個假的 technical_failure，就會讓明明成功的結果
+  被犧牲**——修 alignment 偵測邏輯時，務必記得檢查偵測到「異常」的當下是否
+  已經有其他管道拿到有效結果（`sid in successful`），不能只看「有沒有異常」
+  就直接判失敗，還要看「異常發生前是不是已經處理好了」
+- **`workflow_run` 事件鏈接（既有 2026-08-14 那次從固定 cron 改成事件鏈接
+  的設計）在上游真的 `failure` 時，會讓下游整串一起被跳過（`skipped`，不是
+  `failure`）**——排查「昨天資料是不是沒更新」這類問題時，若下游 workflow
+  顯示 `skipped` 而非 `failure`，要往上游那個真正失敗的 workflow 查，不能
+  只看下游自己的 log（下游根本沒有機會執行，也就沒有自己的失敗 log 可看）
+
 ## 停止觀察改回立即結算 + 紀錄區動能圖三處真實資料範圍 bug（2026-08-28 第二輪）
 
 ### 背景

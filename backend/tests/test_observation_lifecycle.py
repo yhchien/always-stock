@@ -1145,6 +1145,104 @@ def test_v7_tracking_alignment_failure_gives_up_after_retries_exhausted(monkeypa
     assert len(calls) == 3
 
 
+def test_v7_tracking_duplicate_stock_ignores_extra_copy_when_first_succeeded(
+    monkeypatch,
+):
+    """2026-09-04 regression（真實案例 6226，2026-09-03 排程）：LLM 對同一批
+    tracking review 的回應裡，同一檔股票出現兩次，且第一次早就成功驗證過。舊版
+    「sid in seen」一律直接判 TRACKING_OUTPUT_ALIGNMENT_FAILED，完全沒檢查
+    successful 裡是不是已經有效——而 `decide_observation_action()` 只要
+    review_technical_failure 非 None 就無條件回 DECISION_FAILED，等於把明明
+    驗證成功的第一筆結果整個蓋掉，讓單一股票的雜訊重複觸發當天整包 pipeline
+    partial_failure（`Daily Signals Generation` workflow FAIL，連帶
+    `Signal Archive Returns Update`／`Signal Expectation Prices` 兩個下游
+    workflow_run 被 skip）。修法：第一次已成功時，後面重複出現的雜訊直接忽略，
+    不需要也不應該觸發任何重試或判定失敗。"""
+    calls = []
+
+    def fake_call(_system, user_msg, **kwargs):
+        payload = json.loads(user_msg)
+        calls.append(payload)
+        return {
+            "review_date": DAY_1.isoformat(),
+            "items": [
+                _external(stock="2330"),
+                _external(stock="2454"),
+                _external(stock="2454"),
+            ],
+        }, {"status": "ok"}
+
+    monkeypatch.setattr(lifecycle.llm_caller, "_call_llm_json", fake_call)
+    successful, failures = lifecycle.run_tracking_assessments(
+        [
+            {"date": DAY_1.isoformat(), "stock": "2330"},
+            {"date": DAY_1.isoformat(), "stock": "2454"},
+        ],
+        batch_size=2,
+    )
+
+    assert failures == []
+    assert set(successful.keys()) == {"2330", "2454"}
+    # 第一次就成功，重複的雜訊直接忽略，不該多打任何一次重試 LLM call。
+    assert len(calls) == 1
+
+
+def test_v7_tracking_duplicate_stock_retries_when_first_copy_invalid(monkeypatch):
+    """重複情境的另一種可能：第一次出現就沒能通過契約驗證（走既有 ValueError
+    重試路徑，且用盡重試仍失敗），此時後面重複出現的那一筆屬於「還沒拿到有效
+    結果」，應該給這檔股票一次獨立的單檔重試機會（比照 2026-08-22 那次
+    「LLM 漏答」修法的邏輯），而不是直接放棄——即使最終這次重試也失敗，至少
+    確認整段流程不會 crash 或無限重試。"""
+    invalid = _external(assessment="THESIS_INVALIDATED")
+    invalid.update(
+        {
+            "invalidation_reason_code": "MATERIAL_NEGATIVE_EVENT",
+            "thesis_dimensions": {
+                "business_or_exposure": "INTACT",
+                "theme": "INVALIDATED",
+                "catalyst": "INVALIDATED",
+            },
+            "material_evidence": [],
+        }
+    )
+    calls = []
+
+    def fake_call(_system, user_msg, **kwargs):
+        payload = json.loads(user_msg)
+        calls.append(payload)
+        if len(payload["items"]) == 2:
+            return {
+                "review_date": DAY_1.isoformat(),
+                "items": [
+                    _external(stock="2330"),
+                    {**invalid, "stock": "2454"},
+                    {**invalid, "stock": "2454"},
+                ],
+            }, {"status": "ok"}
+        # 針對 2454 的所有單檔重試（不論是既有 ValueError 路徑、還是這次新增
+        # 的重複偵測路徑觸發的），一律持續回傳不合法內容，逼系統用盡重試次數。
+        return {
+            "review_date": DAY_1.isoformat(),
+            "items": [{**invalid, "stock": "2454"}],
+        }, {"status": "ok"}
+
+    monkeypatch.setattr(lifecycle.llm_caller, "_call_llm_json", fake_call)
+    successful, failures = lifecycle.run_tracking_assessments(
+        [
+            {"date": DAY_1.isoformat(), "stock": "2330"},
+            {"date": DAY_1.isoformat(), "stock": "2454"},
+        ],
+        batch_size=2,
+    )
+
+    assert set(successful.keys()) == {"2330"}
+    assert "2454" not in successful
+    failed_stocks = {item["stock"] for item in failures}
+    assert failed_stocks == {"2454"}
+    # 有多次 LLM call（原始批次 + 兩條重試路徑），但確實會結束，不會無限重試。
+    assert len(calls) > 1
+
+
 def test_same_date_rerun_is_idempotent(db, monkeypatch):
     observation = _observation(db)
     evidence = _healthy_evidence()
