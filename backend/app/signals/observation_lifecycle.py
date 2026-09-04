@@ -36,6 +36,7 @@ from app.signals import (
     market_breadth,
     market_regime,
     market_snapshot,
+    market_stress,
     momentum,
     prompt_family,
 )
@@ -665,6 +666,15 @@ def build_current_tracking_evidence(
             "persistence_warning": persistence_warning,
             "market_regime": (market_context or {}).get("market_regime")
             or (market_context or {}).get("market_state"),
+            # M27 Market Regime v2（2026-09-04）：純資訊性欄位，可在 UI 顯示、
+            # 可當 CAUTION 的輔助說明，**不是**核心 sustained-stop dimension——
+            # decide_observation_action() 完全不讀這兩個 key，不會因為市場壓力
+            # 升高就單獨觸發 STOP_OBSERVING（見 market_stress.py 模組 docstring
+            # 與 §21 設計原則）。
+            "market_stress": (market_context or {}).get("market_stress"),
+            "effective_market_state": (market_context or {}).get(
+                "effective_market_state"
+            ),
             "data_quality": {
                 "price_available": candidate.get("close_1d") is not None,
                 "momentum_frame_available": bool(raw_frame),
@@ -2112,6 +2122,26 @@ def replay_observation_lifecycle(
                 "market_regime_reason": regime.get("reason"),
                 "breadth_score": breadth.get("breadth_score"),
             }
+        )
+        try:
+            stress_result = market_stress.compute_market_stress(
+                db,
+                review_date,
+                trend_regime=regime.get("regime"),
+                momentum_frame=momentum_frame,
+                breadth=breadth,
+                taiex_return_1d_pct=(regime.get("metrics") or {}).get(
+                    "return_1d_pct"
+                ),
+            )
+        except Exception:
+            logger.exception(
+                "compute_market_stress failed during replay for %s", review_date
+            )
+            stress_result = market_stress.empty_market_stress(regime.get("regime"))
+        market_context["market_stress"] = stress_result.get("market_stress")
+        market_context["effective_market_state"] = stress_result.get(
+            "effective_market_state"
         )
         evidence_by_id = build_current_tracking_evidence(
             db,

@@ -250,6 +250,21 @@ def _ensure_phase2_shadow_tables() -> None:
         logger.exception("Failed to create Phase 2 shadow tables at startup")
 
 
+def _ensure_market_regime_v2_tables() -> None:
+    """啟動時確保 M27 Market Regime v2（Market Stress Overlay）新表存在
+    （market_stress_indicators）。純建表、不 seed、失敗不擋啟動。這張表只是
+    原始市場指標快照，`MARKET_REGIME_V2_MODE` 預設 shadow，對既有選股結果
+    零影響（見 app/signals/market_stress.py）。
+    """
+    from app.database import Base, engine
+    from app.models import MarketStressIndicator  # noqa: F401 — 觸發 metadata 註冊
+
+    try:
+        Base.metadata.create_all(bind=engine, tables=[MarketStressIndicator.__table__])
+    except Exception:
+        logger.exception("Failed to create Market Regime v2 tables at startup")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
@@ -266,6 +281,7 @@ async def lifespan(app: FastAPI):
     _ensure_m3_snapshot_columns()
     _ensure_classification_tables()
     _ensure_phase2_shadow_tables()
+    _ensure_market_regime_v2_tables()
 
     app.state.bot_app = None
 

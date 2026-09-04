@@ -43,7 +43,14 @@ from app.signals import (
     prompt_family,
 )
 from app.signals import deterministic_signals as det_signals
-from app.signals import market_breadth, market_margin, market_regime, market_snapshot, momentum
+from app.signals import (
+    market_breadth,
+    market_margin,
+    market_regime,
+    market_snapshot,
+    market_stress,
+    momentum,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -369,6 +376,36 @@ def run_signal_pipeline_sync(
                 "breadth_score": breadth.get("breadth_score"),
                 "breadth": breadth,
             }
+
+            # M27 Market Regime v2（Market Stress Overlay，2026-09-04）：
+            # trend_regime（上面算好的 3 態）不動；疊一層獨立的 market_stress
+            # 維度（NORMAL/CAUTION/STRESS/UNKNOWN），描述「市場實際交易環境
+            # 是否已惡化」，跟「指數技術趨勢」分開。純 deterministic，只讀
+            # DB 既有資料 + market_stress_indicators（新 ETL），不呼叫 LLM。
+            # 預設 MARKET_REGIME_V2_MODE=shadow：完整計算並寫進 snapshot/debug，
+            # 但不影響 after_regime／conviction／LLM 候選（見下方 llm_eligible
+            # 分支與 global_selector 呼叫點）。
+            try:
+                market_stress_result = market_stress.compute_market_stress(
+                    db,
+                    target_date,
+                    trend_regime=regime_info["regime"],
+                    momentum_frame=momentum_frame,
+                    breadth=breadth,
+                    taiex_return_1d_pct=(regime_info.get("metrics") or {}).get(
+                        "return_1d_pct"
+                    ),
+                )
+            except Exception:
+                logger.exception(
+                    "compute_market_stress failed for %s; falling back to UNKNOWN",
+                    target_date,
+                )
+                market_stress_result = market_stress.empty_market_stress(
+                    regime_info["regime"]
+                )
+            regime_info["market_stress_v2"] = market_stress_result
+
             after_regime = filters.apply_regime_gate(
                 after_soft, regime_info["regime"], regime_detail=regime_detail
             )
@@ -677,10 +714,25 @@ def run_signal_pipeline_sync(
                 label=f"全體候選比較（共 {len(selection_eligible)} 檔）",
             )
             try:
+                # M27 Market Regime v2：只有 global_only／production 模式才把
+                # Market Environment 傳進 Global Selector 的 LLM 輸入；預設
+                # shadow 模式維持 None，request_payload 完全不受影響（見
+                # global_selector.run_global_selection 的 market_environment
+                # 參數 docstring）。
+                v2_mode = market_stress.market_regime_v2_mode()
+                market_environment_for_selector = (
+                    _build_market_environment_payload(regime_info)
+                    if v2_mode in (
+                        market_stress.MODE_GLOBAL_ONLY,
+                        market_stress.MODE_PRODUCTION,
+                    )
+                    else None
+                )
                 selection_result = global_selector.run_global_selection(
                     selection_cards,
                     market_context,
                     selection_date=target_date,
+                    market_environment=market_environment_for_selector,
                 )
             except global_selector.GlobalSelectionError as exc:
                 selection_failure = exc.as_dict()
@@ -1212,6 +1264,28 @@ def _set_progress(
     db.commit()
 
 
+def _build_market_environment_payload(
+    regime_info: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """M27 Market Regime v2：組出 §十八規格的緊湊 `market_environment` 物件，
+    給 Global Selector 的 LLM 輸入用（只在 global_only／production 模式才會
+    被呼叫端使用）。刻意不重複塞每個 Family 的完整 raw_values（避免 payload
+    膨脹，見 §十八「不要在每張 card 重複大量 raw market values」），只留
+    LLM 判斷「這個環境下要不要正式推薦」所需的摘要層級資訊。
+    """
+    v2 = regime_info.get("market_stress_v2")
+    if not v2:
+        return None
+    return {
+        "trend_regime": v2.get("trend_regime"),
+        "market_stress": v2.get("market_stress"),
+        "effective_market_state": v2.get("effective_market_state"),
+        "stress_families": v2.get("stress_families"),
+        "key_reason_codes": v2.get("key_reason_codes"),
+        "market_stress_data_complete": v2.get("market_stress_data_complete"),
+    }
+
+
 def _build_pipeline_market_context(
     db: Session,
     *,
@@ -1227,6 +1301,33 @@ def _build_pipeline_market_context(
     market_context["market_regime_reason"] = regime_info["reason"]
     market_context["breadth_score"] = regime_info.get("breadth_score")
     market_context["market_regime_detail"] = regime_info.get("regime_detail")
+
+    # M27 Market Regime v2（Market Stress Overlay）：純 additive 欄位，
+    # shadow mode 下不影響任何既有選股/決策邏輯，只是曝光給 snapshot/debug/
+    # 前端顯示；`regime_info.get("market_stress_v2")` 缺失時（尚未接線的呼叫
+    # 路徑）優雅跳過，不 raise。
+    market_stress_v2 = regime_info.get("market_stress_v2")
+    if market_stress_v2:
+        market_context["market_stress"] = market_stress_v2.get("market_stress")
+        market_context["effective_market_state"] = market_stress_v2.get(
+            "effective_market_state"
+        )
+        market_context["market_stress_reason"] = market_stress_v2.get(
+            "market_stress_reason"
+        )
+        market_context["stress_families"] = market_stress_v2.get("stress_families")
+        market_context["market_stress_key_reason_codes"] = market_stress_v2.get(
+            "key_reason_codes"
+        )
+        market_context["market_stress_data_complete"] = market_stress_v2.get(
+            "market_stress_data_complete"
+        )
+        market_context["market_regime_v2_version"] = market_stress_v2.get(
+            "market_regime_v2_version"
+        )
+        market_context["market_regime_v2_mode"] = market_stress_v2.get(
+            "market_regime_v2_mode"
+        )
     try:
         market_context["margin_climate"] = (
             market_margin.compute_market_margin_snapshot(db, target_date)
@@ -1270,6 +1371,24 @@ def _run_p4_tracking_only_day(
         "regime_detail": regime_detail,
         "breadth_score": breadth.get("breadth_score"),
     }
+    try:
+        market_stress_result = market_stress.compute_market_stress(
+            db,
+            target_date,
+            trend_regime=regime_info["regime"],
+            momentum_frame=momentum_frame,
+            breadth=breadth,
+            taiex_return_1d_pct=(regime_info.get("metrics") or {}).get(
+                "return_1d_pct"
+            ),
+        )
+    except Exception:
+        logger.exception(
+            "compute_market_stress failed for %s (P4-only day); falling back to UNKNOWN",
+            target_date,
+        )
+        market_stress_result = market_stress.empty_market_stress(regime_info["regime"])
+    regime_info["market_stress_v2"] = market_stress_result
     market_context = _build_pipeline_market_context(
         db,
         target_date=target_date,

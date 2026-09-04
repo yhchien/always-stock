@@ -489,8 +489,16 @@ def run_global_selection(
     *,
     selection_date: Union[date, str],
     model: str = DEFAULT_GLOBAL_SELECTION_MODEL,
+    market_environment: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Run and validate the one-shot selector.  There is intentionally no fallback.
+
+    `market_environment`（M27 Market Regime v2，2026-09-04）：**只有呼叫端明確
+    傳入才會出現在送給 LLM 的 request_payload 裡**——預設 None，行為與這個參數
+    加入之前逐位元組相同。pipeline.py 只在 `MARKET_REGIME_V2_MODE` 為
+    `global_only`／`production` 時才會傳非 None 值；預設 `shadow` 模式下這個
+    參數永遠是 None，Global Selector 對 LLM 的輸入完全不受影響（見 §十五／
+    §十八：shadow 對 Selection 零影響是本次改動的硬性要求）。
 
     A single full-set contract-correction retry is allowed for a semantically
     invalid model response.  The invalid response is never adopted, and the
@@ -536,6 +544,10 @@ def run_global_selection(
         "date": date_text,
         "compact_selection_cards": cards,
     }
+    if market_environment is not None:
+        # 每張 card 不重複塞市場層級 raw values（見 §十八「不要在每張 card
+        # 重複大量 raw market values」），共用一份 top-level context。
+        request_payload["market_environment"] = market_environment
     metadata = prompt_family.prompt_metadata(family)
     response_schema = (
         global_selection_output_schema(

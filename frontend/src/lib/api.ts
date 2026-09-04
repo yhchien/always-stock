@@ -1598,6 +1598,31 @@ export interface SignalMarketContext {
   breadth_score?: number | null
   /** 2026-07-16 v2.2：4 態 regime detail（BROAD_BULL/NARROW_BULL/…，僅觀察用；gate 已在 backend 做）。 */
   market_regime_detail?: string | null
+
+  // ---- M27 Market Regime v2：Market Stress Overlay（2026-09-04，見
+  // backend app/signals/market_stress.py）。`market_regime` 欄位本身不變，
+  // 純新增這一層「市場壓力」維度。預設 shadow 模式：完整計算並在這裡曝光，
+  // 但不影響 watchlist/選股結果本身。 ----
+  /** NORMAL / CAUTION / STRESS / UNKNOWN */
+  market_stress?: "NORMAL" | "CAUTION" | "STRESS" | "UNKNOWN" | null
+  market_stress_reason?: string | null
+  /** trend_regime × market_stress 合成，給使用者一眼看懂的綜合狀態。 */
+  effective_market_state?:
+    | "BULL_HEALTHY"
+    | "BULL_CAUTION"
+    | "BULL_STRESSED"
+    | "VOLATILE_RANGE"
+    | "VOLATILE_STRESSED"
+    | "RISK_OFF"
+    | null
+  /** 4 個獨立 Evidence Family 各自的狀態（HEALTHY/NEUTRAL/WARNING/STRESS/UNKNOWN）。 */
+  stress_families?: Record<string, string> | null
+  market_stress_key_reason_codes?: string[] | null
+  /** 資料缺失政策（§25）：台灣 VIX／美國 10 年期公債殖利率結構性缺席，
+   * 這個欄位幾乎永遠是 false，是誠實反映已知資料缺口，不是抓取失敗。 */
+  market_stress_data_complete?: boolean | null
+  market_regime_v2_version?: string | null
+  market_regime_v2_mode?: "off" | "shadow" | "global_only" | "production" | null
 }
 
 export interface SignalSnapshotData {

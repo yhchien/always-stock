@@ -422,6 +422,48 @@ def test_global_call_has_no_silent_fallback(monkeypatch):
     assert exc.value.code == "GLOBAL_SELECTION_LLM_FAILED"
 
 
+def test_run_global_selection_omits_market_environment_key_by_default(monkeypatch):
+    """M27 Market Regime v2：不傳 market_environment 時（shadow 模式的預設
+    行為），request_payload 不該多一個 key——跟這個參數加入之前逐位元組相同。"""
+    cards = _cards(1)
+    request_payloads = []
+
+    def fake_call(_system, user_msg, **kwargs):
+        request_payloads.append(json.loads(user_msg))
+        return _payload([_recommend("1000", 1)]), {"status": "ok"}
+
+    monkeypatch.setattr(global_selector.llm_caller, "_call_llm_json", fake_call)
+    global_selector.run_global_selection(cards, {}, selection_date=SELECTION_DATE)
+
+    assert "market_environment" not in request_payloads[0]
+
+
+def test_run_global_selection_includes_market_environment_when_provided(monkeypatch):
+    """global_only／production 模式才會傳 market_environment；傳了就該原樣
+    出現在送給 LLM 的 request_payload 裡。"""
+    cards = _cards(1)
+    request_payloads = []
+    env = {
+        "trend_regime": "BULL_TREND",
+        "market_stress": "STRESS",
+        "effective_market_state": "BULL_STRESSED",
+        "stress_families": {"LOCAL_MARKET_INTERNALS": "STRESS"},
+        "key_reason_codes": ["BREADTH_DETERIORATION"],
+        "market_stress_data_complete": False,
+    }
+
+    def fake_call(_system, user_msg, **kwargs):
+        request_payloads.append(json.loads(user_msg))
+        return _payload([_recommend("1000", 1)]), {"status": "ok"}
+
+    monkeypatch.setattr(global_selector.llm_caller, "_call_llm_json", fake_call)
+    global_selector.run_global_selection(
+        cards, {}, selection_date=SELECTION_DATE, market_environment=env
+    )
+
+    assert request_payloads[0]["market_environment"] == env
+
+
 def test_global_rank_override_is_derived_without_changing_decision(monkeypatch):
     cards = _cards(2)
     invalid = _payload([

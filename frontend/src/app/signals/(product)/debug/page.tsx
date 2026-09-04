@@ -158,6 +158,23 @@ export default function SignalDebugPage() {
           </section>
 
           <section className="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <h2 className="text-sm font-semibold">Market Context（含 M27 Market Regime v2）</h2>
+              <span className="rounded-full border border-slate-700 px-2 py-0.5 text-[11px] text-slate-400">
+                mode: {snapshot.data.market_context.market_regime_v2_mode ?? "—"}
+              </span>
+            </div>
+            <p className="mb-2 text-xs text-slate-500">
+              trend_regime（原有）與 market_stress／effective_market_state（新，見
+              app/signals/market_stress.py）是兩個獨立維度；shadow 模式下這裡只是
+              曝光原始計算結果，不影響上面的 Funnel / Processing Summary 任何一項。
+            </p>
+            <pre className="max-h-[28rem] overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-slate-400">
+              {JSON.stringify(snapshot.data.market_context, null, 2)}
+            </pre>
+          </section>
+
+          <section className="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
             <div className="mb-3 flex flex-wrap items-center gap-2">
               <h2 className="text-sm font-semibold">處理 Funnel</h2>
               <span className="rounded-full border border-slate-700 px-2 py-0.5 text-[11px] text-slate-400">{completeness}</span>

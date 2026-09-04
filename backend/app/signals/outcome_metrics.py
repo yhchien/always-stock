@@ -102,6 +102,15 @@ def _extract_snapshot_items(snapshot: SignalSnapshot) -> list[dict[str, Any]]:
     summary = snapshot.summary or {}
     processing = summary.get("processing_summary") or {}
     selection_summary = summary.get("selection_summary") or {}
+    # M27 Market Regime v2：從 snapshot.market_context 讀（pipeline.py 已把
+    # trend_regime/market_stress/effective_market_state 攤平寫進這裡）；
+    # regime v2 上線前的舊 snapshot 沒有這幾個 key，get() 自然回 None。
+    market_context = snapshot.market_context or {}
+    market_regime_v2_dims = {
+        "trend_regime": market_context.get("market_regime"),
+        "market_stress": market_context.get("market_stress"),
+        "effective_market_state": market_context.get("effective_market_state"),
+    }
     complete = _selection_complete(snapshot)
     prompt_family = (
         processing.get("prompt_family_version")
@@ -180,6 +189,7 @@ def _extract_snapshot_items(snapshot: SignalSnapshot) -> list[dict[str, Any]]:
                     ),
                     "prompt_family_version": prompt_family,
                     **common_versions,
+                    **market_regime_v2_dims,
                     "momentum_score_version": metrics.get(
                         "momentum_score_version"
                     )

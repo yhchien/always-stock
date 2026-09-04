@@ -44,6 +44,13 @@ def ensure_signal_watch_hit_return_columns(engine: Engine) -> None:
             # 2026-08-13：動能分數歷史折線圖用，見 models.py SignalObservationReview.momentum_score 註解
             "momentum_score": "ALTER TABLE signal_observation_reviews ADD COLUMN momentum_score FLOAT",
         },
+        "signal_outcome_metrics": {
+            # M27 Market Regime v2（2026-09-04）：P6 依市場環境分組 outcome，
+            # 見 models.py SignalOutcomeMetric 註解 + app/signals/market_stress.py
+            "trend_regime": "ALTER TABLE signal_outcome_metrics ADD COLUMN trend_regime VARCHAR(24)",
+            "market_stress": "ALTER TABLE signal_outcome_metrics ADD COLUMN market_stress VARCHAR(16)",
+            "effective_market_state": "ALTER TABLE signal_outcome_metrics ADD COLUMN effective_market_state VARCHAR(24)",
+        },
     }
 
     for table_name, wanted in table_alters.items():

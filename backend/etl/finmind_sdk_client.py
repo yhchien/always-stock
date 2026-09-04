@@ -181,6 +181,104 @@ class FinMindSDKClient:
             logger.error(f"Failed to fetch dataset {dataset}: {e}")
             raise
 
+    def _fetch_dataset_for_range_with_id(
+        self,
+        dataset: str,
+        data_id: str,
+        start_date: str,
+        end_date: str,
+    ) -> Any:
+        """對 FinMind v4 REST 打單一 dataset **+ data_id**（例如期貨/選擇權/美股
+        指數/商品/匯率這類「本身就是單一標的」的資料集），回傳 pandas DataFrame。
+        跟 `_fetch_dataset_for_range` 一樣：每次呼叫只計 1 配額，且已驗證這類
+        「單一標的 + 區間」查詢會回傳完整區間資料（不是只回 start_date 當日；
+        那個坑只發生在「不帶 data_id 掃全市場」的 dataset，見既有 margin_trade
+        / monthly_revenue / shareholding 的教訓）。
+        """
+        import requests
+        import pandas as pd
+
+        if not self.can_proceed():
+            raise RuntimeError("Insufficient quota or critical state")
+
+        logger.info(
+            f"Fetching dataset {dataset} (data_id={data_id}) from {start_date} "
+            f"to {end_date}"
+        )
+
+        try:
+            resp = requests.get(
+                "https://api.finmindtrade.com/api/v4/data",
+                params={
+                    "dataset": dataset,
+                    "data_id": data_id,
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "token": self.token,
+                },
+                timeout=120,
+            )
+            if resp.status_code == 402:
+                logger.error(f"402 quota exceeded for dataset {dataset}")
+                self._refresh_quota()
+                raise RuntimeError("Insufficient quota or critical state")
+            resp.raise_for_status()
+            body = resp.json()
+            data = body.get("data") or []
+            df = pd.DataFrame(data) if data else pd.DataFrame()
+
+            self._refresh_quota()
+            logger.info(
+                f"✓ Fetched {len(df)} {dataset} (data_id={data_id}) records"
+            )
+            return df
+
+        except RuntimeError:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to fetch dataset {dataset} (data_id={data_id}): {e}")
+            raise
+
+    def fetch_taiwan_futures_institutional_dataset(
+        self, start_date: str, end_date: str, futures_id: str = "TX"
+    ) -> Any:
+        """M27 Market Regime v2 Family B：外資臺指期未平倉部位（1 quota）"""
+        return self._fetch_dataset_for_range_with_id(
+            "TaiwanFuturesInstitutionalInvestors", futures_id, start_date, end_date
+        )
+
+    def fetch_taiwan_option_institutional_dataset(
+        self, start_date: str, end_date: str, option_id: str = "TXO"
+    ) -> Any:
+        """M27 Market Regime v2 Family B：TXO 買賣權法人成交量／未平倉量（1 quota）"""
+        return self._fetch_dataset_for_range_with_id(
+            "TaiwanOptionInstitutionalInvestors", option_id, start_date, end_date
+        )
+
+    def fetch_us_stock_price_dataset(self, start_date: str, end_date: str, symbol: str) -> Any:
+        """M27 Market Regime v2 Family C：美股指數（VIX/Nasdaq/SOX 等，1 quota/檔）"""
+        return self._fetch_dataset_for_range_with_id(
+            "USStockPrice", symbol, start_date, end_date
+        )
+
+    def fetch_crude_oil_dataset(self, start_date: str, end_date: str, name: str) -> Any:
+        """M27 Market Regime v2 Family D：原油（WTI / Brent，1 quota/檔）"""
+        return self._fetch_dataset_for_range_with_id(
+            "CrudeOilPrices", name, start_date, end_date
+        )
+
+    def fetch_gold_price_dataset(self, start_date: str, end_date: str) -> Any:
+        """M27 Market Regime v2 Family D：黃金價格（1 quota）"""
+        return self._fetch_dataset_for_range("GoldPrice", start_date, end_date)
+
+    def fetch_exchange_rate_dataset(
+        self, start_date: str, end_date: str, currency: str = "USD"
+    ) -> Any:
+        """M27 Market Regime v2 Family D：USD/TWD 匯率（1 quota）"""
+        return self._fetch_dataset_for_range_with_id(
+            "TaiwanExchangeRate", currency, start_date, end_date
+        )
+
     def fetch_taiwan_stock_price_dataset(
         self,
         start_date: str,

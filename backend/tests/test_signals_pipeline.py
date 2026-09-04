@@ -1343,3 +1343,35 @@ def test_p3_global_selection_failure_is_atomic_and_writes_no_observation(
         assert db.query(SignalWatchHit).filter_by(snapshot_date=target_date).count() == 0
         assert db.query(SignalObservation).count() == 0
         assert reason_calls == []
+
+
+def test_build_market_environment_payload_returns_none_without_v2_data():
+    """M27 Market Regime v2：regime_info 缺 market_stress_v2（尚未接線的呼叫
+    路徑）時，helper 要優雅回 None，不 raise。"""
+    assert pipeline_mod._build_market_environment_payload({}) is None
+
+
+def test_build_market_environment_payload_extracts_summary_fields_only():
+    """只留摘要層級欄位給 Global Selector（見 §十八「不要重複塞大量 raw market
+    values」），不應該把整個 stress_family_detail（含 raw_values）都塞進去。"""
+    regime_info = {
+        "market_stress_v2": {
+            "trend_regime": "BULL_TREND",
+            "market_stress": "STRESS",
+            "effective_market_state": "BULL_STRESSED",
+            "stress_families": {"LOCAL_MARKET_INTERNALS": "STRESS"},
+            "key_reason_codes": ["BREADTH_DETERIORATION"],
+            "market_stress_data_complete": False,
+            "stress_family_detail": {"huge": "raw payload should not leak"},
+        }
+    }
+    payload = pipeline_mod._build_market_environment_payload(regime_info)
+    assert payload == {
+        "trend_regime": "BULL_TREND",
+        "market_stress": "STRESS",
+        "effective_market_state": "BULL_STRESSED",
+        "stress_families": {"LOCAL_MARKET_INTERNALS": "STRESS"},
+        "key_reason_codes": ["BREADTH_DETERIORATION"],
+        "market_stress_data_complete": False,
+    }
+    assert "stress_family_detail" not in payload

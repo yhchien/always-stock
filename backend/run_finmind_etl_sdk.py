@@ -194,6 +194,9 @@ class FinMindETLOrchestratorSDK:
         from etl.finmind_margin_trade_sdk import fetch_and_upsert_margin_trade_finmind_sdk
         from etl.finmind_shareholding_sdk import fetch_and_upsert_shareholding_sdk
         from etl.aggregate_industry_flow import aggregate_industry_flow
+        from etl.market_stress_indicators_sdk import (
+            fetch_and_upsert_market_stress_indicators,
+        )
 
         if db is None:
             db = SessionLocal()
@@ -208,7 +211,7 @@ class FinMindETLOrchestratorSDK:
         # per-stock 計費，未來有配額壓力時可考慮比照 broker_trade_agg 拔出。
         DEFAULT_STEPS = ["stocks_master", "daily_price", "inst_flow", "industry_flow",
                          "daily_valuation", "monthly_revenue", "financial_statement",
-                         "margin_trade", "shareholding"]
+                         "margin_trade", "shareholding", "market_stress"]
         ALL_STEPS = DEFAULT_STEPS + ["broker_trade_agg"]
         active_steps = set(steps) if steps else set(DEFAULT_STEPS)
 
@@ -443,6 +446,27 @@ class FinMindETLOrchestratorSDK:
             else:
                 logger.info("\n[8/8] Shareholding: skipped")
                 result["results"]["shareholding"] = {"status": "skipped"}
+
+            # 9. M27 Market Regime v2：Market Stress Overlay 原始市場指標
+            #    （外資臺指期 OI / TXO / 美股指數 / 商品 / 匯率），non-CRITICAL，
+            #    純新增資料、對既有選股邏輯零影響（shadow-only 消費端）
+            if "market_stress" in active_steps and not holiday_detected:
+                logger.info("\n[9/9] Fetching market stress indicators (FinMind)...")
+                try:
+                    ms_result = fetch_and_upsert_market_stress_indicators(
+                        db, start_date, end_date, self.client
+                    )
+                    result["results"]["market_stress"] = ms_result
+                    logger.info(f"✓ Market stress indicators: {ms_result['status']}")
+                except Exception as e:
+                    logger.error(f"✗ Market stress indicators ETL failed: {e}")
+                    result["results"]["market_stress"] = {"status": "error", "error": str(e)}
+            elif "market_stress" in active_steps:
+                logger.info("\n[9/9] Market stress indicators: skipped (non-trading day)")
+                result["results"]["market_stress"] = {"status": "skipped_holiday"}
+            else:
+                logger.info("\n[9/9] Market stress indicators: skipped")
+                result["results"]["market_stress"] = {"status": "skipped"}
 
             # 判定整體狀態
             # 核心步驟失敗（price / inst_flow）→ error (exit 3)

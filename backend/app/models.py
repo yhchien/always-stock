@@ -617,6 +617,13 @@ class SignalOutcomeMetric(Base):
     tracking_prompt_version = Column(String(64), nullable=True, index=True)
     tracking_state_machine_version = Column(String(64), nullable=True, index=True)
     momentum_score_version = Column(String(64), nullable=True, index=True)
+    # M27 Market Regime v2（2026-09-04）：讓 P6 可以依市場環境分組看 outcome
+    # 品質（見 app/signals/market_stress.py）。純新增分析維度，`analytics
+    # 不回饋 production`（不會反過來影響 regime/stress 的判斷門檻）。舊 row
+    # 全部是 NULL（regime v2 上線前的快照沒有這個資訊，不回溯造假）。
+    trend_regime = Column(String(24), nullable=True, index=True)
+    market_stress = Column(String(16), nullable=True, index=True)
+    effective_market_state = Column(String(24), nullable=True, index=True)
     metadata_json = Column(JSON, nullable=False, default=dict)
     calculated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
@@ -1138,3 +1145,53 @@ class SignalShadowSnapshot(Base):
     __table_args__ = (
         UniqueConstraint("snapshot_date", "pipeline_version", name="uq_shadow_snapshot_date_version"),
     )
+
+
+class MarketStressIndicator(Base):
+    """M27 Market Regime v2：Market Stress Overlay 的原始市場指標快照。
+
+    一天一筆，存 Family B（台灣資金／衍生品）與 C/D（全球風險／總體商品）需要的
+    raw values；Family A（LOCAL_MARKET_INTERNALS）沿用既有 `market_breadth.py`
+    （從 momentum frame 算，不需要另存），外資現貨流向沿用既有 `inst_stock_flow`
+    （已存在，不重複存一份）。
+
+    缺資料的欄位一律留 NULL，不可用 0 / 假中性值頂替（見
+    `market_stress.py` 的「資料缺失政策」：缺值 = UNKNOWN，不是「正常」）。
+
+    `台灣 VIX`／`美國 10 年期公債殖利率` 這兩項規格書要求的指標，經 FinMind
+    資料源查證**沒有對應 dataset**（見
+    docs/signals/market_regime_v2_data_audit.md），結構性缺席、永久 NULL，
+    不是抓取失敗，是資料源本身不存在。
+    """
+
+    __tablename__ = "market_stress_indicators"
+
+    trade_date = Column(Date, primary_key=True)
+
+    # ---- Family B: TAIWAN_FLOW_AND_DERIVATIVES ----
+    # 外資臺指期（TX）未平倉部位（口）；來源 TaiwanFuturesInstitutionalInvestors
+    foreign_tx_long_oi = Column(Float, nullable=True)
+    foreign_tx_short_oi = Column(Float, nullable=True)
+    foreign_tx_net_oi = Column(Float, nullable=True)
+    # TXO 全市場（不分法人別）成交量／未平倉量；來源 TaiwanOptionInstitutionalInvestors
+    # 三個法人身份（外資/投信/自營）加總，非全市場含散戶，見 audit 文件說明
+    txo_put_volume = Column(Float, nullable=True)
+    txo_call_volume = Column(Float, nullable=True)
+    txo_put_oi = Column(Float, nullable=True)
+    txo_call_oi = Column(Float, nullable=True)
+
+    # ---- Family C: GLOBAL_RISK ----
+    us_vix_close = Column(Float, nullable=True)
+    nasdaq_close = Column(Float, nullable=True)
+    sox_close = Column(Float, nullable=True)
+    # us10y_yield：結構性缺席（FinMind 無對應 dataset），欄位保留供未來資料源補上
+    us10y_yield = Column(Float, nullable=True)
+
+    # ---- Family D: MACRO_COMMODITY_RISK ----
+    wti_price = Column(Float, nullable=True)
+    brent_price = Column(Float, nullable=True)
+    gold_price = Column(Float, nullable=True)
+    usdtwd_spot = Column(Float, nullable=True)
+
+    source = Column(JSON, nullable=True)  # 每個欄位的抓取狀態，debug 用
+    ingested_at = Column(DateTime, default=datetime.utcnow, nullable=False)

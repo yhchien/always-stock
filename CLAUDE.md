@@ -1,5 +1,182 @@
 # always-stock 專案記憶
 
+## M27 Market Regime v2：Market Stress Overlay（2026-09-04）
+
+### 背景
+使用者提供完整規格書「Market Regime v2 — Market Stress Integration」：既有
+`market_regime.py`（TAIEX OHLC → BULL_TREND/VOLATILE_RANGE/RISK_OFF）只能描述「加權
+指數的技術趨勢」，不能回答「當下是否是健康的動能選股環境」——TAIEX 均線仍為多頭，
+不代表個股動能環境健康。要求新增一層獨立的 Market Stress Overlay，疊在既有 trend
+regime 之上，且明確要求**不修改**六類 True Hard Exclusion、Base Momentum
+Eligibility、A/B/C/D Admission、既有 RISK_OFF survival gate、P4 sustained-stop 規則，
+也不新增固定推薦數量/Top-K/quota。使用者指示「不必管三個階段（shadow→global_only→
+production 的分階段人工驗證流程），直接 push 到 main」——解讀為：跳過「分階段觀察後
+才手動切換」的**流程儀式**，但程式碼本身仍要照規格書寫成 mode 開關（預設
+`shadow`，對選股結果零影響），不能不寫 mode 判斷、直接讓新機制影響正式選股（規格書
+本身反覆強調「不要由 coding agent 自動切 production」，這條安全邊界視為使用者沒有
+明確要求推翻的既有約束，予以保留）。
+
+### 架構（Before → After）
+```
+Before：TAIEX OHLC → BULL_TREND/VOLATILE_RANGE/RISK_OFF（trend_regime）→ Phase 2
+
+After： TAIEX → trend_regime（不動）
+        Local/Flow/Global/Macro 四個獨立 Family → market_stress
+        （NORMAL/CAUTION/STRESS/UNKNOWN）
+        trend_regime × market_stress → effective_market_state
+        → 附加進 Global Selector context（僅 global_only/production 模式）
+        → 附加進 P4 evidence（純資訊性，不算 stop dimension）
+        → 附加進 P6 outcome 分組維度
+```
+
+### 新模組 [backend/app/signals/market_stress.py](backend/app/signals/market_stress.py)
+- **Family A（LOCAL_MARKET_INTERNALS）**：完全 reuse 既有
+  [market_breadth.py](backend/app/signals/market_breadth.py) 的 `breadth_score`
+  （0~100，>=60 HEALTHY / >=45 NEUTRAL / >=30 WARNING / <30 STRESS），額外疊一項
+  `cap_weight_divergence`（= taiex_return_1d − 全市場個股 1 日報酬中位數，抓「權值股
+  撐指數但個股普遍走弱」，明顯偏高時標 `INDEX_CONCENTRATION_WARNING`、狀態最多上調
+  一級，不會單獨造成 STRESS）
+- **Family B（TAIWAN_FLOW_AND_DERIVATIVES）**：外資現貨（`inst_stock_flow` 既有表，
+  **用 3 日滾動加總的 percentile**，不是單日值——這是修過的一個真 bug，見下方
+  Gotcha）+ 外資臺指期未平倉（新 ETL，水位百分位 + 3 日轉弱幅度雙重確認，不是「淨空
+  = 壓力」）+ TXO Put/Call（新 ETL，只能當 confirmation/dislocation warning，規格書
+  明文禁止單獨造成 STRESS）+ 台灣 VIX（**FinMind 無對應 dataset，結構性缺席，永久
+  UNKNOWN**）
+- **Family C（GLOBAL_RISK）**：美國 VIX + Nasdaq + SOX（半導體優先於大盤指數，貼近
+  台股電子供應鏈背景）；US10Y **同樣結構性缺席**；state machine 保證這個 Family
+  單獨 STRESS 不會讓整體 market_stress 變 STRESS（避免美股震盪自動讓台股判定高壓）
+- **Family D（MACRO_COMMODITY_RISK）**：原油（`classify_oil_context()` 區分
+  SUPPLY_INFLATION_STRESS / DEMAND_GROWTH / DEMAND_DESTRUCTION，油價本身不可單獨
+  判斷，需搭配股市/VIX 至少一項確認）+ 黃金（只能 SAFE_HAVEN_CONFIRMATION）+
+  USD/TWD（貶值只能當資金壓力 confirmation）——黃金與匯率都明確禁止單獨造成 STRESS
+- **State machine**（`determine_market_stress`）：全部 4 個 Family UNKNOWN → 整體
+  UNKNOWN；>=2 個 Family STRESS 且至少一個來自 LOCAL/FLOW → STRESS；>=1 個 STRESS
+  或 >=2 個 WARNING → CAUTION；其餘 → NORMAL
+- **Effective market state**（`resolve_effective_market_state`）：trend_regime ×
+  market_stress 的 deterministic mapping；RISK_OFF 不論 stress 為何一律回
+  `RISK_OFF`（不拆 RISK_OFF_STRESSED，避免 state explosion）
+- **Mode**：`MARKET_REGIME_V2_MODE` env（off/shadow/global_only/production），
+  預設 `shadow`——完整計算並寫進 snapshot/debug，但不傳進 Global Selector、不改
+  conviction、不影響 P4 停止判斷、對現有選股結果零影響
+
+### 新 ETL：[etl/market_stress_indicators_sdk.py](backend/etl/market_stress_indicators_sdk.py)
+新表 `market_stress_indicators`（一天一筆寬表）。查證 FinMind 資料源（真實 API 探測，
+非猜測）：
+- ✅ 外資臺指期 OI：`TaiwanFuturesInstitutionalInvestors`（data_id=TX）
+- ✅ TXO 買賣權：`TaiwanOptionInstitutionalInvestors`（data_id=TXO，**只有三大法人
+  口徑，非全市場**，已在欄位/模組 docstring 明確標註範圍限制）
+- ✅ 美國 VIX/Nasdaq/SOX：`USStockPrice`（data_id=`^VIX`/`^IXIC`/`^SOX`）
+- ✅ WTI/Brent：`CrudeOilPrices`（data_id=WTI/Brent，**資料本身有 1~3 天發布延遲**）
+- ✅ 黃金：`GoldPrice`（無 data_id，dataset-level）
+- ✅ USD/TWD：`TaiwanExchangeRate`（data_id=USD，用 spot_buy/sell 中值）
+- ❌ **台灣 VIX、美國 10 年期公債殖利率：FinMind 完全沒有對應 dataset**，探測
+  `TaiwanVix`/`VIX`/`WorldMarkets`/`^TNX`/`^TYX`/`^FVX` 全部失敗或回空——結構性缺席，
+  不是抓取失敗，寫死 UNKNOWN 不假裝正常（完整查證記錄：
+  [docs/signals/market_regime_v2_data_audit.md](docs/signals/market_regime_v2_data_audit.md)）
+
+**關鍵發現**：這批「單一標的（data_id）+ 區間」dataset 一次 API call 就回傳完整區間
+（不是「只回 start_date 當日」那個坑，那個坑只發生在**不帶 data_id 掃全市場**的
+dataset，如 `margin_trade`/`monthly_revenue`/`shareholding`）——400 天回補只花 9 次
+API 呼叫（<30 quota），已對 production 執行（2025-07-31~2026-09-04，287 個交易日）。
+
+### Pipeline 接線（[pipeline.py](backend/app/signals/pipeline.py)）
+`regime_info` 算完 `breadth` 後緊接著呼叫 `market_stress.compute_market_stress()`，
+結果掛進 `regime_info["market_stress_v2"]`，任何例外 catch 後 fallback 到
+`empty_market_stress()`（保守 UNKNOWN，不讓新機制的例外拖垮整個 daily job）。
+`_build_pipeline_market_context()` 把 v2 欄位攤平進 `market_context`（純 additive，
+`SnapshotResponse.market_context` 本來就是 dict passthrough，前端零額外後端改動）。
+`_run_p4_tracking_only_day()`（無 P3 候選的日子）與 `replay_observation_lifecycle()`
+（歷史回放）兩條路徑都同步接上，確保任何會產生 market_context 的路徑行為一致。
+
+`global_selector.run_global_selection()` 新增 optional `market_environment` 參數，
+**預設 None**（request_payload 完全不受影響，逐位元組相同）；只有
+`MARKET_REGIME_V2_MODE in (global_only, production)` 時，pipeline 才呼叫
+`_build_market_environment_payload(regime_info)` 組出摘要層級物件（不重複塞每張
+card 的 raw values，見規格書 §18）傳進去。
+
+`observation_lifecycle.py` 的 `build_current_tracking_evidence()` 加兩個純資訊性
+key（`market_stress`／`effective_market_state`）到每筆 evidence dict——
+`decide_observation_action()` 完全不讀這兩個 key，不可能因為市場壓力升高就單獨觸發
+STOP_OBSERVING（符合規格書 §21）。
+
+### P6 接線
+`SignalOutcomeMetric` 新增 3 個 nullable indexed 欄位（`trend_regime`/
+`market_stress`/`effective_market_state`），`outcome_metrics.py` 的
+`_extract_snapshot_items()` 從 `snapshot.market_context` 讀出攤平寫入。Migration 走
+既有 [signal_watch_schema.py](backend/app/signal_watch_schema.py) 的 idempotent
+ALTER TABLE dict pattern，已對 production 執行。
+
+### 前端
+`SignalMarketContext`（[api.ts](frontend/src/lib/api.ts)）新增 v2 欄位；
+[MarketContextStrip.tsx](frontend/src/components/MarketContextStrip.tsx)（首頁使用）
+加一塊「市場壓力綜合狀態」區塊：effective_market_state chip + 4 個 Family 狀態小
+chip + market_stress_reason 文字 + data_complete=false 時的資料缺口說明；
+`/signals/debug` 頁新增「Market Context（含 M27 Market Regime v2）」raw JSON 區塊。
+**範圍取捨（誠實揭露）**：規格書 §26 列了 4 個頁面（`/signals`、
+`/signals/recommendations`、`/signals/debug`、`/signals/outcomes`），本輪只完成
+首頁 strip（`/signals/recommendations` 已於更早一輪併入 archive，見下方對照）與
+debug 頁；`/signals/archive`、`/signals/outcomes`（含依 effective_market_state 分組
+篩選的 UI）尚未接前端顯示，後端資料（P6 三個新欄位）已就緒，純粹是前端 UI 還沒補上。
+
+### 9/2~9/4 Point-in-time Replay（真實 production 資料，[run_market_regime_v2_replay.py](backend/run_market_regime_v2_replay.py)）
+```
+2026-09-02：old=BULL_TREND → trend=BULL_TREND stress=CAUTION effective=BULL_CAUTION
+            families: LOCAL=NEUTRAL FLOW=WARNING GLOBAL=NEUTRAL MACRO=WARNING
+2026-09-03：old=BULL_TREND → trend=BULL_TREND stress=CAUTION effective=BULL_CAUTION
+            families: LOCAL=WARNING FLOW=NEUTRAL GLOBAL=WARNING MACRO=WARNING
+2026-09-04：old=BULL_TREND → trend=BULL_TREND stress=CAUTION effective=BULL_CAUTION
+            families: LOCAL=WARNING FLOW=NEUTRAL GLOBAL=WARNING MACRO=WARNING
+```
+三天都沒有出現 STRESS（未達 >=2 Family STRESS 門檻），如實反映真實資料，**沒有為了
+配合「應該要有反應」的預期而調整門檻去湊出 STRESS 結果**——這正是規格書 §27 明確
+要求的「若資料證據最後不支持 STRESS，要如實保留結果」。三天皆 `market_stress_data_
+complete=False`（台灣 VIX／US10Y 結構性缺席，數學上不可能是 True，誠實反映已知
+資料缺口）。**Gotcha**：對 production 這種持續有排程寫入的即時資料庫做 replay，
+兩次間隔數小時的重跑，同一天的 family 細節可能因為背景 ETL/cron 期間寫入新資料而
+有感（本次 9/2 的 TAIWAN_FLOW 從第一次 smoke test 的 STRESS 變成正式 replay 的
+WARNING）——不是程式邏輯不穩定，是「point-in-time replay 對著一個持續變動的 live
+DB 跑」的既有限制，之後若要做更嚴謹的歷史回測應該考慮凍結一份資料快照。
+
+### 測試
+- 43 個新測試（[test_signals_market_stress.py](backend/tests/test_signals_market_stress.py)）：
+  涵蓋 4 個 Family 分類器、state machine、effective state mapping、DB-backed
+  orchestrator、mode 讀取。過程中抓到並修掉兩個真 bug：
+  1. `_percentile_rank()` 原本對完全打平（無波動）的歷史資料，會因為 `<=` 計數對
+     自己也成立而誤判成「100 百分位」（看起來像極端值，其實完全沒異常）——改用
+     `below + 0.5*equal` 的 mean-rank 公式正確處理 tie
+  2. 外資現貨流向原本用「單日值」判斷，直接違反規格書明文要求「單一外資賣超日：
+     不得自動 STRESS」——改用 3 日滾動加總的 percentile，單一極端日會被窗口內其他
+     日子稀釋
+- `test_global_selector.py` 新增 2 個測試（`market_environment` 預設不出現在
+  request_payload / 傳入時原樣出現）
+- `test_signals_pipeline.py` 新增 2 個測試（`_build_market_environment_payload`
+  純函式：缺 v2 資料回 None、只抽摘要欄位不洩漏 raw_values）
+- 全 backend suite：1391 pass（+47），20 fail/5 error 維持既有 baseline，零新增失敗
+- 前端 `npx tsc --noEmit`/`npx eslint`（改動檔案）全過；`npx jest` 18 fail/92 pass
+  維持既有 baseline（StockList/StockChart/BacktestPanel），零新增失敗
+
+### Gotcha
+- **Percentile 計算對「完全無波動的歷史」是危險陷阱**：任何用 `<=`／`>=` 計數做
+  百分位排名的寫法，遇到大量重複值（尤其是「近期完全平靜、只有今天有事」這種真實
+  會發生的市場情境）都可能誤判——這次是靠單元測試刻意構造「25 天 VIX 完全不變」
+  這種邊界案例才抓到，寫任何 percentile-based 判斷邏輯都要對 tie 情況寫測試
+- **「不要單看固定金額」不能只靠 percentile 就自動達成**：percentile 本身只是把
+  「固定金額門檻」換成「相對歷史的排名」，但如果直接對單日原始值做 percentile，
+  一個真的異常的單日還是會被排到極端百分位——規格書要求的「不得因單一賣超日自動
+  STRESS」需要額外的「多日窗口聚合」機制（3 日滾動加總）才能真正達成，兩者是互補
+  、不是同一件事
+- **這類大型規格書遇到「跳過分階段流程」的指示時，要分清楚「流程」跟「安全邊界」
+  的差異**：使用者要求跳過的是「先 shadow 觀察幾週、人工確認才手動切換 mode」這個
+  時間跨度的人工驗證儀式，不是要求拿掉「mode 預設 shadow、不由 coding agent 自動
+  切 production」這個寫在程式碼裡的架構安全邊界本身——兩者字面上都叫「三階段」，
+  但一個是操作流程、一個是程式碼契約，混為一談會讓一次性的「跳過流程」指示被誤解
+  成「拿掉安全機制」
+- **這種涉及 4 個 Evidence Family、10+ 個資料源、5 個接線點（pipeline/global_
+  selector/P4/P6/前端）的大型規格，逐項查證 + 分段驗證（先 DB audit、再單元測試
+  純函式、再 DB-backed 整合測試、再對 production 真實資料跑 replay）比一次性整個
+  寫完再測快很多**——這次在寫完 market_stress.py 後立即對 production 真實資料跑
+  一次 smoke test，馬上就抓到兩個門檻設計的真實問題（不是等到最後才發現）
+
 ## P4 每日複核「重複輸出同一檔股票」讓整包 Daily Signals Generation FAIL（2026-09-04）
 
 ### 症狀

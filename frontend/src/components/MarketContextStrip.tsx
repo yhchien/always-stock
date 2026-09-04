@@ -42,6 +42,52 @@ function Metric({ label, value }: { label: string; value: ReactNode }) {
   )
 }
 
+const MARKET_STRESS_LABEL: Record<string, string> = {
+  NORMAL: "正常",
+  CAUTION: "留意",
+  STRESS: "壓力偏高",
+  UNKNOWN: "資料不足",
+}
+
+const MARKET_STRESS_TONE: Record<string, "green" | "amber" | "red" | "slate"> = {
+  NORMAL: "green",
+  CAUTION: "amber",
+  STRESS: "red",
+  UNKNOWN: "slate",
+}
+
+const EFFECTIVE_STATE_LABEL: Record<string, string> = {
+  BULL_HEALTHY: "健康多頭",
+  BULL_CAUTION: "多頭留意",
+  BULL_STRESSED: "壓力型多頭",
+  VOLATILE_RANGE: "震盪盤",
+  VOLATILE_STRESSED: "壓力型震盪",
+  RISK_OFF: "風險退潮",
+}
+
+const FAMILY_LABEL: Record<string, string> = {
+  LOCAL_MARKET_INTERNALS: "台股內部結構",
+  TAIWAN_FLOW_AND_DERIVATIVES: "台灣資金／衍生品",
+  GLOBAL_RISK: "全球金融風險",
+  MACRO_COMMODITY_RISK: "商品／總體",
+}
+
+const FAMILY_STATUS_TONE: Record<string, "green" | "amber" | "red" | "slate"> = {
+  HEALTHY: "green",
+  NEUTRAL: "slate",
+  WARNING: "amber",
+  STRESS: "red",
+  UNKNOWN: "slate",
+}
+
+const FAMILY_STATUS_LABEL: Record<string, string> = {
+  HEALTHY: "健康",
+  NEUTRAL: "中性",
+  WARNING: "留意",
+  STRESS: "壓力",
+  UNKNOWN: "無資料",
+}
+
 function ToneDot({ tone }: { tone: "green" | "amber" | "red" | "slate" }) {
   const cls =
     tone === "green"
@@ -119,6 +165,56 @@ export default function MarketContextStrip({
           <p className="text-sm leading-relaxed text-slate-300">
             {market.market_state_reason}
           </p>
+        ) : null}
+
+        {market.effective_market_state ? (
+          <div className="space-y-1.5 rounded-lg border border-zinc-700/60 bg-zinc-900/40 px-3 py-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs text-slate-500">市場壓力綜合狀態：</span>
+              <span
+                className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-black ${toneChipClass(
+                  MARKET_STRESS_TONE[market.market_stress ?? "UNKNOWN"] ?? "slate"
+                )}`}
+              >
+                <ToneDot
+                  tone={MARKET_STRESS_TONE[market.market_stress ?? "UNKNOWN"] ?? "slate"}
+                />
+                {EFFECTIVE_STATE_LABEL[market.effective_market_state] ??
+                  market.effective_market_state}
+              </span>
+              <span className="text-[11px] text-slate-500">
+                （趨勢 {market.market_regime_label ?? market.market_regime ?? "—"} ×
+                壓力 {MARKET_STRESS_LABEL[market.market_stress ?? "UNKNOWN"] ?? "資料不足"}）
+              </span>
+            </div>
+            {market.market_stress_reason ? (
+              <p className="text-xs leading-relaxed text-slate-400">
+                {market.market_stress_reason}
+              </p>
+            ) : null}
+            {market.stress_families ? (
+              <div className="flex flex-wrap gap-1.5 pt-0.5">
+                {Object.entries(market.stress_families).map(([family, status]) => (
+                  <span
+                    key={family}
+                    className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] ${toneChipClass(
+                      FAMILY_STATUS_TONE[status] ?? "slate"
+                    )}`}
+                    title={family}
+                  >
+                    {FAMILY_LABEL[family] ?? family}：
+                    {FAMILY_STATUS_LABEL[status] ?? status}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            {market.market_stress_data_complete === false ? (
+              <p className="text-[10px] text-slate-500">
+                部分市場指標（如台灣 VIX、美國 10 年期公債殖利率）目前無資料源，
+                評估已如實排除，不影響其餘可用資料的判斷。
+              </p>
+            ) : null}
+          </div>
         ) : null}
 
         {/* 2026-05-27：暫時隱藏市場風險提示黃色框框（保留邏輯便於日後開回） */}
