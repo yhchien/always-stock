@@ -31,6 +31,10 @@ def ensure_signal_watch_hit_return_columns(engine: Engine) -> None:
             "recommendation_thesis": "ALTER TABLE signal_watch_hits ADD COLUMN recommendation_thesis TEXT",
             "relative_advantage": "ALTER TABLE signal_watch_hits ADD COLUMN relative_advantage TEXT",
             "margin_analysis": "ALTER TABLE signal_watch_hits ADD COLUMN margin_analysis JSON",
+            # M27 Market Regime v2 Production Integration（2026-09-04）：見
+            # models.py SignalWatchHit.market_resilience 註解
+            "market_resilience": "ALTER TABLE signal_watch_hits ADD COLUMN market_resilience VARCHAR(16)",
+            "market_context_reason": "ALTER TABLE signal_watch_hits ADD COLUMN market_context_reason TEXT",
         },
         "signal_watch_completed_archives": {
             "max_positive_return_pct": "ALTER TABLE signal_watch_completed_archives ADD COLUMN max_positive_return_pct FLOAT",

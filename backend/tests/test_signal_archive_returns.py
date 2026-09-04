@@ -189,6 +189,45 @@ def test_persist_signal_watch_hits_stores_recommendation_detail_fields():
         assert by_id["2454"].margin_analysis is None
 
 
+def test_persist_signal_watch_hits_stores_market_resilience_fields():
+    """M27 Market Regime v2 Production Integration（2026-09-04）：Global
+    Selector 的 market_resilience／market_context_reason 要寫進 SignalWatchHit；
+    market_environment 沒送進 LLM 輸入時（shadow/off 模式）維持 None。"""
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+
+    with Session() as db:
+        job_id = _seed_job_and_snapshot(db, date(2026, 9, 4))
+        archive.persist_signal_watch_hits(
+            db,
+            date(2026, 9, 4),
+            {
+                "watchlist": [
+                    {
+                        "stock": "3231",
+                        "name": "緯創",
+                        "type": "LEADER",
+                        "market_resilience": "STRONG",
+                        "market_context_reason": "逆風中相對強度仍明顯領先。",
+                    },
+                    {"stock": "2454", "name": "聯發科", "type": "FOLLOWER"},  # 缺值
+                ]
+            },
+            job_id,
+        )
+        by_id = {
+            row.stock_id: row
+            for row in db.query(SignalWatchHit)
+            .filter(SignalWatchHit.snapshot_date == date(2026, 9, 4))
+            .all()
+        }
+        assert by_id["3231"].market_resilience == "STRONG"
+        assert by_id["3231"].market_context_reason == "逆風中相對強度仍明顯領先。"
+        assert by_id["2454"].market_resilience is None
+        assert by_id["2454"].market_context_reason is None
+
+
 def test_get_archive_detail_returns_latest_recommendation_detail_fields():
     """get_archive_detail 取最新一筆命中的三個補充欄位；跨天以最新一筆為準。"""
     engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
@@ -678,6 +717,91 @@ def test_archive_summary_uses_persisted_return_fields():
         assert item["max_positive_return_trade_date"] == date(2026, 4, 30)
         assert item["max_negative_return_pct"] is None
         assert item["max_negative_return_trade_date"] is None
+
+
+def test_archive_summary_exposes_market_resilience_from_latest_hit():
+    """M27 Market Regime v2 Production Integration：summary 卡片顯示的
+    market_resilience 要取「最新一次命中」那筆，不是第一次抓到那筆——沿用既有
+    latest_signal_type 的語意（市場狀態每天可能不同，卡片要顯示當下判斷）。"""
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+
+    with Session() as db:
+        db.add(
+            SignalWatchHit(
+                snapshot_date=date(2026, 9, 2),
+                stock_id="2330",
+                stock_name="台積電",
+                signal_type="LEADER",
+                industry_name="半導體業",
+                sub_industry="晶圓代工",
+                business_summary="a",
+                reason="a",
+                theme={},
+                group_info={},
+                leader_check={},
+                signals={},
+                market_resilience="ADEQUATE",
+                market_context_reason="第一天：市場壓力下仍有合理推薦基礎。",
+            )
+        )
+        db.add(
+            SignalWatchHit(
+                snapshot_date=date(2026, 9, 4),
+                stock_id="2330",
+                stock_name="台積電",
+                signal_type="LEADER",
+                industry_name="半導體業",
+                sub_industry="晶圓代工",
+                business_summary="a",
+                reason="a",
+                theme={},
+                group_info={},
+                leader_check={},
+                signals={},
+                market_resilience="STRONG",
+                market_context_reason="最新一天：相對優勢已明顯領先。",
+            )
+        )
+        db.commit()
+
+        payload = archive.list_archive_summary(db, now=None)
+        item = payload["items"][0]
+        assert item["market_resilience"] == "STRONG"
+        assert item["market_context_reason"] == "最新一天：相對優勢已明顯領先。"
+
+
+def test_archive_summary_market_resilience_none_for_legacy_hits():
+    """舊快照（regime v2 上線前，或 shadow/off 模式）沒有這兩個欄位，要優雅回
+    None，不能 raise。"""
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+
+    with Session() as db:
+        db.add(
+            SignalWatchHit(
+                snapshot_date=date(2026, 4, 29),
+                stock_id="2330",
+                stock_name="台積電",
+                signal_type="LEADER",
+                industry_name="半導體業",
+                sub_industry="晶圓代工",
+                business_summary="a",
+                reason="a",
+                theme={},
+                group_info={},
+                leader_check={},
+                signals={},
+            )
+        )
+        db.commit()
+
+        payload = archive.list_archive_summary(db, now=None)
+        item = payload["items"][0]
+        assert item["market_resilience"] is None
+        assert item["market_context_reason"] is None
 
 
 def test_archive_summary_includes_latest_close_and_daily_change():

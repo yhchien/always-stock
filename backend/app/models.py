@@ -389,6 +389,11 @@ class SignalWatchHit(Base):
     recommendation_thesis = Column(Text, nullable=True)
     relative_advantage = Column(Text, nullable=True)
     margin_analysis = Column(JSON, nullable=True)
+    # M27 Market Regime v2 Production Integration（2026-09-04）：Global Selector
+    # 對這檔候選的「市場逆風韌性」質化判斷（STRONG/ADEQUATE/WEAK）+ 一句話理由；
+    # market_environment 沒送進 LLM 輸入時（shadow/off 模式或舊快照）為 NULL。
+    market_resilience = Column(String(16), nullable=True)
+    market_context_reason = Column(Text, nullable=True)
     theme = Column(JSON, nullable=False)
     group_info = Column(JSON, nullable=False)
     leader_check = Column(JSON, nullable=False)

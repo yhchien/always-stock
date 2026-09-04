@@ -1727,6 +1727,11 @@ export interface SignalArchiveSummaryItem {
   /** 2026-07-13：卡片極簡化 UI 用的 as_of 收盤價 + 當日漲跌幅（個股當日停牌 = null）。 */
   latest_close_price?: number | null
   daily_change_pct?: number | null
+  /** 2026-09-04 M27 Market Regime v2 Production Integration：Global Selector
+   * 對這檔候選最新一次命中時的「市場逆風韌性」質化判斷（不是分數）；
+   * market_environment 沒送進 LLM 輸入時（shadow/off 模式或舊快照）為 null。 */
+  market_resilience?: "STRONG" | "ADEQUATE" | "WEAK" | null
+  market_context_reason?: string | null
 }
 
 export interface SignalArchiveSummaryResponse {

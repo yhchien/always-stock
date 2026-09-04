@@ -131,6 +131,10 @@ class SignalArchiveSummaryItemResponse(BaseModel):
     # 2026-07-13：卡片極簡化 UI 用的 as_of 收盤價 + 當日漲跌幅（個股當日停牌 = None）
     latest_close_price: Optional[float] = None
     daily_change_pct: Optional[float] = None
+    # M27 Market Regime v2 Production Integration（2026-09-04）：Global Selector
+    # 的市場逆風韌性質化判斷；market_environment 沒送進 LLM 輸入時為 None。
+    market_resilience: Optional[str] = None
+    market_context_reason: Optional[str] = None
 
 
 class SignalArchiveSummaryResponse(BaseModel):

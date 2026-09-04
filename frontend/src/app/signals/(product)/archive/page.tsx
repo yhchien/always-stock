@@ -66,6 +66,46 @@ function isArchiveView(value: string | null): value is ArchiveView {
 // 每個分類預設只顯示前 15 名；「查看更多」展開全部
 const TOP_N = 15
 
+// M27 Market Regime v2 Production Integration（2026-09-04）：Global Selector
+// 對每檔候選的「市場逆風韌性」質化判斷；market_environment 沒送進 LLM 輸入時
+// （shadow/off 模式或舊快照）為 null，下拉選單一律歸類到「全部」。
+const MARKET_RESILIENCE_OPTIONS = [
+  { value: "ALL", label: "市場逆風韌性：全部" },
+  { value: "STRONG", label: "強韌" },
+  { value: "ADEQUATE", label: "尚可" },
+  { value: "WEAK", label: "偏弱" },
+] as const
+type MarketResilienceFilter = (typeof MARKET_RESILIENCE_OPTIONS)[number]["value"]
+
+const MARKET_RESILIENCE_LABEL: Record<string, string> = {
+  STRONG: "強韌",
+  ADEQUATE: "尚可",
+  WEAK: "偏弱",
+}
+const MARKET_RESILIENCE_TONE: Record<string, string> = {
+  STRONG: "border-emerald-500/40 bg-emerald-500/10 text-emerald-300",
+  ADEQUATE: "border-sky-500/40 bg-sky-500/10 text-sky-300",
+  WEAK: "border-amber-500/40 bg-amber-500/10 text-amber-300",
+}
+
+function MarketResilienceBadge({
+  value,
+  reason,
+}: {
+  value?: string | null
+  reason?: string | null
+}) {
+  if (!value || !(value in MARKET_RESILIENCE_LABEL)) return null
+  return (
+    <span
+      className={`inline-flex shrink-0 items-center rounded border px-1 py-0 text-[10px] font-medium ${MARKET_RESILIENCE_TONE[value] ?? "border-slate-600 bg-slate-800/40 text-slate-300"}`}
+      title={reason ? `市場逆風韌性：${MARKET_RESILIENCE_LABEL[value]}・${reason}` : `市場逆風韌性：${MARKET_RESILIENCE_LABEL[value]}`}
+    >
+      {MARKET_RESILIENCE_LABEL[value]}
+    </span>
+  )
+}
+
 const PERIOD_PATTERN = /^\d{4}-\d{2}-\d{2}$/
 
 const ACTIVE_COLLAPSED_KEY = "always-stock:signals-archive:active-collapsed"
@@ -1584,6 +1624,9 @@ function SignalArchiveContent() {
   const initialQuery = searchParams.get("q") ?? ""
   const [activeSearch, setActiveSearch] = useState(initialQuery)
   const [completedSearch, setCompletedSearch] = useState(initialQuery)
+  // M27 Market Regime v2 Production Integration（2026-09-04）：市場逆風韌性
+  // 下拉篩選，純前端 filter（不打 backend），跟搜尋框一樣不進 URL。
+  const [resilienceFilter, setResilienceFilter] = useState<MarketResilienceFilter>("ALL")
 
   // 兩區各自可折疊；偏好存 localStorage（追蹤中預設展開、紀錄區預設收合）
   const [activeCollapsed, setActiveCollapsed] = useState(false)
@@ -1709,6 +1752,9 @@ function SignalArchiveContent() {
         (item) => observationByStock.get(item.stock_id)?.status === targetStatus,
       )
     }
+    if (resilienceFilter !== "ALL") {
+      items = items.filter((item) => item.market_resilience === resilienceFilter)
+    }
     const q = activeSearch.trim().toLowerCase()
     if (!q) return items
     return items.filter(
@@ -1716,12 +1762,14 @@ function SignalArchiveContent() {
         item.stock_id.toLowerCase().includes(q) ||
         (item.stock_name ?? "").toLowerCase().includes(q),
     )
-  }, [sortedActiveItems, activeSearch, view, observationByStock])
+  }, [sortedActiveItems, activeSearch, view, observationByStock, resilienceFilter])
 
-  // 搜尋中或「觀察中／警戒」狀態篩選時直接顯示全部符合的（忽略前 15 限制）；
-  // 其他情況依「查看更多」狀態截斷
+  // 搜尋中、「觀察中／警戒」狀態篩選、或市場逆風韌性篩選時直接顯示全部符合的
+  // （忽略前 15 限制）；其他情況依「查看更多」狀態截斷
   const isSearchingActive = activeSearch.trim() !== ""
-  const bypassTopNTruncation = isSearchingActive || isStatusFilterView || showAllActive
+  const isResilienceFiltered = resilienceFilter !== "ALL"
+  const bypassTopNTruncation =
+    isSearchingActive || isStatusFilterView || isResilienceFiltered || showAllActive
   const visibleActiveItems = bypassTopNTruncation
     ? filteredActiveItems
     : filteredActiveItems.slice(0, TOP_N)
@@ -1940,6 +1988,40 @@ function SignalArchiveContent() {
                 </p>
               </div>
               <div className="rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs leading-6 text-slate-400">
+                <p>市場逆風韌性（market resilience）：</p>
+                <p>
+                  大盤壓力偏高時，AI 會額外判斷這檔股票「扛不扛得住目前的市場逆風」——這是質化判斷，不是分數，也
+                  <span className="text-slate-300">不會單獨決定股票要不要被移除或停止觀察</span>，純粹是額外揭露的參考資訊。
+                </p>
+                <p className="mt-1 flex flex-wrap items-center gap-1.5">
+                  <span
+                    className={`inline-flex items-center rounded border px-1 py-0 text-[10px] font-medium ${MARKET_RESILIENCE_TONE.STRONG}`}
+                  >
+                    強韌
+                  </span>
+                  即使市場壓力偏高，這檔在相對強度、資金參與、價格結構等面向仍有明顯優於同日其他候選的優勢。
+                </p>
+                <p className="flex flex-wrap items-center gap-1.5">
+                  <span
+                    className={`inline-flex items-center rounded border px-1 py-0 text-[10px] font-medium ${MARKET_RESILIENCE_TONE.ADEQUATE}`}
+                  >
+                    尚可
+                  </span>
+                  市場壓力下仍有合理的推薦基礎，但相對優勢不如「強韌」明顯。
+                </p>
+                <p className="flex flex-wrap items-center gap-1.5">
+                  <span
+                    className={`inline-flex items-center rounded border px-1 py-0 text-[10px] font-medium ${MARKET_RESILIENCE_TONE.WEAK}`}
+                  >
+                    偏弱
+                  </span>
+                  相對強度、資金參與或價格結構不夠突出，可能不足以抵抗目前的市場逆風。
+                </p>
+                <p className="mt-1 text-slate-500">
+                  沒有標籤的卡片，代表大盤當時沒有明顯壓力（不需要做這項額外判斷），或這是舊資料尚未有這項紀錄。
+                </p>
+              </div>
+              <div className="rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs leading-6 text-slate-400">
                 <p>報酬率規則說明：</p>
                 <p>第一個交易日抓到：報酬率顯示 `--`，當天不計算。</p>
                 <p>第二個交易日：以當日 `(開盤價 + 收盤價) / 2` 建立 baseline 基準價，當天報酬率固定顯示 `0.00%`。</p>
@@ -2027,7 +2109,7 @@ function SignalArchiveContent() {
                 )
               })}
             </div>
-            <div className="mb-3 flex items-center gap-2">
+            <div className="mb-3 flex flex-wrap items-center gap-2">
               <input
                 type="text"
                 value={activeSearch}
@@ -2044,6 +2126,17 @@ function SignalArchiveContent() {
                   清除
                 </button>
               )}
+              <select
+                value={resilienceFilter}
+                onChange={(e) => setResilienceFilter(e.target.value as MarketResilienceFilter)}
+                className="rounded border border-slate-600 bg-slate-800/40 px-2 py-1 text-xs text-slate-100 focus:border-sky-400 focus:outline-none"
+              >
+                {MARKET_RESILIENCE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
               <span className="ml-auto text-xs text-slate-500">
                 {bypassTopNTruncation
                   ? `${filteredActiveItems.length} / ${summary.items.length} 檔`
@@ -2062,6 +2155,11 @@ function SignalArchiveContent() {
             {filteredActiveItems.length === 0 && isSearchingActive && (
               <p className="py-4 text-center text-sm text-slate-400">
                 找不到符合「{activeSearch}」的股票
+              </p>
+            )}
+            {filteredActiveItems.length === 0 && !isSearchingActive && isResilienceFiltered && (
+              <p className="py-4 text-center text-sm text-slate-400">
+                目前沒有「市場逆風韌性：{MARKET_RESILIENCE_LABEL[resilienceFilter] ?? resilienceFilter}」的股票
               </p>
             )}
             {filteredActiveItems.length === 0 && !isSearchingActive && isStatusFilterView && (
@@ -2083,8 +2181,14 @@ function SignalArchiveContent() {
                     className={`flex items-center justify-between gap-3 rounded-lg border px-3 py-2.5 text-left transition ${observationCardTone(status)}`}
                   >
                     <div className="flex min-w-0 flex-col gap-0.5">
-                      <span className="truncate text-sm font-semibold text-slate-100">
-                        {item.stock_id} {item.stock_name}
+                      <span className="flex min-w-0 items-center gap-1.5">
+                        <span className="truncate text-sm font-semibold text-slate-100">
+                          {item.stock_id} {item.stock_name}
+                        </span>
+                        <MarketResilienceBadge
+                          value={item.market_resilience}
+                          reason={item.market_context_reason}
+                        />
                       </span>
                       <ArchiveCardContextLine view={view} item={item} quote={quote} />
                     </div>

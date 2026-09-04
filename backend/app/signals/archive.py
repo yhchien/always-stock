@@ -95,6 +95,10 @@ class ArchiveSummaryItem:
     # 這兩欄直接查 daily_price，任何追蹤日都有值（除非個股當日停牌無資料）。
     latest_close_price: Optional[float] = None
     daily_change_pct: Optional[float] = None
+    # M27 Market Regime v2 Production Integration（2026-09-04）：取最新一次命中
+    # 那筆 SignalWatchHit 的 Global Selector 判斷（見 models.py 欄位註解）。
+    market_resilience: Optional[str] = None
+    market_context_reason: Optional[str] = None
 
 
 @dataclass
@@ -189,6 +193,8 @@ def persist_signal_watch_hits(
                 recommendation_thesis=item.get("recommendation_thesis"),
                 relative_advantage=item.get("relative_advantage"),
                 margin_analysis=item.get("margin_analysis"),
+                market_resilience=item.get("market_resilience"),
+                market_context_reason=item.get("market_context_reason"),
                 theme=item.get("theme") or {},
                 group_info=item.get("group_info") or {},
                 leader_check=item.get("leader_check") or {},
@@ -1369,6 +1375,8 @@ def _build_archive_summary_item(
         max_negative_return_pct=latest_row.max_negative_return_pct,
         max_negative_return_trade_date=latest_row.max_negative_return_trade_date,
         prompt_version=_distinct_versions(rows),
+        market_resilience=latest_row.market_resilience,
+        market_context_reason=latest_row.market_context_reason,
     )
 
 
@@ -2152,6 +2160,8 @@ def _serialize_summary_item(item: ArchiveSummaryItem) -> dict[str, Any]:
         "dream_price": item.dream_price,
         "latest_close_price": item.latest_close_price,
         "daily_change_pct": item.daily_change_pct,
+        "market_resilience": item.market_resilience,
+        "market_context_reason": item.market_context_reason,
     }
 
 
