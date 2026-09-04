@@ -191,6 +191,15 @@ stress=CAUTION），**沒有一天達到 `BULL_STRESSED`／`VOLATILE_STRESSED`�
   失效」這種區分兩種 CAUTION 來源的視覺呈現（§31 規格書要求）——這兩項都是
   純前端顯示層工作，後端資料已就緒，之後隨時可以接上，不影響本輪已完成的
   核心決策邏輯正確性
+  - **後續已補（同日）**：30 日追蹤頁的 `market_resilience` 顯示已接上——
+    [SignalWatchHit](backend/app/models.py) 新增
+    `market_resilience`／`market_context_reason` 兩欄（沿用既有
+    `recommendation_thesis` 等三欄的 idempotent migration pattern）；
+    `persist_signal_watch_hits()` 寫入、`list_archive_summary()` 取最新一次
+    命中的值（跟 `latest_signal_type` 同語意）；追蹤中卡片加小型韌性 label +
+    下拉式篩選 + 頁面說明新增一段解釋。**P4 觀察頁的兩種 CAUTION 來源視覺
+    區分、P6 market-only-caution 分析仍未做**，範圍只限這次明確要求的
+    「推薦卡片 label + 下拉篩選 + 說明」三項
 
 ## M27 Market Regime v2：Market Stress Overlay（2026-09-04）
 
