@@ -396,9 +396,10 @@ def test_compute_market_stress_reads_indicator_table(db):
     assert result["market_regime_v2_version"] == "market_regime_v2"
 
 
-def test_market_regime_v2_mode_defaults_to_shadow(monkeypatch):
+def test_market_regime_v2_mode_defaults_to_production(monkeypatch):
+    """2026-09-04 Production Integration：正式預設改 production。"""
     monkeypatch.delenv("MARKET_REGIME_V2_MODE", raising=False)
-    assert ms.market_regime_v2_mode() == ms.MODE_SHADOW
+    assert ms.market_regime_v2_mode() == ms.MODE_PRODUCTION
 
 
 def test_market_regime_v2_mode_reads_env(monkeypatch):
@@ -406,6 +407,94 @@ def test_market_regime_v2_mode_reads_env(monkeypatch):
     assert ms.market_regime_v2_mode() == ms.MODE_GLOBAL_ONLY
 
 
-def test_market_regime_v2_mode_invalid_value_falls_back_to_shadow(monkeypatch):
-    monkeypatch.setenv("MARKET_REGIME_V2_MODE", "not_a_real_mode")
+def test_market_regime_v2_mode_can_roll_back_to_shadow(monkeypatch):
+    monkeypatch.setenv("MARKET_REGIME_V2_MODE", "shadow")
     assert ms.market_regime_v2_mode() == ms.MODE_SHADOW
+
+
+def test_market_regime_v2_mode_invalid_value_falls_back_to_production(monkeypatch):
+    monkeypatch.setenv("MARKET_REGIME_V2_MODE", "not_a_real_mode")
+    assert ms.market_regime_v2_mode() == ms.MODE_PRODUCTION
+
+
+# ========================= §20 Market Context Severity =========================
+
+
+def test_market_context_severity_unknown_when_market_stress_unknown():
+    assert (
+        ms.compute_market_context_severity(ms.EFFECTIVE_BULL_HEALTHY, ms.STRESS_UNKNOWN)
+        == ms.CONTEXT_SEVERITY_UNKNOWN
+    )
+
+
+def test_market_context_severity_stress_for_bull_stressed():
+    assert (
+        ms.compute_market_context_severity(ms.EFFECTIVE_BULL_STRESSED, ms.STRESS_CAUTION)
+        == ms.CONTEXT_SEVERITY_STRESS
+    )
+
+
+def test_market_context_severity_stress_for_volatile_stressed():
+    assert (
+        ms.compute_market_context_severity(ms.EFFECTIVE_VOLATILE_STRESSED, ms.STRESS_NORMAL)
+        == ms.CONTEXT_SEVERITY_STRESS
+    )
+
+
+def test_market_context_severity_stress_for_risk_off_regardless_of_market_stress_value():
+    """RISK_OFF 不論 market_stress 算出什麼，一律視為 STRESS 嚴重度。"""
+    assert (
+        ms.compute_market_context_severity(ms.EFFECTIVE_RISK_OFF, ms.STRESS_NORMAL)
+        == ms.CONTEXT_SEVERITY_STRESS
+    )
+
+
+def test_market_context_severity_warning_for_bull_caution():
+    assert (
+        ms.compute_market_context_severity(ms.EFFECTIVE_BULL_CAUTION, ms.STRESS_CAUTION)
+        == ms.CONTEXT_SEVERITY_WARNING
+    )
+
+
+def test_market_context_severity_normal_for_bull_healthy():
+    assert (
+        ms.compute_market_context_severity(ms.EFFECTIVE_BULL_HEALTHY, ms.STRESS_NORMAL)
+        == ms.CONTEXT_SEVERITY_NORMAL
+    )
+
+
+def test_market_context_severity_normal_for_volatile_range_normal():
+    assert (
+        ms.compute_market_context_severity(ms.EFFECTIVE_VOLATILE_RANGE, ms.STRESS_NORMAL)
+        == ms.CONTEXT_SEVERITY_NORMAL
+    )
+
+
+# ========================= §6 Conviction Adjustment =========================
+
+
+def test_conviction_adjustment_no_change_for_bull_healthy():
+    assert ms.apply_conviction_adjustment("high", ms.EFFECTIVE_BULL_HEALTHY) == "high"
+
+
+def test_conviction_adjustment_no_change_for_bull_caution():
+    assert ms.apply_conviction_adjustment("high", ms.EFFECTIVE_BULL_CAUTION) == "high"
+
+
+def test_conviction_adjustment_no_change_for_risk_off():
+    """RISK_OFF 沿用既有 conviction／survival policy，不重複降級。"""
+    assert ms.apply_conviction_adjustment("high", ms.EFFECTIVE_RISK_OFF) == "high"
+
+
+def test_conviction_adjustment_no_change_for_volatile_range():
+    assert ms.apply_conviction_adjustment("medium", ms.EFFECTIVE_VOLATILE_RANGE) == "medium"
+
+
+def test_conviction_adjustment_downgrades_one_level_for_bull_stressed():
+    assert ms.apply_conviction_adjustment("high", ms.EFFECTIVE_BULL_STRESSED) == "medium"
+    assert ms.apply_conviction_adjustment("medium", ms.EFFECTIVE_BULL_STRESSED) == "low"
+    assert ms.apply_conviction_adjustment("low", ms.EFFECTIVE_BULL_STRESSED) == "low"
+
+
+def test_conviction_adjustment_downgrades_one_level_for_volatile_stressed():
+    assert ms.apply_conviction_adjustment("high", ms.EFFECTIVE_VOLATILE_STRESSED) == "medium"

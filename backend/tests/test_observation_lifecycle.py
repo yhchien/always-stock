@@ -2169,3 +2169,226 @@ def test_build_current_tracking_evidence_runs_without_mocking(db):
     assert "hard_exclusion" in evidence
     assert "tracking_state" in evidence
     assert "deterministic_signals" in evidence
+
+
+# ===================== M27 Market Regime v2 §37 Regression =====================
+# Production Integration（2026-09-04）：Market Context Overlay 完整矩陣，逐項
+# 對照規格書 §37。所有案例都直接呼叫 decide_observation_action()，
+# market_context_severity 透過 evidence dict 注入（跟 build_current_tracking_
+# evidence() 實際寫入的 key 一致）。
+
+
+def _with_market_severity(evidence, severity):
+    evidence = dict(evidence)
+    evidence["market_context_severity"] = severity
+    return evidence
+
+
+def _stock_specific_caution_evidence(stock: str = "2330"):
+    """股票本身已有 caution evidence（沿用既有 test_one_day_institution_
+    reversal_is_caution_not_stop 的手法：法人單日反轉），不牽涉市場背景。"""
+    evidence = _healthy_evidence(stock)
+    evidence["deterministic_signals"]["institution_flow_momentum"] = "reversal"
+    return evidence
+
+
+def test_bull_healthy_plus_healthy_stock_is_continue():
+    decision = lifecycle.decide_observation_action(
+        current_backend_evidence=_with_market_severity(_healthy_evidence(), "NORMAL"),
+        external_thesis_assessment=_external(),
+        latest_valid_reviews=[],
+        current_observation={"baseline_quality": "P3_COMPLETE"},
+    )
+    assert decision.decision == "CONTINUE"
+    assert "MARKET_RISK_ELEVATED" not in decision.reason_codes
+
+
+def test_bull_caution_plus_healthy_stock_stays_continue_with_warning_tag():
+    """§23：股票本身完全健康時，WARNING 不足以升級成 CAUTION，只附加提示。"""
+    decision = lifecycle.decide_observation_action(
+        current_backend_evidence=_with_market_severity(_healthy_evidence(), "WARNING"),
+        external_thesis_assessment=_external(),
+        latest_valid_reviews=[],
+        current_observation={"baseline_quality": "P3_COMPLETE"},
+    )
+    assert decision.decision == "CONTINUE"
+    assert "MARKET_RISK_ELEVATED" in decision.reason_codes
+
+
+def test_bull_caution_plus_stock_warning_is_caution():
+    decision = lifecycle.decide_observation_action(
+        current_backend_evidence=_with_market_severity(
+            _stock_specific_caution_evidence(), "WARNING"
+        ),
+        external_thesis_assessment=_external(),
+        latest_valid_reviews=[],
+        current_observation={"baseline_quality": "P3_COMPLETE"},
+    )
+    assert decision.decision == "CAUTION"
+    assert "MARKET_CONTEXT" in decision.caution_dimensions
+    assert "MARKET_RISK_ELEVATED" in decision.reason_codes
+
+
+def test_bull_stressed_plus_healthy_stock_becomes_caution_market_context_only():
+    """§24：BULL_STRESSED 讓完全健康的股票也提升為 CAUTION，唯一 caution
+    dimension 是 MARKET_CONTEXT，reason_codes 不含任何個股層級失效代碼。"""
+    decision = lifecycle.decide_observation_action(
+        current_backend_evidence=_with_market_severity(_healthy_evidence(), "STRESS"),
+        external_thesis_assessment=_external(),
+        latest_valid_reviews=[],
+        current_observation={"baseline_quality": "P3_COMPLETE"},
+    )
+    assert decision.decision == "CAUTION"
+    assert decision.caution_dimensions == ["MARKET_CONTEXT"]
+    assert decision.failed_dimensions == []
+    assert "MARKET_RISK_ELEVATED" in decision.reason_codes
+
+
+def test_volatile_stressed_plus_healthy_stock_becomes_caution():
+    decision = lifecycle.decide_observation_action(
+        current_backend_evidence=_with_market_severity(_healthy_evidence(), "STRESS"),
+        external_thesis_assessment=_external(),
+        latest_valid_reviews=[],
+        current_observation={"baseline_quality": "P3_COMPLETE"},
+    )
+    assert decision.decision == "CAUTION"
+
+
+def test_risk_off_plus_healthy_active_observation_is_caution_not_stop():
+    decision = lifecycle.decide_observation_action(
+        current_backend_evidence=_with_market_severity(_healthy_evidence(), "STRESS"),
+        external_thesis_assessment=_external(),
+        latest_valid_reviews=[],
+        current_observation={"baseline_quality": "P3_COMPLETE"},
+    )
+    assert decision.decision == "CAUTION"
+    assert decision.decision != "STOP_OBSERVING"
+
+
+def test_market_stress_three_days_never_becomes_market_only_stop():
+    """§25：MARKET_CONTEXT 永遠不是 sustained-stop core dimension——即使連續
+    三次複核都因市場壓力進 CAUTION，股票本身三個核心維度全部健康，也永遠不能
+    累積成 STOP_OBSERVING（sustained-stop 判斷只看 CORE_DIMENSIONS 交集，
+    MARKET_CONTEXT 不在其中，數學上不可能被算進去）。"""
+    prior_reviews = [
+        {
+            "decision": "CAUTION",
+            "failed_dimensions": [],
+            "caution_dimensions": ["MARKET_CONTEXT"],
+        }
+        for _ in range(2)
+    ]
+    decision = lifecycle.decide_observation_action(
+        current_backend_evidence=_with_market_severity(_healthy_evidence(), "STRESS"),
+        external_thesis_assessment=_external(),
+        latest_valid_reviews=prior_reviews,
+        current_observation={"baseline_quality": "P3_COMPLETE"},
+    )
+    assert decision.decision == "CAUTION"
+    assert decision.decision != "STOP_OBSERVING"
+
+
+def test_market_stress_plus_two_core_failures_two_days_stops_for_core_reason():
+    """合法 STOP（§26）：兩天都有 MOMENTUM_STRUCTURE + PARTICIPATION 同時失效
+    （不是市場背景造成），market_context=STRESS 只是背景證據，STOP 原因仍是
+    既有的 sustained-stop 理由，不是 market-only。"""
+    evidence = _with_market_severity(_healthy_evidence(), "STRESS")
+    evidence["tracking_state"] = "DETERIORATING"
+    evidence["deterministic_signals"].update(
+        {
+            "institution_flow_momentum": "reversal",
+            "chip_trend": "distribution",
+        }
+    )
+    decision = lifecycle.decide_observation_action(
+        current_backend_evidence=evidence,
+        external_thesis_assessment=_external(),
+        latest_valid_reviews=[
+            {
+                "decision": "CAUTION",
+                "failed_dimensions": ["MOMENTUM_STRUCTURE", "PARTICIPATION"],
+            }
+        ],
+        current_observation={"baseline_quality": "P3_COMPLETE"},
+    )
+    assert decision.decision == "STOP_OBSERVING"
+    assert decision.reason_codes != ["MARKET_STRESS_STOP"]
+    assert "MARKET_CONTEXT_STOP" not in decision.reason_codes
+
+
+def test_market_recovery_returns_to_continue_when_stock_healthy_and_market_normal():
+    """§27：昨天因市場壓力進 CAUTION，今天市場降回 NORMAL 且股票健康 → CONTINUE。"""
+    decision = lifecycle.decide_observation_action(
+        current_backend_evidence=_with_market_severity(_healthy_evidence(), "NORMAL"),
+        external_thesis_assessment=_external(),
+        latest_valid_reviews=[
+            {
+                "decision": "CAUTION",
+                "failed_dimensions": [],
+                "caution_dimensions": ["MARKET_CONTEXT"],
+            }
+        ],
+        current_observation={"baseline_quality": "P3_COMPLETE"},
+    )
+    assert decision.decision == "CONTINUE"
+
+
+def test_market_stress_unknown_does_not_cause_caution_or_stop():
+    """§28：UNKNOWN 不得 CAUTION／STOP，只附加資料品質提示。"""
+    decision = lifecycle.decide_observation_action(
+        current_backend_evidence=_with_market_severity(_healthy_evidence(), "UNKNOWN"),
+        external_thesis_assessment=_external(),
+        latest_valid_reviews=[],
+        current_observation={"baseline_quality": "P3_COMPLETE"},
+    )
+    assert decision.decision == "CONTINUE"
+    assert "MARKET_STRESS_DATA_INCOMPLETE" in decision.reason_codes
+
+
+def test_market_stress_unknown_with_stock_caution_only_adds_data_quality_tag():
+    decision = lifecycle.decide_observation_action(
+        current_backend_evidence=_with_market_severity(
+            _stock_specific_caution_evidence(), "UNKNOWN"
+        ),
+        external_thesis_assessment=_external(),
+        latest_valid_reviews=[],
+        current_observation={"baseline_quality": "P3_COMPLETE"},
+    )
+    assert decision.decision == "CAUTION"
+    assert "MARKET_CONTEXT" not in decision.caution_dimensions
+    assert "MARKET_STRESS_DATA_INCOMPLETE" in decision.reason_codes
+
+
+def test_market_context_severity_missing_defaults_to_normal_no_behavior_change():
+    """既有（regime v2 之前的）呼叫端沒有帶 market_context_severity 時，行為要
+    跟這次改動之前完全一致（fallback NORMAL，不觸發任何新分支）。"""
+    evidence = _healthy_evidence()
+    assert "market_context_severity" not in evidence
+    decision = lifecycle.decide_observation_action(
+        current_backend_evidence=evidence,
+        external_thesis_assessment=_external(),
+        latest_valid_reviews=[],
+        current_observation={"baseline_quality": "P3_COMPLETE"},
+    )
+    assert decision.decision == "CONTINUE"
+    assert len(decision.reason_codes) == 1  # 沒有多餘的 MARKET_* 提示標記
+    assert "MARKET_RISK_ELEVATED" not in decision.reason_codes
+    assert "MARKET_STRESS_DATA_INCOMPLETE" not in decision.reason_codes
+
+
+def test_tracking_llm_thesis_intact_allowed_even_under_market_stress():
+    """§18/§37：market_stress=STRESS 但公司業務/題材/催化劑仍完整，Tracking
+    LLM 的 THESIS_INTACT 判斷完全不受市場背景影響（market context 從不決定
+    thesis validation，兩者是 decide_observation_action() 裡完全獨立的判斷
+    路徑：external_thesis_assessment 由 LLM 給、market_context_severity 由
+    backend deterministic 算，互不干擾）。"""
+    decision = lifecycle.decide_observation_action(
+        current_backend_evidence=_with_market_severity(_healthy_evidence(), "STRESS"),
+        external_thesis_assessment=_external(assessment="THESIS_INTACT"),
+        latest_valid_reviews=[],
+        current_observation={"baseline_quality": "P3_COMPLETE"},
+    )
+    # THESIS_INTACT 沒有被拒絕/覆寫；決策落在 Market Context Overlay（CAUTION），
+    # 不是被誤判成 THESIS_INVALIDATED 的 STOP。
+    assert decision.decision == "CAUTION"
+    assert decision.decision != "STOP_OBSERVING"

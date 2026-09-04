@@ -17,7 +17,8 @@ from typing import Any, Dict, Iterable, List, Optional, Union
 from app.signals import llm_caller, prompt_family
 
 
-SELECTION_VERSION = "v7_global_selector"
+# 2026-09-04 Production Integration：正式接入 Market Environment。
+SELECTION_VERSION = "v7_global_selector_market_v2"
 ASSESSMENT_VERSION = "v7_assessment"
 REASON_VERSION = "v7_reason"
 # 2026-08-12：獨立於 llm_caller.DEFAULT_DECISION_MODEL 硬編碼自己的 fallback
@@ -148,6 +149,17 @@ def global_selection_output_schema(
                     "enum": sorted(RECOMMENDATION_BASIS_CODES),
                 },
             },
+            # M27 Market Regime v2 §9~10（Production Integration，2026-09-04）：
+            # 質化的「市場逆風韌性」判斷，不是分數。永遠是必填 key（strict schema
+            # 要求），但只有真的送了 market_environment 進來（production／
+            # global_only 模式）才強制非 null + enum；沒送時（shadow/off/測試）
+            # 允許 null，見 validate_global_selection 的 market_environment_
+            # provided 參數。
+            "market_resilience": {
+                "type": ["string", "null"],
+                "enum": [None, "STRONG", "ADEQUATE", "WEAK"],
+            },
+            "market_context_reason": nullable_string,
         },
         "required": [
             "stock",
@@ -164,6 +176,8 @@ def global_selection_output_schema(
             "rank_override",
             "rank_override_reason",
             "recommendation_basis",
+            "market_resilience",
+            "market_context_reason",
         ],
     }
     return {
@@ -645,6 +659,10 @@ def run_global_selection(
                 cards,
                 selection_date=date_text,
                 expected_version=expected_version,
+                market_environment_provided=market_environment is not None,
+                effective_market_state=(
+                    (market_environment or {}).get("effective_market_state")
+                ),
             )
         except GlobalSelectionError as exc:
             if attempt < max_attempts - 1 and retry_enabled:
@@ -787,14 +805,33 @@ def _derive_rank_override_annotations(
     return {**payload, "items": normalized_items}, derived
 
 
+_STRESSED_EFFECTIVE_STATES_FOR_RESILIENCE_GUARD = {
+    "BULL_STRESSED",
+    "VOLATILE_STRESSED",
+    "RISK_OFF",
+}
+
+
 def validate_global_selection(
     payload: Dict[str, Any],
     cards: List[Dict[str, Any]],
     *,
     selection_date: Union[date, str],
     expected_version: Optional[str] = None,
+    market_environment_provided: bool = False,
+    effective_market_state: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Validate complete one-to-one alignment and every decision invariant in O(n)."""
+    """Validate complete one-to-one alignment and every decision invariant in O(n).
+
+    `market_environment_provided`／`effective_market_state`（M27 Market Regime v2
+    §9~13，2026-09-04）：只有真的把 market_environment 送進 request_payload
+    （production／global_only 模式）才強制每檔 `market_resilience`／
+    `market_context_reason` 非 null；且只有在 `effective_market_state` 屬於
+    BULL_STRESSED／VOLATILE_STRESSED／RISK_OFF 這三種「市場逆風」狀態時，才
+    禁止 `decision=RECOMMEND` 搭配 `market_resilience=WEAK`（§13 契約驗證）。
+    兩個參數都不傳時（shadow/off 模式或既有測試），完全不檢查這兩個新欄位，
+    逐位元組維持這次改動之前的驗證行為。
+    """
     date_text = selection_date.isoformat() if hasattr(selection_date, "isoformat") else str(selection_date)
     version = expected_version or prompt_family.stage_version("global_selector")
     if payload.get("selection_version") != version:
@@ -898,6 +935,40 @@ def validate_global_selection(
                     f"overlap reason must be Traditional Chinese for {sid}",
                 )
             not_selected_backend_ranks.append(backend_rank)
+        # M27 Market Regime v2 §9~13：只有真的送了 market_environment 進來才
+        # 強制驗證這兩個新欄位；shadow/off 模式下這段完全 no-op，逐位元組維持
+        # 這次改動之前的驗證行為。
+        resilience_raw = raw.get("market_resilience")
+        resilience = str(resilience_raw).upper() if resilience_raw is not None else None
+        if market_environment_provided:
+            if resilience not in {"STRONG", "ADEQUATE", "WEAK"}:
+                _invalid(
+                    "GLOBAL_SELECTION_CONTRACT_INVALID",
+                    f"invalid market_resilience for {sid}",
+                )
+            if not _nonempty(raw.get("market_context_reason")):
+                _invalid(
+                    "GLOBAL_SELECTION_CONTRACT_INVALID",
+                    f"missing market_context_reason for {sid}",
+                )
+            _require_traditional_text(
+                raw.get("market_context_reason"),
+                "GLOBAL_SELECTION_CONTRACT_INVALID",
+                f"market_context_reason must be Traditional Chinese for {sid}",
+            )
+            if (
+                decision == "RECOMMEND"
+                and effective_market_state
+                in _STRESSED_EFFECTIVE_STATES_FOR_RESILIENCE_GUARD
+                and resilience == "WEAK"
+            ):
+                _invalid(
+                    "GLOBAL_SELECTION_CONTRACT_INVALID",
+                    "RECOMMEND with market_resilience=WEAK under stressed "
+                    f"market ({effective_market_state}) for {sid}",
+                )
+        item["market_resilience"] = resilience
+        item["market_context_reason"] = raw.get("market_context_reason")
         if "theme_cluster" not in raw or not isinstance(raw.get("distinct_thesis"), bool):
             _invalid("GLOBAL_SELECTION_SCHEMA_INVALID", f"missing cluster/thesis flag for {sid}")
         normalized.append(item)

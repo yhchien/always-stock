@@ -48,7 +48,11 @@ from app.signals.phase2 import watch_quality
 
 
 TRACKING_PROMPT_VERSION = "v7_tracking"
-STATE_MACHINE_VERSION = "p4_state_v1"
+# M27 Market Regime v2 Production Integration（2026-09-04）：P4 state machine
+# 正式讀 Market Environment（Market Context Overlay，見 decide_observation_
+# action() 末段），行為與 p4_state_v1 不同，需要獨立版本識別；歷史 Review 維持
+# 舊 version，不回填（見規格書 §21/§35）。
+STATE_MACHINE_VERSION = "p4_state_v2_market_context"
 DEFAULT_TRACKING_BATCH_SIZE = 12
 DEFAULT_TRACKING_MODEL = os.getenv(
     "OPENAI_SIGNALS_TRACKING_MODEL",
@@ -666,15 +670,36 @@ def build_current_tracking_evidence(
             "persistence_warning": persistence_warning,
             "market_regime": (market_context or {}).get("market_regime")
             or (market_context or {}).get("market_state"),
-            # M27 Market Regime v2（2026-09-04）：純資訊性欄位，可在 UI 顯示、
-            # 可當 CAUTION 的輔助說明，**不是**核心 sustained-stop dimension——
-            # decide_observation_action() 完全不讀這兩個 key，不會因為市場壓力
-            # 升高就單獨觸發 STOP_OBSERVING（見 market_stress.py 模組 docstring
-            # 與 §21 設計原則）。
+            # M27 Market Regime v2（2026-08-04 shadow → 2026-09-04 Production
+            # Integration）：`market_context_severity` 從這輪起會被
+            # decide_observation_action() 的 Market Context Overlay（優先序全
+            # 部 STOP 條件之後）讀取，可以把 CONTINUE 提升為 CAUTION，**但
+            # MARKET_CONTEXT 從未進入 CORE_DIMENSIONS，數學上不可能單獨造成
+            # STOP_OBSERVING**（見 §21/§25、CORE_DIMENSIONS 常數定義）。
             "market_stress": (market_context or {}).get("market_stress"),
             "effective_market_state": (market_context or {}).get(
                 "effective_market_state"
             ),
+            "market_context_severity": market_stress.compute_market_context_severity(
+                (market_context or {}).get("effective_market_state"),
+                (market_context or {}).get("market_stress"),
+            ),
+            # §16：給 Tracking Prompt allowlist 用的緊湊 market_environment
+            # 物件（不塞 raw VIX/oil/gold history，只留摘要層級）。
+            "market_environment": {
+                "trend_regime": (market_context or {}).get("market_regime"),
+                "market_stress": (market_context or {}).get("market_stress"),
+                "effective_market_state": (market_context or {}).get(
+                    "effective_market_state"
+                ),
+                "stress_families": (market_context or {}).get("stress_families"),
+                "stress_reason_codes": (market_context or {}).get(
+                    "market_stress_key_reason_codes"
+                ),
+                "data_complete": (market_context or {}).get(
+                    "market_stress_data_complete"
+                ),
+            },
             "data_quality": {
                 "price_available": candidate.get("close_1d") is not None,
                 "momentum_frame_available": bool(raw_frame),
@@ -1285,9 +1310,32 @@ def decide_observation_action(
     caution_dimensions = sorted(set(caution_dimensions))
     failed_dimensions = sorted(set(failed_dimensions))
     reason_codes = _dedupe(reason_codes)
+
+    # ---- Priority 6：Market Context Overlay（M27 Market Regime v2 Production
+    # Integration，2026-09-04，見規格書 §19~§28）----------------------------
+    # 只有走到這裡（前面所有 STOP 條件都沒觸發）才考慮市場背景。MARKET_CONTEXT
+    # 從未加入 CORE_DIMENSIONS（見常數定義），數學上不可能被上面任何一段
+    # sustained-stop 判斷讀到，永遠無法單獨造成 STOP_OBSERVING——這是這段邏輯
+    # 刻意放在所有 STOP 分支「之後」的唯一原因。
+    market_context_severity = str(
+        current_backend_evidence.get("market_context_severity")
+        or market_stress.CONTEXT_SEVERITY_NORMAL
+    ).upper()
+
     if caution_dimensions:
         if len(set(failed_dimensions) & CORE_DIMENSIONS) >= 2:
             reason_codes.append("MULTI_DIMENSION_EARLY_WARNING")
+        # §23：股票本身已有 caution evidence，市場壓力偏高時附加
+        # MARKET_RISK_ELEVATED + MARKET_CONTEXT——純資訊性標記，不改變既有的
+        # CAUTION 判定（本來就已經是 CAUTION）。UNKNOWN 只標資料品質提示。
+        if market_context_severity in (
+            market_stress.CONTEXT_SEVERITY_WARNING,
+            market_stress.CONTEXT_SEVERITY_STRESS,
+        ):
+            caution_dimensions = sorted(set(caution_dimensions) | {"MARKET_CONTEXT"})
+            reason_codes = _dedupe(reason_codes + ["MARKET_RISK_ELEVATED"])
+        elif market_context_severity == market_stress.CONTEXT_SEVERITY_UNKNOWN:
+            reason_codes = _dedupe(reason_codes + ["MARKET_STRESS_DATA_INCOMPLETE"])
         return ObservationDecision(
             decision=DECISION_CAUTION,
             reason_codes=_dedupe(reason_codes),
@@ -1302,9 +1350,40 @@ def decide_observation_action(
         external,
         recovered=prior_decision == DECISION_CAUTION and recovery,
     )
+
+    # §24：股票本身完全健康（無 caution evidence、無 STOP 觸發），市場壓力達
+    # STRESS 時，最低狀態提升為 CAUTION——這是「純市場因素」能造成 CAUTION 的
+    # 唯一路徑，且 caution_dimensions 只會是 ["MARKET_CONTEXT"]，reason_codes
+    # 不含任何個股層級失效代碼，不會被誤讀成個股論點已轉弱。
+    if market_context_severity == market_stress.CONTEXT_SEVERITY_STRESS:
+        return ObservationDecision(
+            decision=DECISION_CAUTION,
+            reason_codes=_dedupe([continue_code, "MARKET_RISK_ELEVATED"]),
+            reason=(
+                "個股本身動能／資金／論點皆未見失效訊號，但目前市場處於"
+                "壓力偏高狀態（市場內部結構或資金流偏弱），提升為警戒觀察，"
+                "個股原始推薦論點尚未失效。"
+            ),
+            caution_dimensions=["MARKET_CONTEXT"],
+            failed_dimensions=[],
+            pending_stop_update="CLEAR" if pending_cleared_this_review else None,
+        )
+
+    # §27 Market Stress Recovery：昨天若因 market_context=WARNING/STRESS 進入
+    # CAUTION，今天股票健康且市場降回 NORMAL，這裡自然落到 CONTINUE（呼叫端
+    # run_daily_observation_reviews 對 CONTINUE 本來就會重設
+    # consecutive_caution_count=0，不需要在這裡額外處理）。
+    continue_reason_codes = [continue_code]
+    if market_context_severity == market_stress.CONTEXT_SEVERITY_WARNING:
+        # §23：股票本身完全健康時，WARNING 不足以升級成 CAUTION，只附加提示。
+        continue_reason_codes.append("MARKET_RISK_ELEVATED")
+    elif market_context_severity == market_stress.CONTEXT_SEVERITY_UNKNOWN:
+        # §28：UNKNOWN 不得自行 CAUTION／STOP，只增加資料品質提示。
+        continue_reason_codes.append("MARKET_STRESS_DATA_INCOMPLETE")
+
     return ObservationDecision(
         decision=DECISION_CONTINUE,
-        reason_codes=[continue_code],
+        reason_codes=_dedupe(continue_reason_codes),
         reason="原始推薦 thesis 與目前動能／參與結構仍有效，繼續觀察。",
         caution_dimensions=[],
         failed_dimensions=[],
@@ -2342,6 +2421,11 @@ def _tracking_prompt_input(
             "watch_quality_state",
             "market_regime",
             "data_quality",
+            # §17：只傳 compact market_environment 摘要（trend_regime/
+            # market_stress/effective_market_state/stress_families/
+            # 前幾個 reason codes/data_complete），不塞 VIX/Oil/Gold/Futures
+            # 原始歷史序列進 prompt。
+            "market_environment",
         )
     }
     return {

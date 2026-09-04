@@ -417,6 +417,7 @@ def run_signal_pipeline_sync(
                     "llm_eligible_count": len(after_regime),
                 }
             )
+            _apply_market_stress_conviction_adjustment(after_regime, regime_info)
             conviction_by_stock = {
                 str(c.get("stock_id") or ""): c.get("regime_conviction")
                 for c in after_regime
@@ -490,6 +491,7 @@ def run_signal_pipeline_sync(
                     )
 
                     after_regime = phase2_after_regime
+                    _apply_market_stress_conviction_adjustment(after_regime, regime_info)
                     conviction_by_stock = {
                         str(c.get("stock_id") or ""): c.get("conviction")
                         for c in after_regime
@@ -1262,6 +1264,37 @@ def _set_progress(
     if label is not None:
         job.progress_label = label
     db.commit()
+
+
+def _apply_market_stress_conviction_adjustment(
+    candidates: list[Dict[str, Any]], regime_info: Dict[str, Any]
+) -> None:
+    """M27 Market Regime v2 §6（Production Integration，2026-09-04）：production
+    mode 下，BULL_STRESSED／VOLATILE_STRESSED 讓 regime_conviction 最多降一級
+    （high→medium→low→low）。BULL_HEALTHY／BULL_CAUTION／VOLATILE_RANGE／
+    RISK_OFF 完全不動（RISK_OFF 沿用既有 regime gate 自己的 conviction／
+    survival policy，不重複降級）。in-place mutate `after_regime` 的每筆候選，
+    保留 before/after 供 debug；非 production 模式（含預設關閉的 rollback）
+    是 no-op，逐位元組維持既有行為。
+
+    Legacy 候選用 `regime_conviction` key；Phase 2 候選同時有
+    `conviction`／`regime_conviction`（後者是既有的別名，供 llm_caller evidence
+    view 讀取），兩個 key 一起更新，避免只改其中一個造成不一致。
+    """
+    if market_stress.market_regime_v2_mode() != market_stress.MODE_PRODUCTION:
+        return
+    v2 = regime_info.get("market_stress_v2") or {}
+    effective_state = v2.get("effective_market_state")
+    for c in candidates:
+        before = c.get("regime_conviction") or c.get("conviction")
+        after = market_stress.apply_conviction_adjustment(before, effective_state)
+        c["regime_conviction_before_market_stress"] = before
+        c["regime_conviction_after_market_stress"] = after
+        c["market_conviction_adjustment_applied"] = after != before
+        if "regime_conviction" in c:
+            c["regime_conviction"] = after
+        if "conviction" in c:
+            c["conviction"] = after
 
 
 def _build_market_environment_payload(

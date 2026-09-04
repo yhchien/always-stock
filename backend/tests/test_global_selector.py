@@ -62,7 +62,14 @@ def _cards(count: int, *, cluster: str = "AI"):
     )
 
 
-def _recommend(stock: str, rank: int, *, override: bool = False):
+def _recommend(
+    stock: str,
+    rank: int,
+    *,
+    override: bool = False,
+    market_resilience: str | None = None,
+    market_context_reason: str | None = None,
+):
     return {
         "stock": stock,
         "decision": "RECOMMEND",
@@ -78,10 +85,18 @@ def _recommend(stock: str, rank: int, *, override: bool = False):
         "distinct_thesis": True,
         "overlap_with": [],
         "overlap_reason": None,
+        "market_resilience": market_resilience,
+        "market_context_reason": market_context_reason,
     }
 
 
-def _not_selected(stock: str, code: str = "NO_DISTINCT_DAILY_EDGE"):
+def _not_selected(
+    stock: str,
+    code: str = "NO_DISTINCT_DAILY_EDGE",
+    *,
+    market_resilience: str | None = None,
+    market_context_reason: str | None = None,
+):
     return {
         "stock": stock,
         "decision": "NOT_SELECTED",
@@ -97,6 +112,8 @@ def _not_selected(stock: str, code: str = "NO_DISTINCT_DAILY_EDGE"):
         "distinct_thesis": False,
         "overlap_with": [],
         "overlap_reason": None,
+        "market_resilience": market_resilience,
+        "market_context_reason": market_context_reason,
     }
 
 
@@ -454,7 +471,16 @@ def test_run_global_selection_includes_market_environment_when_provided(monkeypa
 
     def fake_call(_system, user_msg, **kwargs):
         request_payloads.append(json.loads(user_msg))
-        return _payload([_recommend("1000", 1)]), {"status": "ok"}
+        return _payload(
+            [
+                _recommend(
+                    "1000",
+                    1,
+                    market_resilience="STRONG",
+                    market_context_reason="即使市場壓力偏高，相對強度仍明顯領先。",
+                )
+            ]
+        ), {"status": "ok"}
 
     monkeypatch.setattr(global_selector.llm_caller, "_call_llm_json", fake_call)
     global_selector.run_global_selection(
@@ -693,3 +719,234 @@ def test_run_global_selection_passes_scaled_timeout_and_single_sdk_try(
     assert captured_kwargs["timeout"] == global_selector._default_selection_timeout_seconds(112)
     assert captured_kwargs["timeout"] > 120.0
     assert captured_kwargs["max_retries"] == 0
+
+
+# ===================== M27 Market Regime v2 §36 Regression =====================
+# Production Integration（2026-09-04）：Global Selector 正式使用 Market
+# Environment 後的完整矩陣，逐項對照規格書 §36。
+
+
+def _stressed_env(effective_market_state: str = "BULL_STRESSED"):
+    return {
+        "trend_regime": "BULL_TREND",
+        "market_stress": "STRESS",
+        "effective_market_state": effective_market_state,
+        "stress_families": {"LOCAL_MARKET_INTERNALS": "STRESS"},
+        "key_reason_codes": ["BREADTH_DETERIORATION"],
+        "market_stress_data_complete": False,
+    }
+
+
+def test_stressed_market_recommend_with_strong_resilience_is_legal(monkeypatch):
+    cards = _cards(1)
+
+    def fake_call(_system, user_msg, **kwargs):
+        return _payload(
+            [
+                _recommend(
+                    "1000",
+                    1,
+                    market_resilience="STRONG",
+                    market_context_reason="逆風中相對強度、資金參與皆明顯領先。",
+                )
+            ]
+        ), {"status": "ok"}
+
+    monkeypatch.setattr(global_selector.llm_caller, "_call_llm_json", fake_call)
+    result = global_selector.run_global_selection(
+        cards, {}, selection_date=SELECTION_DATE, market_environment=_stressed_env()
+    )
+    assert result["summary"]["recommend_count"] == 1
+    assert result["items"][0]["market_resilience"] == "STRONG"
+
+
+def test_stressed_market_recommend_with_adequate_resilience_is_legal(monkeypatch):
+    cards = _cards(1)
+
+    def fake_call(_system, user_msg, **kwargs):
+        return _payload(
+            [
+                _recommend(
+                    "1000",
+                    1,
+                    market_resilience="ADEQUATE",
+                    market_context_reason="逆風下仍有合理推薦基礎，優勢不算特別突出。",
+                )
+            ]
+        ), {"status": "ok"}
+
+    monkeypatch.setattr(global_selector.llm_caller, "_call_llm_json", fake_call)
+    result = global_selector.run_global_selection(
+        cards, {}, selection_date=SELECTION_DATE, market_environment=_stressed_env()
+    )
+    assert result["summary"]["recommend_count"] == 1
+
+
+def test_stressed_market_recommend_with_weak_resilience_is_contract_invalid(monkeypatch):
+    """§13：BULL_STRESSED/VOLATILE_STRESSED/RISK_OFF 下 RECOMMEND + WEAK 不合法；
+    先依既有 retry policy 完整集合 retry，仍不合法則 GlobalSelectionError（不得
+    Backend 靜默改成 NOT_SELECTED）。"""
+    cards = _cards(1)
+    calls = []
+
+    def fake_call(_system, user_msg, **kwargs):
+        calls.append(1)
+        return _payload(
+            [
+                _recommend(
+                    "1000",
+                    1,
+                    market_resilience="WEAK",
+                    market_context_reason="相對強度不足以支撐正式推薦。",
+                )
+            ]
+        ), {"status": "ok"}
+
+    monkeypatch.setattr(global_selector.llm_caller, "_call_llm_json", fake_call)
+    with pytest.raises(global_selector.GlobalSelectionError) as exc:
+        global_selector.run_global_selection(
+            cards, {}, selection_date=SELECTION_DATE, market_environment=_stressed_env()
+        )
+    assert exc.value.code == "GLOBAL_SELECTION_CONTRACT_INVALID"
+    # retry_enabled 預設 true -> max_attempts=3，全部都送一樣的非法回應才會用盡
+    assert len(calls) == 3
+
+
+@pytest.mark.parametrize("effective_state", ["BULL_STRESSED", "VOLATILE_STRESSED", "RISK_OFF"])
+def test_recommend_with_weak_resilience_invalid_across_all_stressed_states(
+    monkeypatch, effective_state
+):
+    cards = _cards(1)
+
+    def fake_call(_system, user_msg, **kwargs):
+        return _payload(
+            [_recommend("1000", 1, market_resilience="WEAK", market_context_reason="不足。")]
+        ), {"status": "ok"}
+
+    monkeypatch.setattr(global_selector.llm_caller, "_call_llm_json", fake_call)
+    with pytest.raises(global_selector.GlobalSelectionError) as exc:
+        global_selector.run_global_selection(
+            cards,
+            {},
+            selection_date=SELECTION_DATE,
+            market_environment=_stressed_env(effective_state),
+        )
+    assert exc.value.code == "GLOBAL_SELECTION_CONTRACT_INVALID"
+
+
+def test_stressed_market_not_selected_with_weak_resilience_is_legal(monkeypatch):
+    """WEAK 的守門只限制 RECOMMEND；NOT_SELECTED 搭配 WEAK 完全合法（本來就
+    是「這檔在目前市場逆風下相對優勢不足以推薦」的正常結論）。"""
+    cards = _cards(1)
+
+    def fake_call(_system, user_msg, **kwargs):
+        return _payload(
+            [
+                _not_selected(
+                    "1000",
+                    market_resilience="WEAK",
+                    market_context_reason="逆風下資金參與不足，未列入今日推薦。",
+                )
+            ]
+        ), {"status": "ok"}
+
+    monkeypatch.setattr(global_selector.llm_caller, "_call_llm_json", fake_call)
+    result = global_selector.run_global_selection(
+        cards, {}, selection_date=SELECTION_DATE, market_environment=_stressed_env()
+    )
+    assert result["summary"]["not_selected_count"] == 1
+
+
+def test_bull_healthy_recommend_with_weak_resilience_is_legal():
+    """BULL_HEALTHY 不在守門清單裡：即使 market_resilience=WEAK，RECOMMEND
+    仍合法（守門只鎖 BULL_STRESSED/VOLATILE_STRESSED/RISK_OFF 三種逆風狀態）。"""
+    env = {**_stressed_env(), "effective_market_state": "BULL_HEALTHY"}
+    payload = _payload(
+        [_recommend("1000", 1, market_resilience="WEAK", market_context_reason="仍推薦。")]
+    )
+    result = global_selector.validate_global_selection(
+        payload,
+        _cards(1),
+        selection_date=SELECTION_DATE,
+        market_environment_provided=True,
+        effective_market_state=env["effective_market_state"],
+    )
+    assert result["items"][0]["decision"] == "RECOMMEND"
+
+
+def test_market_environment_provided_requires_resilience_on_every_item(monkeypatch):
+    """market_environment 有送進來時，缺 market_resilience／market_context_reason
+    的任何一項都應該被判定契約不合法（不是安靜放行 null）。"""
+    cards = _cards(1)
+
+    def fake_call(_system, user_msg, **kwargs):
+        return _payload([_recommend("1000", 1)]), {"status": "ok"}  # 沒帶 resilience
+
+    monkeypatch.setattr(global_selector.llm_caller, "_call_llm_json", fake_call)
+    with pytest.raises(global_selector.GlobalSelectionError) as exc:
+        global_selector.run_global_selection(
+            cards, {}, selection_date=SELECTION_DATE, market_environment=_stressed_env()
+        )
+    assert exc.value.code == "GLOBAL_SELECTION_CONTRACT_INVALID"
+
+
+def test_resilience_not_enforced_when_market_environment_not_provided(monkeypatch):
+    """shadow/off 模式（不傳 market_environment）：完全不驗證這兩個新欄位，
+    逐位元組維持這次改動之前的行為。"""
+    cards = _cards(1)
+
+    def fake_call(_system, user_msg, **kwargs):
+        return _payload([_recommend("1000", 1)]), {"status": "ok"}
+
+    monkeypatch.setattr(global_selector.llm_caller, "_call_llm_json", fake_call)
+    result = global_selector.run_global_selection(cards, {}, selection_date=SELECTION_DATE)
+    assert result["summary"]["recommend_count"] == 1
+
+
+def test_no_fixed_recommend_count_zero_recommend_under_stress_is_legal(monkeypatch):
+    """§36「No Fixed Count」：壓力型市場下 0 檔 RECOMMEND 合法，不強制 Top-K。"""
+    cards = _cards(3)
+
+    def fake_call(_system, user_msg, **kwargs):
+        return _payload(
+            [
+                _not_selected(
+                    str(1000 + i),
+                    market_resilience="WEAK",
+                    market_context_reason="逆風下優勢不足。",
+                )
+                for i in range(3)
+            ]
+        ), {"status": "ok"}
+
+    monkeypatch.setattr(global_selector.llm_caller, "_call_llm_json", fake_call)
+    result = global_selector.run_global_selection(
+        cards, {}, selection_date=SELECTION_DATE, market_environment=_stressed_env()
+    )
+    assert result["summary"]["recommend_count"] == 0
+    assert result["summary"]["not_selected_count"] == 3
+
+
+def test_no_fixed_recommend_count_all_recommend_under_stress_is_legal(monkeypatch):
+    """§36「No Fixed Count」：全部候選都符合 resilience 契約時，全部 RECOMMEND
+    也合法，不強制壓力型市場下的上限。"""
+    cards = _cards(3)
+
+    def fake_call(_system, user_msg, **kwargs):
+        return _payload(
+            [
+                _recommend(
+                    str(1000 + i),
+                    i + 1,
+                    market_resilience="STRONG",
+                    market_context_reason="逆風下仍具明顯相對優勢。",
+                )
+                for i in range(3)
+            ]
+        ), {"status": "ok"}
+
+    monkeypatch.setattr(global_selector.llm_caller, "_call_llm_json", fake_call)
+    result = global_selector.run_global_selection(
+        cards, {}, selection_date=SELECTION_DATE, market_environment=_stressed_env()
+    )
+    assert result["summary"]["recommend_count"] == 3

@@ -52,11 +52,13 @@ def test_default_and_legacy_routing_are_explicit(monkeypatch):
     assert prompt_family.resolve_prompt_family() == "v7"
     versions = prompt_family.prompt_metadata()
     assert versions["research_prompt_version"] == "v7_research"
-    assert versions["tracking_state_machine_version"] == "p4_state_v1"
+    # 2026-09-04 M27 Market Regime v2 Production Integration：P4 state machine
+    # 正式讀 Market Environment，bump 到獨立版本（見 §21/§35）。
+    assert versions["tracking_state_machine_version"] == "p4_state_v2_market_context"
     assert versions["response_contract_versions"] == {
         "research": "v7_research_json_schema_v1",
         "assessment": "v7_assessment_json_schema_v1",
-        "global_selector": "v7_global_selector_json_schema_v1",
+        "global_selector": "v7_global_selector_json_schema_v2",
         "reason": "v7_reason_json_schema_v1",
         "tracking": "v7_tracking_json_schema_v1",
     }
@@ -585,7 +587,7 @@ def test_global_selector_uses_v7_version_and_keeps_zero_to_all_contract(monkeypa
         selection_date=date.fromisoformat(STAGE_DATE),
     )
     response = {
-        "selection_version": "v7_global_selector",
+        "selection_version": prompt_family.stage_version("global_selector"),
         "date": STAGE_DATE,
         "selection_complete": True,
         "items": [{
@@ -622,7 +624,7 @@ def test_global_selector_uses_v7_version_and_keeps_zero_to_all_contract(monkeypa
     selected = global_selector.run_global_selection(
         cards, {}, selection_date=STAGE_DATE
     )
-    assert selected["selection_version"] == "v7_global_selector"
+    assert selected["selection_version"] == prompt_family.stage_version("global_selector")
     assert selected["summary"]["recommend_count"] == 0
     assert captured["response_format_name"] == "fishtail_v7_global_selector"
     basis_schema = (

@@ -1,5 +1,197 @@
 # always-stock 專案記憶
 
+## M27 Market Regime v2 Production Integration：正式接入 P3 選股與 P4 每日 Review（2026-09-04 第二輪）
+
+### 背景
+上一輪把 Market Stress Overlay 做成純 `shadow` 模式（計算、存 snapshot、debug 頁
+看得到，但完全不影響選股/追蹤結果）。這輪使用者提供第二份規格書「Production
+Integration」，明確要求把預設 mode 切成 `production`，讓 Market Environment 真正
+影響 P3 Global Selector 與 P4 每日 Review，但劃定清楚的安全邊界：**Market Stress
+可以影響推薦難度、相對優勢判斷、P4 CAUTION；但不可單獨造成 REMOVE 或
+STOP_OBSERVING**。
+
+### Production 預設
+`market_stress.market_regime_v2_mode()` fallback 從 `shadow` 改 `production`
+（[market_stress.py](backend/app/signals/market_stress.py)）；GitHub Actions
+workflow／Render 都**沒有**明確設定過 `MARKET_REGIME_V2_MODE` env var，所以這個
+code default 改動直接對所有正式部署環境生效，不需要額外改任何 YAML／deployment
+設定。仍可用 env var 覆寫回 `off`/`shadow`/`global_only` 做 rollback 或 replay
+對照。
+
+### P3：Conviction Adjustment（§6）
+新函式 `market_stress.apply_conviction_adjustment(conviction, effective_market_
+state)`：只有 `BULL_STRESSED`／`VOLATILE_STRESSED` 讓 `regime_conviction` 最多
+降一級（high→medium→low→low）；`BULL_HEALTHY`／`BULL_CAUTION`／
+`VOLATILE_RANGE`／`RISK_OFF` 完全不動（RISK_OFF 沿用既有 regime gate 自己的
+conviction/survival policy，不重複降級）。[pipeline.py](backend/app/signals/pipeline.py)
+新增 `_apply_market_stress_conviction_adjustment()`，在 legacy 與 Phase 2 兩條
+`conviction_by_stock` 組裝路徑都接上（in-place mutate candidate dict，同步更新
+`regime_conviction`／`conviction` 兩個 key，保留
+`regime_conviction_before_market_stress`／`_after_market_stress`／
+`market_conviction_adjustment_applied` 三個 debug 欄位）。
+
+### P3：Global Selector 正式使用 Market Environment（§9~§13）
+`global_selector.run_global_selection()` 的 `market_environment` 參數（上輪已建，
+預設 None）現在因為 mode 預設變 production 而**真的會被傳入**（pipeline.py 的
+`v2_mode in (GLOBAL_ONLY, PRODUCTION)` 判斷不變，只是 mode 預設值變了）。
+
+新增 Global Selector 輸出契約欄位（每檔候選都要有，`market_environment` 沒送
+進來時允許 null）：
+- `market_resilience`：`STRONG`／`ADEQUATE`／`WEAK` 三選一，**質化判斷不是分數**
+- `market_context_reason`：繁體中文一句話說明
+
+`global_selection_output_schema()` 加這兩個必填（可 null）欄位；
+`validate_global_selection()` 新增 `market_environment_provided`／
+`effective_market_state` 兩個參數，只有真的送了 market_environment 才強制驗證：
+1. `market_resilience` 必須是合法 enum、`market_context_reason` 非空繁中
+2. **硬規則**：`effective_market_state ∈ {BULL_STRESSED, VOLATILE_STRESSED,
+   RISK_OFF}` 且 `decision=RECOMMEND` 時，`market_resilience=WEAK` 判定
+   `GLOBAL_SELECTION_CONTRACT_INVALID`——沿用既有 retry policy（`max_attempts=3`）
+   完整集合重試，仍不合法就整包失敗（`GlobalSelectionError` 傳上去，pipeline.py
+   既有的 `except GlobalSelectionError` 分支本來就會讓整次 selection 進
+   `technical_failures`／`partial_failure`，**不會**被 backend 靜默改判
+   NOT_SELECTED——Global Selector 仍是 recommendation membership 唯一權威，
+   backend 只驗契約不能篡改決策）
+
+`market_resilience`／`market_context_reason` 透過既有的
+`merge_selection_items()`（`{**source, **selected}` spread）自動流進每筆
+watchlist item，`SnapshotResponse.data: Dict[str, Any]` 是 raw passthrough（查證
+過，非嚴格 Pydantic 巢狀模型過濾），**不需要任何額外後端 API 改動**這兩個新欄位
+就會出現在 `/api/signals/latest` 回應裡。
+
+### P3：Prompt 更新
+- [global-recommendation-selector-v7.md](backend/app/prompts/global-recommendation-selector-v7.md)：
+  新增 Market Environment 輸入說明 + STRONG/ADEQUATE/WEAK 三態定義（質化，禁止
+  數字公式）+ WEAK+RECOMMEND+逆風市場的硬規則說明 + NOT_SELECTED 理由碼**不**
+  新增 MARKET_BAD 之類代碼的明確提醒
+- [shared-policy-v7.md](backend/app/prompts/shared-policy-v7.md)：新增「Market
+  Stress 不是合法否決理由」章節——VIX／外資流向／期貨部位／PCR／油金匯全部只是
+  市場環境背景，個股層級 REMOVE／NOT_SELECTED 必須來自標的本身事實證據
+- [tracking-review-v7.md](backend/app/prompts/tracking-review-v7.md)：新增
+  「Market Environment 只是背景，不能單獨判定論點失效」章節——`market_stress=
+  STRESS` 但公司業務/題材/催化劑仍完整時必須輸出 `THESIS_INTACT`
+- Research／Assessment 兩階段**刻意不傳** market_stress 原始資料（沿用上一輪
+  設計：Research 只研究標的事實，不需要市場背景；這條 guard 純粹是防禦性文字，
+  結構上 Research/Assessment 本來就拿不到這份資料，不可能引用）
+
+### P4：Market Context Overlay（§19~§28，`decide_observation_action()`）
+新增優先序第 6 層（在所有 STOP 條件——技術失敗／立即失效／外部論點失效／
+sustained multi-dimension stop——**之後**，CONTINUE **之前**）：
+
+```
+1. Technical Failure
+2. Immediate Hard Invalidation
+3. External Thesis Invalidation
+4. Sustained Multi-dimensional Stop
+5. Stock-specific Recovery / Current Warning
+6. Market Context Overlay  ← 新增
+7. CONTINUE
+```
+
+`market_stress.compute_market_context_severity(effective_market_state,
+market_stress_value)` 算出 `NORMAL`／`WARNING`／`STRESS`／`UNKNOWN` 四態：
+`RISK_OFF`／`BULL_STRESSED`／`VOLATILE_STRESSED` 一律 `STRESS`（不論
+market_stress 本身算出什麼）；`BULL_CAUTION`／`market_stress=CAUTION` →
+`WARNING`；`market_stress=UNKNOWN` → `UNKNOWN`；其餘 `NORMAL`。這個值透過
+`build_current_tracking_evidence()` 寫進 `evidence["market_context_severity"]`，
+`decide_observation_action()` 從 `current_backend_evidence` 讀取（缺值 fallback
+`NORMAL`，保證舊呼叫端／舊測試逐位元組不受影響）。
+
+行為矩陣：
+- 股票本身已有 caution evidence（`caution_dimensions` 非空）+ 市場
+  WARNING/STRESS → 附加 `MARKET_CONTEXT` dimension + `MARKET_RISK_ELEVATED`
+  reason code，**不改變**既有的 CAUTION 判定（本來就已經是 CAUTION）
+- 股票本身完全健康（會走到 CONTINUE 分支）+ 市場 STRESS → 提升為 CAUTION，
+  **唯一** caution dimension 是 `["MARKET_CONTEXT"]`，`failed_dimensions=[]`，
+  reason 明確寫「個股原始推薦論點尚未失效」
+- 股票本身完全健康 + 市場只到 WARNING → 維持 CONTINUE，只加
+  `MARKET_RISK_ELEVATED` reason code 標記（不升級成 CAUTION）
+- 市場 `UNKNOWN` → 不論股票本身如何，都不因市場因素改變決策，只加
+  `MARKET_STRESS_DATA_INCOMPLETE` reason code
+
+**`MARKET_CONTEXT` 從未加入 `CORE_DIMENSIONS`**（常數維持
+`{MOMENTUM_STRUCTURE, PARTICIPATION, CATALYST_THESIS}` 不動）——這是整個安全
+邊界的數學保證：sustained-stop 判斷（`persistent & CORE_DIMENSIONS`）天生看不到
+`MARKET_CONTEXT`，即使連續多天市場都是 STRESS 導致連續 CAUTION，也**不可能**
+被既有的「持續兩天核心維度失效」邏輯誤判累積成 STOP_OBSERVING。Market Context
+Overlay 刻意放在所有 STOP 分支的程式碼位置「之後」，是這個保證的第二層防線
+（就算未來不小心把 MARKET_CONTEXT 塞進某個 dimension 集合，執行順序本身也保證
+STOP 判斷已經在更早的地方決定完畢，不會再看到這一層新加的資訊）。
+
+Recovery（§27）：不需要額外程式碼——當市場降回 NORMAL 且股票本身健康時，
+自然落到既有的 CONTINUE 分支，`run_daily_observation_reviews()` 對 CONTINUE
+本來就會重設 `consecutive_caution_count=0`，沿用既有機制。
+
+`build_current_tracking_evidence()` 同步新增 nested `market_environment` 物件
+（`trend_regime`／`market_stress`／`effective_market_state`／
+`stress_families`／`stress_reason_codes`／`data_complete`），
+`_tracking_prompt_input()` 的 `backend_summary` 白名單加這個 key（只送摘要層級
+物件，不塞 VIX/Oil/Gold/Futures 原始歷史序列進 Tracking Prompt）。
+
+### 版本號 bump（§35）
+- `prompt_family.STAGE_VERSIONS["v7"]["global_selector"]`：
+  `v7_global_selector` → `v7_global_selector_market_v2`
+- `prompt_family.RESPONSE_CONTRACT_VERSIONS["global_selector"]`：
+  `_json_schema_v1` → `_json_schema_v2`
+- `prompt_family.STAGE_VERSIONS["v7"]["tracking"]`：`v7_tracking` →
+  `v7_tracking_market_v2`
+- `prompt_family.TRACKING_STATE_MACHINE_VERSION` 與
+  `observation_lifecycle.STATE_MACHINE_VERSION`（兩個獨立常數，語意相同但分屬
+  不同檔案，這次一起改，避免只改一邊造成不一致）：`p4_state_v1` →
+  `p4_state_v2_market_context`
+- `global_selector.SELECTION_VERSION`（模組層級便利常數，供測試對照用）同步
+  bump 到 `v7_global_selector_market_v2`
+- `prompt_family_version` 維持 `v7` 不變（規格書明確要求不要因此升 v8）
+- 歷史 Review 維持舊版本字串，**不回填**——只有這次改動之後新產生的 Review
+  才會標新版本，符合「新舊行為要可歸因區分」的既有慣例
+
+### 真實 production 資料驗證
+用 9/2~9/4 三天真實資料重新驗證 `compute_market_stress()`（同一套函式，這次
+額外接上 conviction adjustment 與 market_environment payload 組裝一起測）：三天
+`effective_market_state` 都只到 `BULL_CAUTION`（trend=BULL_TREND、
+stress=CAUTION），**沒有一天達到 `BULL_STRESSED`／`VOLATILE_STRESSED`／
+`RISK_OFF`**——誠實反映：這三天的 conviction 降級與 WEAK+RECOMMEND 契約守門
+在真實資料上都不會被觸發，不是機制沒接上，只是這三天剛好沒有進入需要更嚴格
+判斷的市場狀態。用合成資料（`regime_conviction=high/medium/low` 三檔候選 +
+`effective_market_state=BULL_STRESSED`）驗證機制本身正確運作：conviction 正確
+降一級（high→medium、medium→low、low→low），`regime_conviction`／`conviction`
+兩個 key 同步更新，before/after debug 欄位正確記錄，`market_environment` payload
+正確組出摘要層級物件（不含 raw_values）。
+
+### 測試
+- 12 個新 P3 regression test（[test_global_selector.py](backend/tests/test_global_selector.py)）：
+  BULL_STRESSED/VOLATILE_STRESSED/RISK_OFF 三態下 STRONG/ADEQUATE 合法、WEAK
+  contract invalid 且完整 retry 3 次後才失敗、NOT_SELECTED+WEAK 合法、
+  BULL_HEALTHY 下 WEAK+RECOMMEND 仍合法（守門不適用）、缺 resilience 判定不合法、
+  不傳 market_environment 時完全不驗證（向後相容）、0 檔與全部 RECOMMEND 在
+  壓力市場下都合法（不強制 Top-K）
+- 15 個新 P4 regression test（[test_observation_lifecycle.py](backend/tests/test_observation_lifecycle.py)）：
+  §37 矩陣逐項覆蓋（BULL_HEALTHY/CAUTION/STRESSED × 健康/警戒股票交叉、
+  RISK_OFF 不會變成 STOP、連續 3 天市場壓力也不會累積成 market-only STOP、
+  市場壓力+真實兩核心維度失效兩天才是合法 STOP 且理由碼不是 market-only、
+  market recovery 正確回到 CONTINUE、UNKNOWN 不觸發 CAUTION/STOP、
+  market_context_severity 缺值時行為與改動前逐位元組相同、THESIS_INTACT 在
+  STRESS 市場下依然允許）
+- 2 個新 pure-function coherence test（`_build_market_environment_payload`）
+- 修正 3 個既有測試裡硬編碼的舊版本字串字面值（`v7_global_selector`／
+  `p4_state_v1`／schema version v1），改用常數引用避免未來再次 bump 時漏改
+- 全 backend suite：1430 pass（+39 較上一輪），20 fail/5 error 維持既有
+  baseline，零新增失敗；前端 tsc/eslint 全過，jest 18 fail/92 pass 維持既有
+  baseline
+
+### 誠實揭露：本輪範圍取捨
+- **P6 「market-only caution vs stock-specific caution」分類分析尚未實作**：
+  `SignalObservationReview.caution_dimensions` 已經有足夠資訊可以事後衍生這個
+  分類（`caution_dimensions == ["MARKET_CONTEXT"]` → market-only），純粹是
+  query-time 計算，不需要新 schema，但這次沒有實作對應的分析函式／API
+- **前端 UI 顯示延後**：`SignalWatchlistItem` 型別已加
+  `market_resilience`／`market_context_reason`（[api.ts](frontend/src/lib/api.ts)），
+  後端已確認資料會正確流到 API 回應，但 archive 頁尚未新增顯示這兩個欄位的
+  chip；P4 觀察頁也尚未實作「警戒原因：市場風險升高 vs 個股核心狀態：尚未
+  失效」這種區分兩種 CAUTION 來源的視覺呈現（§31 規格書要求）——這兩項都是
+  純前端顯示層工作，後端資料已就緒，之後隨時可以接上，不影響本輪已完成的
+  核心決策邏輯正確性
+
 ## M27 Market Regime v2：Market Stress Overlay（2026-09-04）
 
 ### 背景

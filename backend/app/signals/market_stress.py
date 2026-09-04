@@ -73,8 +73,11 @@ _VALID_MODES = {MODE_OFF, MODE_SHADOW, MODE_GLOBAL_ONLY, MODE_PRODUCTION}
 
 
 def market_regime_v2_mode() -> str:
-    raw = (os.getenv("MARKET_REGIME_V2_MODE") or MODE_SHADOW).strip().lower()
-    return raw if raw in _VALID_MODES else MODE_SHADOW
+    # 2026-09-04 Production Integration：正式預設改 production（先前 shadow 只
+    # 算不影響選股，這次使用者明確要求正式接入 P3/P4）。仍可用 env var 覆寫回
+    # off/shadow/global_only 做 rollback 或 replay 對照。
+    raw = (os.getenv("MARKET_REGIME_V2_MODE") or MODE_PRODUCTION).strip().lower()
+    return raw if raw in _VALID_MODES else MODE_PRODUCTION
 
 
 # ---- Family status enum ----
@@ -661,6 +664,57 @@ def resolve_effective_market_state(trend_regime: str, market_stress: str) -> str
     return EFFECTIVE_VOLATILE_RANGE
 
 
+# ---- §20：P4 用的市場壓力嚴重度（NORMAL/WARNING/STRESS/UNKNOWN） ----
+
+CONTEXT_SEVERITY_NORMAL = "NORMAL"
+CONTEXT_SEVERITY_WARNING = "WARNING"
+CONTEXT_SEVERITY_STRESS = "STRESS"
+CONTEXT_SEVERITY_UNKNOWN = "UNKNOWN"
+
+_STRESS_EFFECTIVE_STATES = {
+    EFFECTIVE_BULL_STRESSED,
+    EFFECTIVE_VOLATILE_STRESSED,
+    EFFECTIVE_RISK_OFF,
+}
+
+
+def compute_market_context_severity(
+    effective_market_state: Optional[str], market_stress_value: Optional[str]
+) -> str:
+    """§20：給 P4 State Machine 的 Market Context Overlay 用。RISK_OFF 不論
+    market_stress 本身算出什麼，一律視為 STRESS 嚴重度（P3 既有 RISK_OFF gate
+    本來就已經比這裡嚴格很多，這裡只是讓 P4 的警戒判斷跟趨勢風險語意一致）。
+    """
+    if market_stress_value == STRESS_UNKNOWN:
+        return CONTEXT_SEVERITY_UNKNOWN
+    if effective_market_state in _STRESS_EFFECTIVE_STATES or market_stress_value == STRESS_STRESS:
+        return CONTEXT_SEVERITY_STRESS
+    if effective_market_state == EFFECTIVE_BULL_CAUTION or market_stress_value == STRESS_CAUTION:
+        return CONTEXT_SEVERITY_WARNING
+    return CONTEXT_SEVERITY_NORMAL
+
+
+# ---- §6：Production mode 的 regime_conviction 調整（最多降一級） ----
+
+_CONVICTION_DOWNGRADE = {"high": "medium", "medium": "low", "low": "low"}
+_STRESSED_EFFECTIVE_STATES_FOR_CONVICTION = {
+    EFFECTIVE_BULL_STRESSED,
+    EFFECTIVE_VOLATILE_STRESSED,
+}
+
+
+def apply_conviction_adjustment(
+    conviction: Optional[str], effective_market_state: Optional[str]
+) -> str:
+    """§6：只有 BULL_STRESSED／VOLATILE_STRESSED 才降一級（high→medium→low→low，
+    最多一次）。BULL_HEALTHY／BULL_CAUTION／VOLATILE_RANGE／RISK_OFF 都不調整——
+    RISK_OFF 沿用既有 regime gate 自己的 conviction／survival policy，不重複
+    降級；BULL_CAUTION 只在 P4 附加警示，不動 conviction 本身。"""
+    if effective_market_state not in _STRESSED_EFFECTIVE_STATES_FOR_CONVICTION:
+        return conviction or "low"
+    return _CONVICTION_DOWNGRADE.get(conviction or "low", "low")
+
+
 # ========================= Orchestrator =========================
 
 
@@ -717,6 +771,9 @@ def compute_market_stress(
         "market_stress": market_stress,
         "market_stress_reason": stress_result["reason"],
         "effective_market_state": effective_state,
+        "market_context_severity": compute_market_context_severity(
+            effective_state, market_stress
+        ),
         "stress_families": {
             name: fs["status"] for name, fs in family_states.items()
         },
@@ -730,12 +787,14 @@ def compute_market_stress(
 
 def empty_market_stress(trend_regime: str) -> Dict[str, Any]:
     """DB 完全查不到任何 market_stress_indicators 資料時的保守 fallback。"""
+    effective_state = resolve_effective_market_state(trend_regime, STRESS_UNKNOWN)
     return {
         "trend_regime": trend_regime,
         "market_stress": STRESS_UNKNOWN,
         "market_stress_reason": "尚無市場壓力指標資料可供判斷。",
-        "effective_market_state": resolve_effective_market_state(
-            trend_regime, STRESS_UNKNOWN
+        "effective_market_state": effective_state,
+        "market_context_severity": compute_market_context_severity(
+            effective_state, STRESS_UNKNOWN
         ),
         "stress_families": {name: STATUS_UNKNOWN for name in ALL_FAMILIES},
         "stress_family_detail": {},

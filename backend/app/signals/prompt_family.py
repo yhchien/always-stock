@@ -18,11 +18,16 @@ from urllib.parse import urlparse
 PROMPT_FAMILY_VERSION = "v7"
 LEGACY_PROMPT_FAMILY = "legacy_split"
 SHARED_POLICY_VERSION = "v7"
-TRACKING_STATE_MACHINE_VERSION = "p4_state_v1"
+# M27 Market Regime v2 Production Integration（2026-09-04）：P4 state machine
+# 正式讀 Market Environment（Market Context Overlay），行為與 p4_state_v1 不同，
+# 需要獨立版本識別；歷史 Review 維持舊 version，不回填（見 §21/§35）。
+TRACKING_STATE_MACHINE_VERSION = "p4_state_v2_market_context"
 RESPONSE_CONTRACT_VERSIONS = {
     "research": "v7_research_json_schema_v1",
     "assessment": "v7_assessment_json_schema_v1",
-    "global_selector": "v7_global_selector_json_schema_v1",
+    # Global Selector 輸出 contract 新增 market_resilience/market_context_reason
+    # 兩個必填欄位（2026-09-04），bump schema version。
+    "global_selector": "v7_global_selector_json_schema_v2",
     "reason": "v7_reason_json_schema_v1",
     "tracking": "v7_tracking_json_schema_v1",
 }
@@ -31,9 +36,11 @@ STAGE_VERSIONS: Dict[str, Dict[str, str]] = {
     PROMPT_FAMILY_VERSION: {
         "research": "v7_research",
         "assessment": "v7_assessment",
-        "global_selector": "v7_global_selector",
+        # 2026-09-04：正式接入 Market Environment + market_resilience 契約。
+        "global_selector": "v7_global_selector_market_v2",
         "reason": "v7_reason",
-        "tracking": "v7_tracking",
+        # 2026-09-04：Tracking Prompt allowlist 新增 compact market_environment。
+        "tracking": "v7_tracking_market_v2",
     },
     LEGACY_PROMPT_FAMILY: {
         "research": "v6.1",

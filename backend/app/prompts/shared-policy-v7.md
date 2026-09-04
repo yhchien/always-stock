@@ -23,6 +23,16 @@ Backend Rank 或 Observation State Machine。
 - ETF：研究追蹤指數、資產類別、區域、策略、主要持股與主題曝險；公司營收、
   公司產品與公司供應鏈一律為 `NOT_APPLICABLE`，意即「不適用」，不是負面證據。
 
+## Market Stress 不是合法否決理由（M27 Market Regime v2，2026-09-04）
+
+`market_stress`、`effective_market_state`、VIX、外資現貨流向、外資期貨部位、
+Put/Call Ratio、原油、黃金、匯率——這些全部是**市場環境背景**，本身都不是合法的
+REMOVE 或 NOT_SELECTED 理由。個股層級的移除或未選入判斷，必須來自該標的本身的
+事實證據（公司業務、ETF 曝險、題材、供應鏈、催化劑，或其他個股層級的外部證據），
+不能引用大盤或總體市場狀態當作唯一或主要依據。市場壓力偏高只能影響「這檔候選在
+今天的相對優勢夠不夠」這種相對比較判斷（見 Global Selector 的 `market_resilience`
+質化評估），不能單獨構成否決一檔股票本身合格性的理由。
+
 ## 語言與安全
 
 所有人類可讀欄位必須使用清楚的繁體中文；enum、JSON key 與程式欄位維持英文。

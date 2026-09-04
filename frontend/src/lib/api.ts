@@ -1327,6 +1327,11 @@ export interface SignalWatchlistItem {
   signal_metrics?: SignalMetrics | null
   /** 2026-07-21 Phase 1：canonical primary/sub sector，display-only、additive。 */
   canonical?: CanonicalClassification | null
+  /** 2026-09-04 M27 Market Regime v2 Production Integration：Global Selector
+   * 對這檔候選的「市場逆風韌性」質化判斷（不是分數）；market_environment 沒
+   * 送進 LLM 輸入時（shadow/off 模式）為 null。 */
+  market_resilience?: "STRONG" | "ADEQUATE" | "WEAK" | null
+  market_context_reason?: string | null
   /** P3: only RECOMMEND rows appear in the main watchlist. */
   selection_status?: "RECOMMEND" | "NOT_SELECTED" | "REMOVE" | string | null
   selection_version?: string | null
