@@ -24,6 +24,11 @@ interface NavCard {
 
 const NAV_CARDS: NavCard[] = [
   {
+    href: "/signals/shadow-portfolio",
+    title: "模擬交易",
+    description: "用固定虛擬資金模擬 v1 策略的每日 BUY/ADD/SELL 決策與目前持倉權益。",
+  },
+  {
     href: "/signals/archive",
     title: "追蹤紀錄",
     description: "查看今日新推薦的股票、每檔的報酬率、預期價格與歷史追蹤紀錄。",

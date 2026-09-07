@@ -7,6 +7,7 @@ import { useSignalsViewMode } from "@/lib/signalsViewMode"
 
 const LINKS = [
   ["/signals", "總覽"],
+  ["/signals/shadow-portfolio", "模擬交易"],
   ["/signals/archive", "追蹤紀錄"],
   ["/signals/observations", "觀察生命週期"],
   ["/signals/outcomes", "結果分析"],

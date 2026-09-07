@@ -21,6 +21,7 @@ from app.routers import (
     market,
     phase2_debug,
     realtime,
+    shadow_portfolio as shadow_portfolio_router,
     signals,
     stocks,
     watchlist,
@@ -384,6 +385,7 @@ app.include_router(financials.router, prefix="/api")
 app.include_router(analysis.router, prefix="/api")
 app.include_router(watchlist.router, prefix="/api")
 app.include_router(signals.router, prefix="/api")
+app.include_router(shadow_portfolio_router.router, prefix="/api")
 app.include_router(classification.router, prefix="/api")
 app.include_router(phase2_debug.router, prefix="/api")
 

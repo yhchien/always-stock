@@ -1,0 +1,75 @@
+name: Shadow Portfolio Daily Run
+
+on:
+  # Phase 1：必須排在「Signal Archive Returns Update」完成之後，不是接在
+  # daily_signals 後面就好——v1 策略要用的 mark_to_market_return_pct，只有
+  # archive.update_signal_watch_returns()（由 run_signal_archive_returns.py 呼叫）
+  # 跑過之後，沒被當天 P3 重選的追蹤股票才會拿到當天收盤價算出的新鮮報酬率。
+  workflow_run:
+    workflows: ["Signal Archive Returns Update"]
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      target_date:
+        description: '目標交易日 (YYYY-MM-DD)，手動補跑時可指定，例如 2026-09-04'
+        required: false
+
+jobs:
+  run_shadow_portfolio:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    # 僅在 Signal Archive Returns Update 成功時跑；workflow_dispatch 手動觸發時
+    # 沒有 workflow_run context，conclusion 為空也允許跑。
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+
+    env:
+      TZ: Asia/Taipei
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --quiet -r backend/requirements.txt
+
+      - name: Run shadow portfolio strategy
+        id: shadow
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          INPUT_DATE: ${{ github.event.inputs.target_date }}
+        run: |
+          set +e
+          if [ -n "$INPUT_DATE" ]; then
+            python3 run_shadow_portfolio.py "$INPUT_DATE"
+          else
+            python3 run_shadow_portfolio.py
+          fi
+          SHADOW_EXIT=$?
+          echo "shadow_exit=$SHADOW_EXIT" >> "$GITHUB_OUTPUT"
+          echo "Shadow portfolio exit code: $SHADOW_EXIT"
+          exit 0
+
+      - name: Evaluate final status
+        if: always()
+        run: |
+          FINAL_EXIT="${{ steps.shadow.outputs.shadow_exit }}"
+          echo "Final shadow portfolio exit code: $FINAL_EXIT"
+          case "$FINAL_EXIT" in
+            0) echo "Status: ok" ;;
+            1) echo "Status: no_data (target date has no daily_price rows)" ;;
+            3) echo "Status: db_error (FAIL)" ;;
+            *) echo "Status: unknown (exit=$FINAL_EXIT)" ;;
+          esac
+          case "$FINAL_EXIT" in
+            0|1) exit 0 ;;
+            *) exit 1 ;;
+          esac

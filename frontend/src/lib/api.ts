@@ -2695,3 +2695,74 @@ export async function fetchPhase2ShadowSnapshot(
   if (!res.ok) throw new Error(await buildErrorMessage(res, "Phase 2 shadow 結果載入失敗"))
   return res.json()
 }
+
+// ---------------------------------------------------------------------------
+// Shadow Portfolio（魚尾每日模擬交易，v1 策略正式接入生產系統 Phase 1）
+// ---------------------------------------------------------------------------
+export type ShadowOrderAction = "BUY" | "ADD" | "SELL"
+export type ShadowOrderStatus = "PENDING" | "EXECUTED" | "CANCELLED" | "FAILED"
+
+export interface ShadowPosition {
+  stock_id: string
+  stock_name: string
+  first_seen_date: string
+  units: number
+  total_shares: number
+  average_entry_price: number
+  latest_close: number | null
+  market_value: number | null
+  unrealized_pnl: number | null
+  unrealized_return_pct: number | null
+}
+
+export interface ShadowPortfolio {
+  strategy_version: string
+  initial_capital: number
+  cash: number
+  realized_pnl_cumulative: number
+  invested_cost: number | null
+  market_value: number | null
+  total_equity: number | null
+  total_return_pct: number | null
+  position_count: number
+  total_units: number
+  max_stocks: number
+  max_units_per_stock: number
+  max_total_units: number
+  as_of_trade_date: string | null
+  updated_at: string | null
+  positions: ShadowPosition[]
+}
+
+export interface ShadowPendingAction {
+  id: number
+  stock_id: string
+  stock_name: string
+  action: ShadowOrderAction
+  signal_date: string
+  scheduled_execution_date: string
+  status: ShadowOrderStatus
+  reason: string | null
+  entry_pattern: string | null
+  units: number
+  planned_amount: number | null
+}
+
+export interface ShadowPendingActionsResponse {
+  strategy_version: string
+  actions: ShadowPendingAction[]
+}
+
+export async function fetchShadowPortfolio(options?: FetchOptions): Promise<ShadowPortfolio> {
+  const res = await apiFetch(`${API_BASE}/api/signals/shadow-portfolio`, { signal: options?.signal })
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "模擬交易 Portfolio 載入失敗"))
+  return res.json()
+}
+
+export async function fetchShadowPendingActions(
+  options?: FetchOptions,
+): Promise<ShadowPendingActionsResponse> {
+  const res = await apiFetch(`${API_BASE}/api/signals/shadow-portfolio/actions`, { signal: options?.signal })
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "模擬交易待執行動作載入失敗"))
+  return res.json()
+}
