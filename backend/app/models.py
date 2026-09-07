@@ -1200,3 +1200,150 @@ class MarketStressIndicator(Base):
 
     source = Column(JSON, nullable=True)  # 每個欄位的抓取狀態，debug 用
     ingested_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class ShadowVirtualPortfolio(Base):
+    """
+    魚尾每日模擬交易（Shadow Portfolio）Phase 1：把獨立沙盒 fishtail_backtest/ 反覆驗證過的
+    v1 策略（唯一報酬顯著為正、其餘 v2/Unified/Hybrid 三套皆已證明較差並刪除）正式接進生產
+    系統，用固定虛擬資金模擬每天的 BUY/ADD/SELL/HOLD 決策。
+
+    這是目前持倉現金狀態的 singleton（每個 strategy_version 一列，例如 "v1_frozen"）；
+    真正的每日決策紀錄在 `ShadowStrategyDailyDecision`（append-only），每日權益歷史在
+    `ShadowPortfolioDailySnapshot`。策略版本改版（未來若有 v2）不可回頭改寫 v1_frozen 的
+    歷史決策/訂單，須另開新的 strategy_version 字串。
+    """
+    __tablename__ = "shadow_virtual_portfolios"
+
+    strategy_version = Column(String(32), primary_key=True)  # e.g. "v1_frozen"
+    cash = Column(Float, nullable=False)
+    realized_pnl_cumulative = Column(Float, nullable=False, default=0.0)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class ShadowVirtualPosition(Base):
+    """目前持倉，一檔股票（同一 strategy_version 下）一列；持有 1~2 個 lot（見
+    `ShadowPositionLot`）。部位全部賣出時整列刪除，不保留空部位列。"""
+    __tablename__ = "shadow_virtual_positions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    strategy_version = Column(String(32), nullable=False, index=True)
+    stock_id = Column(String, nullable=False, index=True)
+    stock_name = Column(String, nullable=False)
+    first_seen_date = Column(Date, nullable=False)  # 對應的 P4 cohort（SignalObservation.started_signal_date）
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("strategy_version", "stock_id", name="uq_shadow_position_strategy_stock"),
+    )
+
+
+class ShadowPositionLot(Base):
+    """每個 lot 獨立一列（v1 策略最多 2 lot／股票），不只存平均成本——方便日後拆分析「第一份
+    績效 vs 加碼那份績效」。部位全數賣出時隨 Position 一起刪除（無歷史保留，成交紀錄另存於
+    `ShadowStrategyOrder`）。"""
+    __tablename__ = "shadow_position_lots"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    position_id = Column(
+        Integer, ForeignKey("shadow_virtual_positions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    entry_type = Column(String(32), nullable=False)  # EARLY_HEALTHY_PULLBACK | DEEP_PULLBACK
+    entry_signal_date = Column(Date, nullable=False)
+    entry_execution_date = Column(Date, nullable=False)
+    entry_price = Column(Float, nullable=False)
+    shares = Column(Float, nullable=False)
+    allocation = Column(Float, nullable=False)
+    entry_day_index = Column(Integer, nullable=True)
+    entry_hit_count = Column(Integer, nullable=True)
+    entry_momentum = Column(Float, nullable=True)
+    entry_p4_decision = Column(String(32), nullable=True)
+    entry_mark_to_market_return = Column(Float, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class ShadowStrategyOrder(Base):
+    """Pending order queue：策略在 T 日收盤後決定的 BUY/ADD/SELL，狀態機
+    PENDING → EXECUTED（或 CANCELLED/FAILED）。`scheduled_execution_date` 在建立當下只是
+    「跳過週末」的粗略猜測值（純供 UI 顯示「預計執行」用，生產系統沒有精確的交易日曆工具）；
+    真正成交靠 `execute_pending_strategy_orders` 每天檢查該股票當天是否已有 `daily_price`，
+    self-healing——即使猜測的日期遇到補班/連假而不準，隔天仍會自動處理，不需要人工介入。"""
+    __tablename__ = "shadow_strategy_orders"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    strategy_version = Column(String(32), nullable=False, index=True)
+    stock_id = Column(String, nullable=False, index=True)
+    stock_name = Column(String, nullable=False)
+    action = Column(String(8), nullable=False)  # BUY | ADD | SELL
+    signal_date = Column(Date, nullable=False)
+    scheduled_execution_date = Column(Date, nullable=False, index=True)
+    status = Column(String(16), nullable=False, default="PENDING", index=True)  # PENDING|EXECUTED|CANCELLED|FAILED
+    reason = Column(Text, nullable=True)
+    entry_pattern = Column(String(32), nullable=True)
+    units = Column(Integer, nullable=False, default=1)
+    planned_amount = Column(Float, nullable=True)
+    signal_snapshot = Column(JSON, nullable=True)
+    execution_price = Column(Float, nullable=True)
+    executed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class ShadowStrategyDailyDecision(Base):
+    """每日、每檔被評估股票的策略決策——append-only，策略改版後也不可回頭覆寫舊
+    strategy_version 的歷史列（沿用 `signal_watch_completed_archives` 等既有表「不可回填/
+    不可覆寫歷史」的慣例）。idempotency 靠 `(strategy_version, trade_date, stock_id)`
+    唯一鍵：同一天 job 重跑時，若某股票已有紀錄就整檔跳過，不重算也不重建 order。"""
+    __tablename__ = "shadow_strategy_daily_decisions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    strategy_version = Column(String(32), nullable=False, index=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    stock_id = Column(String, nullable=False, index=True)
+    stock_name = Column(String, nullable=False)
+    action = Column(String(32), nullable=False)  # WATCH|BUY|ADD|HOLD|SELL|SKIPPED_PORTFOLIO_CAPACITY
+    action_reason = Column(Text, nullable=True)
+    entry_pattern = Column(String(32), nullable=True)
+    p3_selected_today = Column(Boolean, nullable=False, default=False)
+    hit_count = Column(Integer, nullable=True)
+    momentum_score = Column(Float, nullable=True)
+    mark_to_market_return_pct = Column(Float, nullable=True)
+    p4_decision = Column(String(32), nullable=True)
+    position_units = Column(Integer, nullable=True)
+    actual_position_return = Column(Float, nullable=True)
+    entry_score = Column(Float, nullable=True)
+    scheduled_execution_date = Column(Date, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "strategy_version", "trade_date", "stock_id", name="uq_shadow_decision_strategy_date_stock"
+        ),
+    )
+
+
+class ShadowPortfolioDailySnapshot(Base):
+    """每日 portfolio 權益快照，equity curve 的資料來源。UPSERT-by-(strategy_version,
+    trade_date)——這是可重算覆寫的衍生聚合值，不是決策紀錄本身，沿用 `SignalSnapshot`
+    的 UPSERT-by-date 慣例（跟 `ShadowStrategyDailyDecision` 的 append-only 規則不同）。"""
+    __tablename__ = "shadow_portfolio_daily_snapshots"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    strategy_version = Column(String(32), nullable=False, index=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    cash = Column(Float, nullable=False)
+    invested_cost = Column(Float, nullable=False)
+    market_value = Column(Float, nullable=True)
+    total_equity = Column(Float, nullable=False)
+    total_return_pct = Column(Float, nullable=False)
+    realized_pnl = Column(Float, nullable=False)
+    unrealized_pnl = Column(Float, nullable=True)
+    position_count = Column(Integer, nullable=False)
+    total_units = Column(Integer, nullable=False)
+    pending_buy_count = Column(Integer, nullable=False, default=0)
+    pending_sell_count = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("strategy_version", "trade_date", name="uq_shadow_snapshot_strategy_date"),
+    )

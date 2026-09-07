@@ -265,6 +265,23 @@ def _ensure_market_regime_v2_tables() -> None:
         logger.exception("Failed to create Market Regime v2 tables at startup")
 
 
+def _ensure_shadow_portfolio_tables() -> None:
+    """啟動時確保魚尾每日模擬交易（Shadow Portfolio）Phase 1 新表存在。純建表、不 seed、
+    失敗不擋啟動。這批表完全獨立於既有 signal_* 選股/追蹤表，正式的 v1 策略邏輯只讀取既有表
+    （SignalObservation / SignalObservationReview / SignalWatchHit / daily_price），從不
+    寫入既有表，對現有選股/追蹤結果零影響。實際建表邏輯在
+    `app.signals.shadow_portfolio.ensure_shadow_portfolio_tables`（與獨立 script 共用，
+    比照 `observation_schema.ensure_observation_tables` 的既有慣例）。
+    """
+    from app.database import engine
+    from app.signals.shadow_portfolio import ensure_shadow_portfolio_tables
+
+    try:
+        ensure_shadow_portfolio_tables(engine)
+    except Exception:
+        logger.exception("Failed to create Shadow Portfolio tables at startup")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
@@ -282,6 +299,7 @@ async def lifespan(app: FastAPI):
     _ensure_classification_tables()
     _ensure_phase2_shadow_tables()
     _ensure_market_regime_v2_tables()
+    _ensure_shadow_portfolio_tables()
 
     app.state.bot_app = None
 
