@@ -32,13 +32,14 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import func
+from sqlalchemy import func, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import (
     DailyPrice,
+    ShadowCompletedTrade,
     ShadowPositionLot,
     ShadowPortfolioDailySnapshot,
     ShadowStrategyDailyDecision,
@@ -67,8 +68,31 @@ def ensure_shadow_portfolio_tables(engine: Engine) -> None:
             ShadowStrategyOrder.__table__,
             ShadowStrategyDailyDecision.__table__,
             ShadowPortfolioDailySnapshot.__table__,
+            ShadowCompletedTrade.__table__,
         ],
     )
+    _ensure_shadow_virtual_portfolio_cycle_columns(engine)
+
+
+def _ensure_shadow_virtual_portfolio_cycle_columns(engine: Engine) -> None:
+    """2026-09-08：35 交易日循環重置——`shadow_virtual_portfolios` 這張表在
+    production 早已有資料（本輪之前的 backfill 驗證），`create_all` 不會替既有表
+    補欄位，需要顯式 ALTER TABLE（比照 `signal_watch_schema.py` 既有 dict pattern）。
+    """
+    inspector = inspect(engine)
+    if "shadow_virtual_portfolios" not in inspector.get_table_names():
+        return
+    wanted = {
+        "cycle_number": "ALTER TABLE shadow_virtual_portfolios ADD COLUMN cycle_number INTEGER NOT NULL DEFAULT 1",
+        "cycle_start_trade_date": "ALTER TABLE shadow_virtual_portfolios ADD COLUMN cycle_start_trade_date DATE",
+    }
+    columns = {c["name"] for c in inspector.get_columns("shadow_virtual_portfolios")}
+    missing = [name for name in wanted if name not in columns]
+    if not missing:
+        return
+    with engine.begin() as conn:
+        for name in missing:
+            conn.execute(text(wanted[name]))
 
 # ---------------------------------------------------------------------------
 # 凍結參數 —— 逐字對應 fishtail_backtest/backtest/run_all.py 的 BASELINE_PARAMS。
@@ -101,6 +125,11 @@ EXIT_REASON_P4_STOP = "P4_STOP"
 EXIT_REASON_OFFICIAL_EXIT = "OFFICIAL_EXIT"
 EXIT_REASON_TAKE_PROFIT = "TAKE_PROFIT"
 EXIT_REASON_REAL_STOP_LOSS = "REAL_POSITION_STOP_LOSS"
+# 35 交易日循環強制重置（見 check_and_apply_cycle_reset）——不是策略訊號觸發的
+# 正常出場，是行政性強制平倉，exit_execution_date 就是觸發當天，不等 T+1
+EXIT_REASON_CYCLE_RESET = "CYCLE_RESET"
+
+CYCLE_LENGTH_TRADING_DAYS = 35
 
 ACTION_WATCH = "WATCH"
 ACTION_BUY = "BUY"
@@ -514,6 +543,51 @@ def _position_average_entry_price(db: Session, position_id: int) -> Optional[flo
     return total_cost / total_shares
 
 
+def _record_completed_trade(
+    db: Session,
+    *,
+    strategy_version: str,
+    cycle_number: int,
+    lot: ShadowPositionLot,
+    stock_id: str,
+    stock_name: str,
+    exit_reason: str,
+    exit_signal_date: date,
+    exit_execution_date: date,
+    exit_price: float,
+) -> ShadowCompletedTrade:
+    """把一個要平倉的 lot 轉成永久保存的 `ShadowCompletedTrade` 列——**呼叫端負責
+    自己刪除 lot**，這個函式只 `db.add()` 新紀錄，不動 lot 本身。"""
+    realized_pnl = lot.shares * exit_price - lot.allocation
+    trade = ShadowCompletedTrade(
+        strategy_version=strategy_version,
+        cycle_number=cycle_number,
+        stock_id=stock_id,
+        stock_name=stock_name,
+        entry_type=lot.entry_type,
+        entry_signal_date=lot.entry_signal_date,
+        entry_execution_date=lot.entry_execution_date,
+        entry_price=lot.entry_price,
+        entry_day_index=lot.entry_day_index,
+        entry_hit_count=lot.entry_hit_count,
+        entry_momentum=lot.entry_momentum,
+        entry_p4_decision=lot.entry_p4_decision,
+        entry_mark_to_market_return=lot.entry_mark_to_market_return,
+        exit_reason=exit_reason,
+        exit_signal_date=exit_signal_date,
+        exit_execution_date=exit_execution_date,
+        exit_price=exit_price,
+        shares=lot.shares,
+        allocation=lot.allocation,
+        realized_pnl=realized_pnl,
+        realized_return_pct=(realized_pnl / lot.allocation * 100.0) if lot.allocation else 0.0,
+        holding_days=(exit_execution_date - lot.entry_execution_date).days,
+        followed_by_rotation=False,  # 呼叫端事後統一更新（見 execute_pending_strategy_orders）
+    )
+    db.add(trade)
+    return trade
+
+
 def _latest_close(db: Session, *, stock_id: str, as_of: date) -> Optional[float]:
     row = (
         db.query(DailyPrice.close_price)
@@ -545,6 +619,7 @@ def execute_pending_strategy_orders(
     orders.sort(key=lambda o: 0 if o.action == ACTION_SELL else 1)
 
     executed = {"sell": 0, "buy": 0, "add": 0, "skipped_no_price": 0, "failed": 0}
+    trades_created_today: List[ShadowCompletedTrade] = []
 
     for order in orders:
         if order.action == ACTION_SELL:
@@ -574,6 +649,20 @@ def execute_pending_strategy_orders(
                 proceeds = lot.shares * price
                 portfolio.cash += proceeds
                 portfolio.realized_pnl_cumulative += proceeds - lot.allocation
+                trades_created_today.append(
+                    _record_completed_trade(
+                        db,
+                        strategy_version=strategy_version,
+                        cycle_number=portfolio.cycle_number,
+                        lot=lot,
+                        stock_id=order.stock_id,
+                        stock_name=order.stock_name,
+                        exit_reason=order.reason or "UNKNOWN",
+                        exit_signal_date=order.signal_date,
+                        exit_execution_date=target_date,
+                        exit_price=price,
+                    )
+                )
                 db.delete(lot)
             db.delete(position)
             order.status = ORDER_STATUS_EXECUTED
@@ -638,6 +727,13 @@ def execute_pending_strategy_orders(
             order.execution_price = price
             order.executed_at = datetime.utcnow()
             executed["buy" if order.action == ACTION_BUY else "add"] += 1
+
+    # 「賣出後有沒有換股」：這次呼叫只要有任何 BUY/ADD 成交，今天所有平倉紀錄都標記
+    # followed_by_rotation=True（不分先後順序——SELL 已排在 BUY/ADD 之前執行，但
+    # 「今天同時發生」才是使用者想問的換股語意，不是嚴格的因果順序）
+    if (executed["buy"] + executed["add"]) > 0:
+        for trade in trades_created_today:
+            trade.followed_by_rotation = True
 
     return executed
 
@@ -913,3 +1009,90 @@ def create_portfolio_daily_snapshot(
     snapshot.pending_sell_count = pending_sell_count
 
     return snapshot
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator 4：35 個交易日一循環，循環結束強制清空重來
+# ---------------------------------------------------------------------------
+def _count_cycle_trading_days(
+    db: Session, *, strategy_version: str, cycle_start_trade_date: date, target_date: date
+) -> int:
+    """比照全專案既有的 day_index 慣例（`_count_market_trading_days`）：用 COUNT
+    query 算天數，不用遞增計數器欄位——同一天重跑天然 idempotent，不需要額外判斷
+    這一天是否已經算過。"""
+    count = (
+        db.query(func.count(func.distinct(ShadowPortfolioDailySnapshot.trade_date)))
+        .filter(
+            ShadowPortfolioDailySnapshot.strategy_version == strategy_version,
+            ShadowPortfolioDailySnapshot.trade_date >= cycle_start_trade_date,
+            ShadowPortfolioDailySnapshot.trade_date <= target_date,
+        )
+        .scalar()
+        or 0
+    )
+    return int(count)
+
+
+def check_and_apply_cycle_reset(
+    db: Session, *, target_date: date, strategy_version: str = STRATEGY_VERSION
+) -> bool:
+    """必須排在 `create_portfolio_daily_snapshot(target_date=target_date)` 之後
+    （同一次呼叫的最後一步）——這個函式讀當天的 snapshot 判斷交易日數。
+
+    回傳是否有觸發重置。**不會**清空 `ShadowStrategyDailyDecision`（append-only
+    決策紀錄）或 `ShadowCompletedTrade`（永久保存的已平倉交易）——只清「目前部位」
+    這個可變狀態，比照既有 `signal_watch_hits`（會清）vs
+    `signal_watch_completed_archives`（永久）的既有分離原則。
+    """
+    portfolio = _get_or_create_portfolio(db, strategy_version)
+
+    if portfolio.cycle_start_trade_date is None:
+        # 這個 strategy_version 第一次真正運作（第一天不可能滿 35 天）
+        portfolio.cycle_start_trade_date = target_date
+        return False
+
+    days_in_cycle = _count_cycle_trading_days(
+        db, strategy_version=strategy_version,
+        cycle_start_trade_date=portfolio.cycle_start_trade_date, target_date=target_date,
+    )
+    if days_in_cycle < CYCLE_LENGTH_TRADING_DAYS:
+        return False
+
+    # ---- 觸發重置：強制平倉所有目前持倉，寫入永久交易紀錄 ----
+    positions = _load_positions(db, strategy_version)
+    for stock_id, position in positions.items():
+        close = _latest_close(db, stock_id=stock_id, as_of=target_date)
+        lots = db.query(ShadowPositionLot).filter(ShadowPositionLot.position_id == position.id).all()
+        for lot in lots:
+            exit_price = close if close is not None else lot.entry_price  # 缺當日收盤價的保守 fallback
+            proceeds = lot.shares * exit_price
+            portfolio.cash += proceeds
+            portfolio.realized_pnl_cumulative += proceeds - lot.allocation
+            _record_completed_trade(
+                db,
+                strategy_version=strategy_version,
+                cycle_number=portfolio.cycle_number,
+                lot=lot,
+                stock_id=stock_id,
+                stock_name=position.stock_name,
+                exit_reason=EXIT_REASON_CYCLE_RESET,
+                exit_signal_date=target_date,
+                exit_execution_date=target_date,  # 行政性強制動作，不等 T+1
+                exit_price=exit_price,
+            )
+            db.delete(lot)
+        db.delete(position)
+
+    # ---- 取消所有還在排隊的 pending 訂單（部位已經沒了，訂單也失去意義）----
+    db.query(ShadowStrategyOrder).filter(
+        ShadowStrategyOrder.strategy_version == strategy_version,
+        ShadowStrategyOrder.status == ORDER_STATUS_PENDING,
+    ).update({"status": "CANCELLED"}, synchronize_session=False)
+
+    # ---- 重設 portfolio 現金/循環狀態 ----
+    portfolio.cash = V1_STRATEGY_PARAMS["initial_capital"]
+    portfolio.realized_pnl_cumulative = 0.0
+    portfolio.cycle_number += 1
+    portfolio.cycle_start_trade_date = None  # 下次呼叫的第一天會重新設定
+
+    return True

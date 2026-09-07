@@ -114,6 +114,12 @@ def main(argv: list) -> int:
                 "create_portfolio_daily_snapshot: equity=%.2f return_pct=%.2f%% positions=%d",
                 snapshot.total_equity, snapshot.total_return_pct, snapshot.position_count,
             )
+
+        with SessionLocal() as db:
+            reset_triggered = sp.check_and_apply_cycle_reset(db, target_date=target_date)
+            db.commit()
+            if reset_triggered:
+                logger.info("35-trading-day cycle completed; portfolio has been reset for a new cycle")
     except Exception:
         logger.exception("Shadow portfolio run failed: target_date=%s", target_date)
         return EXIT_DB_ERROR

@@ -9,6 +9,8 @@ from datetime import date, timedelta
 
 from app.models import (
     DailyPrice,
+    ShadowCompletedTrade,
+    ShadowPositionLot,
     ShadowStrategyDailyDecision,
     ShadowStrategyOrder,
     ShadowVirtualPortfolio,
@@ -455,3 +457,243 @@ def test_execute_pending_orders_sells_before_buys_same_day(db):
     portfolio = db.query(ShadowVirtualPortfolio).first()
     # 50,000 起始現金 + 賣出台泥 95,000 - 買進台積電 100,000 = 45,000（若買在賣之前會現金不足失敗）
     assert portfolio.cash == 45000.0
+
+
+# ---------------------------------------------------------------------------
+# ShadowCompletedTrade 永久交易紀錄
+# ---------------------------------------------------------------------------
+def _seed_position_with_lot(db, *, stock_id, stock_name, entry_price, shares, allocation, entry_type="EARLY_HEALTHY_PULLBACK", entry_date=D0):
+    position = ShadowVirtualPosition(
+        strategy_version=sp.STRATEGY_VERSION, stock_id=stock_id, stock_name=stock_name, first_seen_date=entry_date,
+    )
+    db.add(position)
+    db.commit()
+    lot = ShadowPositionLot(
+        position_id=position.id, entry_type=entry_type, entry_signal_date=entry_date,
+        entry_execution_date=entry_date, entry_price=entry_price, shares=shares, allocation=allocation,
+        entry_day_index=2, entry_hit_count=1, entry_momentum=75.0, entry_p4_decision="CAUTION",
+        entry_mark_to_market_return=-1.5,
+    )
+    db.add(lot)
+    db.commit()
+    return position, lot
+
+
+def test_sell_records_completed_trade_with_full_entry_exit_fields(db):
+    db.add(ShadowVirtualPortfolio(strategy_version=sp.STRATEGY_VERSION, cash=500000.0))
+    db.commit()
+    _seed_position_with_lot(db, stock_id="1101", stock_name="台泥", entry_price=100.0, shares=1000.0, allocation=100000.0, entry_date=D0)
+    db.add(
+        ShadowStrategyOrder(
+            strategy_version=sp.STRATEGY_VERSION, stock_id="1101", stock_name="台泥",
+            action=sp.ACTION_SELL, signal_date=D1, scheduled_execution_date=D2,
+            status=sp.ORDER_STATUS_PENDING, units=1, reason=sp.EXIT_REASON_TAKE_PROFIT,
+        )
+    )
+    db.commit()
+    _seed_price(db, "1101", D2, low=108.0)
+
+    sp.execute_pending_strategy_orders(db, target_date=D2)
+    db.commit()
+
+    trade = db.query(ShadowCompletedTrade).filter(ShadowCompletedTrade.stock_id == "1101").first()
+    assert trade is not None
+    assert trade.entry_price == 100.0
+    assert trade.entry_day_index == 2
+    assert trade.entry_hit_count == 1
+    assert trade.entry_momentum == 75.0
+    assert trade.entry_p4_decision == "CAUTION"
+    assert trade.exit_reason == sp.EXIT_REASON_TAKE_PROFIT
+    assert trade.exit_price == 108.0
+    assert trade.exit_execution_date == D2
+    assert trade.shares == 1000.0
+    assert trade.allocation == 100000.0
+    assert trade.realized_pnl == 8000.0
+    assert trade.realized_return_pct == 8.0
+    assert trade.followed_by_rotation is False
+    # 平倉後 lot/position 應該被清掉（既有行為，沒有因為新增交易紀錄而改變）
+    assert db.query(ShadowVirtualPosition).count() == 0
+
+
+def test_sell_marks_followed_by_rotation_when_buy_happens_same_day(db):
+    db.add(ShadowVirtualPortfolio(strategy_version=sp.STRATEGY_VERSION, cash=200000.0))
+    db.commit()
+    _seed_position_with_lot(db, stock_id="1101", stock_name="台泥", entry_price=100.0, shares=1000.0, allocation=100000.0, entry_date=D0)
+    db.add(
+        ShadowStrategyOrder(
+            strategy_version=sp.STRATEGY_VERSION, stock_id="1101", stock_name="台泥",
+            action=sp.ACTION_SELL, signal_date=D1, scheduled_execution_date=D2,
+            status=sp.ORDER_STATUS_PENDING, units=1, reason=sp.EXIT_REASON_P4_STOP,
+        )
+    )
+    db.add(
+        ShadowStrategyOrder(
+            strategy_version=sp.STRATEGY_VERSION, stock_id="2330", stock_name="台積電",
+            action=sp.ACTION_BUY, signal_date=D1, scheduled_execution_date=D2,
+            status=sp.ORDER_STATUS_PENDING, units=1, planned_amount=100000.0,
+            signal_snapshot={"first_seen_date": D1.isoformat()},
+        )
+    )
+    db.commit()
+    _seed_price(db, "1101", D2, low=90.0)
+    _seed_price(db, "2330", D2, high=500.0)
+
+    sp.execute_pending_strategy_orders(db, target_date=D2)
+    db.commit()
+
+    trade = db.query(ShadowCompletedTrade).filter(ShadowCompletedTrade.stock_id == "1101").first()
+    assert trade.followed_by_rotation is True
+
+
+def test_sell_without_same_day_buy_is_not_marked_as_rotation(db):
+    db.add(ShadowVirtualPortfolio(strategy_version=sp.STRATEGY_VERSION, cash=200000.0))
+    db.commit()
+    _seed_position_with_lot(db, stock_id="1101", stock_name="台泥", entry_price=100.0, shares=1000.0, allocation=100000.0, entry_date=D0)
+    db.add(
+        ShadowStrategyOrder(
+            strategy_version=sp.STRATEGY_VERSION, stock_id="1101", stock_name="台泥",
+            action=sp.ACTION_SELL, signal_date=D1, scheduled_execution_date=D2,
+            status=sp.ORDER_STATUS_PENDING, units=1, reason=sp.EXIT_REASON_P4_STOP,
+        )
+    )
+    db.commit()
+    _seed_price(db, "1101", D2, low=90.0)
+
+    sp.execute_pending_strategy_orders(db, target_date=D2)
+    db.commit()
+
+    trade = db.query(ShadowCompletedTrade).filter(ShadowCompletedTrade.stock_id == "1101").first()
+    assert trade.followed_by_rotation is False
+
+
+# ---------------------------------------------------------------------------
+# 35 交易日循環強制重置
+# ---------------------------------------------------------------------------
+def test_cycle_reset_not_triggered_before_35_trading_days(db):
+    _seed_trading_calendar(db, D0, 40)
+    trade_dates = sorted({row.trade_date for row in db.query(DailyPrice).all()})
+    cycle_start = trade_dates[0]
+    db.add(
+        ShadowVirtualPortfolio(
+            strategy_version=sp.STRATEGY_VERSION, cash=500000.0, cycle_start_trade_date=cycle_start,
+        )
+    )
+    db.commit()
+
+    for d in trade_dates[:34]:  # 只跑 34 個交易日，還沒滿 35
+        sp.create_portfolio_daily_snapshot(db, target_date=d)
+        db.commit()
+        assert sp.check_and_apply_cycle_reset(db, target_date=d) is False
+        db.commit()
+
+    portfolio = db.query(ShadowVirtualPortfolio).first()
+    assert portfolio.cycle_number == 1
+    assert portfolio.cycle_start_trade_date == cycle_start
+
+
+def test_cycle_reset_triggers_at_35th_trading_day_and_force_liquidates(db):
+    _seed_trading_calendar(db, D0, 40)
+    trade_dates = sorted({row.trade_date for row in db.query(DailyPrice).all()})
+    cycle_start = trade_dates[0]
+    day35 = trade_dates[34]
+
+    db.add(
+        ShadowVirtualPortfolio(
+            strategy_version=sp.STRATEGY_VERSION, cash=500000.0, cycle_start_trade_date=cycle_start,
+        )
+    )
+    db.commit()
+    _seed_position_with_lot(db, stock_id="1101", stock_name="台泥", entry_price=100.0, shares=1000.0, allocation=100000.0, entry_date=cycle_start)
+    _seed_price(db, "1101", day35, close=120.0)
+
+    for d in trade_dates[:34]:
+        sp.create_portfolio_daily_snapshot(db, target_date=d)
+        db.commit()
+
+    sp.create_portfolio_daily_snapshot(db, target_date=day35)
+    db.commit()
+    reset_triggered = sp.check_and_apply_cycle_reset(db, target_date=day35)
+    db.commit()
+
+    assert reset_triggered is True
+    portfolio = db.query(ShadowVirtualPortfolio).first()
+    assert portfolio.cash == sp.V1_STRATEGY_PARAMS["initial_capital"]
+    assert portfolio.realized_pnl_cumulative == 0.0
+    assert portfolio.cycle_number == 2
+    assert portfolio.cycle_start_trade_date is None
+
+    assert db.query(ShadowVirtualPosition).count() == 0
+    assert db.query(ShadowPositionLot).count() == 0
+
+    trade = db.query(ShadowCompletedTrade).filter(ShadowCompletedTrade.stock_id == "1101").first()
+    assert trade is not None
+    assert trade.exit_reason == sp.EXIT_REASON_CYCLE_RESET
+    assert trade.exit_price == 120.0
+    assert trade.exit_execution_date == day35
+    assert trade.cycle_number == 1  # 屬於被結束的那個循環，不是新循環
+
+
+def test_cycle_reset_cancels_pending_orders(db):
+    _seed_trading_calendar(db, D0, 40)
+    trade_dates = sorted({row.trade_date for row in db.query(DailyPrice).all()})
+    cycle_start = trade_dates[0]
+    day35 = trade_dates[34]
+
+    db.add(
+        ShadowVirtualPortfolio(
+            strategy_version=sp.STRATEGY_VERSION, cash=500000.0, cycle_start_trade_date=cycle_start,
+        )
+    )
+    db.add(
+        ShadowStrategyOrder(
+            strategy_version=sp.STRATEGY_VERSION, stock_id="2330", stock_name="台積電",
+            action=sp.ACTION_BUY, signal_date=day35, scheduled_execution_date=trade_dates[35],
+            status=sp.ORDER_STATUS_PENDING, units=1, planned_amount=100000.0,
+        )
+    )
+    db.commit()
+
+    for d in trade_dates[:34]:
+        sp.create_portfolio_daily_snapshot(db, target_date=d)
+        db.commit()
+    sp.create_portfolio_daily_snapshot(db, target_date=day35)
+    db.commit()
+    sp.check_and_apply_cycle_reset(db, target_date=day35)
+    db.commit()
+
+    order = db.query(ShadowStrategyOrder).filter(ShadowStrategyOrder.stock_id == "2330").first()
+    assert order.status == "CANCELLED"
+
+
+def test_cycle_reset_does_not_touch_daily_decisions_or_completed_trades(db):
+    """完成交易的永久紀錄跟 append-only 決策紀錄，不因循環重置而消失。"""
+    _seed_trading_calendar(db, D0, 40)
+    trade_dates = sorted({row.trade_date for row in db.query(DailyPrice).all()})
+    cycle_start = trade_dates[0]
+    day35 = trade_dates[34]
+
+    db.add(
+        ShadowVirtualPortfolio(
+            strategy_version=sp.STRATEGY_VERSION, cash=500000.0, cycle_start_trade_date=cycle_start,
+        )
+    )
+    db.add(
+        ShadowStrategyDailyDecision(
+            strategy_version=sp.STRATEGY_VERSION, trade_date=cycle_start, stock_id="2330",
+            stock_name="台積電", action=sp.ACTION_WATCH,
+        )
+    )
+    db.commit()
+    _seed_position_with_lot(db, stock_id="1101", stock_name="台泥", entry_price=100.0, shares=1000.0, allocation=100000.0, entry_date=cycle_start)
+    _seed_price(db, "1101", day35, close=120.0)
+
+    for d in trade_dates[:34]:
+        sp.create_portfolio_daily_snapshot(db, target_date=d)
+        db.commit()
+    sp.create_portfolio_daily_snapshot(db, target_date=day35)
+    db.commit()
+    sp.check_and_apply_cycle_reset(db, target_date=day35)
+    db.commit()
+
+    assert db.query(ShadowStrategyDailyDecision).count() == 1  # 沒被清掉
+    assert db.query(ShadowCompletedTrade).count() == 1  # 平倉紀錄保留

@@ -1218,6 +1218,12 @@ class ShadowVirtualPortfolio(Base):
     strategy_version = Column(String(32), primary_key=True)  # e.g. "v1_frozen"
     cash = Column(Float, nullable=False)
     realized_pnl_cumulative = Column(Float, nullable=False, default=0.0)
+    # 2026-09-08：35 個交易日一循環，循環結束時全面強制清空重來（見
+    # shadow_portfolio.check_and_apply_cycle_reset）。cycle_start_trade_date=NULL
+    # 代表這個 strategy_version 尚未真正跑過第一天；交易日數用 COUNT query 算
+    # （不用遞增計數器），同一天重跑天然 idempotent，不需要額外判斷。
+    cycle_number = Column(Integer, nullable=False, default=1, server_default="1")
+    cycle_start_trade_date = Column(Date, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
 
@@ -1347,3 +1353,52 @@ class ShadowPortfolioDailySnapshot(Base):
     __table_args__ = (
         UniqueConstraint("strategy_version", "trade_date", name="uq_shadow_snapshot_strategy_date"),
     )
+
+
+class ShadowCompletedTrade(Base):
+    """每一筆已平倉交易的永久紀錄——**不受 35 交易日循環強制重置影響**（見
+    `shadow_portfolio.check_and_apply_cycle_reset`）。一列 = 一個 lot 平倉（同一天
+    賣出 2 個 lot 的部位會產生 2 列，比照沙盒 fishtail_backtest/backtest/portfolio.py
+    的 `ClosedTrade` 語意，每個 lot 的績效各自可查、可分析「第一份 vs 加碼那份」）。
+
+    跟 `ShadowVirtualPosition`／`ShadowPositionLot`（目前部位，循環重置時會被清空）
+    的關係，比照既有 `signal_watch_hits`（目前追蹤中，會被清）vs
+    `signal_watch_completed_archives`（永久保存）的既有分離慣例。
+    """
+    __tablename__ = "shadow_completed_trades"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    strategy_version = Column(String(32), nullable=False, index=True)
+    cycle_number = Column(Integer, nullable=False, index=True)  # 屬於第幾個 35 交易日循環
+
+    stock_id = Column(String, nullable=False, index=True)
+    stock_name = Column(String, nullable=False)
+
+    entry_type = Column(String(32), nullable=False)  # EARLY_HEALTHY_PULLBACK | DEEP_PULLBACK
+    entry_signal_date = Column(Date, nullable=False)
+    entry_execution_date = Column(Date, nullable=False)
+    entry_price = Column(Float, nullable=False)
+    # 買進當下的股票數字（來自 ShadowPositionLot 既有的 entry_* 欄位，原樣搬過來）
+    entry_day_index = Column(Integer, nullable=True)
+    entry_hit_count = Column(Integer, nullable=True)
+    entry_momentum = Column(Float, nullable=True)
+    entry_p4_decision = Column(String(32), nullable=True)
+    entry_mark_to_market_return = Column(Float, nullable=True)
+
+    # CYCLE_RESET：35 交易日循環結束強制平倉（見 check_and_apply_cycle_reset），
+    # 不是策略訊號觸發的正常出場，exit_execution_date 就是觸發當天（不等 T+1）
+    exit_reason = Column(String(32), nullable=False)
+    exit_signal_date = Column(Date, nullable=False)
+    exit_execution_date = Column(Date, nullable=False)
+    exit_price = Column(Float, nullable=False)
+
+    shares = Column(Float, nullable=False)
+    allocation = Column(Float, nullable=False)
+    realized_pnl = Column(Float, nullable=False)
+    realized_return_pct = Column(Float, nullable=False)
+    holding_days = Column(Integer, nullable=False)
+
+    # 賣出當天是否同時有 BUY/ADD 成交（換股）
+    followed_by_rotation = Column(Boolean, nullable=False, default=False)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

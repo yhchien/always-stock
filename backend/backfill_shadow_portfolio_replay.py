@@ -173,50 +173,60 @@ def main(argv: list) -> int:
     print(f"\n{'='*78}\nSTRATEGY_VERSION={sp.STRATEGY_VERSION}  REPLAY {trade_dates[0]} ~ {trade_dates[-1]}\n{'='*78}")
 
     for d in trade_dates:
+        # 每個 with 區塊內就把要印的欄位讀成 plain tuple——session 一離開 with
+        # 就 close，ORM 物件在區塊外變成 detached/expired，屬性存取會觸發對已
+        # 關閉 session 的 lazy-load 而炸掉（DetachedInstanceError，真的撞過，
+        # 撞到的當下讓整支 script 在第一天就當機）。
         with SessionLocal() as db:
             executed = sp.execute_pending_strategy_orders(db, target_date=d)
             db.commit()
             # 今天真正成交的訂單（用 T-1 的訊號，用今天的 high/low 成交）
-            filled_today = (
-                db.query(ShadowStrategyOrder)
-                .filter(
+            filled_today = [
+                (o.action, o.stock_id, o.stock_name, o.execution_price, o.reason)
+                for o in db.query(ShadowStrategyOrder).filter(
                     ShadowStrategyOrder.strategy_version == sp.STRATEGY_VERSION,
                     ShadowStrategyOrder.status == sp.ORDER_STATUS_EXECUTED,
                     ShadowStrategyOrder.scheduled_execution_date == d,
                 )
-                .all()
-            )
+            ]
 
         with SessionLocal() as db:
             decided = sp.run_daily_trading_strategy(db, target_date=d)
             db.commit()
             # 今天新產生、明天要執行的訊號
-            new_signals = (
-                db.query(ShadowStrategyDailyDecision)
-                .filter(
+            new_signals = [
+                (s.action, s.stock_id, s.stock_name, s.action_reason)
+                for s in db.query(ShadowStrategyDailyDecision).filter(
                     ShadowStrategyDailyDecision.strategy_version == sp.STRATEGY_VERSION,
                     ShadowStrategyDailyDecision.trade_date == d,
                     ShadowStrategyDailyDecision.action.in_([sp.ACTION_BUY, sp.ACTION_ADD, sp.ACTION_SELL]),
                 )
-                .all()
-            )
+            ]
 
         with SessionLocal() as db:
             snapshot = sp.create_portfolio_daily_snapshot(db, target_date=d)
             db.commit()
+            snapshot_equity = snapshot.total_equity
+            snapshot_return_pct = snapshot.total_return_pct
+
+        with SessionLocal() as db:
+            reset_triggered = sp.check_and_apply_cycle_reset(db, target_date=d)
+            db.commit()
 
         print(f"\n--- {d} ---")
+        if reset_triggered:
+            print("  *** 35 個交易日循環結束，portfolio 已強制重置 ***")
         if filled_today:
             print("  [今日成交]")
-            for o in filled_today:
-                print(f"    {o.action:4s} {o.stock_id:8s} {o.stock_name:6s} @ {o.execution_price:.2f}  ({o.reason})")
+            for action, stock_id, stock_name, execution_price, reason in filled_today:
+                print(f"    {action:4s} {stock_id:8s} {stock_name:6s} @ {execution_price:.2f}  ({reason})")
         else:
             print("  [今日成交] 無")
 
         if new_signals:
             print("  [今日訊號，明日待執行]")
-            for s in new_signals:
-                print(f"    {s.action:4s} {s.stock_id:8s} {s.stock_name:6s}  {s.action_reason}")
+            for action, stock_id, stock_name, action_reason in new_signals:
+                print(f"    {action:4s} {stock_id:8s} {stock_name:6s}  {action_reason}")
         else:
             print("  [今日訊號] 無")
 
@@ -224,11 +234,11 @@ def main(argv: list) -> int:
             f"  持有={decided.get('hold', 0)} 觀察={decided.get('watch', 0)} "
             f"容量不足跳過={decided.get('skipped_capacity', 0)}"
         )
-        print(f"  >> 權益={snapshot.total_equity:,.0f}  累積報酬={snapshot.total_return_pct:+.2f}%")
+        print(f"  >> 權益={snapshot_equity:,.0f}  累積報酬={snapshot_return_pct:+.2f}%")
 
         logger.info(
             "%s executed=%s decided=%s equity=%.0f return=%.2f%%",
-            d, executed, decided, snapshot.total_equity, snapshot.total_return_pct,
+            d, executed, decided, snapshot_equity, snapshot_return_pct,
         )
 
     with SessionLocal() as db:
@@ -240,6 +250,7 @@ def main(argv: list) -> int:
             .order_by(ShadowPortfolioDailySnapshot.trade_date.desc())
             .first()
         )
+        final_return_pct = final_snapshot.total_return_pct if final_snapshot else float("nan")
         trades = _reconstruct_trades(db, sp.STRATEGY_VERSION)
 
     trade_count = len(trades)
@@ -252,7 +263,7 @@ def main(argv: list) -> int:
     print(f"{'Metric':30s} {'Sandbox v1_frozen':>20s} {'Production port':>20s}")
     print(
         f"{'Total return %':30s} {SANDBOX_BENCHMARK['total_return_pct']:>20.2f} "
-        f"{final_snapshot.total_return_pct if final_snapshot else float('nan'):>20.2f}"
+        f"{final_return_pct:>20.2f}"
     )
     print(f"{'Trade count':30s} {SANDBOX_BENCHMARK['trade_count']:>20d} {trade_count:>20d}")
     print(f"{'Win rate %':30s} {SANDBOX_BENCHMARK['win_rate_pct']:>20.1f} {win_rate_pct:>20.1f}")

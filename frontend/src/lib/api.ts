@@ -2732,6 +2732,10 @@ export interface ShadowPortfolio {
   as_of_trade_date: string | null
   updated_at: string | null
   positions: ShadowPosition[]
+  cycle_number: number
+  cycle_start_trade_date: string | null
+  cycle_length_trading_days: number
+  cycle_trading_days_elapsed: number | null
 }
 
 export interface ShadowPendingAction {
@@ -2764,5 +2768,79 @@ export async function fetchShadowPendingActions(
 ): Promise<ShadowPendingActionsResponse> {
   const res = await apiFetch(`${API_BASE}/api/signals/shadow-portfolio/actions`, { signal: options?.signal })
   if (!res.ok) throw new Error(await buildErrorMessage(res, "模擬交易待執行動作載入失敗"))
+  return res.json()
+}
+
+export type ShadowTradeSortBy = "return_desc" | "return_asc" | "entry_date_desc" | "entry_date_asc"
+export type ShadowStockStatSortBy = "trade_count_desc" | "avg_return_desc" | "avg_return_asc" | "total_pnl_desc"
+
+export interface ShadowCompletedTrade {
+  id: number
+  cycle_number: number
+  stock_id: string
+  stock_name: string
+  entry_type: string
+  entry_signal_date: string
+  entry_execution_date: string
+  entry_price: number
+  entry_day_index: number | null
+  entry_hit_count: number | null
+  entry_momentum: number | null
+  entry_p4_decision: string | null
+  entry_mark_to_market_return: number | null
+  exit_reason: string
+  exit_signal_date: string
+  exit_execution_date: string
+  exit_price: number
+  shares: number
+  allocation: number
+  realized_pnl: number
+  realized_return_pct: number
+  holding_days: number
+  followed_by_rotation: boolean
+}
+
+export interface ShadowCompletedTradesResponse {
+  strategy_version: string
+  trades: ShadowCompletedTrade[]
+}
+
+export interface ShadowStockTradeStat {
+  stock_id: string
+  stock_name: string
+  trade_count: number
+  total_realized_pnl: number
+  avg_return_pct: number
+  win_rate_pct: number
+}
+
+export interface ShadowStockTradeStatsResponse {
+  strategy_version: string
+  stats: ShadowStockTradeStat[]
+}
+
+export async function fetchShadowCompletedTrades(
+  params?: { cycleNumber?: number; sortBy?: ShadowTradeSortBy },
+  options?: FetchOptions,
+): Promise<ShadowCompletedTradesResponse> {
+  const qs = new URLSearchParams()
+  if (params?.cycleNumber !== undefined) qs.set("cycle_number", String(params.cycleNumber))
+  if (params?.sortBy) qs.set("sort_by", params.sortBy)
+  const url = `${API_BASE}/api/signals/shadow-portfolio/trades${qs.toString() ? `?${qs.toString()}` : ""}`
+  const res = await apiFetch(url, { signal: options?.signal })
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "模擬交易紀錄載入失敗"))
+  return res.json()
+}
+
+export async function fetchShadowTradesByStock(
+  params?: { cycleNumber?: number; sortBy?: ShadowStockStatSortBy },
+  options?: FetchOptions,
+): Promise<ShadowStockTradeStatsResponse> {
+  const qs = new URLSearchParams()
+  if (params?.cycleNumber !== undefined) qs.set("cycle_number", String(params.cycleNumber))
+  if (params?.sortBy) qs.set("sort_by", params.sortBy)
+  const url = `${API_BASE}/api/signals/shadow-portfolio/trades/by-stock${qs.toString() ? `?${qs.toString()}` : ""}`
+  const res = await apiFetch(url, { signal: options?.signal })
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "模擬交易個股統計載入失敗"))
   return res.json()
 }
