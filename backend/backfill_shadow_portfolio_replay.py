@@ -32,8 +32,8 @@ BACKEND_DIR = Path(__file__).resolve().parent
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-REPLAY_START = date(2026, 8, 1)
-REPLAY_END = date(2026, 9, 7)
+REPLAY_START = date(2026, 8, 7)
+REPLAY_END = date(2026, 9, 4)
 
 SANDBOX_BENCHMARK = {
     "total_return_pct": 12.05,
