@@ -7,8 +7,11 @@ from __future__ import annotations
 import uuid
 from datetime import date, timedelta
 
+import pytest
+
 from app.models import (
     DailyPrice,
+    EtfClassification,
     ShadowCompletedTrade,
     ShadowPositionLot,
     ShadowStrategyDailyDecision,
@@ -17,9 +20,22 @@ from app.models import (
     ShadowVirtualPosition,
     SignalObservation,
     SignalObservationReview,
+    SignalSnapshot,
+    SignalWatchCompletedArchive,
     SignalWatchHit,
 )
 from app.signals import shadow_portfolio as sp
+
+
+@pytest.fixture(autouse=True)
+def _reset_snapshot_watchlist_cache():
+    """`sp._SNAPSHOT_WATCHLIST_CACHE` 是 process-local 快取（見該常數 docstring），跨測試
+    共用同一份 in-memory dict；不同測試的 `db` fixture 各自是獨立的 SQLite 資料庫，同一個
+    日期在不同測試可能對應完全不同的 `SignalSnapshot` 內容，快取沒有 per-db 隔離的概念，
+    每個測試前都要清空，避免讀到別的測試留下的舊值。"""
+    sp._SNAPSHOT_WATCHLIST_CACHE.clear()
+    yield
+    sp._SNAPSHOT_WATCHLIST_CACHE.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -87,6 +103,45 @@ def _seed_hit(
     db.commit()
 
 
+def _seed_completed_archive(
+    db, *, stock_id: str, stock_name: str, first_seen_date: date, completed_trade_date: date,
+    hit_count: int = 1, closure_reason: str = "p4_stopped",
+) -> None:
+    """已封存的魚尾追蹤週期（signal_watch_hits 已被硬刪除）——backfill/replay 對已經
+    結束的歷史週期，以及 is_official_exit_signal_day 判斷都要靠這張表。"""
+    db.add(
+        SignalWatchCompletedArchive(
+            stock_id=stock_id, stock_name=stock_name, first_seen_date=first_seen_date,
+            latest_hit_date=completed_trade_date, hit_count=hit_count,
+            latest_signal_type="LEADER", completed_trade_date=completed_trade_date,
+            closure_reason=closure_reason,
+        )
+    )
+    db.commit()
+
+
+def _seed_snapshot(db, *, snapshot_date_: date, watchlist: list) -> None:
+    """永久保留的每日快照——已封存週期的 hit_count/p3_selected_today/momentum_score
+    重建都靠這張表，取代已被硬刪除的 signal_watch_hits。"""
+    db.add(
+        SignalSnapshot(
+            snapshot_date=snapshot_date_, market_context={}, watchlist=watchlist,
+            removed=[], summary={},
+        )
+    )
+    db.commit()
+
+
+def _seed_etf(db, stock_id: str) -> None:
+    db.add(
+        EtfClassification(
+            stock_id=stock_id, asset_type="ETF", asset_class="EQUITY", region="TAIWAN", strategy="PASSIVE",
+            classification_confidence="HIGH",
+        )
+    )
+    db.commit()
+
+
 D0 = date(2026, 8, 3)  # Monday
 D1 = D0 + timedelta(days=1)  # Tue
 D2 = D0 + timedelta(days=2)  # Wed
@@ -110,31 +165,82 @@ def test_evidence_builder_ignores_future_hits_beyond_target_date(db):
     assert evidence.p3_selected_today is False  # D1 本身沒有 hit
 
 
-def test_tracking_universe_uses_review_history_not_current_mutable_status(db):
+def test_resolve_relevant_observation_uses_review_history_not_current_mutable_status(db):
     """Regression test：曾經真實觸發過的 bug——`SignalObservation.status` 是「現在」的
     最新狀態，回放（backfill）歷史某一天時若直接濾這個欄位，會把「當時仍在追蹤、後來才
     被停止」的股票整段歷史都排除掉（用了未來才會發生的停止事實），等同 no-lookahead
-    違規。`resolve_tracking_universe` 必須改用 review 歷史（是否在 target_date 之前已經
-    出現過 STOP_OBSERVING）判斷，不能看目前的 `.status` 欄位。"""
+    違規。`_resolve_relevant_observation`（`build_daily_evidence` 找 p4_decision 對應
+    episode 用）必須改用 review 歷史判斷，不能看目前的 `.status` 欄位；且「已經停止」
+    的判斷要用嚴格小於（STOP_OBSERVING 判定當天，仍要能讀到當天自己的這個決策，出場
+    判斷才有機會在正確的那天觸發），從隔天開始才真正視為不在追蹤中。"""
     obs = _seed_observation(db, stock_id="1101", stock_name="台泥", first_seen_date=D0, status="STOPPED")
     _seed_review(db, obs, D1, "CAUTION")
     _seed_review(db, obs, D2, "STOP_OBSERVING")  # 真正停止是在 D2
 
-    universe_before_stop = sp.resolve_tracking_universe(db, strategy_version=sp.STRATEGY_VERSION, target_date=D1)
-    universe_after_stop = sp.resolve_tracking_universe(db, strategy_version=sp.STRATEGY_VERSION, target_date=D2)
+    before_stop = sp._resolve_relevant_observation(db, stock_id="1101", target_date=D1)
+    on_stop_day = sp._resolve_relevant_observation(db, stock_id="1101", target_date=D2)
+    after_stop = sp._resolve_relevant_observation(db, stock_id="1101", target_date=D3)
 
-    assert any(t[0] == "1101" for t in universe_before_stop), (
+    assert before_stop is not None, (
         "D1 當時這檔股票還在追蹤中（尚未觸發 STOP_OBSERVING），即使『現在』的 "
-        ".status 已經是 STOPPED，回放 D1 時仍應該把它納入評估"
+        ".status 已經是 STOPPED，回放 D1 時仍應該找得到這個 episode"
     )
-    assert not any(t[0] == "1101" for t in universe_after_stop)
+    assert on_stop_day is not None, (
+        "D2 當天剛判定 STOP_OBSERVING，仍要能讀到『今天』的這個決策本身"
+    )
+    assert after_stop is None, "D3（STOP_OBSERVING 隔天）才真正視為已經不在追蹤中"
+
+
+def test_tracking_universe_includes_currently_active_fishtail_cohort(db):
+    """`resolve_tracking_universe` 的主要來源是魚尾（`signal_watch_hits`），不是
+    P4 `SignalObservation`——即使沒有任何 P4 觀察，只要魚尾有活躍週期就該被納入。"""
+    _seed_hit(db, stock_id="1101", stock_name="台泥", snapshot_date_=D0)
+
+    universe = sp.resolve_tracking_universe(db, strategy_version=sp.STRATEGY_VERSION, target_date=D1)
+    assert dict((t[0], t[2]) for t in universe)["1101"] == D0
+
+
+def test_tracking_universe_uses_fishtail_first_seen_date_not_p4_started_signal_date(db):
+    """Regression test：真實 production 事故——2026-08-11 的一次性強制結算（`manual_reset`）
+    只重置了魚尾側，P4 `SignalObservation.started_signal_date` 完全沒被動到，導致同一檔股票
+    兩套系統的追蹤起點永久錯位（真實案例 2383 台光電：P4 認為 2026-08-06 開始，魚尾在
+    manual_reset 後於 2026-08-11 重新起算）。`resolve_tracking_universe` 必須回傳魚尾的
+    first_seen_date，不是 P4 的 started_signal_date，否則 `day_index`／`hit_count_so_far`
+    全部會用錯誤的起點算，產生沙盒驗證資料裡從未出現過的「幽靈交易」。"""
+    _seed_observation(db, stock_id="2383", stock_name="台光電", first_seen_date=D0 - timedelta(days=5))
+    _seed_hit(db, stock_id="2383", stock_name="台光電", snapshot_date_=D1)  # 魚尾在 D1 才重新起算
+
+    universe = sp.resolve_tracking_universe(db, strategy_version=sp.STRATEGY_VERSION, target_date=D2)
+    first_seen_by_stock = {t[0]: t[2] for t in universe}
+    assert first_seen_by_stock["2383"] == D1, (
+        "first_seen_date 必須是魚尾的起點（D1），不能是 P4 SignalObservation 更早的 "
+        "started_signal_date（D0-5天）"
+    )
+
+
+def test_tracking_universe_includes_archived_cohort_covering_target_date(db):
+    """backfill/replay 對「已經是過去」的日期重播時，`signal_watch_hits` 可能已經被硬
+    刪除（週期已經結算/封存），必須額外查 `signal_watch_completed_archives`／
+    `signal_watch_stopped_observations` 才能拿到正確的歷史 universe。"""
+    _seed_completed_archive(
+        db, stock_id="1101", stock_name="台泥", first_seen_date=D0, completed_trade_date=D2,
+    )
+    # 目前完全沒有活躍的 signal_watch_hits（已經硬刪除）
+
+    universe_within_window = sp.resolve_tracking_universe(db, strategy_version=sp.STRATEGY_VERSION, target_date=D1)
+    universe_after_window = sp.resolve_tracking_universe(db, strategy_version=sp.STRATEGY_VERSION, target_date=D3)
+
+    assert dict((t[0], t[2]) for t in universe_within_window)["1101"] == D0
+    assert "1101" not in {t[0] for t in universe_after_window}
 
 
 def test_tracking_universe_excludes_etf(db):
-    """v1 凍結參數 `exclude_etf=True`：真實 production 資料查證發現 00738U/00994A/00947
-    這類 ETF 若不排除，會被誤判進 v1 候選（v1 從未設計來處理 ETF 的動能/回檔行為）。"""
-    _seed_observation(db, stock_id="1101", stock_name="台泥", first_seen_date=D0, asset_type="COMMON_STOCK")
-    _seed_observation(db, stock_id="00738U", stock_name="ETF", first_seen_date=D0, asset_type="ETF")
+    """v1 凍結參數 `exclude_etf=True`：真實 production 資料查證發現 `EtfClassification`
+    才是正確辨識來源（`SignalObservation.asset_type` 對槓桿/反向 ETF 如 `00753L` 分類
+    不準確）。"""
+    _seed_hit(db, stock_id="1101", stock_name="台泥", snapshot_date_=D0)
+    _seed_hit(db, stock_id="00738U", stock_name="ETF", snapshot_date_=D0)
+    _seed_etf(db, "00738U")
 
     universe = sp.resolve_tracking_universe(db, strategy_version=sp.STRATEGY_VERSION, target_date=D0)
     stock_ids = {t[0] for t in universe}
@@ -160,6 +266,9 @@ def test_evidence_momentum_prefers_p3_hit_over_p4_review(db):
     _seed_price(db, "1101", D1, open_=100.0, close=100.0)
     obs = _seed_observation(db, stock_id="1101", stock_name="台泥", first_seen_date=D0)
     _seed_review(db, obs, D1, "CAUTION", momentum_score=50.0)
+    # D0 的 hit 代表這個魚尾週期的第 1 次選中（讓 _fishtail_cohort_is_active 判定為
+    # 活躍週期），D1 的 hit 才是這個測試真正要驗證的「今天又被 P3 重選」情境
+    _seed_hit(db, stock_id="1101", stock_name="台泥", snapshot_date_=D0)
     _seed_hit(db, stock_id="1101", stock_name="台泥", snapshot_date_=D1, momentum_score=70.0)
 
     evidence = sp.build_daily_evidence(db, stock_id="1101", stock_name="台泥", first_seen_date=D0, target_date=D1)
@@ -204,18 +313,59 @@ def test_evidence_baseline_day_return_is_forced_zero(db):
     assert evidence.mark_to_market_return_pct == 0.0  # 比照 archive.py：baseline 當天固定 0%，不用收盤價算
 
 
-def test_evidence_official_exit_day_at_30th_trading_day(db):
-    _seed_trading_calendar(db, D0, 40)
-    # 直接找第 30 個交易日
-    from app.models import DailyPrice as DP
-    trade_dates = sorted({row.trade_date for row in db.query(DP).all()})
-    day30 = trade_dates[29]
-    day29 = trade_dates[28]
+def test_evidence_official_exit_day_from_fishtail_archive_completion(db):
+    """Regression test：`is_official_exit_signal_day` 曾經被誤實作成
+    `day_index >= 30`（docstring 誤寫「30 個交易日期滿」，程式碼直接照抄），但真實比對
+    沙盒 `daily_data.csv` 後發現這個門檻在 21 個交易日的驗證視窗裡從未被觸發過
+    （day_index 最高只到 17），而 CSV 裡這個欄位其實有 174 筆 True——真正代表的是
+    「魚尾判定這個追蹤週期在這一天正式結束」（`signal_watch_completed_archives`／
+    `signal_watch_stopped_observations` 的 completed_trade_date），不論結束原因為何。"""
+    _seed_hit(db, stock_id="1101", stock_name="台泥", snapshot_date_=D0)
+    _seed_completed_archive(
+        db, stock_id="1101", stock_name="台泥", first_seen_date=D0, completed_trade_date=D2,
+    )
 
-    ev29 = sp.build_daily_evidence(db, stock_id="1101", stock_name="台泥", first_seen_date=D0, target_date=day29)
-    ev30 = sp.build_daily_evidence(db, stock_id="1101", stock_name="台泥", first_seen_date=D0, target_date=day30)
-    assert ev29.is_official_exit_signal_day is False
-    assert ev30.is_official_exit_signal_day is True
+    ev_before = sp.build_daily_evidence(db, stock_id="1101", stock_name="台泥", first_seen_date=D0, target_date=D1)
+    ev_on_completion_day = sp.build_daily_evidence(
+        db, stock_id="1101", stock_name="台泥", first_seen_date=D0, target_date=D2
+    )
+    assert ev_before.is_official_exit_signal_day is False
+    assert ev_on_completion_day.is_official_exit_signal_day is True
+
+
+def test_evidence_uses_snapshot_reconstruction_when_cohort_already_archived(db):
+    """backfill/replay 重播「已經是過去、且已經封存」的歷史日期時，`signal_watch_hits`
+    已被硬刪除，`hit_count_so_far`／`p3_selected_today`／`momentum_score` 必須改從永久
+    保留的 `SignalSnapshot.watchlist` 逐日重建，不能因為 hits 表已清空就整段變成
+    第 1 次選中／從未被選中。"""
+    _seed_trading_calendar(db, D0, 5)
+    _seed_completed_archive(
+        db, stock_id="1101", stock_name="台泥", first_seen_date=D0, completed_trade_date=D3, hit_count=2,
+    )
+    # 這個週期已經封存，目前完全沒有 signal_watch_hits，只能靠 SignalSnapshot 重建
+    _seed_snapshot(db, snapshot_date_=D2, watchlist=[{"stock": "1101", "signal_metrics": {"momentum_score": 82.0}}])
+
+    evidence = sp.build_daily_evidence(db, stock_id="1101", stock_name="台泥", first_seen_date=D0, target_date=D2)
+    assert evidence.p3_selected_today is True
+    assert evidence.momentum_score == 82.0
+    assert evidence.hit_count_so_far == 2  # 第 1 次（first_seen_date 本身）+ D2 這次重選
+
+
+def test_evidence_p4_decision_resolves_even_when_started_signal_date_differs_from_fishtail_first_seen_date(db):
+    """Regression test：真實案例 2383 台光電——P4 `SignalObservation.started_signal_date`
+    與魚尾 first_seen_date 不一致時（見 `_resolve_relevant_observation` docstring），
+    `p4_decision` 仍然要能正確找到對應的 P4 episode，不能因為日期對不上就永遠回 None
+    （這是原本 exact-match 查詢的 bug：對不上就靜默拿到 p4_decision=None，讓
+    `generate_exit_signal` 的 P4_STOP 分支永遠不會觸發）。"""
+    _seed_hit(db, stock_id="2383", stock_name="台光電", snapshot_date_=D1)  # 魚尾週期從 D1 起算
+    obs = _seed_observation(db, stock_id="2383", stock_name="台光電", first_seen_date=D0 - timedelta(days=5))
+    _seed_review(db, obs, D1, "STOP_OBSERVING")
+
+    evidence = sp.build_daily_evidence(db, stock_id="2383", stock_name="台光電", first_seen_date=D1, target_date=D1)
+    assert evidence.p4_decision == "STOP_OBSERVING", (
+        "first_seen_date（D1，魚尾）跟 P4 episode 的 started_signal_date（D0-5天）不同，"
+        "仍然要能正確找到對應的 P4 觀察並讀出 STOP_OBSERVING"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -329,9 +479,11 @@ def test_capacity_allocation_skips_lower_ranked_candidate_when_cash_insufficient
     _seed_price(db, "2330", D1, open_=100.0, close=100.0)  # baseline=100
     _seed_price(db, "2330", D2, open_=97.0, close=98.0)    # return=(98-100)/100*100=-2.0
 
-    # 刻意不呼叫 _seed_hit：first_seen_date 本身已是隱含的第 1 次選中
-    # （hit_count_so_far==1），若在 D2 額外插入一筆 signal_watch_hits 會變成第 2 次
-    # 選中，跳出 setup_a 的 hit_count==1 門檻
+    # D0 各自的 hit 代表魚尾週期在 D0 第 1 次選中（讓 resolve_tracking_universe 找得到
+    # 這兩檔、first_seen_date 正確落在 D0），D2 刻意不額外插入 hit，讓 hit_count_so_far
+    # 在 D2 仍維持 1（不跳出 setup_a 的 hit_count==1 門檻）
+    _seed_hit(db, stock_id="1101", stock_name="台泥", snapshot_date_=D0)
+    _seed_hit(db, stock_id="2330", stock_name="台積電", snapshot_date_=D0)
     obs_a = _seed_observation(db, stock_id="1101", stock_name="台泥", first_seen_date=D0)
     _seed_review(db, obs_a, D2, "CAUTION", momentum_score=78.0)
 

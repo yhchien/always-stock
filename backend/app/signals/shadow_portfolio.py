@@ -18,13 +18,47 @@ v1 策略（+12.05% 無成本／+9.93% 含成本，28 筆交易，勝率 46.4%�
 2. **出場優先序**：`-8% 真實停損`（用 `close/average_entry_price-1` 算的實際部位報酬，
    不是 `mark_to_market_return_pct`）是**最優先**檢查、短路其他所有判斷（見沙盒
    `run_backtest.py:208-237`）。正確優先序是
-   **-8% 真實停損 > P4_STOP > 官方平倉日（30 個交易日期滿）> +10% 固定停利**——不是單純
+   **-8% 真實停損 > P4_STOP > 官方平倉日（魚尾追蹤週期結束）> +10% 固定停利**——不是單純
    「P4_STOP 最優先」
 
 v1 沒有獨立的「加碼（WINNER_ADD）」判斷邏輯（那是 v2/Unified 才有的機制）：v1 的加碼純粹是
 「已持有 1 lot 的股票，某天又觸發一次 setup_a/setup_b」，用**完全相同**的
 `generate_entry_signal`／`compute_entry_score`／`rank_candidates`，只是持倉容量允許加到
 第 2 lot。BUY vs ADD 只是「這檔股票原本有沒有持倉」的顯示區分，不是兩套演算法。
+
+**2026-09-08 修復：cohort 身份（first_seen_date）與 P4 SignalObservation 混用的重大 bug**——
+第一版把 `resolve_tracking_universe`／`build_daily_evidence` 的 `first_seen_date`／
+`day_index`／`hit_count_so_far`／`is_official_exit_signal_day` 全部建在
+`SignalObservation.started_signal_date`（P4 自己的觀察生命週期起點）上，但沙盒驗證用的
+`daily_data.csv` 其實是從**魚尾**（`signal_watch_hits`／`signal_watch_completed_archives`／
+`signal_watch_stopped_observations`，P3 選股驅動的追蹤系統）匯出的。P4 與魚尾是兩套獨立管理
+的生命週期系統，起訖日經常對不上（例如 2026-08-11 那次「強制結算誤刪過廣」事件只重置了魚尾
+側，P4 的 `SignalObservation` 完全沒被動到）。用錯來源會在沙盒從未出現過的日期產生「幽靈交易」，
+真實驗證：對 2026-09-04 的 production 資料重跑，發現 49 個 P4 判定要評估的股票裡有 24 個
+（近半數）first_seen_date 跟魚尾側完全對不上，backfill 結果因此從沙盒驗證過的 +12.05%／
++9.93% 惡化成 -9.09%。
+
+同一輪還發現 `is_official_exit_signal_day` 的定義本身就寫錯：docstring 寫「30 個交易日期滿」
+並直接套用 `day_index >= archive.ARCHIVE_RETENTION_TRADE_DAYS`，但這個門檻在整個 21 個交易日
+的驗證視窗裡**從未被觸發過**（day_index 最高只到 17），然而沙盒 CSV 裡這個欄位確實有 174 筆
+`True`——實際比對後發現它真正代表的是「魚尾判定這個追蹤週期在這一天正式結束」（`signal_watch_
+completed_archives`／`signal_watch_stopped_observations` 的 `completed_trade_date == 這天`），
+不論結束原因是 30 日期滿、提前停損/回落規則、P4 STOP 還是人工重置，皆算。
+
+修復後的正確資料來源：
+- `first_seen_date`／cohort 身份：魚尾（`_load_grouped_hits` 同語意，取目前仍活躍的
+  `signal_watch_hits` 最早 `snapshot_date`；backfill 對已經封存的歷史週期額外查
+  `signal_watch_completed_archives`／`signal_watch_stopped_observations`）
+- `hit_count_so_far`／`p3_selected_today`／`momentum_score`：週期仍活躍時直接查
+  `signal_watch_hits`（跟原本一樣快）；週期已經封存（`signal_watch_hits` 已被硬刪除，只有
+  backfill 重播已經是過去的日期才會發生）時，改用永久保留的 `SignalSnapshot.watchlist`
+  逐日重建
+- `p4_decision`：不能要求 P4 `started_signal_date` 完全等於魚尾 `first_seen_date`（兩者本來
+  就經常不同），改成用跟 `resolve_tracking_universe` 相同的「review 歷史判斷是否仍在進行中」
+  邏輯，找出這檔股票在 `target_date` 當下真正對應的 P4 觀察 episode
+- `is_official_exit_signal_day`：改查魚尾封存表的 `completed_trade_date == target_date`
+- ETF 排除：改用 Phase 1 canonical classification 的 `EtfClassification` 表（`SignalObservation.
+  asset_type` 對槓桿/反向 ETF（如 `00753L`）分類不準確，已在真實資料驗證中發現）
 """
 from __future__ import annotations
 
@@ -39,6 +73,7 @@ from sqlalchemy.orm import Session
 from app.database import Base
 from app.models import (
     DailyPrice,
+    EtfClassification,
     ShadowCompletedTrade,
     ShadowPositionLot,
     ShadowPortfolioDailySnapshot,
@@ -48,9 +83,17 @@ from app.models import (
     ShadowVirtualPosition,
     SignalObservation,
     SignalObservationReview,
+    SignalSnapshot,
+    SignalWatchCompletedArchive,
     SignalWatchHit,
+    SignalWatchStoppedObservation,
 )
 from app.signals import archive
+
+# 魚尾封存表：一個追蹤週期會落在哪張表，取決於它結束時是自然/提前/P4 停止（進
+# signal_watch_completed_archives）還是人工重置（signal_watch_stopped_observations 也會有，
+# 兩表 schema 相同、语意重疊，backfill/point-in-time 查詢一律兩張都查，見 M23 CLAUDE.md）
+_FISHTAIL_ARCHIVE_MODELS = (SignalWatchCompletedArchive, SignalWatchStoppedObservation)
 
 STRATEGY_VERSION = "v1_frozen"
 
@@ -283,16 +326,29 @@ def _count_market_trading_days(db: Session, *, first_seen_date: date, target_dat
     return max(int(count), 1)
 
 
-def _count_hits_so_far(db: Session, *, stock_id: str, first_seen_date: date, target_date: date) -> int:
-    """hit_count_so_far：這個 P4 cohort 被 P3 選中過幾次，到 target_date（含）為止。
+def _fishtail_cohort_is_active(db: Session, *, stock_id: str, first_seen_date: date) -> bool:
+    """判斷 (stock_id, first_seen_date) 這個魚尾追蹤週期，在**呼叫當下**（不是
+    target_date）是否仍然活躍（尚未結算/封存）。活躍時 `signal_watch_hits` 還在，可以
+    直接查；已封存時該表已被硬刪除（見 `archive.py` 既有 settle/refresh 邏輯），
+    必須改用永久保留的 `SignalSnapshot.watchlist` 逐日重建（見 `_count_hits_so_far_
+    from_snapshots`／`_p3_selection_from_snapshot`）。這個分流只在 backfill/replay
+    對著早就結束的歷史日期重播時才會走到「已封存」分支——正常每日排程評估「今天」的
+    活躍持股，一定是走「活躍」分支。"""
+    earliest = (
+        db.query(func.min(SignalWatchHit.snapshot_date))
+        .filter(SignalWatchHit.stock_id == stock_id)
+        .scalar()
+    )
+    return earliest == first_seen_date
 
-    `first_seen_date`（P4 episode 的 `started_signal_date`）本身就代表 P3 第一次選中
-    ——這永遠算「第 1 次」，不管 `signal_watch_hits` 那天有沒有對應列。查證 production
-    真實資料發現：不少 P4 episode 從頭到尾都沒有任何 `signal_watch_hits` 列（兩張表是
-    獨立來源，並非每次 P3 選中都會反映在 `signal_watch_hits`），若只靠這張表數
-    reselection，會把「這是全新第一次選中」誤判成「從未被選中過（0 次）」，導致 v1
-    的 `hit_count==1`（setup_a）門檻永遠測不出正確結果。之後每多一筆 `signal_watch_hits`
-    （`snapshot_date > first_seen_date`）代表額外一次真正的重選確認，才 +1。
+
+def _count_hits_so_far(db: Session, *, stock_id: str, first_seen_date: date, target_date: date) -> int:
+    """hit_count_so_far（週期仍活躍時）：這個魚尾 cohort 被 P3 選中過幾次，到
+    target_date（含）為止。
+
+    `first_seen_date` 本身就代表 P3 第一次選中——這永遠算「第 1 次」。之後每多一筆
+    `signal_watch_hits`（`snapshot_date > first_seen_date`）代表額外一次真正的重選
+    確認，才 +1。
     """
     additional = (
         db.query(func.count(func.distinct(SignalWatchHit.snapshot_date)))
@@ -305,6 +361,128 @@ def _count_hits_so_far(db: Session, *, stock_id: str, first_seen_date: date, tar
         or 0
     )
     return 1 + int(additional)
+
+
+# process-local 快取：{snapshot_date: {stock_id: momentum_score}}——backfill/replay 對
+# 已封存週期逐股票逐日重播時，同一天的 SignalSnapshot.watchlist（一份可能上百檔股票的
+# 大型 JSON）常被重複查詢上百次；第一次真的跑production backfill 時，這個重複查詢量
+# 直接把遠端 Postgres 連線拖到逾時斷線（`consuming input failed: server closed the
+# connection unexpectedly`）。快取讓每個 snapshot_date 全程只真的查一次 DB，同一個
+# Python process 內的其餘查詢全部命中記憶體。單日 snapshot 一旦寫入（`signal_snapshots`
+# 是 append-only 的歷史紀錄，只有「今天」這筆可能被重新產生覆蓋），對已經是過去的日期
+# 不會再變動，process 內快取不會有 stale 風險；`run_shadow_portfolio.py`／
+# `backfill_shadow_portfolio_replay.py` 都是每次執行都是全新 process，重啟自然清空。
+_SNAPSHOT_WATCHLIST_CACHE: Dict[date, Dict[str, Optional[float]]] = {}
+
+
+def _snapshot_watchlist_index(db: Session, snapshot_date_: date) -> Dict[str, Optional[float]]:
+    """某一天 `SignalSnapshot.watchlist` 的 `{stock_id: momentum_score}` 索引（一次查詢
+    整理成 dict，之後同一天的任何股票查詢都直接命中記憶體）。watchlist item 的股票代號
+    欄位是 `"stock"` 不是 `"stock_id"`（既有全站慣例，見
+    `archive._load_snapshot_reports_for_stock`）。"""
+    cached = _SNAPSHOT_WATCHLIST_CACHE.get(snapshot_date_)
+    if cached is not None:
+        return cached
+    snap = db.query(SignalSnapshot).filter(SignalSnapshot.snapshot_date == snapshot_date_).first()
+    index: Dict[str, Optional[float]] = {}
+    if snap is not None:
+        for item in snap.watchlist or []:
+            metrics = item.get("signal_metrics") or {}
+            index[str(item.get("stock"))] = metrics.get("momentum_score")
+    _SNAPSHOT_WATCHLIST_CACHE[snapshot_date_] = index
+    return index
+
+
+def _count_hits_so_far_from_snapshots(
+    db: Session, *, stock_id: str, first_seen_date: date, target_date: date
+) -> int:
+    """hit_count_so_far（週期已封存時的 fallback）：`signal_watch_hits` 已被硬刪除，
+    改從永久保留的 `SignalSnapshot.watchlist` 逐日重建，透過 `_snapshot_watchlist_index`
+    的 process-local 快取避免對每一天重複查詢。"""
+    additional = 0
+    d = first_seen_date + timedelta(days=1)
+    while d <= target_date:
+        if stock_id in _snapshot_watchlist_index(db, d):
+            additional += 1
+        d += timedelta(days=1)
+    return 1 + additional
+
+
+def _p3_selection_from_snapshot(
+    db: Session, *, stock_id: str, target_date: date
+) -> Tuple[bool, Optional[float]]:
+    """週期已封存時的 fallback：從 `SignalSnapshot.watchlist` 讀 target_date 當天
+    是否有這檔股票、以及當天的 momentum_score，取代已被硬刪除的 `signal_watch_hits`
+    單日查詢。"""
+    index = _snapshot_watchlist_index(db, target_date)
+    if stock_id not in index:
+        return False, None
+    return True, index[stock_id]
+
+
+def _resolve_relevant_observation(
+    db: Session, *, stock_id: str, target_date: date
+) -> Optional[SignalObservation]:
+    """找出 stock_id 在 target_date 當下「正在進行」的 P4 觀察 episode——**不要求**
+    `SignalObservation.started_signal_date` 等於魚尾的 first_seen_date（兩套系統的
+    episode 邊界獨立、經常不同步，見模組頂部說明）。同一檔股票理論上同時只會有一個
+    進行中的 episode，若因資料異常同時有多個符合，取 started_signal_date 最新的一個。
+
+    「已經停止」判斷用 `review_date < target_date`（**嚴格小於**，不是 `<=`）——
+    STOP_OBSERVING 判定當天，仍然要能讀到「今天」的這個決策本身，`generate_exit_signal`
+    的 P4_STOP 分支才有機會在正確的那天觸發（沙盒驗證資料的真實案例：6213 聯茂在追蹤
+    最後一天，`p4_decision=STOP_OBSERVING` 跟平倉都記在同一天）。這跟
+    `resolve_tracking_universe` 判斷「今天的 universe 該不該包含這檔股票」是不同問題
+    （那邊已完全改用魚尾資料，不再查這兩張表）。
+    """
+    candidates = (
+        db.query(SignalObservation)
+        .filter(
+            SignalObservation.stock_id == stock_id,
+            SignalObservation.started_signal_date <= target_date,
+        )
+        .order_by(SignalObservation.started_signal_date.desc())
+        .all()
+    )
+    for obs in candidates:
+        already_stopped = (
+            db.query(SignalObservationReview.id)
+            .filter(
+                SignalObservationReview.observation_id == obs.id,
+                SignalObservationReview.review_date < target_date,
+                SignalObservationReview.decision == "STOP_OBSERVING",
+            )
+            .first()
+            is not None
+        )
+        if not already_stopped:
+            return obs
+    return None
+
+
+def _is_official_exit_signal_day(
+    db: Session, *, stock_id: str, first_seen_date: date, target_date: date
+) -> bool:
+    """官方平倉日：魚尾（`signal_watch_completed_archives`／`signal_watch_stopped_
+    observations`）判定這個 (stock_id, first_seen_date) 追蹤週期在 target_date 當天
+    正式結束——不論原因（30 交易日期滿、提前結算停損/回落規則、P4 STOP、人工重置皆算）。
+    沙盒驗證用的 v1 策略把這個日子當成官方平倉日的保底出場訊號，**不是** `day_index >=
+    30`（真實資料比對後確認：這個門檻在正常追蹤窗口內幾乎不會被觸發，且與沙盒 CSV 的
+    實際欄位語意不符）。
+    """
+    for model_cls in _FISHTAIL_ARCHIVE_MODELS:
+        hit = (
+            db.query(model_cls.stock_id)
+            .filter(
+                model_cls.stock_id == stock_id,
+                model_cls.first_seen_date == first_seen_date,
+                model_cls.completed_trade_date == target_date,
+            )
+            .first()
+        )
+        if hit is not None:
+            return True
+    return False
 
 
 def _resolve_nth_market_trade_date(db: Session, *, first_seen_date: date, day_index: int) -> Optional[date]:
@@ -347,27 +525,39 @@ def build_daily_evidence(
     """組出某檔股票在 target_date 當天的 v1 決策所需 evidence。只讀 <= target_date
     的資料，不使用任何未來欄位（no-lookahead）。
 
-    **報酬率完全由 `daily_price` 直接算出，不依賴 `signal_watch_hits`**——查證 production
-    真實資料發現：多數 P4 觀察中的股票從未有對應的 `signal_watch_hits` 列（`SignalWatchHit`
-    只在該股票「當天被 P3 重選」才會有一列，P4 追蹤本身跟這張表是兩個獨立、不一定重疊的
-    資料來源）。baseline 沿用既有 `archive.py` 的慣例（第 2 個交易日 `(open+close)/2`，
-    第 2 天固定 0%），但直接對 `daily_price` 算，適用於所有股票不論有沒有被 P3 重選過。
+    `first_seen_date` 必須是**魚尾**（`signal_watch_hits`／已封存的
+    `signal_watch_completed_archives`／`signal_watch_stopped_observations`）認定的
+    追蹤週期起點，不是 P4 `SignalObservation.started_signal_date`（見模組頂部說明，
+    兩者經常不同步）；呼叫端（`resolve_tracking_universe`）已經保證這點。
+
+    **報酬率完全由 `daily_price` 直接算出，不依賴 `signal_watch_hits`**：baseline 沿用
+    既有 `archive.py` 的慣例（第 2 個交易日 `(open+close)/2`，第 2 天固定 0%），對
+    `daily_price` 直接算，跟這個週期是否仍活躍無關。
     """
     day_index = _count_market_trading_days(db, first_seen_date=first_seen_date, target_date=target_date)
-    hit_count_so_far = _count_hits_so_far(
-        db, stock_id=stock_id, first_seen_date=first_seen_date, target_date=target_date
-    )
 
-    hit_today = (
-        db.query(SignalWatchHit)
-        .filter(SignalWatchHit.stock_id == stock_id, SignalWatchHit.snapshot_date == target_date)
-        .first()
-    )
-    p3_selected_today = hit_today is not None
-
-    momentum_score: Optional[float] = None
-    if hit_today is not None:
-        momentum_score = (hit_today.signal_metrics or {}).get("momentum_score")
+    if _fishtail_cohort_is_active(db, stock_id=stock_id, first_seen_date=first_seen_date):
+        hit_count_so_far = _count_hits_so_far(
+            db, stock_id=stock_id, first_seen_date=first_seen_date, target_date=target_date
+        )
+        hit_today = (
+            db.query(SignalWatchHit)
+            .filter(SignalWatchHit.stock_id == stock_id, SignalWatchHit.snapshot_date == target_date)
+            .first()
+        )
+        p3_selected_today = hit_today is not None
+        momentum_score: Optional[float] = (
+            (hit_today.signal_metrics or {}).get("momentum_score") if hit_today is not None else None
+        )
+    else:
+        # 這個週期已經結算/封存（signal_watch_hits 已被硬刪除）——只有 backfill/replay
+        # 重播早就結束的歷史日期才會走到這裡；改用永久保留的 SignalSnapshot 逐日重建。
+        hit_count_so_far = _count_hits_so_far_from_snapshots(
+            db, stock_id=stock_id, first_seen_date=first_seen_date, target_date=target_date
+        )
+        p3_selected_today, momentum_score = _p3_selection_from_snapshot(
+            db, stock_id=stock_id, target_date=target_date
+        )
 
     mark_to_market_return_pct: Optional[float] = None
     baseline_date, baseline_price = _resolve_baseline_price(db, stock_id=stock_id, first_seen_date=first_seen_date)
@@ -383,11 +573,7 @@ def build_daily_evidence(
             if today_close is not None:
                 mark_to_market_return_pct = (float(today_close) - baseline_price) / baseline_price * 100.0
 
-    observation = (
-        db.query(SignalObservation)
-        .filter(SignalObservation.stock_id == stock_id, SignalObservation.started_signal_date == first_seen_date)
-        .first()
-    )
+    observation = _resolve_relevant_observation(db, stock_id=stock_id, target_date=target_date)
     p4_decision: Optional[str] = None
     if observation is not None:
         review = (
@@ -403,7 +589,9 @@ def build_daily_evidence(
             if momentum_score is None:
                 momentum_score = review.momentum_score
 
-    is_official_exit_signal_day = day_index >= archive.ARCHIVE_RETENTION_TRADE_DAYS
+    is_official_exit_signal_day = _is_official_exit_signal_day(
+        db, stock_id=stock_id, first_seen_date=first_seen_date, target_date=target_date
+    )
 
     return EvidenceRow(
         stock_id=stock_id,
@@ -423,56 +611,69 @@ def build_daily_evidence(
 def resolve_tracking_universe(
     db: Session, *, strategy_version: str, target_date: date
 ) -> List[Tuple[str, str, date]]:
-    """回傳 target_date 當天要評估的 (stock_id, stock_name, first_seen_date) 清單：
-    聯集 (a) P4 在 target_date 當下仍在追蹤中的股票、(b) 目前 Shadow Portfolio 有持倉的
-    股票（防禦性——即使 P4 那邊已結算，已持倉的股票仍要繼續被評估是否該出場，不能因為觀察
-    生命週期已終止就漏掉真正持有的部位）。
+    """回傳 target_date 當天要評估的 (stock_id, stock_name, first_seen_date) 清單——
+    `first_seen_date` 一律以**魚尾**（`signal_watch_hits`／已封存的
+    `signal_watch_completed_archives`／`signal_watch_stopped_observations`）認定的追蹤
+    週期起點為準，**不是** P4 `SignalObservation.started_signal_date`（見模組頂部說明：
+    兩套系統的 episode 邊界獨立、經常不同步；沙盒驗證用的資料正是從魚尾匯出的）。
 
-    **刻意不用 `SignalObservation.status`**（那是「現在」的最新狀態，是會隨時間變動的
-    可變欄位）——backfill/replay 對過去某一天重跑時，若某個 episode 是「當時仍在追蹤、
-    後來才被停止」，用現在的 status 篩選會把它整段歷史都排除掉，等同於用了「這檔股票
-    未來會被停止」這個未來資訊，是 no-lookahead 違規。改用 review 歷史判斷：只要這個
-    episode 在 target_date（含）之前沒有任何一次 `STOP_OBSERVING` 複核，就視為當時仍在
-    追蹤中——這對「重播歷史」與「跑今天」兩種情境都同樣正確（跑今天時，`STOP_OBSERVING`
-    review 存在與否本來就等價於現在的 status）。
+    聯集三個來源：
+    (a) 目前仍在 `signal_watch_hits` 活躍追蹤中的股票（尚未結算/封存），first_seen_date
+        = 該股票目前這輪的最早 `snapshot_date`
+    (b) 已經結算/封存、但 `[first_seen_date, completed_trade_date]` 涵蓋 target_date 的
+        歷史週期——(a) 只反映「呼叫當下」的即時狀態，對已經結算的歷史週期查不到任何列；
+        backfill/replay 重播「已經是過去」的日期時，必須額外查這兩張封存表才拿得到正確
+        的 universe（正常每日排程評估「今天」時，這個來源理論上不會貢獻任何額外股票，
+        因為若真的今天才結算，出場交易發生前 (a) 那邊仍然查得到）
+    (c) 目前 Shadow Portfolio 有持倉的股票（防禦性——即使魚尾/P4 那邊已結算，已持倉的
+        股票仍要繼續被評估是否該出場，不能因為追蹤週期已終止就漏掉真正持有的部位）
 
-    另外套用 v1 凍結參數 `exclude_etf=True`（沙盒 `run_all.py` 的 `BASELINE_PARAMS`）：
-    只納入 `asset_type=="COMMON_STOCK"` 的觀察，ETF（例：00738U／00994A／00947）不進入
-    候選（`SignalObservation.asset_type` 已有這個分類，不需要另外查表判斷）。
+    ETF 排除（v1 凍結參數 `exclude_etf=True`）：改查 Phase 1 canonical classification 的
+    `EtfClassification` 表——真實資料驗證發現 `SignalObservation.asset_type` 對槓桿/反向
+    ETF（如 `00753L`）分類不準確，`EtfClassification` 才是正確辨識來源。
     """
     universe: Dict[str, Tuple[str, str, date]] = {}
 
-    candidates = (
-        db.query(SignalObservation)
-        .filter(
-            SignalObservation.started_signal_date <= target_date,
-            SignalObservation.asset_type == "COMMON_STOCK",  # v1 凍結參數 exclude_etf=True
-        )
+    # (a) 目前仍活躍的魚尾週期
+    active_rows = (
+        db.query(SignalWatchHit.stock_id, SignalWatchHit.stock_name, func.min(SignalWatchHit.snapshot_date))
+        .group_by(SignalWatchHit.stock_id, SignalWatchHit.stock_name)
         .all()
     )
-    for obs in candidates:
-        already_stopped = (
-            db.query(SignalObservationReview.id)
-            .filter(
-                SignalObservationReview.observation_id == obs.id,
-                SignalObservationReview.review_date <= target_date,
-                SignalObservationReview.decision == "STOP_OBSERVING",
-            )
-            .first()
-            is not None
-        )
-        if not already_stopped:
-            universe[obs.stock_id] = (obs.stock_id, obs.stock_name, obs.started_signal_date)
+    for stock_id, stock_name, first_seen_date in active_rows:
+        if first_seen_date <= target_date:
+            universe[stock_id] = (stock_id, stock_name, first_seen_date)
 
+    # (b) 已封存但當時涵蓋 target_date（backfill/replay 需要）
+    for model_cls in _FISHTAIL_ARCHIVE_MODELS:
+        archived_rows = (
+            db.query(model_cls.stock_id, model_cls.stock_name, model_cls.first_seen_date)
+            .filter(
+                model_cls.first_seen_date <= target_date,
+                model_cls.completed_trade_date >= target_date,
+            )
+            .all()
+        )
+        for stock_id, stock_name, first_seen_date in archived_rows:
+            universe.setdefault(stock_id, (stock_id, stock_name, first_seen_date))
+
+    # (c) 既有持倉防禦性 union
     for pos in (
         db.query(ShadowVirtualPosition)
         .filter(ShadowVirtualPosition.strategy_version == strategy_version)
         .all()
     ):
-        if pos.stock_id not in universe:
-            universe[pos.stock_id] = (pos.stock_id, pos.stock_name, pos.first_seen_date)
+        universe.setdefault(pos.stock_id, (pos.stock_id, pos.stock_name, pos.first_seen_date))
 
-    return sorted(universe.values(), key=lambda t: t[0])
+    etf_ids = {
+        row[0]
+        for row in db.query(EtfClassification.stock_id)
+        .filter(EtfClassification.stock_id.in_(list(universe.keys())))
+        .all()
+    }
+    filtered = {sid: v for sid, v in universe.items() if sid not in etf_ids}
+
+    return sorted(filtered.values(), key=lambda t: t[0])
 
 
 def next_weekday_guess(d: date) -> date:

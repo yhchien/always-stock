@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 
 import {
   fetchShadowCompletedTrades,
@@ -118,6 +118,8 @@ function TradeCard({ trade }: { trade: ShadowCompletedTrade }) {
   )
 }
 
+const TRADES_COLLAPSED_KEY = "always-stock:shadow-portfolio:trades-collapsed"
+
 const TRADE_SORT_OPTIONS: Array<{ value: ShadowTradeSortBy; label: string }> = [
   { value: "entry_date_desc", label: "進場日期新到舊" },
   { value: "return_desc", label: "報酬率高到低" },
@@ -171,6 +173,26 @@ export default function ShadowPortfolioPage() {
   const [trades, setTrades] = useState<ShadowCompletedTrade[]>([])
   const [stockStats, setStockStats] = useState<ShadowStockTradeStat[]>([])
   const [tradesLoading, setTradesLoading] = useState(true)
+  const [tradesCollapsed, setTradesCollapsed] = useState(true)
+
+  // 初始展開狀態：讀 localStorage（預設收合，比照首頁 DailySignalsPanel 慣例）
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(TRADES_COLLAPSED_KEY)
+      if (saved === "false") setTradesCollapsed(false)
+    } catch {
+      // ignore
+    }
+  }, [])
+
+  const persistTradesCollapsed = useCallback((next: boolean) => {
+    setTradesCollapsed(next)
+    try {
+      window.localStorage.setItem(TRADES_COLLAPSED_KEY, String(next))
+    } catch {
+      // ignore
+    }
+  }, [])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -193,6 +215,7 @@ export default function ShadowPortfolioPage() {
   }, [])
 
   useEffect(() => {
+    if (tradesCollapsed) return // 收合時不打 API，展開才載入（比照首頁面板慣例）
     const controller = new AbortController()
     async function run() {
       setTradesLoading(true)
@@ -212,7 +235,7 @@ export default function ShadowPortfolioPage() {
     }
     void run()
     return () => controller.abort()
-  }, [tradeView, tradeSortBy, stockSortBy])
+  }, [tradesCollapsed, tradeView, tradeSortBy, stockSortBy])
 
   return (
     <main className="mx-auto min-h-screen max-w-5xl px-4 py-6 text-slate-100">
@@ -314,85 +337,107 @@ export default function ShadowPortfolioPage() {
             )}
           </section>
 
-          <section className="mt-6">
-            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-              <h2 className="text-sm font-semibold text-slate-200">交易紀錄（永久保存，不受循環重置影響）</h2>
-              <div className="flex gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => setTradeView("list")}
-                  className={`rounded-lg px-2.5 py-1 text-xs transition-colors ${
-                    tradeView === "list"
-                      ? "bg-sky-500/15 text-sky-100"
-                      : "border border-slate-700 text-slate-400 hover:border-slate-500 hover:text-slate-200"
-                  }`}
-                >
-                  逐筆列表
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setTradeView("by-stock")}
-                  className={`rounded-lg px-2.5 py-1 text-xs transition-colors ${
-                    tradeView === "by-stock"
-                      ? "bg-sky-500/15 text-sky-100"
-                      : "border border-slate-700 text-slate-400 hover:border-slate-500 hover:text-slate-200"
-                  }`}
-                >
-                  依股票統計
-                </button>
-              </div>
-            </div>
+          <section className="mt-6 rounded-lg border border-slate-800">
+            <button
+              type="button"
+              onClick={() => persistTradesCollapsed(!tradesCollapsed)}
+              aria-expanded={!tradesCollapsed}
+              className="flex w-full items-center justify-between gap-2 p-3 text-left"
+            >
+              <span className="flex items-center gap-2 text-sm font-semibold text-slate-200">
+                <span aria-hidden className="shrink-0 text-slate-400">
+                  {tradesCollapsed ? "▸" : "▾"}
+                </span>
+                交易紀錄（永久保存，不受循環重置影響）
+              </span>
+              {tradesCollapsed && (
+                <span className="shrink-0 text-xs text-slate-500">點擊展開</span>
+              )}
+            </button>
 
-            {tradeView === "list" ? (
-              <SortChip options={TRADE_SORT_OPTIONS} value={tradeSortBy} onChange={setTradeSortBy} />
-            ) : (
-              <SortChip options={STOCK_SORT_OPTIONS} value={stockSortBy} onChange={setStockSortBy} />
-            )}
-
-            <div className="mt-3">
-              {tradesLoading && <p className="text-sm text-slate-500">正在載入交易紀錄…</p>}
-              {!tradesLoading && tradeView === "list" && trades.length === 0 && (
-                <p className="rounded-lg border border-slate-800 bg-slate-900/50 p-4 text-sm text-slate-500">
-                  目前還沒有已平倉的交易。
-                </p>
-              )}
-              {!tradesLoading && tradeView === "list" && trades.length > 0 && (
-                <div className="grid gap-2 sm:grid-cols-2">
-                  {trades.map((t) => (
-                    <TradeCard key={t.id} trade={t} />
-                  ))}
-                </div>
-              )}
-              {!tradesLoading && tradeView === "by-stock" && stockStats.length === 0 && (
-                <p className="rounded-lg border border-slate-800 bg-slate-900/50 p-4 text-sm text-slate-500">
-                  目前還沒有已平倉的交易。
-                </p>
-              )}
-              {!tradesLoading && tradeView === "by-stock" && stockStats.length > 0 && (
-                <div className="grid gap-2 sm:grid-cols-2">
-                  {stockStats.map((s) => (
-                    <article
-                      key={s.stock_id}
-                      className="rounded-lg border border-slate-800 bg-slate-900/50 p-3"
+            {!tradesCollapsed && (
+              <div className="border-t border-slate-800 p-3 pt-3">
+                <div className="mb-2 flex flex-wrap items-center justify-end gap-2">
+                  <div className="flex gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setTradeView("list")}
+                      className={`rounded-lg px-2.5 py-1 text-xs transition-colors ${
+                        tradeView === "list"
+                          ? "bg-sky-500/15 text-sky-100"
+                          : "border border-slate-700 text-slate-400 hover:border-slate-500 hover:text-slate-200"
+                      }`}
                     >
-                      <div className="flex items-center justify-between">
-                        <span className="text-sm font-semibold text-slate-100">
-                          <span className="font-mono">{s.stock_id}</span> {s.stock_name}
-                        </span>
-                        <span className="text-xs text-slate-400">操作 {s.trade_count} 次</span>
-                      </div>
-                      <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-slate-400">
-                        <span className={returnTone(s.avg_return_pct)}>平均報酬 {formatPct(s.avg_return_pct)}</span>
-                        <span>勝率 {s.win_rate_pct.toFixed(1)}%</span>
-                        <span className={returnTone(s.total_realized_pnl)}>
-                          累積損益 {formatMoney(s.total_realized_pnl)} 元
-                        </span>
-                      </div>
-                    </article>
-                  ))}
+                      逐筆列表
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTradeView("by-stock")}
+                      className={`rounded-lg px-2.5 py-1 text-xs transition-colors ${
+                        tradeView === "by-stock"
+                          ? "bg-sky-500/15 text-sky-100"
+                          : "border border-slate-700 text-slate-400 hover:border-slate-500 hover:text-slate-200"
+                      }`}
+                    >
+                      依股票統計
+                    </button>
+                  </div>
                 </div>
-              )}
-            </div>
+
+                {tradeView === "list" ? (
+                  <SortChip options={TRADE_SORT_OPTIONS} value={tradeSortBy} onChange={setTradeSortBy} />
+                ) : (
+                  <SortChip options={STOCK_SORT_OPTIONS} value={stockSortBy} onChange={setStockSortBy} />
+                )}
+
+                <div className="mt-3">
+                  {tradesLoading && <p className="text-sm text-slate-500">正在載入交易紀錄…</p>}
+                  {!tradesLoading && tradeView === "list" && trades.length === 0 && (
+                    <p className="rounded-lg border border-slate-800 bg-slate-900/50 p-4 text-sm text-slate-500">
+                      目前還沒有已平倉的交易。
+                    </p>
+                  )}
+                  {!tradesLoading && tradeView === "list" && trades.length > 0 && (
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {trades.map((t) => (
+                        <TradeCard key={t.id} trade={t} />
+                      ))}
+                    </div>
+                  )}
+                  {!tradesLoading && tradeView === "by-stock" && stockStats.length === 0 && (
+                    <p className="rounded-lg border border-slate-800 bg-slate-900/50 p-4 text-sm text-slate-500">
+                      目前還沒有已平倉的交易。
+                    </p>
+                  )}
+                  {!tradesLoading && tradeView === "by-stock" && stockStats.length > 0 && (
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {stockStats.map((s) => (
+                        <article
+                          key={s.stock_id}
+                          className="rounded-lg border border-slate-800 bg-slate-900/50 p-3"
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="text-sm font-semibold text-slate-100">
+                              <span className="font-mono">{s.stock_id}</span> {s.stock_name}
+                            </span>
+                            <span className="text-xs text-slate-400">操作 {s.trade_count} 次</span>
+                          </div>
+                          <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-slate-400">
+                            <span className={returnTone(s.avg_return_pct)}>
+                              平均報酬 {formatPct(s.avg_return_pct)}
+                            </span>
+                            <span>勝率 {s.win_rate_pct.toFixed(1)}%</span>
+                            <span className={returnTone(s.total_realized_pnl)}>
+                              累積損益 {formatMoney(s.total_realized_pnl)} 元
+                            </span>
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </section>
         </>
       )}

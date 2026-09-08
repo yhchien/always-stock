@@ -1,5 +1,137 @@
 # always-stock 專案記憶
 
+## Shadow Portfolio v1：first_seen_date 誤用 P4 而非魚尾，導致正式站報酬率從
++12%（沙盒驗證）變成 -9%（production）的根因修復（2026-09-08）
+
+### 症狀
+使用者回報 `/signals/shadow-portfolio`（模擬交易頁）顯示累積報酬 **-9.09%**，但稍早在
+`fishtail_backtest/` 沙盒做實驗時，同一套凍結 v1 策略在同一段真實資料（2026-08-07~
+09-04）驗證出的是 **+12.05%（無成本）／+9.93%（含成本）**。一開始誤以為是使用者看混了
+沙盒報告裡「整體報酬」跟「單筆最大虧損 -9.09%」兩個相鄰數字（兩者巧合地都接近 -9%），
+但使用者澄清問的其實是**正式站上的 Shadow Portfolio 頁面**，不是沙盒——這是完全不同的
+兩套系統，前者才是這次真正要修的 bug。
+
+### 根因：cohort 身份（first_seen_date）用錯資料來源
+`backend/app/signals/shadow_portfolio.py`（Phase 1，2026-09-07 上線）把沙盒驗證過的 v1
+策略搬進正式環境時，`resolve_tracking_universe()`／`build_daily_evidence()` 把
+`first_seen_date`／`day_index`／`hit_count_so_far`／`is_official_exit_signal_day` 全部
+建在 **P4 `SignalObservation.started_signal_date`**（P4 自己的觀察生命週期起點）上，
+但沙盒驗證用的 `daily_data.csv` 其實是從**魚尾**（`signal_watch_hits`／
+`signal_watch_completed_archives`／`signal_watch_stopped_observations`，P3 選股驅動的
+追蹤系統）匯出的。P4 與魚尾是兩套獨立管理的生命週期系統，起訖日經常對不上——CLAUDE.md
+本身已多次記錄過這個結構性事實（見「P4 停止觀察時魚尾追蹤週期跟著結算」等條目），但
+Shadow Portfolio 這次移植時沒有意識到沙盒資料具體是從哪一套系統匯出的，直接假設兩者
+同義。
+
+真實查證（production 資料）：2383 台光電因為 2026-08-11 那次「強制結算誤刪過廣」
+（`manual_reset`）事件，魚尾側的追蹤週期在 08-11 重新起算，但 P4 `SignalObservation.
+started_signal_date` 完全沒被那次重置動到、仍停在 08-06；6491 晶碩的魚尾週期則是當天
+就被 `manual_reset` 關閉（沙盒 CSV 裡完全沒有這檔股票），但 P4 仍把它當成有效追蹤對象。
+量化規模：以 2026-09-04 為基準，P4 判定要評估的 49 檔股票裡，**24 檔（近半數）
+first_seen_date 跟魚尾側完全對不上**，部分甚至能追溯到 6 月的舊 P4 觀察（只因為那個
+episode 還沒被判定 STOP_OBSERVING）。用錯起點日會讓 `day_index`／`hit_count_so_far`／
+進出場報酬率基準全部算錯，在沙盒資料裡從未出現過的日期產生「幽靈交易」，第一天就走偏，
+21 天資金排擠效應一路累積放大。
+
+同一輪還意外發現 `is_official_exit_signal_day` 的定義本身就寫錯：docstring 寫「30 個
+交易日期滿」並直接套用 `day_index >= archive.ARCHIVE_RETENTION_TRADE_DAYS`，但這個門檻
+在整個 21 個交易日的驗證視窗裡**從未被觸發過**（day_index 最高只到 17），然而沙盒 CSV
+裡這個欄位確實有 174 筆 `True`——比對後發現真正代表的是「魚尾判定這個追蹤週期在這一天
+正式結束」（`completed_trade_date == 這天`），不論結束原因是 30 日期滿、提前結算停損/
+回落規則、P4 STOP 還是人工重置，皆算。這兩個 bug 是獨立但相關的：都源自「移植沙盒邏輯
+時，沒有先查證清楚沙盒 CSV 每個欄位實際對應哪一套系統、哪個確切定義」。
+
+### 修法（`app/signals/shadow_portfolio.py`）
+- `resolve_tracking_universe()`：改成聯集三個魚尾來源——(a) 目前仍活躍的
+  `signal_watch_hits`（依 stock_id 分組取 `MIN(snapshot_date)`）、(b) 已封存但
+  `[first_seen_date, completed_trade_date]` 涵蓋 `target_date` 的歷史週期
+  （`signal_watch_completed_archives`／`signal_watch_stopped_observations`，backfill
+  重播「已經是過去」的日期需要）、(c) 既有持倉防禦性 union（沿用原設計）。ETF 排除從
+  `SignalObservation.asset_type`（真實資料驗證發現對槓桿/反向 ETF 如 `00753L` 分類
+  不準確）改用 Phase 1 canonical classification 的 `EtfClassification` 表
+- `build_daily_evidence()`：`hit_count_so_far`／`p3_selected_today`／`momentum_score`
+  依「魚尾週期在呼叫當下是否仍活躍」分流——活躍時沿用原本直查 `signal_watch_hits`（快）；
+  已封存（`signal_watch_hits` 已被硬刪除，只有 backfill 重播早就結束的歷史日期才會發生）
+  改用永久保留的 `SignalSnapshot.watchlist` 逐日重建
+- 新增 `_resolve_relevant_observation()`：找出 `target_date` 當下正在進行的 P4
+  episode，**不要求** `started_signal_date` 等於魚尾 `first_seen_date`（兩者本來就經常
+  不同步）。「已經停止」判斷刻意用 `review_date < target_date`（**嚴格小於**，不是
+  `<=`）——STOP_OBSERVING 判定當天仍要能讀到「今天」的這個決策本身，`generate_exit_
+  signal` 的 P4_STOP 分支才有機會在正確的那天觸發（真實案例：6213 聯茂在追蹤最後一天，
+  `p4_decision=STOP_OBSERVING` 跟平倉記在同一天）
+- 新增 `_is_official_exit_signal_day()`：改查魚尾封存紀錄 `completed_trade_date ==
+  target_date`，取代錯誤的 `day_index >= 30` 判斷
+
+### 效能坑：process-local 快取，避免遠端連線被拖垮
+第一版 `_count_hits_so_far_from_snapshots`／`_p3_selection_from_snapshot`（週期已封存
+時的 fallback）對「每一檔股票、每一天」各自查一次 `SignalSnapshot.watchlist`（可能上百
+檔股票的大型 JSON），對 backfill 這種「幾乎所有股票在跑的當下都已經是過去、已封存」的
+情境是 O(股票數 × 天數) 的重複大型 JSON 抓取——真的把 production Postgres（Render，
+Singapore）連線拖到斷線（`consuming input failed: server closed the connection
+unexpectedly`，backfill 在第 15/21 天當機）。修法：新增 `_SNAPSHOT_WATCHLIST_CACHE`
+（process-local `{snapshot_date: {stock_id: momentum_score}}` dict），每個
+`snapshot_date` 全程只真的查一次 DB，同一個 process 內其餘查詢全部命中記憶體。
+`backfill_shadow_portfolio_replay.py`／`run_shadow_portfolio.py` 都是每次執行全新
+process，重啟自然清空，沒有 stale 風險。測試套件也要在每個測試前後清空這個 module-level
+dict（`test_shadow_portfolio.py` 的 `_reset_snapshot_watchlist_cache` autouse
+fixture），否則不同測試的獨立 in-memory SQLite 資料庫會共用同一份快取，讀到別的測試
+留下的舊值。
+
+修完快取後，backfill 仍然在**完全跟大小無關的簡單查詢**上撞到過兩次同款
+`consuming input failed` 斷線（例如單純的 `SELECT min(snapshot_date) ... WHERE
+stock_id = X`）——這證實遠端連線不穩本身就是既有、獨立的環境風險（CLAUDE.md 已有
+`backfill_p4_momentum_scores.py` 同款事故的先例），不是這次快取修法沒修乾淨。因此在
+`backfill_shadow_portfolio_replay.py` 加了 `_with_retry()`：每個每日步驟（各自已經是
+獨立、短命的 `SessionLocal()` session）撞到 `OperationalError` 就整步重試（最多 4 次、
+間隔 3 秒），因為每一步本身都是 deterministic／idempotent 的計算，重來不會產生重複
+副作用。
+
+### 驗證
+- 33 個 `test_shadow_portfolio.py` 測試（含 8 個新 regression test，直接複刻真實案例
+  2383／6491／6213 的情境）全過；全 backend suite 20 fail/5 error 維持既有 baseline
+  （site-passwordless／FinMind SDK 需要 live token 兩類），零新增失敗
+- 對 production DB 重跑 `backfill_shadow_portfolio_replay.py --execute`，範圍依使用者
+  要求擴大到 **2026-08-01~09-07**（26 個交易日，含 3 天提早起算＋3 天延後到今天）：
+  **+3.26% 累積報酬、24 筆交易、勝率 41.7%**——修復前的 -9.09% 已經不再重現，`/api/
+  signals/shadow-portfolio` 正式 API 也已回傳這個新結果（`as_of_trade_date=2026-09-07`）
+- **誠實揭露**：這次驗證用的是比原始沙盒窗口更寬的 26 天範圍（原始沙盒只驗證
+  2026-08-07~09-04 這 21 天），逐日交易明細跟沙盒原始的 28 筆交易**不是逐筆相同**——
+  多出的早期交易日（08-03~08-06）本身沒有任何交易，理論上不該改變 08-07 之後的候選
+  排序，但沒有另外針對「原始 21 天窗口」重新做一次逐位元組比對來確認完全重現
+  +12.05%/+9.93%（前三次嘗試都在中途撞到上述遠端連線不穩斷線，第四次改成 26 天窗口
+  時才第一次順利跑完）。目前的信心來源是：(a) 33 個單元測試逐值鎖定新邏輯的正確性、
+  (b) 26 天真實資料重播結果健康且為正報酬、(c) 修復前後的量化前後對比（49 檔裡 24 檔
+  起點日對不上）已經精確定位並解釋了 -9% 的成因。若要更嚴謹地重現原始 benchmark，
+  下一輪可以縮小 `backfill_shadow_portfolio_replay.py` 的 `REPLAY_START`／`REPLAY_END`
+  回 2026-08-07~09-04 單獨再跑一次。
+
+### 前端：模擬交易頁「交易紀錄」改成可收合區塊
+`frontend/src/app/signals/(product)/shadow-portfolio/page.tsx` 的「交易紀錄」section
+（逐筆列表／依股票統計兩種檢視）比照首頁 `DailySignalsPanel` 既有慣例，改成可收合
+（▸/▾ 按鈕 + localStorage 持久化 `always-stock:shadow-portfolio:trades-collapsed`，
+預設收合）；收合時不打 API（`tradesCollapsed` 進 `useEffect` 依賴陣列，收合時直接
+return，展開才真的 fetch），節省不必要的請求。
+
+### Gotcha
+- **同一個「凍結策略驗證通過」的結論，不能自動延伸到「移植到另一個資料來源後也一樣
+  正確」**——沙盒驗證的是「用這份 CSV 資料，這套規則的表現」，CSV 本身隱含了「first_
+  seen_date 用哪套系統定義」這個未明文寫下的假設；移植到 production 時若沒有先反查
+  「這份 CSV 當初到底是從哪張表匯出的」，很容易兩套語意相近、但邊界不同的系統被當成
+  同一件事
+- **「查證過某個欄位存在」不能證明「兩邊算出來的值真的一致」**——這次的兩個 bug
+  （first_seen_date 來源、is_official_exit_signal_day 定義）都是「程式碼看起來邏輯
+  自洽、文件描述也言之成理」，但都沒有真的拿沙盒 CSV 的具體數字回頭核對過。之後任何
+  「把沙盒/離線驗證過的邏輯搬進 production」的工作，都應該先用真實資料的具體案例
+  （不是抽象推論）逐值核對，而不是只看程式碼路徑是否通順
+- **遠端 managed Postgres 對長連線/連續多次查詢的不穩定是這個專案的已知環境風險**
+  （這是至少第二次遇到同款 `consuming input failed: server closed the connection
+  unexpectedly`），任何新的一次性 backfill/migration 腳本都應該預先假設會撞到，用
+  「短命 session ＋ 每步驟可重試」的模式設計，不要假設一個長連線可以撐完整個腳本
+- **`_SNAPSHOT_WATCHLIST_CACHE` 這類 module-level cache，測試套件必須主動清空**——
+  跟本 session 更早一輪 `exclusions._GROUP_STOCKS_CACHE` 踩過的坑是同一類問題，任何
+  新增的 process-local cache 都要記得在對應測試檔案加 autouse fixture 重置，不能假設
+  「反正每個測試的 db fixture 都是獨立的」就會自動沒事——cache 是跨 db fixture 共用的
+
 ## M27 Market Regime v2：market_resilience 欄位在最終 watchlist 遺失修復（2026-09-04 第三輪）
 
 ### 症狀

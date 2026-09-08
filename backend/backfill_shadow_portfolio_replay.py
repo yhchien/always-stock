@@ -1,7 +1,12 @@
 """
-一次性 backfill：對 2026-08-07~2026-09-04（fishtail_backtest/ 沙盒驗證過的同一段真實魚尾
-歷史資料，21 個交易日）逐日重跑 Shadow Portfolio v1 策略，驗證 production port 是否忠實
-複製沙盒結果（+12.05% 無成本／28 筆交易／勝率 46.4%）。
+一次性 backfill：逐日重跑 Shadow Portfolio v1 策略，驗證 production port（用魚尾 first_seen_
+date，取代原本誤用 P4 SignalObservation.started_signal_date 的版本，見 2026-09-08 修復）
+在真實資料上的行為是否合理。
+
+原始驗證窗口是 2026-08-07~2026-09-04（fishtail_backtest/ 沙盒驗證過的同一段真實魚尾歷史
+資料，21 個交易日，凍結 benchmark +12.05% 無成本／28 筆交易／勝率 46.4%）；`REPLAY_START`／
+`REPLAY_END` 可調整為更長區間做延伸驗證——**窗口一旦變寬，`SANDBOX_BENCHMARK` 的三個數字
+不再是同一批交易日的逐位元組對照，只能當參考基準，不是嚴格相等的驗證目標**。
 
 寫進**正式** `strategy_version="v1_frozen"` 的表（這批歷史資料本來就是沙盒 CSV 的原始
 production 來源，SignalWatchHit/SignalObservation/SignalObservationReview 早已存在，
@@ -18,6 +23,7 @@ production 資料的邊界情況跟沙盒 CSV 匯出當下的假設不同（例�
 from __future__ import annotations
 
 import sys
+import time
 from collections import defaultdict
 from datetime import date
 from pathlib import Path
@@ -26,8 +32,8 @@ BACKEND_DIR = Path(__file__).resolve().parent
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-REPLAY_START = date(2026, 8, 7)
-REPLAY_END = date(2026, 9, 4)
+REPLAY_START = date(2026, 8, 1)
+REPLAY_END = date(2026, 9, 7)
 
 SANDBOX_BENCHMARK = {
     "total_return_pct": 12.05,
@@ -170,6 +176,28 @@ def main(argv: list) -> int:
 
     from app.models import ShadowStrategyDailyDecision, ShadowStrategyOrder
 
+    def _with_retry(step_fn, *, retries: int = 4, delay_seconds: float = 3.0):
+        """遠端 Postgres 對長時間佔用連線的既有已知不穩定（見
+        `backfill_p4_momentum_scores.py` 同類事故）——`step_fn` 是一個會自己開
+        `SessionLocal()`／commit／讀值回傳的零參數函式，任何一步撞到
+        `OperationalError`（連線斷線）就整步重來（每一步本身都是 idempotent 的
+        deterministic 計算，重來不會產生重複副作用）。"""
+        from sqlalchemy.exc import OperationalError
+
+        last_exc: Exception | None = None
+        for attempt in range(1, retries + 1):
+            try:
+                return step_fn()
+            except OperationalError as exc:
+                last_exc = exc
+                logger.warning(
+                    "OperationalError on attempt %d/%d (%s) — retrying in %.0fs",
+                    attempt, retries, type(exc).__name__, delay_seconds,
+                )
+                if attempt < retries:
+                    time.sleep(delay_seconds)
+        raise last_exc
+
     print(f"\n{'='*78}\nSTRATEGY_VERSION={sp.STRATEGY_VERSION}  REPLAY {trade_dates[0]} ~ {trade_dates[-1]}\n{'='*78}")
 
     for d in trade_dates:
@@ -177,41 +205,53 @@ def main(argv: list) -> int:
         # 就 close，ORM 物件在區塊外變成 detached/expired，屬性存取會觸發對已
         # 關閉 session 的 lazy-load 而炸掉（DetachedInstanceError，真的撞過，
         # 撞到的當下讓整支 script 在第一天就當機）。
-        with SessionLocal() as db:
-            executed = sp.execute_pending_strategy_orders(db, target_date=d)
-            db.commit()
-            # 今天真正成交的訂單（用 T-1 的訊號，用今天的 high/low 成交）
-            filled_today = [
-                (o.action, o.stock_id, o.stock_name, o.execution_price, o.reason)
-                for o in db.query(ShadowStrategyOrder).filter(
-                    ShadowStrategyOrder.strategy_version == sp.STRATEGY_VERSION,
-                    ShadowStrategyOrder.status == sp.ORDER_STATUS_EXECUTED,
-                    ShadowStrategyOrder.scheduled_execution_date == d,
-                )
-            ]
+        def _step_execute_pending():
+            with SessionLocal() as db:
+                executed = sp.execute_pending_strategy_orders(db, target_date=d)
+                db.commit()
+                filled_today = [
+                    (o.action, o.stock_id, o.stock_name, o.execution_price, o.reason)
+                    for o in db.query(ShadowStrategyOrder).filter(
+                        ShadowStrategyOrder.strategy_version == sp.STRATEGY_VERSION,
+                        ShadowStrategyOrder.status == sp.ORDER_STATUS_EXECUTED,
+                        ShadowStrategyOrder.scheduled_execution_date == d,
+                    )
+                ]
+                return executed, filled_today
 
-        with SessionLocal() as db:
-            decided = sp.run_daily_trading_strategy(db, target_date=d)
-            db.commit()
-            # 今天新產生、明天要執行的訊號
-            new_signals = [
-                (s.action, s.stock_id, s.stock_name, s.action_reason)
-                for s in db.query(ShadowStrategyDailyDecision).filter(
-                    ShadowStrategyDailyDecision.strategy_version == sp.STRATEGY_VERSION,
-                    ShadowStrategyDailyDecision.trade_date == d,
-                    ShadowStrategyDailyDecision.action.in_([sp.ACTION_BUY, sp.ACTION_ADD, sp.ACTION_SELL]),
-                )
-            ]
+        executed, filled_today = _with_retry(_step_execute_pending)
 
-        with SessionLocal() as db:
-            snapshot = sp.create_portfolio_daily_snapshot(db, target_date=d)
-            db.commit()
-            snapshot_equity = snapshot.total_equity
-            snapshot_return_pct = snapshot.total_return_pct
+        def _step_run_strategy():
+            with SessionLocal() as db:
+                decided = sp.run_daily_trading_strategy(db, target_date=d)
+                db.commit()
+                new_signals = [
+                    (s.action, s.stock_id, s.stock_name, s.action_reason)
+                    for s in db.query(ShadowStrategyDailyDecision).filter(
+                        ShadowStrategyDailyDecision.strategy_version == sp.STRATEGY_VERSION,
+                        ShadowStrategyDailyDecision.trade_date == d,
+                        ShadowStrategyDailyDecision.action.in_([sp.ACTION_BUY, sp.ACTION_ADD, sp.ACTION_SELL]),
+                    )
+                ]
+                return decided, new_signals
 
-        with SessionLocal() as db:
-            reset_triggered = sp.check_and_apply_cycle_reset(db, target_date=d)
-            db.commit()
+        decided, new_signals = _with_retry(_step_run_strategy)
+
+        def _step_snapshot():
+            with SessionLocal() as db:
+                snapshot = sp.create_portfolio_daily_snapshot(db, target_date=d)
+                db.commit()
+                return snapshot.total_equity, snapshot.total_return_pct
+
+        snapshot_equity, snapshot_return_pct = _with_retry(_step_snapshot)
+
+        def _step_cycle_reset():
+            with SessionLocal() as db:
+                reset_triggered = sp.check_and_apply_cycle_reset(db, target_date=d)
+                db.commit()
+                return reset_triggered
+
+        reset_triggered = _with_retry(_step_cycle_reset)
 
         print(f"\n--- {d} ---")
         if reset_triggered:
