@@ -7,14 +7,36 @@ import {
   fetchShadowPendingActions,
   fetchShadowPortfolio,
   fetchShadowTradesByStock,
+  SHADOW_STRATEGY_VERSIONS,
   type ShadowCompletedTrade,
   type ShadowOrderAction,
   type ShadowPendingAction,
   type ShadowPortfolio,
   type ShadowStockStatSortBy,
   type ShadowStockTradeStat,
+  type ShadowStrategyVersion,
   type ShadowTradeSortBy,
 } from "@/lib/api"
+
+const STRATEGY_VERSION_STORAGE_KEY = "always-stock:shadow-portfolio:strategy-version"
+
+const STRATEGY_META: Record<
+  ShadowStrategyVersion,
+  { label: string; badge: string; description: string }
+> = {
+  v1_frozen: {
+    label: "v1（正式凍結版）",
+    badge: "LEGACY",
+    description:
+      "已驗證並凍結的既有策略：固定 +10% 停利、單檔最多加碼 2 次、最多同時持有 6 個單位、35 個交易日一循環，循環結束強制清空重來。",
+  },
+  FORWARD_V1_202609: {
+    label: "FORWARD_V1_202609",
+    badge: "FORWARD TEST",
+    description:
+      "2026-09-09 起正式 Forward Test：無固定停利（讓贏家自然發展）、加碼不設上限但絕不攤平（須先確認目前部位獲利）、單一持股成本不得超過總權益 50%、無強制循環重置、無 Rotation（滿倉/現金不足時寧可錯過候選也不強制換股）。",
+  },
+}
 
 function formatMoney(value: number | null | undefined): string {
   if (value === null || value === undefined) return "—"
@@ -162,6 +184,29 @@ function SortChip<T extends string>({
 }
 
 export default function ShadowPortfolioPage() {
+  const [strategyVersion, setStrategyVersion] = useState<ShadowStrategyVersion>("v1_frozen")
+
+  // 讀 localStorage 記住上次選擇（比照本頁 tradesCollapsed 既有慣例）
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(STRATEGY_VERSION_STORAGE_KEY)
+      if (saved && (SHADOW_STRATEGY_VERSIONS as readonly string[]).includes(saved)) {
+        setStrategyVersion(saved as ShadowStrategyVersion)
+      }
+    } catch {
+      // ignore
+    }
+  }, [])
+
+  const selectStrategyVersion = useCallback((next: ShadowStrategyVersion) => {
+    setStrategyVersion(next)
+    try {
+      window.localStorage.setItem(STRATEGY_VERSION_STORAGE_KEY, next)
+    } catch {
+      // ignore
+    }
+  }, [])
+
   const [portfolio, setPortfolio] = useState<ShadowPortfolio | null>(null)
   const [actions, setActions] = useState<ShadowPendingAction[]>([])
   const [loading, setLoading] = useState(true)
@@ -196,13 +241,15 @@ export default function ShadowPortfolioPage() {
 
   useEffect(() => {
     const controller = new AbortController()
+    setLoading(true)
     Promise.all([
-      fetchShadowPortfolio({ signal: controller.signal }),
-      fetchShadowPendingActions({ signal: controller.signal }),
+      fetchShadowPortfolio({ strategyVersion }, { signal: controller.signal }),
+      fetchShadowPendingActions({ strategyVersion }, { signal: controller.signal }),
     ])
       .then(([p, a]) => {
         setPortfolio(p)
         setActions(a.actions)
+        setError(null)
       })
       .catch((reason: unknown) => {
         if (!controller.signal.aborted)
@@ -212,7 +259,7 @@ export default function ShadowPortfolioPage() {
         if (!controller.signal.aborted) setLoading(false)
       })
     return () => controller.abort()
-  }, [])
+  }, [strategyVersion])
 
   useEffect(() => {
     if (tradesCollapsed) return // 收合時不打 API，展開才載入（比照首頁面板慣例）
@@ -221,10 +268,16 @@ export default function ShadowPortfolioPage() {
       setTradesLoading(true)
       try {
         if (tradeView === "list") {
-          const res = await fetchShadowCompletedTrades({ sortBy: tradeSortBy }, { signal: controller.signal })
+          const res = await fetchShadowCompletedTrades(
+            { strategyVersion, sortBy: tradeSortBy },
+            { signal: controller.signal },
+          )
           setTrades(res.trades)
         } else {
-          const res = await fetchShadowTradesByStock({ sortBy: stockSortBy }, { signal: controller.signal })
+          const res = await fetchShadowTradesByStock(
+            { strategyVersion, sortBy: stockSortBy },
+            { signal: controller.signal },
+          )
           setStockStats(res.stats)
         }
       } catch {
@@ -235,18 +288,45 @@ export default function ShadowPortfolioPage() {
     }
     void run()
     return () => controller.abort()
-  }, [tradesCollapsed, tradeView, tradeSortBy, stockSortBy])
+  }, [strategyVersion, tradesCollapsed, tradeView, tradeSortBy, stockSortBy])
 
   return (
     <main className="mx-auto min-h-screen max-w-5xl px-4 py-6 text-slate-100">
       <header className="mb-5">
         <h1 className="text-2xl font-semibold">魚尾模擬交易</h1>
         <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
-          用固定虛擬資金（Paper Trading）模擬已驗證的 v1 策略：不是真的下單，純粹追蹤「如果照
-          這套規則交易，現在會是什麼結果」。以 35 個交易日為一個循環，循環結束時現金與持倉會
-          全面強制清空重新開始——但每一筆已平倉交易都會永久保存，不會因為循環重置而消失。
+          用固定虛擬資金（Paper Trading）模擬策略：不是真的下單，純粹追蹤「如果照這套規則交易，
+          現在會是什麼結果」。
         </p>
-        <p className="mt-2 rounded-lg border border-sky-800/40 bg-sky-950/20 p-3 text-xs leading-5 text-sky-200">
+
+        <div className="mt-4 flex flex-wrap gap-2">
+          {SHADOW_STRATEGY_VERSIONS.map((v) => (
+            <button
+              key={v}
+              type="button"
+              onClick={() => selectStrategyVersion(v)}
+              className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
+                strategyVersion === v
+                  ? "border-sky-500/60 bg-sky-500/15 text-sky-100"
+                  : "border-slate-700 text-slate-400 hover:border-slate-500 hover:text-slate-200"
+              }`}
+            >
+              <span
+                className={`mr-1.5 rounded px-1.5 py-0.5 text-[9px] font-semibold ${
+                  v === "FORWARD_V1_202609"
+                    ? "bg-amber-500/20 text-amber-200"
+                    : "bg-slate-700/60 text-slate-300"
+                }`}
+              >
+                {STRATEGY_META[v].badge}
+              </span>
+              {STRATEGY_META[v].label}
+            </button>
+          ))}
+        </div>
+        <p className="mt-2 max-w-3xl text-xs leading-5 text-slate-500">{STRATEGY_META[strategyVersion].description}</p>
+
+        <p className="mt-3 rounded-lg border border-sky-800/40 bg-sky-950/20 p-3 text-xs leading-5 text-sky-200">
           <strong>重要</strong>
           ：以下「下一交易日動作」是收盤後根據今天資料做出的決策，代表「預計執行」，不是「已經
           成交」——實際成交要等下一個交易日行情出來，用當天最高價（買）／最低價（賣）模擬。
@@ -269,7 +349,14 @@ export default function ShadowPortfolioPage() {
             />
             <StatBox label="現金" value={formatMoney(portfolio.cash)} />
             <StatBox label="持股數" value={`${portfolio.position_count} / ${portfolio.max_stocks}`} />
-            <StatBox label="單位數" value={`${portfolio.total_units} / ${portfolio.max_total_units}`} />
+            <StatBox
+              label="單位數"
+              value={
+                portfolio.max_total_units === null
+                  ? `${portfolio.total_units}（無上限）`
+                  : `${portfolio.total_units} / ${portfolio.max_total_units}`
+              }
+            />
             <StatBox
               label="已實現損益"
               value={formatMoney(portfolio.realized_pnl_cumulative)}
@@ -280,9 +367,18 @@ export default function ShadowPortfolioPage() {
             {portfolio.as_of_trade_date && (
               <>資料截至 {portfolio.as_of_trade_date}・起始本金 {formatMoney(portfolio.initial_capital)} 元・</>
             )}
-            第 {portfolio.cycle_number} 個循環
-            {portfolio.cycle_trading_days_elapsed !== null && (
-              <>（第 {portfolio.cycle_trading_days_elapsed} / {portfolio.cycle_length_trading_days} 個交易日）</>
+            {portfolio.cycle_length_trading_days !== null ? (
+              <>
+                第 {portfolio.cycle_number} 個循環
+                {portfolio.cycle_trading_days_elapsed !== null && (
+                  <>（第 {portfolio.cycle_trading_days_elapsed} / {portfolio.cycle_length_trading_days} 個交易日）</>
+                )}
+              </>
+            ) : (
+              <>無強制循環重置</>
+            )}
+            {portfolio.max_position_exposure_pct !== null && (
+              <>・單檔曝險上限 {(portfolio.max_position_exposure_pct * 100).toFixed(0)}%</>
             )}
           </p>
 

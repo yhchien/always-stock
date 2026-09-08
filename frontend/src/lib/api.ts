@@ -2727,16 +2727,22 @@ export interface ShadowPortfolio {
   position_count: number
   total_units: number
   max_stocks: number
-  max_units_per_stock: number
-  max_total_units: number
+  // null = 這個策略版本沒有這項上限（例如 FORWARD_V1_202609 無 unit 上限、
+  // v1_frozen 無單檔曝險%上限）——不是 0，也不是資料缺漏
+  max_units_per_stock: number | null
+  max_total_units: number | null
+  max_position_exposure_pct: number | null
   as_of_trade_date: string | null
   updated_at: string | null
   positions: ShadowPosition[]
   cycle_number: number
   cycle_start_trade_date: string | null
-  cycle_length_trading_days: number
+  cycle_length_trading_days: number | null
   cycle_trading_days_elapsed: number | null
 }
+
+export const SHADOW_STRATEGY_VERSIONS = ["v1_frozen", "FORWARD_V1_202609"] as const
+export type ShadowStrategyVersion = (typeof SHADOW_STRATEGY_VERSIONS)[number]
 
 export interface ShadowPendingAction {
   id: number
@@ -2757,16 +2763,22 @@ export interface ShadowPendingActionsResponse {
   actions: ShadowPendingAction[]
 }
 
-export async function fetchShadowPortfolio(options?: FetchOptions): Promise<ShadowPortfolio> {
-  const res = await apiFetch(`${API_BASE}/api/signals/shadow-portfolio`, { signal: options?.signal })
+export async function fetchShadowPortfolio(
+  params?: { strategyVersion?: string },
+  options?: FetchOptions,
+): Promise<ShadowPortfolio> {
+  const qs = params?.strategyVersion ? `?strategy_version=${encodeURIComponent(params.strategyVersion)}` : ""
+  const res = await apiFetch(`${API_BASE}/api/signals/shadow-portfolio${qs}`, { signal: options?.signal })
   if (!res.ok) throw new Error(await buildErrorMessage(res, "模擬交易 Portfolio 載入失敗"))
   return res.json()
 }
 
 export async function fetchShadowPendingActions(
+  params?: { strategyVersion?: string },
   options?: FetchOptions,
 ): Promise<ShadowPendingActionsResponse> {
-  const res = await apiFetch(`${API_BASE}/api/signals/shadow-portfolio/actions`, { signal: options?.signal })
+  const qs = params?.strategyVersion ? `?strategy_version=${encodeURIComponent(params.strategyVersion)}` : ""
+  const res = await apiFetch(`${API_BASE}/api/signals/shadow-portfolio/actions${qs}`, { signal: options?.signal })
   if (!res.ok) throw new Error(await buildErrorMessage(res, "模擬交易待執行動作載入失敗"))
   return res.json()
 }
@@ -2820,10 +2832,11 @@ export interface ShadowStockTradeStatsResponse {
 }
 
 export async function fetchShadowCompletedTrades(
-  params?: { cycleNumber?: number; sortBy?: ShadowTradeSortBy },
+  params?: { strategyVersion?: string; cycleNumber?: number; sortBy?: ShadowTradeSortBy },
   options?: FetchOptions,
 ): Promise<ShadowCompletedTradesResponse> {
   const qs = new URLSearchParams()
+  if (params?.strategyVersion) qs.set("strategy_version", params.strategyVersion)
   if (params?.cycleNumber !== undefined) qs.set("cycle_number", String(params.cycleNumber))
   if (params?.sortBy) qs.set("sort_by", params.sortBy)
   const url = `${API_BASE}/api/signals/shadow-portfolio/trades${qs.toString() ? `?${qs.toString()}` : ""}`
@@ -2833,10 +2846,11 @@ export async function fetchShadowCompletedTrades(
 }
 
 export async function fetchShadowTradesByStock(
-  params?: { cycleNumber?: number; sortBy?: ShadowStockStatSortBy },
+  params?: { strategyVersion?: string; cycleNumber?: number; sortBy?: ShadowStockStatSortBy },
   options?: FetchOptions,
 ): Promise<ShadowStockTradeStatsResponse> {
   const qs = new URLSearchParams()
+  if (params?.strategyVersion) qs.set("strategy_version", params.strategyVersion)
   if (params?.cycleNumber !== undefined) qs.set("cycle_number", String(params.cycleNumber))
   if (params?.sortBy) qs.set("sort_by", params.sortBy)
   const url = `${API_BASE}/api/signals/shadow-portfolio/trades/by-stock${qs.toString() ? `?${qs.toString()}` : ""}`

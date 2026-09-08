@@ -1,0 +1,79 @@
+"""迴歸測試：`GET /api/signals/shadow-portfolio` 必須依 `strategy_version` query
+param 回傳該策略自己的資金/曝險規則，不能不管傳入哪個版本都套用 v1 的門檻值——這是
+2026-09 加入 UI 版本切換時發現並修好的既有 bug（改動前 `max_stocks`／
+`max_units_per_stock`／`max_total_units`／`initial_capital` 全部硬編碼
+`V1_STRATEGY_PARAMS`）。
+"""
+from __future__ import annotations
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from app.database import get_db
+from app.main import app
+from app.models import Base, ShadowVirtualPortfolio
+from app.signals import shadow_portfolio as sp
+
+
+@pytest.fixture
+def api():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+    session = Session()
+
+    def override_get_db():
+        yield session
+
+    app.dependency_overrides[get_db] = override_get_db
+    client = TestClient(app)
+    try:
+        yield client, session
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+
+
+def test_shadow_portfolio_endpoint_returns_v1_caps_for_v1_frozen(api):
+    client, db = api
+    db.add(ShadowVirtualPortfolio(strategy_version="v1_frozen", cash=600000.0))
+    db.commit()
+
+    res = client.get("/api/signals/shadow-portfolio", params={"strategy_version": "v1_frozen"})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["max_stocks"] == 5
+    assert body["max_units_per_stock"] == 2
+    assert body["max_total_units"] == 6
+    assert body["max_position_exposure_pct"] is None
+    assert body["cycle_length_trading_days"] == 35
+
+
+def test_shadow_portfolio_endpoint_returns_forward_v1_caps_not_v1_hardcode(api):
+    client, db = api
+    db.add(ShadowVirtualPortfolio(strategy_version="FORWARD_V1_202609", cash=600000.0))
+    db.commit()
+
+    res = client.get("/api/signals/shadow-portfolio", params={"strategy_version": "FORWARD_V1_202609"})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["max_stocks"] == 5
+    # 迴歸重點：這兩個過去會被誤填成 v1 的 2 / 6，FORWARD_V1_202609 沒有這兩個上限
+    assert body["max_units_per_stock"] is None
+    assert body["max_total_units"] is None
+    assert body["max_position_exposure_pct"] == pytest.approx(0.50)
+    assert body["cycle_length_trading_days"] is None  # 無強制循環重置
+
+
+def test_shadow_portfolio_endpoint_unknown_strategy_version_falls_back_to_v1(api):
+    client, _db = api
+    res = client.get("/api/signals/shadow-portfolio", params={"strategy_version": "TYPO_VERSION"})
+    assert res.status_code == 200
+    body = res.json()
+    # strategy_version 欄位本身照原樣回傳（不偷改使用者傳入的值），但參數 fallback 回 v1
+    assert body["strategy_version"] == "TYPO_VERSION"
+    assert body["max_stocks"] == 5
+    assert body["max_units_per_stock"] == 2

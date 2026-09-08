@@ -31,9 +31,17 @@ from app.models import (
     ShadowVirtualPortfolio,
     ShadowVirtualPosition,
 )
-from app.signals.shadow_portfolio import CYCLE_LENGTH_TRADING_DAYS, STRATEGY_VERSION, V1_STRATEGY_PARAMS
+from app.signals.shadow_portfolio import STRATEGY_PARAMS_BY_VERSION, STRATEGY_VERSION
 
 router = APIRouter(prefix="/signals/shadow-portfolio", tags=["signals"])
+
+
+def _resolve_params(strategy_version: str) -> dict:
+    """未知的 `strategy_version` fallback 回 v1 的參數（不是 404）——這個 API 從
+    2026-04 就是公開唯讀 endpoint，前端舊版本可能還沒更新、或使用者手動改 URL
+    query string 打錯字，靜默 fallback 比讓整個模擬交易頁掛掉更安全；`strategy_
+    version` 欄位本身仍會照使用者傳入的原始字串回傳，不會偷偷改寫。"""
+    return STRATEGY_PARAMS_BY_VERSION.get(strategy_version, STRATEGY_PARAMS_BY_VERSION[STRATEGY_VERSION])
 
 
 class ShadowPositionResponse(BaseModel):
@@ -61,14 +69,18 @@ class ShadowPortfolioResponse(BaseModel):
     position_count: int
     total_units: int
     max_stocks: int
-    max_units_per_stock: int
-    max_total_units: int
+    # None = 這個策略版本沒有這項上限（FORWARD_V1_202609：無 unit 上限、無曝險%上限則為 v1/Clean
+    # 系列沒有這個概念）——前端要把 None 顯示成「無上限」，不能當成 0 或當成錯誤
+    max_units_per_stock: Optional[int] = None
+    max_total_units: Optional[int] = None
+    max_position_exposure_pct: Optional[float] = None
     as_of_trade_date: Optional[date] = None
     updated_at: Optional[datetime] = None
     positions: List[ShadowPositionResponse]
     cycle_number: int
     cycle_start_trade_date: Optional[date] = None
-    cycle_length_trading_days: int
+    # None = 這個策略版本沒有強制循環重置概念（Clean Baselines / FORWARD_V1_202609）
+    cycle_length_trading_days: Optional[int] = None
     cycle_trading_days_elapsed: Optional[int] = None
 
 
@@ -106,12 +118,13 @@ def get_shadow_portfolio(
     strategy_version: str = STRATEGY_VERSION,
     db: Session = Depends(get_db),
 ) -> ShadowPortfolioResponse:
+    params = _resolve_params(strategy_version)
     portfolio = (
         db.query(ShadowVirtualPortfolio)
         .filter(ShadowVirtualPortfolio.strategy_version == strategy_version)
         .first()
     )
-    cash = portfolio.cash if portfolio else V1_STRATEGY_PARAMS["initial_capital"]
+    cash = portfolio.cash if portfolio else params["initial_capital"]
     realized_pnl = portfolio.realized_pnl_cumulative if portfolio else 0.0
     updated_at = portfolio.updated_at if portfolio else None
 
@@ -174,7 +187,7 @@ def get_shadow_portfolio(
 
     return ShadowPortfolioResponse(
         strategy_version=strategy_version,
-        initial_capital=V1_STRATEGY_PARAMS["initial_capital"],
+        initial_capital=params["initial_capital"],
         cash=cash,
         realized_pnl_cumulative=realized_pnl,
         invested_cost=latest_snapshot.invested_cost if latest_snapshot else None,
@@ -183,15 +196,16 @@ def get_shadow_portfolio(
         total_return_pct=latest_snapshot.total_return_pct if latest_snapshot else 0.0,
         position_count=len(positions),
         total_units=sum(p.units for p in positions),
-        max_stocks=V1_STRATEGY_PARAMS["max_stocks"],
-        max_units_per_stock=V1_STRATEGY_PARAMS["max_units_per_stock"],
-        max_total_units=V1_STRATEGY_PARAMS["max_total_units"],
+        max_stocks=params["max_stocks"],
+        max_units_per_stock=params.get("max_units_per_stock"),
+        max_total_units=params.get("max_total_units"),
+        max_position_exposure_pct=params.get("max_position_exposure_pct"),
         as_of_trade_date=latest_snapshot.trade_date if latest_snapshot else None,
         updated_at=updated_at,
         positions=positions,
         cycle_number=cycle_number,
         cycle_start_trade_date=cycle_start_trade_date,
-        cycle_length_trading_days=CYCLE_LENGTH_TRADING_DAYS,
+        cycle_length_trading_days=params.get("cycle_reset_trading_days"),
         cycle_trading_days_elapsed=cycle_trading_days_elapsed,
     )
 
