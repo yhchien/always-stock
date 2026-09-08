@@ -13,11 +13,13 @@ from app.models import (
     DailyPrice,
     EtfClassification,
     ShadowCompletedTrade,
+    ShadowMissedCandidate,
     ShadowPositionLot,
     ShadowStrategyDailyDecision,
     ShadowStrategyOrder,
     ShadowVirtualPortfolio,
     ShadowVirtualPosition,
+    ShadowWinnerTracking,
     SignalObservation,
     SignalObservationReview,
     SignalSnapshot,
@@ -849,3 +851,403 @@ def test_cycle_reset_does_not_touch_daily_decisions_or_completed_trades(db):
 
     assert db.query(ShadowStrategyDailyDecision).count() == 1  # 沒被清掉
     assert db.query(ShadowCompletedTrade).count() == 1  # 平倉紀錄保留
+
+
+# ---------------------------------------------------------------------------
+# 2026-09：Shadow Portfolio Forward Freeze —— STRATEGY_PARAMS_BY_VERSION 登記表 +
+# FORWARD_V1_202609（no unit caps / 50% 曝險上限 / 加碼須先獲利 / 無固定停利 /
+# 無 Rotation）。v1_frozen 既有全部測試（本檔案上方）維持逐一通過即代表這次重構對
+# v1_frozen 零行為變更；這裡只補新增/修正的行為。
+# ---------------------------------------------------------------------------
+
+
+def _make_evidence_row(**overrides) -> sp.EvidenceRow:
+    base = dict(
+        stock_id="1101", stock_name="台泥", first_seen_date=D0, trade_date=D2,
+        day_index=3, p3_selected_today=False, hit_count_so_far=1, momentum_score=75.0,
+        p4_decision="CAUTION", mark_to_market_return_pct=-1.5, is_official_exit_signal_day=False,
+    )
+    base.update(overrides)
+    return sp.EvidenceRow(**base)
+
+
+def _seed_position_with_lots(db, *, strategy_version, stock_id, stock_name, first_seen_date, lots):
+    """`lots`：list[dict]，每個至少含 entry_price/shares/allocation。跟既有
+    `_seed_position_with_lot`（單數、硬編碼 v1_frozen）平行，差別是可指定
+    `strategy_version` 且一次可建多個 lot（測 FORWARD_V1 no-unit-cap 用）。"""
+    position = ShadowVirtualPosition(
+        strategy_version=strategy_version, stock_id=stock_id, stock_name=stock_name,
+        first_seen_date=first_seen_date,
+    )
+    db.add(position)
+    db.commit()
+    for lot_kwargs in lots:
+        db.add(
+            ShadowPositionLot(
+                position_id=position.id,
+                entry_type=lot_kwargs.get("entry_type", "EARLY_HEALTHY_PULLBACK"),
+                entry_signal_date=lot_kwargs.get("entry_signal_date", first_seen_date),
+                entry_execution_date=lot_kwargs.get("entry_execution_date", first_seen_date),
+                entry_price=lot_kwargs["entry_price"], shares=lot_kwargs["shares"],
+                allocation=lot_kwargs["allocation"],
+            )
+        )
+    db.commit()
+    return position
+
+
+# ---- generate_exit_signal：take_profit_basis 三態 ----
+def test_generate_exit_signal_actual_position_basis_ignores_mark_to_market():
+    params = {"take_profit_signal_pct": 10.0, "take_profit_basis": "actual_position"}
+    row = _make_evidence_row(mark_to_market_return_pct=50.0)  # tracking return 很高
+    # 真正部位報酬只有 2% -> 不該觸發固定停利
+    assert sp.generate_exit_signal(row, params, actual_position_return=2.0) is None
+    # 真正部位報酬達標 -> 觸發
+    sig = sp.generate_exit_signal(row, params, actual_position_return=12.0)
+    assert sig is not None and sig.reason == sp.EXIT_REASON_TAKE_PROFIT
+
+
+def test_generate_exit_signal_no_take_profit_when_basis_none():
+    params = {"take_profit_signal_pct": None, "take_profit_basis": None}
+    row = _make_evidence_row(mark_to_market_return_pct=99.0)
+    assert sp.generate_exit_signal(row, params, actual_position_return=99.0) is None
+
+
+def test_generate_exit_signal_mark_to_market_basis_unchanged_for_v1_frozen():
+    """v1_frozen 既有行為逐字不變：即使傳入很低的 actual_position_return，只要
+    mark_to_market_return_pct 達標依然觸發（因為 v1 的 basis 是 mark_to_market）。"""
+    params = sp.STRATEGY_PARAMS_BY_VERSION[sp.STRATEGY_VERSION]
+    row = _make_evidence_row(mark_to_market_return_pct=10.0)
+    sig = sp.generate_exit_signal(row, params, actual_position_return=-99.0)
+    assert sig is not None and sig.reason == sp.EXIT_REASON_TAKE_PROFIT
+
+
+def test_generate_exit_signal_unknown_basis_raises():
+    with pytest.raises(ValueError):
+        sp.generate_exit_signal(
+            _make_evidence_row(), {"take_profit_signal_pct": 10.0, "take_profit_basis": "bogus"}
+        )
+
+
+# ---- execute_pending_strategy_orders 迴歸：不可再硬編碼 V1 的 unit_capital ----
+def test_execute_pending_orders_sizes_allocation_by_strategy_version_not_v1_hardcode(db, monkeypatch):
+    """2026-09 之前的 bug：無論 `strategy_version` 是誰，`execute_pending_strategy_
+    orders` 一律用模組層級 `V1_STRATEGY_PARAMS['unit_capital']`（100,000）算配置金額。
+    這裡故意登記一個 unit_capital 明顯不同（50,000）的假策略版本，驗證真的用它自己的
+    參數，不是被靜默套用 v1 的值。"""
+    fake_version = "TEST_UNIT_CAPITAL_50K"
+    monkeypatch.setitem(
+        sp.STRATEGY_PARAMS_BY_VERSION, fake_version,
+        {**sp.STRATEGY_PARAMS_BY_VERSION[sp.STRATEGY_VERSION_FORWARD_V1], "unit_capital": 50000.0},
+    )
+    db.add(ShadowVirtualPortfolio(strategy_version=fake_version, cash=200000.0))
+    db.commit()
+    db.add(
+        ShadowStrategyOrder(
+            strategy_version=fake_version, stock_id="1101", stock_name="台泥",
+            action=sp.ACTION_BUY, signal_date=D0, scheduled_execution_date=D1,
+            status=sp.ORDER_STATUS_PENDING, units=1, planned_amount=50000.0,
+            signal_snapshot={"first_seen_date": D0.isoformat()},
+        )
+    )
+    db.commit()
+    _seed_price(db, "1101", D1, high=100.0)
+
+    result = sp.execute_pending_strategy_orders(db, target_date=D1, strategy_version=fake_version)
+    db.commit()
+
+    assert result["buy"] == 1
+    portfolio = (
+        db.query(ShadowVirtualPortfolio)
+        .filter(ShadowVirtualPortfolio.strategy_version == fake_version)
+        .first()
+    )
+    assert portfolio.cash == 150000.0  # 200,000 - 50,000（不是被誤用 v1 的 100,000）
+    lot = (
+        db.query(ShadowPositionLot)
+        .join(ShadowVirtualPosition)
+        .filter(ShadowVirtualPosition.strategy_version == fake_version)
+        .first()
+    )
+    assert lot.allocation == 50000.0
+    assert lot.shares == 500.0  # 50,000 / 100
+
+
+# ---- check_and_apply_cycle_reset：FORWARD_V1 / Clean Baselines 無強制循環重置 ----
+def test_cycle_reset_is_noop_for_forward_v1(db):
+    db.add(ShadowVirtualPortfolio(strategy_version=sp.STRATEGY_VERSION_FORWARD_V1, cash=600000.0))
+    db.commit()
+    _seed_position_with_lots(
+        db, strategy_version=sp.STRATEGY_VERSION_FORWARD_V1, stock_id="1101", stock_name="台泥",
+        first_seen_date=D0, lots=[{"entry_price": 100.0, "shares": 1000.0, "allocation": 100000.0}],
+    )
+    triggered = sp.check_and_apply_cycle_reset(db, target_date=D0, strategy_version=sp.STRATEGY_VERSION_FORWARD_V1)
+    db.commit()
+    assert triggered is False
+    # 部位完全沒被動過
+    assert db.query(ShadowVirtualPosition).count() == 1
+    assert db.query(ShadowPositionLot).count() == 1
+
+
+# ---------------------------------------------------------------------------
+# FORWARD_V1_202609 整合測試：透過 `run_daily_trading_strategy` 端到端驗證
+# ---------------------------------------------------------------------------
+FV1 = sp.STRATEGY_VERSION_FORWARD_V1
+
+
+def _seed_setup_a_universe(db, *, stock_id="1101", stock_name="台泥"):
+    """讓 `stock_id` 在 D2 觸發 EARLY_HEALTHY_PULLBACK（setup_a：day_index 2~3、
+    hit_count_so_far==1、momentum 68~80、tracking return -2.5~0、p4=CAUTION）。跟既有
+    `test_capacity_allocation_skips_lower_ranked_candidate_when_cash_insufficient` 用
+    同一套建構方式。"""
+    _seed_trading_calendar(db, D0, 5)
+    _seed_price(db, stock_id, D0, open_=100.0, close=100.0)
+    _seed_price(db, stock_id, D1, open_=100.0, close=100.0)  # baseline=100
+    _seed_price(db, stock_id, D2, open_=98.0, close=98.0)  # tracking return=-2.0%
+    _seed_hit(db, stock_id=stock_id, stock_name=stock_name, snapshot_date_=D0)
+    obs = _seed_observation(db, stock_id=stock_id, stock_name=stock_name, first_seen_date=D0)
+    _seed_review(db, obs, D2, "CAUTION", momentum_score=75.0)
+
+
+def test_forward_v1_blocks_add_when_position_not_profitable(db):
+    _seed_setup_a_universe(db)
+    db.add(ShadowVirtualPortfolio(strategy_version=FV1, cash=500000.0))
+    db.commit()
+    # entry_price 使得 D2 收盤(98) 換算 actual_position_return ≈ -3.0%（虧損，但沒觸發
+    # -8% 真實停損，才能真正驗證是「加碼須先獲利」這條規則擋下，不是被停損短路）
+    _seed_position_with_lots(
+        db, strategy_version=FV1, stock_id="1101", stock_name="台泥", first_seen_date=D0,
+        lots=[{"entry_price": 98.0 / 0.97, "shares": 100000.0 / (98.0 / 0.97), "allocation": 100000.0}],
+    )
+
+    sp.run_daily_trading_strategy(db, target_date=D2, strategy_version=FV1)
+    db.commit()
+
+    decision = (
+        db.query(ShadowStrategyDailyDecision)
+        .filter(ShadowStrategyDailyDecision.strategy_version == FV1, ShadowStrategyDailyDecision.trade_date == D2)
+        .first()
+    )
+    assert decision.action == sp.ACTION_SKIPPED_ADD_NOT_PROFITABLE
+    assert decision.actual_position_return is not None and decision.actual_position_return < 0
+    assert db.query(ShadowStrategyOrder).count() == 0  # 完全沒有建立加碼訂單
+
+
+def test_forward_v1_allows_add_when_position_profitable(db):
+    _seed_setup_a_universe(db)
+    db.add(ShadowVirtualPortfolio(strategy_version=FV1, cash=500000.0))
+    db.commit()
+    # entry_price=90 -> D2 收盤 98 時 actual_position_return ≈ +8.9%（獲利）
+    _seed_position_with_lots(
+        db, strategy_version=FV1, stock_id="1101", stock_name="台泥", first_seen_date=D0,
+        lots=[{"entry_price": 90.0, "shares": 100000.0 / 90.0, "allocation": 100000.0}],
+    )
+
+    sp.run_daily_trading_strategy(db, target_date=D2, strategy_version=FV1)
+    db.commit()
+
+    decision = (
+        db.query(ShadowStrategyDailyDecision)
+        .filter(ShadowStrategyDailyDecision.strategy_version == FV1, ShadowStrategyDailyDecision.trade_date == D2)
+        .first()
+    )
+    assert decision.action == sp.ACTION_ADD
+    order = db.query(ShadowStrategyOrder).filter(ShadowStrategyOrder.strategy_version == FV1).first()
+    assert order is not None and order.action == sp.ACTION_ADD
+
+
+def test_forward_v1_no_unit_caps_allows_unlimited_adds_to_same_stock(db):
+    """v1_frozen 的 max_units_per_stock=2 會擋下第 3 筆加碼；FORWARD_V1_202609 拿掉這個
+    上限，同一檔股票應該可以繼續加碼（只要仍然獲利、現金/曝險allow）。"""
+    _seed_setup_a_universe(db)
+    db.add(ShadowVirtualPortfolio(strategy_version=FV1, cash=1_000_000.0))
+    db.commit()
+    # 已經有 2 個 lot（模擬 v1 情境下已達 max_units_per_stock=2 的狀態），entry_price 都
+    # 遠低於 D2 收盤 98，確保獲利門檻通過
+    _seed_position_with_lots(
+        db, strategy_version=FV1, stock_id="1101", stock_name="台泥", first_seen_date=D0,
+        lots=[
+            {"entry_price": 80.0, "shares": 100000.0 / 80.0, "allocation": 100000.0},
+            {"entry_price": 82.0, "shares": 100000.0 / 82.0, "allocation": 100000.0},
+        ],
+    )
+
+    sp.run_daily_trading_strategy(db, target_date=D2, strategy_version=FV1)
+    db.commit()
+
+    decision = (
+        db.query(ShadowStrategyDailyDecision)
+        .filter(ShadowStrategyDailyDecision.strategy_version == FV1, ShadowStrategyDailyDecision.trade_date == D2)
+        .first()
+    )
+    assert decision.action == sp.ACTION_ADD  # 沒有被 max_units_per_stock 擋下（因為 FORWARD_V1 沒有這個上限）
+
+
+def test_forward_v1_position_exposure_limit_blocks_add_and_records_missed_candidate(db):
+    """單一 stock 的 position cost 加上這次要加碼的金額，不得超過目前 portfolio
+    equity 的 50%——這裡建構一個現金充足（不會先被「現金不足」短路擋下）、但既有部位
+    市值已經很高的場景，驗證真正被擋下的是曝險上限，且寫入 `ShadowMissedCandidate`。"""
+    _seed_setup_a_universe(db)
+    db.add(ShadowVirtualPortfolio(strategy_version=FV1, cash=200000.0))
+    db.commit()
+    _seed_position_with_lots(
+        db, strategy_version=FV1, stock_id="1101", stock_name="台泥", first_seen_date=D0,
+        lots=[{"entry_price": 50.0, "shares": 2000.0, "allocation": 100000.0}],
+    )
+    # equity = cash(200,000) + market_value(2000 shares * 98 收盤 = 196,000) = 396,000
+    # existing_cost(100,000) + unit_capital(100,000) = 200,000 -> 200,000/396,000 ≈ 50.5% > 50%
+    # （現金 200,000 >= unit_capital 100,000，所以不會被「現金不足」那個 elif 分支先短路）
+
+    sp.run_daily_trading_strategy(db, target_date=D2, strategy_version=FV1)
+    db.commit()
+
+    decision = (
+        db.query(ShadowStrategyDailyDecision)
+        .filter(ShadowStrategyDailyDecision.strategy_version == FV1, ShadowStrategyDailyDecision.trade_date == D2)
+        .first()
+    )
+    assert decision.action == sp.ACTION_SKIPPED_CAPACITY
+    assert sp.SKIP_REASON_POSITION_EXPOSURE_LIMIT in decision.action_reason
+
+    missed = db.query(ShadowMissedCandidate).filter(ShadowMissedCandidate.strategy_version == FV1).first()
+    assert missed is not None
+    assert missed.skip_reason == sp.SKIP_REASON_POSITION_EXPOSURE_LIMIT
+    assert missed.stock_id == "1101"
+    assert missed.portfolio_snapshot["equity"] is not None
+
+
+def test_forward_v1_skip_portfolio_full_records_missed_candidate(db):
+    """FORWARD_V1 名額已滿（max_stocks=5）時，新的合格候選要記進 ShadowMissedCandidate，
+    reason=SKIP_PORTFOLIO_FULL，且既有 5 檔部位完全不會被 Rotation 賣掉（Part 21）。"""
+    _seed_setup_a_universe(db, stock_id="9999", stock_name="候選股")
+    db.add(ShadowVirtualPortfolio(strategy_version=FV1, cash=1_000_000.0))
+    db.commit()
+    # 塞滿 5 檔既有部位（用跟候選股無關的股票代號，避免今天又被評估到）
+    for i, sid in enumerate(["1001", "1002", "1003", "1004", "1005"]):
+        _seed_position_with_lots(
+            db, strategy_version=FV1, stock_id=sid, stock_name=f"既有{i}", first_seen_date=D0,
+            lots=[{"entry_price": 50.0, "shares": 2000.0, "allocation": 100000.0}],
+        )
+
+    sp.run_daily_trading_strategy(db, target_date=D2, strategy_version=FV1)
+    db.commit()
+
+    decision = (
+        db.query(ShadowStrategyDailyDecision)
+        .filter(
+            ShadowStrategyDailyDecision.strategy_version == FV1,
+            ShadowStrategyDailyDecision.trade_date == D2,
+            ShadowStrategyDailyDecision.stock_id == "9999",
+        )
+        .first()
+    )
+    assert decision.action == sp.ACTION_SKIPPED_CAPACITY
+    assert sp.SKIP_REASON_PORTFOLIO_FULL in decision.action_reason
+    missed = db.query(ShadowMissedCandidate).filter(ShadowMissedCandidate.stock_id == "9999").first()
+    assert missed is not None and missed.skip_reason == sp.SKIP_REASON_PORTFOLIO_FULL
+
+    # Part 21：既有 5 檔部位完全沒有被強制賣出（沒有任何 SELL 訂單/決策）
+    assert db.query(ShadowStrategyOrder).filter(ShadowStrategyOrder.action == sp.ACTION_SELL).count() == 0
+    sell_decisions = (
+        db.query(ShadowStrategyDailyDecision)
+        .filter(ShadowStrategyDailyDecision.strategy_version == FV1, ShadowStrategyDailyDecision.action == sp.ACTION_SELL)
+        .count()
+    )
+    assert sell_decisions == 0
+
+
+def test_forward_v1_no_fixed_take_profit_even_when_actual_return_above_10_pct(db):
+    """FORWARD_V1 完全沒有固定停利：即使真實部位報酬 >= +10%，也只維持 HOLD，不產生
+    SELL/TAKE_PROFIT。"""
+    # 用一檔不在候選池評估邏輯之外、單純持有的股票（不需要今天觸發任何進場訊號）
+    _seed_trading_calendar(db, D0, 5)
+    _seed_price(db, "1101", D2, close=115.0)
+    db.add(ShadowVirtualPortfolio(strategy_version=FV1, cash=500000.0))
+    db.commit()
+    obs = _seed_observation(db, stock_id="1101", stock_name="台泥", first_seen_date=D0)
+    _seed_review(db, obs, D2, "CONTINUE", momentum_score=60.0)
+    _seed_hit(db, stock_id="1101", stock_name="台泥", snapshot_date_=D0)
+    _seed_position_with_lots(
+        db, strategy_version=FV1, stock_id="1101", stock_name="台泥", first_seen_date=D0,
+        lots=[{"entry_price": 100.0, "shares": 1000.0, "allocation": 100000.0}],
+    )
+    # actual_position_return = (115/100 - 1) * 100 = +15% >= 10%，遠高於 winner 門檻
+
+    sp.run_daily_trading_strategy(db, target_date=D2, strategy_version=FV1)
+    db.commit()
+
+    decision = (
+        db.query(ShadowStrategyDailyDecision)
+        .filter(ShadowStrategyDailyDecision.strategy_version == FV1, ShadowStrategyDailyDecision.stock_id == "1101")
+        .first()
+    )
+    assert decision.action == sp.ACTION_HOLD  # 不是 SELL
+    assert decision.actual_position_return == pytest.approx(15.0)
+    assert db.query(ShadowStrategyOrder).filter(ShadowStrategyOrder.action == sp.ACTION_SELL).count() == 0
+
+
+# ---------------------------------------------------------------------------
+# update_winner_tracking（Part 49，純觀察）
+# ---------------------------------------------------------------------------
+def test_update_winner_tracking_creates_row_only_once_threshold_crossed(db):
+    _seed_trading_calendar(db, D0, 5)
+    _seed_price(db, "1101", D1, close=105.0)  # +5%，還沒到 +10%
+    _seed_position_with_lots(
+        db, strategy_version=FV1, stock_id="1101", stock_name="台泥", first_seen_date=D0,
+        lots=[{"entry_price": 100.0, "shares": 1000.0, "allocation": 100000.0}],
+    )
+
+    updated = sp.update_winner_tracking(db, target_date=D1, strategy_version=FV1)
+    db.commit()
+    assert updated == 0
+    assert db.query(ShadowWinnerTracking).count() == 0
+
+    _seed_price(db, "1101", D2, close=112.0)  # +12%，跨過門檻
+    updated2 = sp.update_winner_tracking(db, target_date=D2, strategy_version=FV1)
+    db.commit()
+    assert updated2 == 1
+    row = db.query(ShadowWinnerTracking).first()
+    assert row.current_actual_return == pytest.approx(12.0)
+    assert row.highest_actual_return == pytest.approx(12.0)
+    assert row.winner_10_first_date == D2
+    assert row.drawdown_from_peak_pct == pytest.approx(0.0)
+
+
+def test_update_winner_tracking_keeps_tracking_after_falling_back_below_10_pct(db):
+    """一旦進入 Winner 生命週期，即使之後報酬跌回 10% 以下，仍要繼續記錄（觀察完整的
+    漲多少/回落多少），不能半路停止觀察。"""
+    _seed_trading_calendar(db, D0, 5)
+    _seed_position_with_lots(
+        db, strategy_version=FV1, stock_id="1101", stock_name="台泥", first_seen_date=D0,
+        lots=[{"entry_price": 100.0, "shares": 1000.0, "allocation": 100000.0}],
+    )
+    _seed_price(db, "1101", D1, close=120.0)  # +20%，peak
+    sp.update_winner_tracking(db, target_date=D1, strategy_version=FV1)
+    db.commit()
+
+    _seed_price(db, "1101", D2, close=105.0)  # 回落到 +5%（低於 10% 門檻，但曾經達標過）
+    updated = sp.update_winner_tracking(db, target_date=D2, strategy_version=FV1)
+    db.commit()
+    assert updated == 1
+
+    rows = db.query(ShadowWinnerTracking).order_by(ShadowWinnerTracking.trade_date).all()
+    assert len(rows) == 2
+    latest = rows[-1]
+    assert latest.current_actual_return == pytest.approx(5.0)
+    assert latest.highest_actual_return == pytest.approx(20.0)  # peak 仍是 D1 那天
+    assert latest.drawdown_from_peak_pct == pytest.approx(5.0 - 20.0)
+    assert latest.winner_10_first_date == D1  # 沿用第一次達標的日期，不會被之後的日期覆蓋
+
+
+def test_update_winner_tracking_idempotent_on_rerun_same_day(db):
+    _seed_trading_calendar(db, D0, 5)
+    _seed_price(db, "1101", D1, close=115.0)
+    _seed_position_with_lots(
+        db, strategy_version=FV1, stock_id="1101", stock_name="台泥", first_seen_date=D0,
+        lots=[{"entry_price": 100.0, "shares": 1000.0, "allocation": 100000.0}],
+    )
+    sp.update_winner_tracking(db, target_date=D1, strategy_version=FV1)
+    db.commit()
+    sp.update_winner_tracking(db, target_date=D1, strategy_version=FV1)  # 重跑同一天
+    db.commit()
+    assert db.query(ShadowWinnerTracking).count() == 1  # 沒有重複列，是 UPSERT

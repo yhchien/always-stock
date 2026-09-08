@@ -32,6 +32,7 @@ from app.auth import require_user
 from app.database import SessionLocal, get_db
 from app.industry_flow_service import get_latest_industry_trade_date
 from app.models import (
+    DailyPrice,
     SignalExpectationPrice,
     SignalGenerationJob,
     SignalSnapshot,
@@ -43,6 +44,7 @@ from app.signals import expectation_price as expectation_price_service
 from app.signals import observation_lifecycle
 from app.signals import outcome_metrics
 from app.signals.pipeline import run_signal_pipeline_sync
+from app.trading_calendar import is_trading_day
 
 logger = logging.getLogger(__name__)
 
@@ -987,11 +989,24 @@ def regenerate_signals(
 
     錯誤碼：
       - 401 未登入（Depends require_user）
+      - 400 `_resolve_target_date` 解析出的日期不是真實交易日（防止在非交易日誤觸發，
+        產生內容與前一個交易日幾乎相同的幽靈 SignalSnapshot——2026-08-09 那次事故的根因）。
+        **例外**：`daily_price` 整張表完全沒有任何資料時（全新系統第一次啟動，尚未跑過
+        任何一次 ETL）視為合法的 bootstrap 情境放行——這種情況下沒有任何真實交易日可供
+        比對，`_resolve_target_date` 落回「今天」是唯一合理的行為，不是這次要防的 bug。
       - 409 同 snapshot_date 已有 running job
       - 429 user 同日已達 10 次 / 全站同日已達 10 次
       - 202 Accepted + { job_id, snapshot_date }
     """
     target_date = _resolve_target_date(db)
+
+    if not is_trading_day(db, target_date):
+        has_any_price_data = db.query(DailyPrice.id).first() is not None
+        if has_any_price_data:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"{target_date.isoformat()} 不是交易日，無法重新產生訊號",
+            )
 
     if _has_running_job_for_date(db, target_date):
         raise HTTPException(

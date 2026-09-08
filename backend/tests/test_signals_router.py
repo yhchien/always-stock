@@ -419,6 +419,37 @@ def test_regenerate_happy_path_202_and_kicks_off_background(api):
     assert calls == [(body["job_id"], date(2026, 4, 25))]
 
 
+def test_regenerate_rejects_non_trading_day_when_real_price_data_exists(api, monkeypatch):
+    """迴歸測試：2026-08-09（週日）幽靈 SignalSnapshot 事故的根因——`_resolve_target_date`
+    在某些情況下可能解析出一個不是真實交易日的日期（這裡直接 monkeypatch 模擬那個失敗
+    模式），且 DB 裡明明已經有真實交易資料（不是空系統 bootstrap），這時必須擋下來，
+    不能悄悄用舊資料重新產生一份内容幾乎相同的快照。"""
+    client, db, calls = api
+    _seed_daily_price(db, "2330", date(2026, 8, 7), open_price=100.0, close_price=101.0)
+    _register_login(client)
+
+    monkeypatch.setattr(signals_router, "_resolve_target_date", lambda db: date(2026, 8, 9))
+
+    res = client.post("/api/signals/regenerate")
+    assert res.status_code == 400
+    assert "不是交易日" in res.json()["detail"]
+    assert calls == []  # 完全沒有排程任何背景任務
+
+
+def test_regenerate_allows_fallback_to_today_when_daily_price_table_is_completely_empty(api, monkeypatch):
+    """全新系統第一次啟動、`daily_price` 整張表完全沒有任何資料時，`_resolve_target_date`
+    落回「今天」是既有且合法的 bootstrap 行為（見 `test_regenerate_uses_today_when_no_
+    trade_data_or_snapshot`），不該被這次新增的交易日守門擋下。"""
+    client, db, calls = api
+    _register_login(client)
+
+    monkeypatch.setattr(signals_router, "_resolve_target_date", lambda db: date(2026, 4, 29))
+
+    res = client.post("/api/signals/regenerate")
+    assert res.status_code == 202
+    assert calls == [(res.json()["job_id"], date(2026, 4, 29))]
+
+
 def test_run_pipeline_safely_refreshes_archive_returns(monkeypatch):
     calls = []
 

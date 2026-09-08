@@ -75,12 +75,14 @@ from app.models import (
     DailyPrice,
     EtfClassification,
     ShadowCompletedTrade,
+    ShadowMissedCandidate,
     ShadowPositionLot,
     ShadowPortfolioDailySnapshot,
     ShadowStrategyDailyDecision,
     ShadowStrategyOrder,
     ShadowVirtualPortfolio,
     ShadowVirtualPosition,
+    ShadowWinnerTracking,
     SignalObservation,
     SignalObservationReview,
     SignalSnapshot,
@@ -112,6 +114,8 @@ def ensure_shadow_portfolio_tables(engine: Engine) -> None:
             ShadowStrategyDailyDecision.__table__,
             ShadowPortfolioDailySnapshot.__table__,
             ShadowCompletedTrade.__table__,
+            ShadowMissedCandidate.__table__,
+            ShadowWinnerTracking.__table__,
         ],
     )
     _ensure_shadow_virtual_portfolio_cycle_columns(engine)
@@ -161,6 +165,99 @@ V1_STRATEGY_PARAMS: Dict[str, Any] = {
     "real_stop_loss_pct": -8.0,
 }
 
+CYCLE_LENGTH_TRADING_DAYS = 35
+
+STRATEGY_VERSION_V1_FROZEN = "v1_frozen"
+STRATEGY_VERSION_CLEAN_FIXED_TP = "CLEAN_FIXED_TP"
+STRATEGY_VERSION_CLEAN_NO_FIXED_TP = "CLEAN_NO_FIXED_TP"
+STRATEGY_VERSION_FORWARD_V1 = "FORWARD_V1_202609"
+
+# ---------------------------------------------------------------------------
+# 多策略版本參數登記表 —— 2026-09 新增（Clean Baselines + FORWARD_V1_202609）。
+#
+# `V1_STRATEGY_PARAMS` 本身逐字不動（上面凍結區塊）；這裡只用「淺層 dict 合併」
+# 疊加語意旗標，v1_frozen 疊上去的旗標值全部等於它既有的隱含行為（見各旗標註解），
+# 保證這次重構對 v1_frozen 是零行為變更。任何呼叫這個引擎的地方都必須先
+# `params = STRATEGY_PARAMS_BY_VERSION[strategy_version]` 拿到完整參數，
+# **不可再直接引用模組層級的 `V1_STRATEGY_PARAMS`**（那是 2026-09 之前的舊 bug：
+# `execute_pending_strategy_orders`/`run_daily_trading_strategy` 幾處都曾經硬編碼
+# 這個常數，導致任何非 v1 的 strategy_version 實際上仍會用 v1 的資金/門檻執行）。
+#
+# 語意旗標：
+#   take_profit_basis: "mark_to_market" | "actual_position" | None（None=完全不做固定停利）
+#   max_units_per_stock / max_total_units: None = 無上限（FORWARD_V1 拿掉這兩個上限）
+#   max_position_exposure_pct: None = 無曝險上限；0.50 = 單檔 position cost 不得超過
+#       目前 portfolio equity 的 50%（FORWARD_V1 專用）
+#   add_requires_profit: True 時，加碼前必須 actual_position_return > 0，否則
+#       SKIP_ADD_POSITION_NOT_PROFITABLE（絕不攤平，FORWARD_V1 專用）
+#   cycle_reset_trading_days: None = 不做強制循環重置；v1_frozen 沿用既有 35 交易日
+#   granular_skip_reasons: True 時才會把「容量不足」拆成 SKIP_PORTFOLIO_FULL /
+#       SKIP_INSUFFICIENT_CASH / SKIP_POSITION_EXPOSURE_LIMIT 並寫入
+#       `ShadowMissedCandidate`；v1_frozen/Clean Baselines 維持既有單一
+#       ACTION_SKIPPED_CAPACITY 決策文字，逐字不變
+#   track_winners: True 時，daily runner 會額外呼叫 `update_winner_tracking()`
+# ---------------------------------------------------------------------------
+STRATEGY_PARAMS_BY_VERSION: Dict[str, Dict[str, Any]] = {
+    STRATEGY_VERSION_V1_FROZEN: {
+        **V1_STRATEGY_PARAMS,
+        "take_profit_basis": "mark_to_market",
+        "max_position_exposure_pct": None,
+        "add_requires_profit": False,
+        "cycle_reset_trading_days": CYCLE_LENGTH_TRADING_DAYS,
+        "granular_skip_reasons": False,
+        "track_winners": False,
+    },
+    STRATEGY_VERSION_CLEAN_FIXED_TP: {
+        **V1_STRATEGY_PARAMS,
+        "take_profit_basis": "actual_position",
+        "max_position_exposure_pct": None,
+        "add_requires_profit": False,
+        "cycle_reset_trading_days": None,
+        "granular_skip_reasons": False,
+        "track_winners": False,
+    },
+    STRATEGY_VERSION_CLEAN_NO_FIXED_TP: {
+        **V1_STRATEGY_PARAMS,
+        "take_profit_signal_pct": None,
+        "take_profit_basis": None,
+        "max_position_exposure_pct": None,
+        "add_requires_profit": False,
+        "cycle_reset_trading_days": None,
+        "granular_skip_reasons": False,
+        "track_winners": False,
+    },
+    STRATEGY_VERSION_FORWARD_V1: {
+        "initial_capital": V1_STRATEGY_PARAMS["initial_capital"],
+        "unit_capital": V1_STRATEGY_PARAMS["unit_capital"],
+        "max_stocks": V1_STRATEGY_PARAMS["max_stocks"],
+        "max_units_per_stock": None,
+        "max_total_units": None,
+        "max_position_exposure_pct": 0.50,
+        "setup_a": V1_STRATEGY_PARAMS["setup_a"],
+        "setup_b": V1_STRATEGY_PARAMS["setup_b"],
+        "take_profit_signal_pct": None,
+        "take_profit_basis": None,
+        "real_stop_loss_pct": V1_STRATEGY_PARAMS["real_stop_loss_pct"],
+        "add_requires_profit": True,
+        "cycle_reset_trading_days": None,
+        "granular_skip_reasons": True,
+        "track_winners": True,
+    },
+}
+
+SKIP_REASON_PORTFOLIO_FULL = "SKIP_PORTFOLIO_FULL"
+SKIP_REASON_INSUFFICIENT_CASH = "SKIP_INSUFFICIENT_CASH"
+SKIP_REASON_POSITION_EXPOSURE_LIMIT = "SKIP_POSITION_EXPOSURE_LIMIT"
+ACTION_SKIPPED_ADD_NOT_PROFITABLE = "SKIP_ADD_POSITION_NOT_PROFITABLE"
+WINNER_10_FLAG = "WINNER_10_REACHED"
+WINNER_10_THRESHOLD_PCT = 10.0
+
+_SKIP_REASON_LABELS = {
+    SKIP_REASON_PORTFOLIO_FULL: "名額已滿",
+    SKIP_REASON_INSUFFICIENT_CASH: "現金不足",
+    SKIP_REASON_POSITION_EXPOSURE_LIMIT: "單檔曝險已達上限",
+}
+
 ENTRY_TYPE_EARLY_HEALTHY_PULLBACK = "EARLY_HEALTHY_PULLBACK"
 ENTRY_TYPE_DEEP_PULLBACK = "DEEP_PULLBACK"
 
@@ -171,8 +268,6 @@ EXIT_REASON_REAL_STOP_LOSS = "REAL_POSITION_STOP_LOSS"
 # 35 交易日循環強制重置（見 check_and_apply_cycle_reset）——不是策略訊號觸發的
 # 正常出場，是行政性強制平倉，exit_execution_date 就是觸發當天，不等 T+1
 EXIT_REASON_CYCLE_RESET = "CYCLE_RESET"
-
-CYCLE_LENGTH_TRADING_DAYS = 35
 
 ACTION_WATCH = "WATCH"
 ACTION_BUY = "BUY"
@@ -281,21 +376,43 @@ def generate_entry_signal(row: EvidenceRow, params: dict) -> Optional[EntrySigna
     return EntrySignal(row=row, entry_type=best_type, entry_score=compute_entry_score(row, best_type))
 
 
-def generate_exit_signal(row: EvidenceRow, params: dict) -> Optional[ExitSignal]:
-    """優先序：P4_STOP > 官方平倉日 > +10% 固定停利。**-8% 真實停損不在這裡**——
+def generate_exit_signal(
+    row: EvidenceRow, params: dict, *, actual_position_return: Optional[float] = None
+) -> Optional[ExitSignal]:
+    """優先序：P4_STOP > 官方平倉日 > 固定停利（若啟用）。**-8% 真實停損不在這裡**——
     呼叫端必須先用實際部位報酬（average_entry_price 對今日收盤）檢查真實停損，
     只有沒觸發時才呼叫這個函式（見 `run_daily_trading_strategy` 與模組頂部說明）。
+
+    `params["take_profit_basis"]` 決定固定停利的判斷基準：
+      - "mark_to_market"（v1_frozen 既有行為，逐字不變）：用 `row.mark_to_market_return_pct`
+      - "actual_position"（CLEAN_FIXED_TP）：用呼叫端傳入的 `actual_position_return`
+        （真正 (今日收盤/實際持倉均價 - 1)，不是 tracking baseline）
+      - None（CLEAN_NO_FIXED_TP / FORWARD_V1_202609）：完全不做固定停利判斷
+    `actual_position_return` 未傳入時預設 None，對 `take_profit_basis="mark_to_market"`
+    的既有呼叫端（v1_frozen）完全零影響。
     """
     if row.p4_decision == "STOP_OBSERVING":
         return ExitSignal(reason=EXIT_REASON_P4_STOP, row=row)
     if row.is_official_exit_signal_day:
         return ExitSignal(reason=EXIT_REASON_OFFICIAL_EXIT, row=row)
+
     take_profit = params.get("take_profit_signal_pct")
-    if (
-        take_profit is not None
-        and row.mark_to_market_return_pct is not None
-        and row.mark_to_market_return_pct >= take_profit
-    ):
+    # `.get(..., "mark_to_market")`：key 完全缺席（呼叫端傳入尚未套用這次重構的舊版
+    # params dict，例如直接傳 `V1_STRATEGY_PARAMS` 常數本身）時，預設回到 v1 既有行為；
+    # 只有明確設成 `None`（CLEAN_NO_FIXED_TP / FORWARD_V1_202609 在登記表裡就是這樣設）
+    # 才代表「這個策略版本刻意關掉固定停利」。
+    basis = params.get("take_profit_basis", "mark_to_market")
+    if take_profit is None or basis is None:
+        return None
+
+    if basis == "mark_to_market":
+        reference = row.mark_to_market_return_pct
+    elif basis == "actual_position":
+        reference = actual_position_return
+    else:
+        raise ValueError(f"Unknown take_profit_basis: {basis!r}")
+
+    if reference is not None and reference >= take_profit:
         return ExitSignal(reason=EXIT_REASON_TAKE_PROFIT, row=row)
     return None
 
@@ -724,7 +841,7 @@ def _get_or_create_portfolio(db: Session, strategy_version: str) -> ShadowVirtua
     if portfolio is None:
         portfolio = ShadowVirtualPortfolio(
             strategy_version=strategy_version,
-            cash=V1_STRATEGY_PARAMS["initial_capital"],
+            cash=STRATEGY_PARAMS_BY_VERSION[strategy_version]["initial_capital"],
             realized_pnl_cumulative=0.0,
         )
         db.add(portfolio)
@@ -757,6 +874,33 @@ def _position_average_entry_price(db: Session, position_id: int) -> Optional[flo
     if total_shares <= 0:
         return None
     return total_cost / total_shares
+
+
+def _position_cost(db: Session, position_id: int) -> float:
+    """該部位所有 lot 的成本加總（不是市值）——Part 14 單檔曝險上限比的是
+    position cost，不是 mark-to-market 市值。"""
+    return (
+        db.query(func.coalesce(func.sum(ShadowPositionLot.allocation), 0.0))
+        .filter(ShadowPositionLot.position_id == position_id)
+        .scalar()
+        or 0.0
+    )
+
+
+def _compute_mark_to_market_equity(
+    db: Session, *, portfolio: ShadowVirtualPortfolio, positions: Dict[str, ShadowVirtualPosition], target_date: date
+) -> float:
+    """cash + 目前所有持倉的市值（缺當日收盤價時保守以成本代替，比照
+    `create_portfolio_daily_snapshot` 既有算法）——FORWARD_V1_202609 的
+    `max_position_exposure_pct` 需要用同一個「當下 portfolio equity」定義，
+    抽成獨立函式供兩處共用，避免出現兩套不一致的 equity 算法。"""
+    market_value = 0.0
+    for stock_id, pos in positions.items():
+        lots = db.query(ShadowPositionLot).filter(ShadowPositionLot.position_id == pos.id).all()
+        close = _latest_close(db, stock_id=stock_id, as_of=target_date)
+        for lot in lots:
+            market_value += lot.shares * close if close is not None else lot.allocation
+    return portfolio.cash + market_value
 
 
 def _record_completed_trade(
@@ -821,7 +965,13 @@ def execute_pending_strategy_orders(
 ) -> Dict[str, int]:
     """SELL 先於 BUY/ADD（spec §6：賣出釋放的現金當天就能用於買進）。self-healing：
     某股票 target_date 當天還沒有 daily_price 就跳過，繼續留 PENDING 等下次呼叫。
-    Idempotent：只處理 status=PENDING 的訂單，已執行過的訂單天然不會被重複處理。"""
+    Idempotent：只處理 status=PENDING 的訂單，已執行過的訂單天然不會被重複處理。
+
+    **2026-09 修正**：unit_capital 一律用 `STRATEGY_PARAMS_BY_VERSION[strategy_version]`，
+    不可再直接引用模組層級的 `V1_STRATEGY_PARAMS`（舊 bug：無論 `strategy_version` 是誰，
+    這裡先前都拿 v1 的資金額度執行，任何非 v1 策略會被靜默套用錯誤的單位金額）。
+    """
+    params = STRATEGY_PARAMS_BY_VERSION[strategy_version]
     portfolio = _get_or_create_portfolio(db, strategy_version)
     orders = (
         db.query(ShadowStrategyOrder)
@@ -895,8 +1045,8 @@ def execute_pending_strategy_orders(
                 executed["skipped_no_price"] += 1
                 continue
             price = float(price_row[0])
-            allocation = min(V1_STRATEGY_PARAMS["unit_capital"], portfolio.cash)
-            if allocation < V1_STRATEGY_PARAMS["unit_capital"] - 1e-6:
+            allocation = min(params["unit_capital"], portfolio.cash)
+            if allocation < params["unit_capital"] - 1e-6:
                 order.status = "FAILED"
                 order.reason = (order.reason or "") + "；執行時現金不足，訂單失敗"
                 executed["failed"] += 1
@@ -962,8 +1112,13 @@ def run_daily_trading_strategy(
 ) -> Dict[str, int]:
     """必須排在 `execute_pending_strategy_orders(target_date=target_date)` 之後、同一次
     呼叫內執行（spec §36：先執行昨天的訂單、更新 portfolio，才能用正確的持倉狀態決定今天
-    的動作）。"""
-    params = V1_STRATEGY_PARAMS
+    的動作）。
+
+    Idempotent：`already_decided` 用 `(strategy_version, trade_date, stock_id)` 排除
+    今天已經處理過的股票；同一天重跑只會補上「這次呼叫之前還沒被評估過」的股票，不會對
+    已存在的決策重寫或重複建立訂單。
+    """
+    params = STRATEGY_PARAMS_BY_VERSION[strategy_version]
     portfolio = _get_or_create_portfolio(db, strategy_version)
     positions = _load_positions(db, strategy_version)
     universe = resolve_tracking_universe(db, strategy_version=strategy_version, target_date=target_date)
@@ -984,8 +1139,11 @@ def run_daily_trading_strategy(
             db, stock_id=stock_id, stock_name=stock_name, first_seen_date=first_seen_date, target_date=target_date
         )
 
-    # ---- 出場判斷：真實 -8% 停損最優先，短路其他所有判斷 ----
+    # ---- 出場判斷：真實 -8% 停損最優先，短路其他所有判斷；順便記下每檔目前持有股票
+    # 「今天」的真實部位報酬（Part 5 的 actual_position_return），下面加碼門檻與
+    # HOLD 決策都重用同一份，不重算兩次、也不會跟這裡用的基準不一致 ----
     decided_exits: Dict[str, ExitSignal] = {}
+    actual_return_by_stock: Dict[str, Optional[float]] = {}
     for stock_id, evidence in evidence_by_stock.items():
         position = positions.get(stock_id)
         if position is None:
@@ -997,10 +1155,11 @@ def run_daily_trading_strategy(
             if avg_entry not in (None, 0) and today_close is not None
             else None
         )
+        actual_return_by_stock[stock_id] = actual_position_return
         if actual_position_return is not None and actual_position_return <= params["real_stop_loss_pct"]:
             decided_exits[stock_id] = ExitSignal(reason=EXIT_REASON_REAL_STOP_LOSS, row=evidence)
             continue
-        sig = generate_exit_signal(evidence, params)
+        sig = generate_exit_signal(evidence, params, actual_position_return=actual_position_return)
         if sig is not None:
             decided_exits[stock_id] = sig
 
@@ -1029,32 +1188,66 @@ def run_daily_trading_strategy(
         lots = db.query(ShadowPositionLot).filter(ShadowPositionLot.position_id == pos.id).all()
         projected_cash += sum(lot.allocation for lot in lots)  # 保守估計，忽略損益
 
+    # FORWARD_V1_202609 專用：單檔曝險比對用的 equity，決策當下算一次固定值，不隨這次
+    # 迴圈內陸續 accept 的候選重算（見 `_compute_mark_to_market_equity` docstring）。
+    # 其餘策略版本 `max_position_exposure_pct` 為 None，完全不會走進這個分支。
+    current_equity: Optional[float] = None
+    if params.get("max_position_exposure_pct") is not None:
+        current_equity = _compute_mark_to_market_equity(
+            db, portfolio=portfolio, positions=positions, target_date=target_date
+        )
+
     accepted: Dict[str, EntrySignal] = {}
-    skipped_capacity: Dict[str, EntrySignal] = {}
+    skipped_capacity: Dict[str, Tuple[EntrySignal, str]] = {}
+    skipped_not_profitable: Dict[str, EntrySignal] = {}
     for sig in candidates:
         stock_id = sig.row.stock_id
         already_held = stock_id in projected_stocks
+
+        # Part 16：絕不攤平——加碼前必須先確認目前部位已經是賺錢的，否則整筆直接
+        # 略過（既不是 accepted，也不算容量不足，是獨立的策略性拒絕）。只有
+        # `add_requires_profit=True` 的版本（FORWARD_V1_202609）會走到這個分支。
+        if already_held and params.get("add_requires_profit"):
+            current_return = actual_return_by_stock.get(stock_id)
+            if current_return is None or current_return <= 0:
+                skipped_not_profitable[stock_id] = sig
+                continue
+
         existing_units = 0
+        existing_cost = 0.0
         if already_held and stock_id in positions:
             existing_units = _position_units(db, positions[stock_id].id)
+            existing_cost = _position_cost(db, positions[stock_id].id)
+
+        skip_reason: Optional[str] = None
         if not already_held and len(projected_stocks) >= params["max_stocks"]:
-            skipped_capacity[stock_id] = sig
+            skip_reason = SKIP_REASON_PORTFOLIO_FULL
+        elif params.get("max_units_per_stock") is not None and existing_units >= params["max_units_per_stock"]:
+            skip_reason = SKIP_REASON_PORTFOLIO_FULL
+        elif params.get("max_total_units") is not None and projected_units >= params["max_total_units"]:
+            skip_reason = SKIP_REASON_PORTFOLIO_FULL
+        elif projected_cash < params["unit_capital"]:
+            skip_reason = SKIP_REASON_INSUFFICIENT_CASH
+        elif (
+            params.get("max_position_exposure_pct") is not None
+            and current_equity
+            and (existing_cost + params["unit_capital"]) / current_equity > params["max_position_exposure_pct"]
+        ):
+            skip_reason = SKIP_REASON_POSITION_EXPOSURE_LIMIT
+
+        if skip_reason is not None:
+            skipped_capacity[stock_id] = (sig, skip_reason)
             continue
-        if existing_units >= params["max_units_per_stock"]:
-            skipped_capacity[stock_id] = sig
-            continue
-        if projected_units >= params["max_total_units"]:
-            skipped_capacity[stock_id] = sig
-            continue
-        if projected_cash < params["unit_capital"]:
-            skipped_capacity[stock_id] = sig
-            continue
+
         accepted[stock_id] = sig
         projected_stocks.add(stock_id)
         projected_units += 1
         projected_cash -= params["unit_capital"]
 
-    counts = {"buy": 0, "add": 0, "sell": 0, "hold": 0, "watch": 0, "skipped_capacity": 0}
+    counts = {
+        "buy": 0, "add": 0, "sell": 0, "hold": 0, "watch": 0,
+        "skipped_capacity": 0, "skipped_not_profitable": 0,
+    }
 
     # ---- 寫 orders + 每日決策紀錄 ----
     for stock_id, exit_sig in decided_exits.items():
@@ -1078,7 +1271,7 @@ def run_daily_trading_strategy(
                 action_reason=exit_sig.reason, p3_selected_today=evidence.p3_selected_today,
                 hit_count=evidence.hit_count_so_far, momentum_score=evidence.momentum_score,
                 mark_to_market_return_pct=evidence.mark_to_market_return_pct, p4_decision=evidence.p4_decision,
-                position_units=held_units,
+                position_units=held_units, actual_position_return=actual_return_by_stock.get(stock_id),
                 scheduled_execution_date=next_weekday_guess(target_date),
             )
         )
@@ -1101,7 +1294,7 @@ def run_daily_trading_strategy(
                 scheduled_execution_date=next_weekday_guess(target_date),
                 status=ORDER_STATUS_PENDING, reason=f"entry_score={sig.entry_score:.2f}",
                 entry_pattern=sig.entry_type, units=1,
-                planned_amount=V1_STRATEGY_PARAMS["unit_capital"], signal_snapshot=snapshot,
+                planned_amount=params["unit_capital"], signal_snapshot=snapshot,
             )
         )
         db.add(
@@ -1113,27 +1306,85 @@ def run_daily_trading_strategy(
                 hit_count=evidence.hit_count_so_far, momentum_score=evidence.momentum_score,
                 mark_to_market_return_pct=evidence.mark_to_market_return_pct, p4_decision=evidence.p4_decision,
                 position_units=(_position_units(db, positions[stock_id].id) if already_held else 0),
+                actual_position_return=(actual_return_by_stock.get(stock_id) if already_held else None),
                 entry_score=sig.entry_score, scheduled_execution_date=next_weekday_guess(target_date),
             )
         )
         counts["add" if action == ACTION_ADD else "buy"] += 1
 
-    for stock_id, sig in skipped_capacity.items():
+    for stock_id, (sig, skip_reason) in skipped_capacity.items():
         evidence = sig.row
+        if params.get("granular_skip_reasons"):
+            # FORWARD_V1_202609：拆分具體原因 + 寫入 ShadowMissedCandidate 供事後
+            # 歸因（Part 22/50，5d/10d/max return 一律在報告產生時另外 join 現算）。
+            action_reason = (
+                f"{skip_reason}：符合 {sig.entry_type} 但{_SKIP_REASON_LABELS[skip_reason]}，"
+                f"entry_score={sig.entry_score:.2f}"
+            )
+            db.add(
+                ShadowStrategyDailyDecision(
+                    strategy_version=strategy_version, trade_date=target_date,
+                    stock_id=stock_id, stock_name=evidence.stock_name, action=ACTION_SKIPPED_CAPACITY,
+                    action_reason=action_reason,
+                    entry_pattern=sig.entry_type, p3_selected_today=evidence.p3_selected_today,
+                    hit_count=evidence.hit_count_so_far, momentum_score=evidence.momentum_score,
+                    mark_to_market_return_pct=evidence.mark_to_market_return_pct, p4_decision=evidence.p4_decision,
+                    entry_score=sig.entry_score,
+                )
+            )
+            db.add(
+                ShadowMissedCandidate(
+                    strategy_version=strategy_version, trade_date=target_date,
+                    stock_id=stock_id, stock_name=evidence.stock_name,
+                    entry_pattern=sig.entry_type, entry_score=sig.entry_score,
+                    skip_reason=skip_reason,
+                    portfolio_snapshot={
+                        "cash": portfolio.cash,
+                        "position_count": len(positions),
+                        "equity": current_equity,
+                    },
+                )
+            )
+        else:
+            # v1_frozen / Clean Baselines：逐字保留既有決策文字（單一籠統原因），
+            # 零行為變更——這兩類策略從不啟用 granular_skip_reasons。
+            db.add(
+                ShadowStrategyDailyDecision(
+                    strategy_version=strategy_version, trade_date=target_date,
+                    stock_id=stock_id, stock_name=evidence.stock_name, action=ACTION_SKIPPED_CAPACITY,
+                    action_reason=f"符合 {sig.entry_type} 但資金/名額容量不足，entry_score={sig.entry_score:.2f}",
+                    entry_pattern=sig.entry_type, p3_selected_today=evidence.p3_selected_today,
+                    hit_count=evidence.hit_count_so_far, momentum_score=evidence.momentum_score,
+                    mark_to_market_return_pct=evidence.mark_to_market_return_pct, p4_decision=evidence.p4_decision,
+                    entry_score=sig.entry_score,
+                )
+            )
+        counts["skipped_capacity"] += 1
+
+    for stock_id, sig in skipped_not_profitable.items():
+        evidence = sig.row
+        current_return = actual_return_by_stock.get(stock_id)
         db.add(
             ShadowStrategyDailyDecision(
                 strategy_version=strategy_version, trade_date=target_date,
-                stock_id=stock_id, stock_name=evidence.stock_name, action=ACTION_SKIPPED_CAPACITY,
-                action_reason=f"符合 {sig.entry_type} 但資金/名額容量不足，entry_score={sig.entry_score:.2f}",
+                stock_id=stock_id, stock_name=evidence.stock_name, action=ACTION_SKIPPED_ADD_NOT_PROFITABLE,
+                action_reason=(
+                    f"{sig.entry_type} 再次成立（entry_score={sig.entry_score:.2f}），"
+                    f"但目前部位尚未獲利（actual_position_return="
+                    f"{current_return:.2f}% ）—— 依規則絕不攤平，不加碼"
+                    if current_return is not None
+                    else f"{sig.entry_type} 再次成立，但無法確認目前部位是否獲利——依規則絕不攤平，不加碼"
+                ),
                 entry_pattern=sig.entry_type, p3_selected_today=evidence.p3_selected_today,
                 hit_count=evidence.hit_count_so_far, momentum_score=evidence.momentum_score,
                 mark_to_market_return_pct=evidence.mark_to_market_return_pct, p4_decision=evidence.p4_decision,
-                entry_score=sig.entry_score,
+                actual_position_return=current_return, entry_score=sig.entry_score,
+                position_units=(_position_units(db, positions[stock_id].id) if stock_id in positions else None),
             )
         )
-        counts["skipped_capacity"] += 1
+        counts["skipped_not_profitable"] += 1
 
-    handled = set(decided_exits) | set(accepted) | set(skipped_capacity)
+    handled = set(decided_exits) | set(accepted) | set(skipped_capacity) | set(skipped_not_profitable)
     for stock_id, evidence in evidence_by_stock.items():
         if stock_id in handled:
             continue
@@ -1147,12 +1398,98 @@ def run_daily_trading_strategy(
                 p3_selected_today=evidence.p3_selected_today, hit_count=evidence.hit_count_so_far,
                 momentum_score=evidence.momentum_score,
                 mark_to_market_return_pct=evidence.mark_to_market_return_pct, p4_decision=evidence.p4_decision,
+                actual_position_return=(actual_return_by_stock.get(stock_id) if held else None),
                 position_units=(_position_units(db, positions[stock_id].id) if held else None),
             )
         )
         counts["hold" if held else "watch"] += 1
 
     return counts
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator 2b（FORWARD_V1_202609 專用）：Winner 生命週期純觀察紀錄
+# ---------------------------------------------------------------------------
+def update_winner_tracking(
+    db: Session, *, target_date: date, strategy_version: str = STRATEGY_VERSION
+) -> int:
+    """Part 49：任一持倉的 actual_position_return 首次 `>= +10%` 之後，只要部位還開著，
+    每個交易日 UPSERT 一列到 `ShadowWinnerTracking`，記錄它後續怎麼走（現在報酬／歷史
+    最高報酬／從高點回落多少）。**純觀察，決策引擎（`run_daily_trading_strategy`）完全
+    不讀這張表**——這裡故意不做 `params["track_winners"]` 短路判斷，維持函式本身單純、
+    好測試；要不要呼叫它是呼叫端（daily runner／replay harness）依策略版本自行決定。
+
+    只有一次 `actual_position_return >= 10%` 之後才開始建列（見迴圈內的
+    `existing_any is None: continue` 短路）；一旦開始追蹤，即使之後報酬又跌回 10% 以下
+    也會繼續記錄（觀察它完整的漲多少、回落多少），不會半路停止觀察。
+
+    回傳這次呼叫實際 UPSERT 了幾列，方便呼叫端記 log。
+    """
+    positions = _load_positions(db, strategy_version)
+    updated = 0
+    for stock_id, position in positions.items():
+        avg_entry = _position_average_entry_price(db, position.id)
+        today_close = _latest_close(db, stock_id=stock_id, as_of=target_date)
+        if avg_entry in (None, 0) or today_close is None:
+            continue
+        current_actual_return = (today_close / avg_entry - 1) * 100.0
+
+        prior_rows = (
+            db.query(ShadowWinnerTracking)
+            .filter(
+                ShadowWinnerTracking.strategy_version == strategy_version,
+                ShadowWinnerTracking.stock_id == stock_id,
+                ShadowWinnerTracking.first_seen_date == position.first_seen_date,
+            )
+            .order_by(ShadowWinnerTracking.trade_date.asc())
+            .all()
+        )
+
+        if current_actual_return < WINNER_10_THRESHOLD_PCT and not prior_rows:
+            # 從未達標過、今天也沒達標 -> 這個部位還沒進入 Winner 生命週期，不用建列
+            continue
+
+        if prior_rows:
+            winner_10_first_date = prior_rows[0].winner_10_first_date
+            highest_actual_return = max(prior_rows[-1].highest_actual_return, current_actual_return)
+        else:
+            winner_10_first_date = target_date
+            highest_actual_return = current_actual_return
+        drawdown_from_peak_pct = current_actual_return - highest_actual_return  # 恆 <= 0
+
+        evidence = build_daily_evidence(
+            db, stock_id=stock_id, stock_name=position.stock_name,
+            first_seen_date=position.first_seen_date, target_date=target_date,
+        )
+
+        row = (
+            db.query(ShadowWinnerTracking)
+            .filter(
+                ShadowWinnerTracking.strategy_version == strategy_version,
+                ShadowWinnerTracking.stock_id == stock_id,
+                ShadowWinnerTracking.first_seen_date == position.first_seen_date,
+                ShadowWinnerTracking.trade_date == target_date,
+            )
+            .first()
+        )
+        if row is None:
+            row = ShadowWinnerTracking(
+                strategy_version=strategy_version, stock_id=stock_id,
+                first_seen_date=position.first_seen_date, trade_date=target_date,
+                winner_10_first_date=winner_10_first_date, current_actual_return=current_actual_return,
+                highest_actual_return=highest_actual_return, drawdown_from_peak_pct=drawdown_from_peak_pct,
+            )
+            db.add(row)
+        else:
+            row.winner_10_first_date = winner_10_first_date
+            row.current_actual_return = current_actual_return
+            row.highest_actual_return = highest_actual_return
+            row.drawdown_from_peak_pct = drawdown_from_peak_pct
+        row.momentum_score = evidence.momentum_score
+        row.p4_decision = evidence.p4_decision
+        row.tracking_return = evidence.mark_to_market_return_pct
+        updated += 1
+    return updated
 
 
 # ---------------------------------------------------------------------------
@@ -1176,7 +1513,7 @@ def create_portfolio_daily_snapshot(
             market_value += lot.shares * close if close is not None else lot.allocation
 
     total_equity = portfolio.cash + market_value
-    initial_capital = V1_STRATEGY_PARAMS["initial_capital"]
+    initial_capital = STRATEGY_PARAMS_BY_VERSION[strategy_version]["initial_capital"]
     total_return_pct = (total_equity - initial_capital) / initial_capital * 100.0
 
     pending_buy_count = (
@@ -1259,11 +1596,20 @@ def check_and_apply_cycle_reset(
     決策紀錄）或 `ShadowCompletedTrade`（永久保存的已平倉交易）——只清「目前部位」
     這個可變狀態，比照既有 `signal_watch_hits`（會清）vs
     `signal_watch_completed_archives`（永久）的既有分離原則。
+
+    `strategy_version` 的 `cycle_reset_trading_days` 若是 `None`（Clean Baselines /
+    FORWARD_V1_202609 皆是）——這個概念只屬於 v1_frozen 的既有生產迴圈設計，spec 對
+    FORWARD_V1_202609 完全沒有提到強制重置，直接整段 no-op。
     """
+    params = STRATEGY_PARAMS_BY_VERSION[strategy_version]
+    cycle_length = params.get("cycle_reset_trading_days")
+    if cycle_length is None:
+        return False
+
     portfolio = _get_or_create_portfolio(db, strategy_version)
 
     if portfolio.cycle_start_trade_date is None:
-        # 這個 strategy_version 第一次真正運作（第一天不可能滿 35 天）
+        # 這個 strategy_version 第一次真正運作（第一天不可能滿一個完整循環）
         portfolio.cycle_start_trade_date = target_date
         return False
 
@@ -1271,7 +1617,7 @@ def check_and_apply_cycle_reset(
         db, strategy_version=strategy_version,
         cycle_start_trade_date=portfolio.cycle_start_trade_date, target_date=target_date,
     )
-    if days_in_cycle < CYCLE_LENGTH_TRADING_DAYS:
+    if days_in_cycle < cycle_length:
         return False
 
     # ---- 觸發重置：強制平倉所有目前持倉，寫入永久交易紀錄 ----
@@ -1306,7 +1652,7 @@ def check_and_apply_cycle_reset(
     ).update({"status": "CANCELLED"}, synchronize_session=False)
 
     # ---- 重設 portfolio 現金/循環狀態 ----
-    portfolio.cash = V1_STRATEGY_PARAMS["initial_capital"]
+    portfolio.cash = params["initial_capital"]
     portfolio.realized_pnl_cumulative = 0.0
     portfolio.cycle_number += 1
     portfolio.cycle_start_trade_date = None  # 下次呼叫的第一天會重新設定

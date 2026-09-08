@@ -115,11 +115,12 @@ def main(argv: list) -> int:
 
     try:
         from app.database import SessionLocal, engine
-        from app.models import DailyPrice, SignalGenerationJob
+        from app.models import SignalGenerationJob
         from app.observation_schema import ensure_observation_tables
         from app.outcome_schema import ensure_outcome_tables
         from app.signals.outcome_metrics import refresh_incremental_outcomes
         from app.signals.pipeline import run_signal_pipeline_sync
+        from app.trading_calendar import is_trading_day
     except Exception:
         logger.exception("Failed to import pipeline modules")
         return EXIT_DB_ERROR
@@ -130,12 +131,7 @@ def main(argv: list) -> int:
     # （白白多打一次 LLM，還多一次觸發下游驗證失敗的機會）。
     try:
         with SessionLocal() as db:
-            has_trade_data = (
-                db.query(DailyPrice.id)
-                .filter(DailyPrice.trade_date == target_date)
-                .first()
-                is not None
-            )
+            has_trade_data = is_trading_day(db, target_date)
     except Exception:
         logger.exception("Failed to check trading day for target_date=%s", target_date)
         return EXIT_DB_ERROR

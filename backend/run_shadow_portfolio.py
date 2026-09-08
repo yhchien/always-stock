@@ -52,8 +52,8 @@ def main(argv: list) -> int:
 
     try:
         from app.database import SessionLocal, engine
-        from app.models import DailyPrice
         from app.signals import shadow_portfolio as sp
+        from app.trading_calendar import is_trading_day
     except Exception:
         logger.exception("Failed to import shadow_portfolio modules")
         return EXIT_DB_ERROR
@@ -80,12 +80,7 @@ def main(argv: list) -> int:
 
     try:
         with SessionLocal() as db:
-            has_trade_data = (
-                db.query(DailyPrice.id)
-                .filter(DailyPrice.trade_date == target_date)
-                .first()
-                is not None
-            )
+            has_trade_data = is_trading_day(db, target_date)
     except Exception:
         logger.exception("Failed to check trading day for target_date=%s", target_date)
         return EXIT_DB_ERROR

@@ -1402,3 +1402,65 @@ class ShadowCompletedTrade(Base):
     followed_by_rotation = Column(Boolean, nullable=False, default=False)
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class ShadowMissedCandidate(Base):
+    """FORWARD_V1_202609（無 Rotation）專用：append-only 記錄所有因為滿倉/現金不足/單檔
+    曝險上限而沒有買進的候選（見 shadow_portfolio.STRATEGY_PARAMS_BY_VERSION 的
+    `granular_skip_reasons` 旗標，只有它啟用的策略版本才會寫入這張表）。
+
+    **刻意不存任何「事後 N 日報酬」欄位**——這張表本身是 append-only 的決策當下快照，
+    事後歸因（5 日/10 日/最大報酬、後續是否被 P4 停止）一律在報告產生時用
+    `trade_date`/`stock_id` join `daily_price`/`signal_observations` 現算，不回頭 UPDATE
+    這張表，避免任何「append-only 表卻需要事後補值」的兩難。
+    """
+    __tablename__ = "shadow_missed_candidates"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    strategy_version = Column(String(32), nullable=False, index=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    stock_id = Column(String, nullable=False, index=True)
+    stock_name = Column(String, nullable=False)
+    entry_pattern = Column(String(32), nullable=True)
+    entry_score = Column(Float, nullable=True)
+    skip_reason = Column(String(32), nullable=False)  # SKIP_PORTFOLIO_FULL | SKIP_INSUFFICIENT_CASH | SKIP_POSITION_EXPOSURE_LIMIT
+    portfolio_snapshot = Column(JSON, nullable=True)  # {cash, position_count, equity} 決策當下狀態
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "strategy_version", "trade_date", "stock_id", name="uq_shadow_missed_strategy_date_stock"
+        ),
+    )
+
+
+class ShadowWinnerTracking(Base):
+    """FORWARD_V1_202609 專用：純觀察，**決策引擎完全不讀這張表**（見 spec Part 20/49，
+    「Winner 只觀察、不管理」）。任一持倉首次 `actual_position_return >= +10%` 之後，
+    只要部位還開著，每個交易日 UPSERT 一列，記錄它後續怎麼走——為未來研究 Winner
+    Rotation/Trailing 累積真正 out-of-sample 的資料，這一輪本身不使用這些資料做任何決策。
+    """
+    __tablename__ = "shadow_winner_tracking"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    strategy_version = Column(String(32), nullable=False, index=True)
+    stock_id = Column(String, nullable=False, index=True)
+    first_seen_date = Column(Date, nullable=False)  # 對應 ShadowVirtualPosition.first_seen_date，區分同股票不同輪
+    trade_date = Column(Date, nullable=False, index=True)
+
+    winner_10_first_date = Column(Date, nullable=False)  # 這個部位第一次達到 +10% 的日期，之後每天原樣帶著
+    current_actual_return = Column(Float, nullable=False)
+    highest_actual_return = Column(Float, nullable=False)
+    drawdown_from_peak_pct = Column(Float, nullable=False)
+    momentum_score = Column(Float, nullable=True)
+    p4_decision = Column(String(32), nullable=True)
+    tracking_return = Column(Float, nullable=True)  # mark_to_market_return_pct，供對照參考用
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "strategy_version", "stock_id", "first_seen_date", "trade_date",
+            name="uq_shadow_winner_strategy_stock_first_seen_date",
+        ),
+    )
