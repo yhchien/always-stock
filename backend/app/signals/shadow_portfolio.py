@@ -608,33 +608,24 @@ def build_daily_evidence(
     )
 
 
-def resolve_tracking_universe(
-    db: Session, *, strategy_version: str, target_date: date
-) -> List[Tuple[str, str, date]]:
-    """回傳 target_date 當天要評估的 (stock_id, stock_name, first_seen_date) 清單——
-    `first_seen_date` 一律以**魚尾**（`signal_watch_hits`／已封存的
-    `signal_watch_completed_archives`／`signal_watch_stopped_observations`）認定的追蹤
-    週期起點為準，**不是** P4 `SignalObservation.started_signal_date`（見模組頂部說明：
-    兩套系統的 episode 邊界獨立、經常不同步；沙盒驗證用的資料正是從魚尾匯出的）。
+def resolve_fishtail_universe(db: Session, *, target_date: date) -> Dict[str, Tuple[str, str, date]]:
+    """魚尾（`signal_watch_hits`／已封存的 `signal_watch_completed_archives`／
+    `signal_watch_stopped_observations`）認定的追蹤週期聯集，`{stock_id: (stock_id,
+    stock_name, first_seen_date)}`——`resolve_tracking_universe()` 的 (a)+(b) 部分抽出
+    成獨立公開函式，供其他策略版本（例如實驗性的 Winner Management / Rotation 引擎，見
+    `shadow_portfolio_experiments.py`）重用同一套「魚尾候選來源」邏輯，不用各自重寫一份；
+    ETF 排除／(c) 現有持倉 union 留在 `resolve_tracking_universe()`（那兩步是 v1 orchestrator
+    特有的行為，不是所有呼叫端都需要）。
 
-    聯集三個來源：
     (a) 目前仍在 `signal_watch_hits` 活躍追蹤中的股票（尚未結算/封存），first_seen_date
         = 該股票目前這輪的最早 `snapshot_date`
     (b) 已經結算/封存、但 `[first_seen_date, completed_trade_date]` 涵蓋 target_date 的
         歷史週期——(a) 只反映「呼叫當下」的即時狀態，對已經結算的歷史週期查不到任何列；
         backfill/replay 重播「已經是過去」的日期時，必須額外查這兩張封存表才拿得到正確
-        的 universe（正常每日排程評估「今天」時，這個來源理論上不會貢獻任何額外股票，
-        因為若真的今天才結算，出場交易發生前 (a) 那邊仍然查得到）
-    (c) 目前 Shadow Portfolio 有持倉的股票（防禦性——即使魚尾/P4 那邊已結算，已持倉的
-        股票仍要繼續被評估是否該出場，不能因為追蹤週期已終止就漏掉真正持有的部位）
-
-    ETF 排除（v1 凍結參數 `exclude_etf=True`）：改查 Phase 1 canonical classification 的
-    `EtfClassification` 表——真實資料驗證發現 `SignalObservation.asset_type` 對槓桿/反向
-    ETF（如 `00753L`）分類不準確，`EtfClassification` 才是正確辨識來源。
+        的 universe。
     """
     universe: Dict[str, Tuple[str, str, date]] = {}
 
-    # (a) 目前仍活躍的魚尾週期
     active_rows = (
         db.query(SignalWatchHit.stock_id, SignalWatchHit.stock_name, func.min(SignalWatchHit.snapshot_date))
         .group_by(SignalWatchHit.stock_id, SignalWatchHit.stock_name)
@@ -644,7 +635,6 @@ def resolve_tracking_universe(
         if first_seen_date <= target_date:
             universe[stock_id] = (stock_id, stock_name, first_seen_date)
 
-    # (b) 已封存但當時涵蓋 target_date（backfill/replay 需要）
     for model_cls in _FISHTAIL_ARCHIVE_MODELS:
         archived_rows = (
             db.query(model_cls.stock_id, model_cls.stock_name, model_cls.first_seen_date)
@@ -657,7 +647,38 @@ def resolve_tracking_universe(
         for stock_id, stock_name, first_seen_date in archived_rows:
             universe.setdefault(stock_id, (stock_id, stock_name, first_seen_date))
 
-    # (c) 既有持倉防禦性 union
+    return universe
+
+
+def filter_out_etfs(db: Session, universe: Dict[str, Tuple[str, str, date]]) -> Dict[str, Tuple[str, str, date]]:
+    """v1 凍結參數 `exclude_etf=True`：改查 Phase 1 canonical classification 的
+    `EtfClassification` 表——真實資料驗證發現 `SignalObservation.asset_type` 對槓桿/反向
+    ETF（如 `00753L`）分類不準確，`EtfClassification` 才是正確辨識來源。抽成獨立函式
+    供 `resolve_tracking_universe()` 與其他策略版本共用。"""
+    etf_ids = {
+        row[0]
+        for row in db.query(EtfClassification.stock_id)
+        .filter(EtfClassification.stock_id.in_(list(universe.keys())))
+        .all()
+    }
+    return {sid: v for sid, v in universe.items() if sid not in etf_ids}
+
+
+def resolve_tracking_universe(
+    db: Session, *, strategy_version: str, target_date: date
+) -> List[Tuple[str, str, date]]:
+    """回傳 target_date 當天要評估的 (stock_id, stock_name, first_seen_date) 清單——
+    `first_seen_date` 一律以**魚尾**認定的追蹤週期起點為準，**不是** P4
+    `SignalObservation.started_signal_date`（見模組頂部說明：兩套系統的 episode 邊界
+    獨立、經常不同步；沙盒驗證用的資料正是從魚尾匯出的）。
+
+    `resolve_fishtail_universe()` 的聯集，再 union (c) 目前這個 strategy_version 在
+    Shadow Portfolio 有持倉的股票（防禦性——即使魚尾/P4 那邊已結算，已持倉的股票仍要
+    繼續被評估是否該出場，不能因為追蹤週期已終止就漏掉真正持有的部位），最後套用
+    `filter_out_etfs()`。
+    """
+    universe = dict(resolve_fishtail_universe(db, target_date=target_date))
+
     for pos in (
         db.query(ShadowVirtualPosition)
         .filter(ShadowVirtualPosition.strategy_version == strategy_version)
@@ -665,13 +686,7 @@ def resolve_tracking_universe(
     ):
         universe.setdefault(pos.stock_id, (pos.stock_id, pos.stock_name, pos.first_seen_date))
 
-    etf_ids = {
-        row[0]
-        for row in db.query(EtfClassification.stock_id)
-        .filter(EtfClassification.stock_id.in_(list(universe.keys())))
-        .all()
-    }
-    filtered = {sid: v for sid, v in universe.items() if sid not in etf_ids}
+    filtered = filter_out_etfs(db, universe)
 
     return sorted(filtered.values(), key=lambda t: t[0])
 

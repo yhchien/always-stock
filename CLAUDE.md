@@ -1,5 +1,97 @@
 # always-stock 專案記憶
 
+## Test B：Winner Management + Portfolio Rotation 假說驗證（2026-09-08）
+
+### 背景
+使用者要求驗證「固定 +10% 全部停利可能過早賣掉真正的大贏家」這個假說，指定建立完全獨立
+的 `strategy_version = TEST_B_ROTATION`，不可修改或覆寫既有 `v1_frozen`。規格書極度詳細
+（40+ 條規則、20 個單元測試、42 項報告輸出要求）。
+
+### 架構決定：純記憶體回測引擎，零 DB 寫入
+跟 v1 當初在 `fishtail_backtest/` 沙盒先驗證再考慮移植的模式一致：Test A／Test B **完全
+不寫入任何 Shadow Portfolio DB 表**（`ShadowVirtualPortfolio`／`ShadowVirtualPosition`／
+`ShadowStrategyOrder`／`ShadowCompletedTrade` 一律不動），對 v1_frozen 零風險。資料來源
+唯讀重用 `shadow_portfolio.py` 已修好的證據建構函式（`build_daily_evidence`／
+`generate_entry_signal`／`compute_entry_score`），確保三組比較用的是同一套「已修好 first_
+seen_date bug」的候選來源，不是舊沙盒的過期 CSV。
+
+小重構（行為不變，既有測試全過）：把 `resolve_tracking_universe()` 的「魚尾候選聯集」
+拆成獨立公開函式 `resolve_fishtail_universe()` + `filter_out_etfs()`，供新引擎重用。
+
+### 新模組
+- [backend/app/signals/shadow_portfolio_experiments.py](backend/app/signals/shadow_portfolio_experiments.py)：
+  `ExperimentEngine`（`MODE_TEST_A_HOLD_FOREVER` / `MODE_TEST_B_ROTATION`）、Position/Lot
+  純記憶體資料結構、`compute_hold_score`（P4 狀態/動能水準/動能趨勢/P3 重選/tracking 趨勢/
+  高點回落六項證據）、`normalize_entry_score`／`normalize_hold_score`（映射到 0~10 同尺度）、
+  Winner Management 狀態機（WINNER_STRONG/HEALTHY/WEAKENING/ROTATION_ELIGIBLE）、Rotation
+  邏輯（`ROTATION_MIN_EDGE` 門檻、Full/Partial 判斷、同日 hard exit 先釋放 slot）
+- [backend/tests/test_shadow_portfolio_experiments.py](backend/tests/test_shadow_portfolio_experiments.py)：
+  20 個單元測試（規格 §40 全部覆蓋），全過
+- [backend/run_testb_backtest.py](backend/run_testb_backtest.py)：對 production DB 唯讀
+  查詢，跑 v1（直接讀既有 `ShadowCompletedTrade` 不重新模擬）+ Test A + Test B 三組比較，
+  輸出比較表／§32 原 TAKE_PROFIT 股票追蹤／§34 Winner Hold Analysis／§39 Rotation Log／
+  §35 Add Attribution／§36 Concentration Analysis／CSV 三份
+
+### 真實結果（2026-08-07~09-04，同一段已驗證過的 v1 視窗）
+| Metric | v1_frozen | Test A（延後停利，無 rotation） | Test B（Winner Mgmt + Rotation） |
+|---|---|---|---|
+| Net Return | +5.51% | **+6.39%** | **-17.67%** |
+| Max Drawdown | -3.29% | -7.57% | -21.62% |
+| Trades | 23 | 10 | 33 |
+| Win Rate | 43.48% | 40.00% | 15.15% |
+| Profit Factor | 1.60 | 1.44 | 0.26 |
+
+**核心假說部分成立、部分被推翻**：
+- **Test A（單純延後停利，A. 假說核心）確實小幅優於 v1**（+6.39% vs +5.51%）——證實
+  固定 +10% 全賣確實會犧牲一些後續漲幅（萬海在 Test A 抱到 P4_STOP 才出場，單筆
+  +25.78%，遠優於 v1 分批 +12.77%/+11.37% 就出場）
+- **Test B（加上 Rotation）反而大幅惡化成 -17.67%**——rotation 機制本身在這組門檻設定下
+  是負貢獻，不是正貢獻。21 次 rotation 平均 edge 只有 2.4 分（0~10 尺度），換手極度
+  頻繁（Turnover 1127% vs v1 的 767%），且經常在部位剛進場 1~2 天、還沒有足夠動能趨勢
+  資料（`previous_momentum_score`/`previous_tracking_return` 當天是 None）時就被換掉
+  ——例如萬海 8/12 買進，8/13 就被換掉（rotation edge 1.57），隔天又被換回來（8/14 再
+  被換出）。真正演變成大贏家的萬海最終路徑是「Rotation 換出→換回→8/27 又被換出賺
+  +20.9%」，機制本身不是完全沒抓到大贏家，而是同一檔股票被反覆進出，槓桿在雜訊上
+  被浪費，累加起來的交易成本/錯誤換手拖垮整體報酬
+- **w/o top1 = -22.99%、w/o top3 = -25.41%**：Test B 唯一的正貢獻集中在極少數幾筆
+  （主要是萬海 +20.90%），拿掉最好的 1~3 筆後帳面直接惡化，代表這組門檻設計沒有穩健
+  的普遍性優勢，是少數運氣好的個案撐住整體數字
+- **Concentration**：期末沒有任何一檔超過 30% 曝險（v1 的 33% 隱含上限反而沒被突破），
+  代表 Test B 的劣化**不是**來自過度集中單一大注，是 rotation 換手本身的品質問題
+
+### Attribution（§42 要求逐項拆解，不能只給一個總報酬數字）
+- **A（單純延後停利）**：正貢獻，+0.88pp（Test A vs v1）
+- **B（正確保留 Winner）**：部分成立——§34 Winner Hold Analysis 顯示多檔進入 Winner
+  Management 後 highest_position_return 遠高於進場當時（如萬海之後最高 +32.71%、
+  中再保 +18.79%、AMAX-KY +27.31%），代表「有 upside 可以抓」這個判斷是對的；但
+  Rotation 機制沒有讓 Portfolio 真的穩定持有到那些高點，多數在還沒漲到 highest 之前
+  就被換出去
+- **C（Rotation）**：**最大的負貢獻來源**（Test B 相對 Test A 惡化 24pp），本次 baseline
+  參數（`ROTATION_MIN_EDGE=1.5`）換手門檻明顯太低，導致雜訊也能觸發換股
+- **D（多次加碼）**：貢獻很小——本次只有 6 次 ADD #1，樣本太少看不出明確效果
+- **E（更高集中度）**：非成因——期末最大單檔曝險只有 16.7%，遠低於 50% 上限
+
+### 誠實揭露／已知限制（比照本專案一貫「不為了湊漂亮數字調參」原則，未做任何調整）
+- 規格明確要求「第一輪不要 optimize」，`ROTATION_MIN_EDGE`／`MAX_POSITION_EXPOSURE_PCT`／
+  weakening 門檻全部維持 baseline 值，即使已經看出 Rotation 門檻可能太鬆
+- `hold_score`／`normalize_hold_score` 的映射區間（-7~14 → 0~10）是工程估計值，非
+  逐案例校準；同樣可能是造成 rotation 過度敏感的原因之一（沒有足夠鑑別力區分「真的
+  轉弱」跟「單日正常波動」）
+- 21 個交易日窗口對驗證「Rotation 品質」樣本數偏少，尤其新進場股票前 1~2 天完全沒有
+  `previous_momentum_score`/`previous_tracking_return`可比較，這段時間的 hold_score
+  天生比較不可靠，卻正好是 rotation 最常發生換手的時間點
+- `§36 Concentration Analysis` 只用「期末未平倉部位」估算最大曝險，沒有逐日追蹤歷史峰值
+  （若某檔股票中途曾經超過 50% 曝險但後來又降回來，這個簡化算法看不到）
+
+### 建議下一步（若要讓 Test B 假說有機會成立）
+1. 先解決「新進場沒有足夠歷史資料」的問題——例如新倉位前 N 天（如 2~3 天）豁免參與
+   rotation 比較，避免用不完整的 hold_score 跟已經有完整歷史的老倉位比較
+2. 重新檢視 `ROTATION_MIN_EDGE`：目前 1.5（0~10 尺度）換算大約是「贏 15%」，樣本顯示
+   這個門檻仍會被雜訊觸發，可能需要大幅提高或改用更嚴格的判斷（如要求連續 N 天優勢）
+3. 目前 §17 唯一驗證到的正貢獻路徑是「單純不要太早停利」（Test A），先確認這個效果
+   在更長的樣本（例如上一輪驗證過的 2026-08-01~09-07）是否穩健，再考慮要不要疊加
+   更複雜的 rotation 機制
+
 ## Shadow Portfolio v1：first_seen_date 誤用 P4 而非魚尾，導致正式站報酬率從
 +12%（沙盒驗證）變成 -9%（production）的根因修復（2026-09-08）
 
