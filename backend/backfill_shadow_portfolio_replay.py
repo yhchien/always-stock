@@ -97,10 +97,16 @@ def _reset_shadow_portfolio_state(session_factory, strategy_version: str, logger
     證據」做判斷，等於把未來的狀態誤植回過去，整個回放會全部錯亂（這是真的撞過的
     bug，不是假設性風險）。`ShadowStrategyDailyDecision` 的 idempotency 只保證「同一天
     不會重複決策」，保證不了「整個 replay 從頭安全重跑」。
+    **2026-09-08 修正**：原本漏清 `ShadowCompletedTrade`——那張表的 model docstring
+    寫「不受 35 交易日循環強制重置影響」，講的是 `check_and_apply_cycle_reset`（策略
+    正常運作時的循環重置，永久紀錄本來就該保留），跟這支 backfill script 的「整個重跑」
+    是完全不同的情境；backfill 重跑必須連已平倉的永久紀錄都清空重建，不然每次重新驗證
+    都會在這張表疊加重複列（真的撞過：同一個 8/7~9/4 窗口 4 次 backfill 疊出 63 筆，
+    但實際只有 24 筆不重複的交易，直接汙染了正式站「交易紀錄」頁面顯示的資料）。
     """
     from app.models import (
-        ShadowPortfolioDailySnapshot, ShadowPositionLot, ShadowStrategyDailyDecision,
-        ShadowStrategyOrder, ShadowVirtualPortfolio, ShadowVirtualPosition,
+        ShadowCompletedTrade, ShadowPortfolioDailySnapshot, ShadowPositionLot,
+        ShadowStrategyDailyDecision, ShadowStrategyOrder, ShadowVirtualPortfolio, ShadowVirtualPosition,
     )
 
     with session_factory() as db:
@@ -125,6 +131,9 @@ def _reset_shadow_portfolio_state(session_factory, strategy_version: str, logger
         ).delete(synchronize_session=False)
         db.query(ShadowPortfolioDailySnapshot).filter(
             ShadowPortfolioDailySnapshot.strategy_version == strategy_version
+        ).delete(synchronize_session=False)
+        db.query(ShadowCompletedTrade).filter(
+            ShadowCompletedTrade.strategy_version == strategy_version
         ).delete(synchronize_session=False)
         db.query(ShadowVirtualPortfolio).filter(ShadowVirtualPortfolio.strategy_version == strategy_version).delete(
             synchronize_session=False
