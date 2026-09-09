@@ -80,6 +80,13 @@ STOCK_OVERRIDES.update({
                reason="長榮：貨櫃航運為核心業務，不應與航空客運公司同 sub_sector"),
     "2646": _e("AVIATION", "客運航空", CONFIDENCE_HIGH,
                reason="星宇：客運航空公司，不應與貨櫃/散裝航運同 sub_sector"),
+    "3406": _e("COMPUTER_PERIPHERALS", "光學鏡片、鏡頭", CONFIDENCE_HIGH,
+               ["光學元件", "手機鏡頭", "光學鏡片"],
+               "玉晶光：主力為手機相機鏡頭與光學元件，為大立光(3008)同業競爭對手，"
+               "應與 3008 同 sub_sector；FinMind industry_name='LED照明產業'/"
+               "sub_industry='燈具/應用' 為誤置分類，與真實主力業務明顯不符"
+               "（2026-09-09：連續多日被 LLM 以 BUSINESS_MISMATCH/THEME_MISMATCH 否決"
+               "才發現漏了這檔，與 1303 南亞為同一類 bug，見 CLAUDE.md 同日條目）"),
 })
 
 # =============================================================================

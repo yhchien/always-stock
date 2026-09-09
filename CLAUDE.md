@@ -927,6 +927,47 @@ participation 門檻改動（恢復 ≥2，不分 regime），保留 composite b
   的尾段沒包進 old_string），靠跑測試看到 `NameError`/斷言失敗才發現，之後
   修正時要完整看清楚原測試函式的真正結尾（下一個 `def test_` 之前）才動手
 
+## 玉晶光（3406）永遠選不進推薦：與南亞同一類 canonical 校正表漏檔 bug（2026-09-09）
+
+### 症狀
+使用者問「玉晶光漲很兇，為什麼一直沒在魚尾看到？」查 2026-08-18~09-08 每日
+`signal_snapshots.removed`，發現玉晶光**幾乎每天都進候選池、多數還是 LEADER
+類型**（8/19~9/8 期間股價從 657 漲到 1010+，+53%），但**每一天都被 LLM 判定
+`BUSINESS_MISMATCH`/`THEME_MISMATCH` 否決**，理由一致：「公司實際業務為光學
+鏡頭與元件，與輸入的 LED 照明題材不符」。
+
+### 根因（與 [[project_nan_ya_industry_label_llm_veto_bug]] 完全同一類 bug）
+FinMind 原始 `stocks_master.industry_name` 把玉晶光分類成「LED照明產業」/
+「燈具/應用」——玉晶光電（Genius Electronic Optical）實際是手機相機鏡頭光學
+元件廠，大立光（3008）的直接競爭對手；查 `security_classification` 發現這檔
+**也沒有被 2026-07-21 Phase 1 canonical classification 的人工 override 表
+（`stock_overrides.py`）涵蓋到**，`primary_sector` 跟原始 FinMind 標籤一樣錯
+（`LED_LIGHTING`，還標 confidence=HIGH）。對照組大立光（3008）已經被正確校正
+成 `COMPUTER_PERIPHERALS`／「光學鏡片、鏡頭」。LLM 每天正確地發現「題材（LED
+照明）跟公司實際業務（光學鏡頭）對不上」然後否決——LLM 判斷邏輯本身沒有錯，
+錯的是候選池組裝時餵給它的產業標籤。
+
+### 修法
+`stock_overrides.py` 新增 `"3406": _e("COMPUTER_PERIPHERALS", "光學鏡片、鏡頭",
+CONFIDENCE_HIGH, ...)`，比照 3008 大立光同 sub_sector；重跑
+`run_classification_backfill.py`（1626 筆 UPSERT）套用到 production。驗證
+`_load_canonical_industry_labels(db, ["3406", "3008"])` 兩檔現在回傳同一組
+`("電腦及週邊設備", "光學鏡片、鏡頭")`。**只影響之後新產生的候選池組裝**，過去
+已經產生的 removed 快照不回溯修改（沿用一貫「不回溯造假資料」原則）。
+
+### Gotcha
+- **這是 1303 南亞修復後同一個系統性漏洞的第二次真實命中**：`_load_canonical_
+  industry_labels()` 這個機制本身在 2026-08-19 就已經接好（優先讀
+  `security_classification`，confidence 不足才 fallback 回原始 FinMind 標籤），
+  但**機制接好不代表校正表本身完整**——`stock_overrides.py` 只涵蓋 Phase 1
+  當時明確處理過的 catch-all industry_name（其他/電子工業/食品生技/...）+
+  少數 regression case，任何漏掉的個股仍然會拿到錯誤的原始標籤餵給 LLM
+- **偵測這類 bug 的訊號很一致**：一檔股票動能明顯強（連續進候選池、多為
+  LEADER）卻連續多天被同一種 veto_reason（BUSINESS_MISMATCH/THEME_MISMATCH）
+  否決，且 LLM 給的否決理由本身講得通（真的指出業務跟題材不符）——這種「LLM
+  判斷正確但輸入錯誤」的模式，應該優先懷疑 `stocks_master.industry_name` 誤置
+  分類，而不是懷疑 LLM 判斷邏輯或選股門檻
+
 ## 南亞（1303）永遠選不進推薦：LLM 看到的產業標籤從未接上 canonical 校正表（2026-08-19）
 
 ### 症狀
