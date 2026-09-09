@@ -355,7 +355,7 @@ TPEx,櫃買指數,INDEX_BENCHMARK,大盤,,,,,False,,False,非真實證券（指�
 2420,新巨,COMMON_STOCK,電腦及週邊設備,COMPUTER_PERIPHERALS,電腦及週邊設備,電源供應器,,False,HIGH,False,
 2423,固緯,COMMON_STOCK,其他,COMPUTER_PERIPHERALS,電腦及週邊設備,量測儀器,,False,HIGH,False,固緯：電子量測儀器製造
 2425,承啟,COMMON_STOCK,電腦及週邊設備,COMPUTER_PERIPHERALS,電腦及週邊設備,顯示卡,,False,HIGH,False,
-2426,鼎元,COMMON_STOCK,電腦及週邊設備,OPTOELECTRONICS,光電（面板/觸控/光學）,化合物半導體元件/雷射二極體晶片,光電元件|化合物半導體|雷射二極體,False,HIGH,False,鼎元：主力為砷化鎵（GaAs）系化合物半導體元件與雷射二極體晶片研發製造，應與晶電(2448)同屬 OPTOELECTRONICS；FinMind industry_name='電腦及週邊設備'/sub_industry='精簡型電腦'為誤置分類，與真實主力業務明顯不符
+2426,鼎元,COMMON_STOCK,電腦及週邊設備,OPTOELECTRONICS,光電（面板/觸控/光學）,LED磊晶/晶粒/受光元件,光電元件|LED晶粒|受光元件|光二極體,False,HIGH,False,鼎元：主力為可見光LED、紅外線LED、受光元件與光二極體，應與晶電(2448)同屬 OPTOELECTRONICS；FinMind industry_name='電腦及週邊設備'/sub_industry='精簡型電腦'為誤置分類，與真實主力業務明顯不符。2026-09-09 首次校正時誤猜為「化合物半導體元件/雷射二極體晶片」，重跑 2026-09-08 選股 flow 時被 LLM 即時查證推翻（真實產品為 LED/受光元件，非雷射二極體），已依 LLM 查證結果改為此描述——教訓：sub_sector文字本身也要盡量貼近可查證的真實產品用詞，猜測過細/用錯詞仍可能被THEME_MISMATCH 否決，不是只有 primary_sector 大分類對不對的問題
 2427,三商電,COMMON_STOCK,觸控面板,OPTOELECTRONICS,光電（面板/觸控/光學）,金融提款機(ATM),,False,HIGH,False,
 2428,興勤,COMMON_STOCK,被動元件,PASSIVE_CONNECTOR,被動元件與連接器,電阻器,,False,HIGH,False,
 2430,燦坤,COMMON_STOCK,貿易百貨,RETAIL_TRADE,貿易百貨與零售,零售通路,,False,HIGH,False,
@@ -376,7 +376,7 @@ TPEx,櫃買指數,INDEX_BENCHMARK,大盤,,,,,False,,False,非真實證券（指�
 2451,創見,COMMON_STOCK,電腦及週邊設備,COMPUTER_PERIPHERALS,電腦及週邊設備,隨身碟、記憶卡讀卡機,,False,HIGH,False,
 2453,凌群,COMMON_STOCK,大數據,BIG_DATA_CLOUD,大數據與雲端運算,顧問諮詢,,False,HIGH,False,
 2454,聯發科,COMMON_STOCK,半導體,SEMICONDUCTOR,半導體,電源管理IC,,False,HIGH,False,
-2455,全新,COMMON_STOCK,半導體,OPTOELECTRONICS,光電（面板/觸控/光學）,LED磊晶/雷射二極體,光電元件|LED磊晶|化合物半導體,False,HIGH,False,全新：全新光電科技主力為LED磊晶片、雷射二極體與化合物半導體元件，應與晶電(2448)/鼎元(2426)同屬 OPTOELECTRONICS；FinMind industry_name='半導體'/sub_industry='晶圓製造'為誤置分類，與真實主力業務明顯不符
+2455,全新,COMMON_STOCK,半導體,OPTOELECTRONICS,光電（面板/觸控/光學）,LED磊晶/晶粒,光電元件|LED磊晶|化合物半導體,False,HIGH,False,全新：全新光電科技主力為LED磊晶片與晶粒相關化合物半導體元件，應與晶電(2448)/鼎元(2426)同屬 OPTOELECTRONICS；FinMind industry_name='半導體'/sub_industry='晶圓製造'為誤置分類，與真實主力業務明顯不符。2026-09-09 順手拿掉「雷射二極體」這個未經即時查證的猜測用詞（同 2426 案例教訓，避免同類文字精確度風險）
 2459,敦吉,COMMON_STOCK,智慧電網,ELECTRICAL_CABLE,電器電纜與重電,高/低壓輸電設施,,False,HIGH,False,
 2479,和立,COMMON_STOCK,電子工業,SEMICONDUCTOR,半導體,IC設計,,False,MEDIUM,False,和立：類比IC設計
 2480,敦陽科,COMMON_STOCK,大數據,BIG_DATA_CLOUD,大數據與雲端運算,顧問諮詢,,False,HIGH,False,

@@ -93,16 +93,23 @@ STOCK_OVERRIDES.update({
                "FinMind industry_name='雲端運算'/sub_industry='系統整合'為誤置分類"
                "（系統整合業務屬集團其他成員，非本檔本業）；2026-08-01~09-08 期間連續"
                "被 LLM 以 BUSINESS_MISMATCH 否決（見 CLAUDE.md 2026-09-09 條目）"),
-    "2426": _e("OPTOELECTRONICS", "化合物半導體元件/雷射二極體晶片", CONFIDENCE_HIGH,
-               ["光電元件", "化合物半導體", "雷射二極體"],
-               "鼎元：主力為砷化鎵（GaAs）系化合物半導體元件與雷射二極體晶片研發製造，"
+    "2426": _e("OPTOELECTRONICS", "LED磊晶/晶粒/受光元件", CONFIDENCE_HIGH,
+               ["光電元件", "LED晶粒", "受光元件", "光二極體"],
+               "鼎元：主力為可見光LED、紅外線LED、受光元件與光二極體，"
                "應與晶電(2448)同屬 OPTOELECTRONICS；FinMind industry_name='電腦及週邊設備'/"
-               "sub_industry='精簡型電腦'為誤置分類，與真實主力業務明顯不符"),
-    "2455": _e("OPTOELECTRONICS", "LED磊晶/雷射二極體", CONFIDENCE_HIGH,
+               "sub_industry='精簡型電腦'為誤置分類，與真實主力業務明顯不符。"
+               "2026-09-09 首次校正時誤猜為「化合物半導體元件/雷射二極體晶片」，"
+               "重跑 2026-09-08 選股 flow 時被 LLM 即時查證推翻（真實產品為 LED/"
+               "受光元件，非雷射二極體），已依 LLM 查證結果改為此描述——教訓：sub_sector"
+               "文字本身也要盡量貼近可查證的真實產品用詞，猜測過細/用錯詞仍可能被"
+               "THEME_MISMATCH 否決，不是只有 primary_sector 大分類對不對的問題"),
+    "2455": _e("OPTOELECTRONICS", "LED磊晶/晶粒", CONFIDENCE_HIGH,
                ["光電元件", "LED磊晶", "化合物半導體"],
-               "全新：全新光電科技主力為LED磊晶片、雷射二極體與化合物半導體元件，"
+               "全新：全新光電科技主力為LED磊晶片與晶粒相關化合物半導體元件，"
                "應與晶電(2448)/鼎元(2426)同屬 OPTOELECTRONICS；FinMind industry_name='半導體'/"
-               "sub_industry='晶圓製造'為誤置分類，與真實主力業務明顯不符"),
+               "sub_industry='晶圓製造'為誤置分類，與真實主力業務明顯不符。"
+               "2026-09-09 順手拿掉「雷射二極體」這個未經即時查證的猜測用詞"
+               "（同 2426 案例教訓，避免同類文字精確度風險）"),
     "3504": _e("COMPUTER_PERIPHERALS", "光學鏡片、鏡頭", CONFIDENCE_HIGH,
                ["光學元件", "投影鏡頭", "光學鏡片"],
                "揚明光：主力為光學鏡頭、投影機鏡頭與光學模組，應與大立光(3008)/"
