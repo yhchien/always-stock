@@ -1,0 +1,77 @@
+{
+  "strategy_version": "v1_frozen",
+  "manifest_generated_at": "2026-09-08",
+  "data_start": "2026-08-07",
+  "data_end": "2026-09-04",
+  "dataset": {
+    "sandbox_frozen_csv": {
+      "path": "fishtail_backtest/daily_data.csv",
+      "rows": 1191,
+      "unique_stock_id": 162,
+      "unique_stock_first_seen_cohorts": 208,
+      "sha256": "ea74642202d167fdb0b534f7b753497fb0ec7b3e04a4d07a60742b74265ac6f7",
+      "extraction_script": "LOST — 原始產生 daily_data.csv 的擷取腳本已不存在於 repo，無法重新產生逐位元組相同的資料；只能靠反推比對，見 root_cause_investigation.md"
+    },
+    "production_db_reconstruction": {
+      "source": "resolve_fishtail_universe() + build_daily_evidence()（backend/app/signals/shadow_portfolio.py，目前 production 程式碼版本）",
+      "cohorts_only_in_sandbox": 27,
+      "cohorts_only_in_current": 9,
+      "cohorts_in_both": 181,
+      "note": "cohort 集合本身高度重疊（181/208 相同），差異主要不是「候選是誰」，而是同一個 cohort/day 算出來的 mark_to_market_return_pct 數值不同"
+    }
+  },
+  "initial_capital": 600000.0,
+  "unit_capital": 100000.0,
+  "max_stocks": 5,
+  "max_total_units": 6,
+  "max_units_per_stock": 2,
+  "portfolio_constraints_confirmed_identical": true,
+  "execution_model": {
+    "buy": "T+1 當日 HIGH 價成交（保守假設）",
+    "sell": "T+1 當日 LOW 價成交（保守假設）",
+    "confirmed_identical_between_sandbox_and_production": true
+  },
+  "take_profit_basis": "mark_to_market_return_pct（非 actual_position_return）——此為原始 sandbox 設計本身即如此，非 production port 引入的新邏輯，詳見 root_cause_investigation.md Q3/Q4/Q5",
+  "stop_loss_basis": "real_stop_loss_pct 使用 actual_position_return（average_entry_price 對照當日收盤），與 take_profit 使用不同的報酬計算基準——這個「同一策略內兩種出場理由用不同報酬定義」的不對稱性是本次調查發現的核心設計特徵",
+  "first_seen_semantics": "P3 每日候選池 UPSERT-by-date 的 SignalSnapshot.watchlist 首次出現日；本次調查證實：這次的 28→23 筆交易差異，其成因『不是』first_seen_date 語意重新定義（P4 vs 魚尾）造成——15 筆消失交易的 first_seen_date 與 day_index 在新舊版本間 100% 相同，差異來源見下",
+  "results": {
+    "sandbox_gross_no_cost": {
+      "total_return_pct": 12.0523,
+      "final_equity": 672313.82,
+      "trade_count": 28,
+      "win_rate_pct": 46.43,
+      "max_drawdown_pct": -4.3376
+    },
+    "sandbox_net_with_cost": {
+      "total_return_pct": 9.9303,
+      "final_equity": 659581.95,
+      "trade_count": 28,
+      "win_rate_pct": 46.43,
+      "note": "fee_rate/tax_rate = TW_FEE_RATE/TW_SELL_TAX；production 完全沒有成本模型，不可拿本欄位跟 production 數字比較"
+    },
+    "production_v1_frozen_current": {
+      "total_return_pct": 5.5120,
+      "final_equity": 633071.71,
+      "trade_count": 23,
+      "win_rate_pct": 43.48,
+      "max_drawdown_pct": -3.2875,
+      "cost_model": "無（fee_rate/tax_rate 在 shadow_portfolio.py 全站零 grep 命中），本欄位性質上等同 gross，應對照 sandbox_gross_no_cost 而非 sandbox_net_with_cost"
+    }
+  },
+  "root_cause_classification": [
+    "A（原始 sandbox 設計本身有缺陷：TAKE_PROFIT 用 mark_to_market_return_pct 而非 actual_position_return，兩個資料集皆有此現象，見 3/10 vs 4/10 假 TAKE_PROFIT 案例）",
+    "C（資料集在 sandbox 擷取之後發生變化：2026-08-09 週日出現與 08-07 週五內容完全相同的重複 SignalSnapshot，疑似人工在非交易日誤按「重新產生」，導致 4 檔股票 hit_count_so_far 被灌水 1→2，違反 setup_a 的 hit_count==1 嚴格條件）",
+    "F（gross/net 比較口徑：production +5.51% 應與 sandbox gross +12.05% 對照，不可與 sandbox net +9.93% 對照——雖非本次差異的主因，但屬於報告與溝通上必須澄清的口徑問題）"
+  ],
+  "root_cause_classification_explicitly_ruled_out": [
+    "D（first_seen_date 語意重新定義 / P4-魚尾 fix）——15 筆消失交易的 first_seen_date、day_index 在新舊重建之間逐筆比對 100% 相同，僅 4967 一檔的新增交易可歸因於此",
+    "B（production port 邏輯錯誤）——generate_exit_signal() 在 sandbox 與 production 兩份程式碼逐行比對完全相同，TAKE_PROFIT 觸發條件本身沒有被改寫",
+    "E（執行模型/資金規則實作差異）——Portfolio constraints 與 T+1 HIGH/LOW 執行模型逐項比對完全相同"
+  ],
+  "unresolved_uncertainty": "mark_to_market_return_pct 造成 15 筆消失交易中 11 筆（非 hit_count 灌水那 4 筆）的確切根因，是「production 現在的公式（day_index==2 強制鎖 0.0% 為基準日）」與「sandbox 當初遺失腳本所用的公式」不同，但無法反推出 sandbox 原始公式的精確定義（已嘗試 3 種候選公式重建，皆無法逐位元組吻合）——這是本次調查唯一沒有 100% 定案的部分，誠實揭露、不臆測",
+  "canonical_v1_recommendation": {
+    "recommended_baseline": "production_v1_frozen_current（DB-backed，程式碼與資料皆可持續驗證/重跑，sandbox CSV 因擷取腳本遺失已無法重現，不具備『可重新驗證』的基準資格）",
+    "caveat": "production_v1_frozen 目前是 gross-only（無成本模型）數字，若要跟未來任何『net』版本比較，必須先補上一致的 fee_rate/tax_rate 假設，否則會重蹈本次 F 類口徑錯誤",
+    "caveat_2": "TAKE_PROFIT 用 mark_to_market_return_pct 而非 actual_position_return 是兩個資料集共有的既有設計，本次調查只誠實揭露、未修改；是否要改為以 actual_position_return 判斷停利，屬於下一輪需要使用者明確拍板的策略決策，不在本次唯讀調查授權範圍內"
+  }
+}
