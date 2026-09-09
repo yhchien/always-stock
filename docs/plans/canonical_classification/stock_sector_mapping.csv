@@ -1,35 +1,35 @@
 ﻿stock_id,stock_name,asset_type,source_industry,primary_sector,primary_sector_label,sub_sector,theme_clusters,is_financial,confidence,review_required,reason
 1704,榮化,COMMON_STOCK,化學工業,CHEMICAL,化學工業,,,False,HIGH,False,
-2463,研揚,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,其他（待歸類）,,,False,LOW,True,industry_name='電子工業' 無系統性映射也無個股 override，需人工複核
-2469,力信,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,其他（待歸類）,,,False,LOW,True,力信：業務內容需人工查證
-2494,廣業科,COMMON_STOCK,通信網路業,COMMUNICATION_NETWORK,通信網路,,,False,HIGH,False,
-3367,英華達,COMMON_STOCK,其他電子業,COMPUTER_PERIPHERALS,電腦及週邊設備,NB/伺服器代工,,False,HIGH,False,英華達：英業達集團旗下，NB/伺服器代工
-6862,三集瑞-KY,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,其他（待歸類）,,,False,LOW,True,三集瑞-KY：業務內容需人工查證
-3534,雷凌,COMMON_STOCK,電子工業,SEMICONDUCTOR,半導體,IC設計（通訊晶片）,,False,HIGH,False,雷凌：Airoha 力旺集團通訊晶片設計
-7760,享溫馨,COMMON_STOCK,休閒娛樂,LEISURE_TOURISM,休閒觀光與娛樂,娛樂服務業,,False,HIGH,False,
-2336,致伸,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,其他（待歸類）,,,False,LOW,True,industry_name='電子工業' 無系統性映射也無個股 override，需人工複核
-3584,介面,COMMON_STOCK,光電業,OPTOELECTRONICS,光電（面板/觸控/光學）,,,False,HIGH,False,
-1724,台硝,COMMON_STOCK,化學工業,CHEMICAL,化學工業,,,False,HIGH,False,
-2473,思源,COMMON_STOCK,半導體業,SEMICONDUCTOR,半導體,,,False,HIGH,False,
-3009,奇美電,COMMON_STOCK,光電業,OPTOELECTRONICS,光電（面板/觸控/光學）,面板（已合併退場）,,False,HIGH,False,奇美電：原奇美電子（面板廠），已與群創合併，現為集團閒置股本
-3614,誠致,COMMON_STOCK,半導體業,COMPUTER_PERIPHERALS,電腦及週邊設備,散熱模組,,False,MEDIUM,False,誠致：散熱/機構零件
-3598,奕力,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,其他（待歸類）,,,False,LOW,True,industry_name='電子工業' 無系統性映射也無個股 override，需人工複核
 2315,神達,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,其他（待歸類）,,,False,LOW,True,industry_name='電子工業' 無系統性映射也無個股 override，需人工複核
-2341,英群,COMMON_STOCK,電腦及週邊設備業,COMPUTER_PERIPHERALS,電腦及週邊設備,監控/影像設備,,False,MEDIUM,False,英群：網通/影像設備
-5280,F-敦泰,COMMON_STOCK,半導體業,SEMICONDUCTOR,半導體,觸控/驅動IC,,False,HIGH,False,F-敦泰：觸控與顯示驅動整合IC設計
-4148,全宇生技-KY,COMMON_STOCK,化學生技醫療,BIOTECH_MEDICAL,生技醫療,,,False,LOW,True,全宇生技-KY：業務內容需人工查證
-6119,大傳,COMMON_STOCK,電子工業,FACTORY_ENGINEERING,廠務工程與系統整合,廠務工程,,False,MEDIUM,False,大傳：無塵室/廠務系統工程
+2341,英群,COMMON_STOCK,電子工業,COMPUTER_PERIPHERALS,電腦及週邊設備,監控/影像設備,,False,MEDIUM,False,英群：網通/影像設備
+2452,乾坤,COMMON_STOCK,電子工業,PASSIVE_CONNECTOR,被動元件與連接器,電感元件,,False,MEDIUM,False,乾坤：電感元件製造
+2473,思源,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,其他（待歸類）,,,False,LOW,True,industry_name='電子工業' 無系統性映射也無個股 override，需人工複核
+2469,力信,COMMON_STOCK,電子零組件業,DIVERSIFIED_OTHER,其他（待歸類）,,,False,LOW,True,力信：業務內容需人工查證
+7760,享溫馨,COMMON_STOCK,休閒娛樂,LEISURE_TOURISM,休閒觀光與娛樂,娛樂服務業,,False,HIGH,False,
+2494,廣業科,COMMON_STOCK,通信網路業,COMMUNICATION_NETWORK,通信網路,,,False,HIGH,False,
+2463,研揚,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,其他（待歸類）,,,False,LOW,True,industry_name='電子工業' 無系統性映射也無個股 override，需人工複核
+1724,台硝,COMMON_STOCK,化學工業,CHEMICAL,化學工業,,,False,HIGH,False,
+3009,奇美電,COMMON_STOCK,光電業,OPTOELECTRONICS,光電（面板/觸控/光學）,面板（已合併退場）,,False,HIGH,False,奇美電：原奇美電子（面板廠），已與群創合併，現為集團閒置股本
 3061,璨圓,COMMON_STOCK,光電業,OPTOELECTRONICS,光電（面板/觸控/光學）,LED磊晶,,False,MEDIUM,False,璨圓：LED磊晶片
-2456,奇力新,COMMON_STOCK,電子零組件業,PASSIVE_CONNECTOR,被動元件與連接器,,,False,HIGH,False,
 3080,威力盟,COMMON_STOCK,光電業,SEMICONDUCTOR,半導體,IC設計,,False,MEDIUM,False,威力盟：電源管理IC設計
-3573,穎台,COMMON_STOCK,光電業,OPTOELECTRONICS,光電（面板/觸控/光學）,,,False,HIGH,False,
+3534,雷凌,COMMON_STOCK,半導體業,SEMICONDUCTOR,半導體,IC設計（通訊晶片）,,False,HIGH,False,雷凌：Airoha 力旺集團通訊晶片設計
+3367,英華達,COMMON_STOCK,電子工業,COMPUTER_PERIPHERALS,電腦及週邊設備,NB/伺服器代工,,False,HIGH,False,英華達：英業達集團旗下，NB/伺服器代工
+4148,全宇生技-KY,COMMON_STOCK,化學生技醫療,BIOTECH_MEDICAL,生技醫療,,,False,LOW,True,全宇生技-KY：業務內容需人工查證
+3573,穎台,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,其他（待歸類）,,,False,LOW,True,industry_name='電子工業' 無系統性映射也無個股 override，需人工複核
+3584,介面,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,其他（待歸類）,,,False,LOW,True,industry_name='電子工業' 無系統性映射也無個股 override，需人工複核
+2456,奇力新,COMMON_STOCK,電子零組件業,PASSIVE_CONNECTOR,被動元件與連接器,,,False,HIGH,False,
+3599,旺能,COMMON_STOCK,光電業,SOLAR_ENERGY,太陽能,太陽能電池,,False,MEDIUM,False,旺能：太陽能電池片製造
+3614,誠致,COMMON_STOCK,電子工業,COMPUTER_PERIPHERALS,電腦及週邊設備,散熱模組,,False,MEDIUM,False,誠致：散熱/機構零件
+6862,三集瑞-KY,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,其他（待歸類）,,,False,LOW,True,三集瑞-KY：業務內容需人工查證
+3598,奕力,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,其他（待歸類）,,,False,LOW,True,industry_name='電子工業' 無系統性映射也無個股 override，需人工複核
+2336,致伸,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,其他（待歸類）,,,False,LOW,True,industry_name='電子工業' 無系統性映射也無個股 override，需人工複核
+5280,F-敦泰,COMMON_STOCK,半導體業,SEMICONDUCTOR,半導體,觸控/驅動IC,,False,HIGH,False,F-敦泰：觸控與顯示驅動整合IC設計
+6119,大傳,COMMON_STOCK,電子通路業,FACTORY_ENGINEERING,廠務工程與系統整合,廠務工程,,False,MEDIUM,False,大傳：無塵室/廠務系統工程
 4178,永笙-KY,COMMON_STOCK,再生醫療,BIOTECH_MEDICAL,生技醫療,臨床實驗、移植技術、疾病治療,,False,HIGH,False,
 4763,材料*-KY,COMMON_STOCK,化學工業,CHEMICAL,化學工業,,,False,HIGH,False,
-3599,旺能,COMMON_STOCK,光電業,SOLAR_ENERGY,太陽能,太陽能電池,,False,MEDIUM,False,旺能：太陽能電池片製造
-2452,乾坤,COMMON_STOCK,電子零組件業,PASSIVE_CONNECTOR,被動元件與連接器,電感元件,,False,MEDIUM,False,乾坤：電感元件製造
+6781,AES-KY,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,其他（待歸類）,,,False,LOW,True,AES-KY：業務內容需人工查證
 2475,華映,COMMON_STOCK,光電業,OPTOELECTRONICS,光電（面板/觸控/光學）,,,False,HIGH,False,
-6781,AES-KY,COMMON_STOCK,電子零組件業,DIVERSIFIED_OTHER,其他（待歸類）,,,False,LOW,True,AES-KY：業務內容需人工查證
-6933,AMAX-KY,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,其他（待歸類）,,,False,LOW,True,industry_name='電子工業' 無系統性映射也無個股 override，需人工複核
+6933,AMAX-KY,COMMON_STOCK,電子工業,COMPUTER_PERIPHERALS,電腦及週邊設備,伺服器液冷散熱與整機櫃,伺服器|液冷散熱|高效能運算,False,HIGH,False,AMAX-KY：主力為伺服器、高效能運算與液冷整機櫃解決方案，應與永擎(7711)同屬COMPUTER_PERIPHERALS；原本 primary_sector=DIVERSIFIED_OTHER 且 LOW confidence/review_required=True（FinMind industry_name='電子工業'為 catch-all 誤置），2026-09-09 依 LLM 研究結果補上明確分類
 2499,東貝,COMMON_STOCK,光電業,OPTOELECTRONICS,光電（面板/觸控/光學）,,,False,HIGH,False,
 3561,昇陽光電,COMMON_STOCK,光電業,OPTOELECTRONICS,光電（面板/觸控/光學）,,,False,HIGH,False,
 5264,鎧勝-KY,COMMON_STOCK,電腦及週邊設備業,COMPUTER_PERIPHERALS,電腦及週邊設備,,,False,HIGH,False,
@@ -50,19 +50,19 @@
 7827,漢康-KY創,COMMON_STOCK,製藥,PHARMACEUTICAL,製藥,中、西藥製劑,,False,HIGH,False,
 1236,宏亞,COMMON_STOCK,食品,FOOD,食品,乳製品,,False,HIGH,False,
 1256,鮮活果汁-KY,COMMON_STOCK,食品,FOOD,食品,加工食品,,False,HIGH,False,
-1312A,國喬特,PREFERRED_STOCK,石化及塑橡膠,PETROCHEMICAL,石化,塑膠製品,,False,HIGH,False,
-7835,永悅健康-創,COMMON_STOCK,數位雲端,BIG_DATA_CLOUD,大數據與雲端運算,,,False,HIGH,False,
-1522A,堤維西甲特,PREFERRED_STOCK,汽車,AUTOMOTIVE,汽車與零組件,車燈,,False,HIGH,False,
 6863,永道-KY,COMMON_STOCK,通信網路業,DIVERSIFIED_OTHER,其他（待歸類）,,,False,LOW,True,永道-KY：業務內容需人工查證
+1312A,國喬特,PREFERRED_STOCK,石化及塑橡膠,PETROCHEMICAL,石化,塑膠製品,,False,HIGH,False,
+1522A,堤維西甲特,PREFERRED_STOCK,汽車,AUTOMOTIVE,汽車與零組件,車燈,,False,HIGH,False,
 2237,華德動能-創,COMMON_STOCK,電動車輛產業,EV_BATTERY,電動車輛與電池,電動汽車、電動機車、電動自行車,,False,HIGH,False,
+8008,建興電,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,其他（待歸類）,,,False,LOW,True,industry_name='電子工業' 無系統性映射也無個股 override，需人工複核
 7855,和運租車,COMMON_STOCK,其他,DIVERSIFIED_OTHER,其他（待歸類）,其他,,False,LOW,True,industry_name='其他' 無系統性映射也無個股 override，需人工複核
-8008,建興電,COMMON_STOCK,電腦及週邊設備業,COMPUTER_PERIPHERALS,電腦及週邊設備,,,False,HIGH,False,
-1710,東聯,COMMON_STOCK,紡織,TEXTILE_FIBER,紡織與人纖,石化原料(例如純對苯二甲酸、乙二醇、己內醯胺、丙烯腈等),,False,HIGH,False,
 2391,合勤,COMMON_STOCK,電子工業,COMPUTER_PERIPHERALS,電腦及週邊設備,連接器/線材通路,,False,MEDIUM,False,合勤：網通設備
+7835,永悅健康-創,COMMON_STOCK,創新板股票,DIVERSIFIED_OTHER,其他（待歸類）,,,False,LOW,True,industry_name='創新板股票' 無系統性映射也無個股 override，需人工複核
+8078,華寶,COMMON_STOCK,通信網路業,COMMUNICATION_NETWORK,通信網路,,,False,HIGH,False,
+1710,東聯,COMMON_STOCK,紡織,TEXTILE_FIBER,紡織與人纖,石化原料(例如純對苯二甲酸、乙二醇、己內醯胺、丙烯腈等),,False,HIGH,False,
 3519,綠能,COMMON_STOCK,半導體業,SEMICONDUCTOR,半導體,,,False,HIGH,False,
 6145,勁永,COMMON_STOCK,電子通路業,ELECTRONIC_DISTRIBUTION,電子零組件通路與服務,,,False,HIGH,False,
 TPEx,櫃買指數,INDEX_BENCHMARK,大盤,,,,,False,,False,非真實證券（指數/大盤佔位列），不列入分類統計
-8078,華寶,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,其他（待歸類）,,,False,LOW,True,industry_name='電子工業' 無系統性映射也無個股 override，需人工複核
 8199,廣鎵,COMMON_STOCK,電子工業,OPTOELECTRONICS,光電（面板/觸控/光學）,LED磊晶,,False,MEDIUM,False,廣鎵：氮化鎵磊晶
 5236,凌陽創新,COMMON_STOCK,人工智慧,AI,人工智慧,電腦視覺,,False,HIGH,False,
 6921,嘉雨思-創,COMMON_STOCK,創新板股票,DIVERSIFIED_OTHER,其他（待歸類）,,,False,LOW,True,嘉雨思-創：業務內容需人工查證
@@ -239,7 +239,6 @@ TPEx,櫃買指數,INDEX_BENCHMARK,大盤,,,,,False,,False,非真實證券（指�
 1717,長興,COMMON_STOCK,印刷電路板,PCB_ELECTRONIC_MATERIALS,印刷電路板與電子材料,銅箔基板,,False,HIGH,False,
 1718,中纖,COMMON_STOCK,其他,TEXTILE_FIBER,紡織與人纖,人纖原料,,False,HIGH,False,中纖：人造纖維原料
 1720,生達,COMMON_STOCK,食品生技,PHARMACEUTICAL,製藥,學名藥,,False,HIGH,False,生達：學名藥製造大廠
-1721,三晃,COMMON_STOCK,石化及塑橡膠,PETROCHEMICAL,石化,橡塑膠添加劑,,False,HIGH,False,
 1722,台肥,COMMON_STOCK,其他,CHEMICAL,化學工業,肥料/工業化學品,,False,HIGH,False,台肥：肥料與工業化學品製造
 1723,中碳,COMMON_STOCK,電動車輛產業,EV_BATTERY,電動車輛與電池,鋰電池材料,,False,HIGH,False,
 1725,元禎,COMMON_STOCK,石化及塑橡膠,PETROCHEMICAL,石化,界面活性劑,,False,HIGH,False,
@@ -260,6 +259,7 @@ TPEx,櫃買指數,INDEX_BENCHMARK,大盤,,,,,False,,False,非真實證券（指�
 2006,東和鋼鐵,COMMON_STOCK,鋼鐵,STEEL,鋼鐵,鋼胚,,False,HIGH,False,
 2007,燁興,COMMON_STOCK,鋼鐵,STEEL,鋼鐵,鋼筋,,False,HIGH,False,
 1701,中化,COMMON_STOCK,生技醫療業,PHARMACEUTICAL,製藥,西藥製劑,,False,HIGH,False,中化：中國化學製藥，西藥製劑大廠
+1721,國慶科技,COMMON_STOCK,石化及塑橡膠,PETROCHEMICAL,石化,橡塑膠添加劑,,False,HIGH,False,
 2008,高興昌,COMMON_STOCK,鋼鐵,STEEL,鋼鐵,製管,,False,HIGH,False,
 2010,春源,COMMON_STOCK,鋼鐵,STEEL,鋼鐵,金屬製品,,False,HIGH,False,
 2012,春雨,COMMON_STOCK,鋼鐵,STEEL,鋼鐵,鋼線鋼纜,,False,HIGH,False,
@@ -336,7 +336,7 @@ TPEx,櫃買指數,INDEX_BENCHMARK,大盤,,,,,False,,False,非真實證券（指�
 2393,億光,COMMON_STOCK,平面顯示器,OPTOELECTRONICS,光電（面板/觸控/光學）,顯示器模組,,False,HIGH,False,
 2395,研華,COMMON_STOCK,雲端運算,BIG_DATA_CLOUD,大數據與雲端運算,雲端應用服務,,False,HIGH,False,
 2311,日月光,COMMON_STOCK,半導體業,SEMICONDUCTOR,半導體,,,False,HIGH,False,
-2381,華宇,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,其他（待歸類）,,,False,LOW,True,industry_name='電子工業' 無系統性映射也無個股 override，需人工複核
+2381,華宇,COMMON_STOCK,電腦及週邊設備業,COMPUTER_PERIPHERALS,電腦及週邊設備,,,False,HIGH,False,
 2325,矽品,COMMON_STOCK,半導體業,SEMICONDUCTOR,半導體,,,False,HIGH,False,
 2397,友通,COMMON_STOCK,通信網路,COMMUNICATION_NETWORK,通信網路,網路設備(如數據機、網路卡、閘道器、路由器、網路電話),,False,HIGH,False,
 2399,映泰,COMMON_STOCK,區塊鏈,SOFTWARE_ECOMMERCE,軟體服務與電子商務,元件裝置,,False,HIGH,False,
@@ -355,7 +355,7 @@ TPEx,櫃買指數,INDEX_BENCHMARK,大盤,,,,,False,,False,非真實證券（指�
 2420,新巨,COMMON_STOCK,電腦及週邊設備,COMPUTER_PERIPHERALS,電腦及週邊設備,電源供應器,,False,HIGH,False,
 2423,固緯,COMMON_STOCK,其他,COMPUTER_PERIPHERALS,電腦及週邊設備,量測儀器,,False,HIGH,False,固緯：電子量測儀器製造
 2425,承啟,COMMON_STOCK,電腦及週邊設備,COMPUTER_PERIPHERALS,電腦及週邊設備,顯示卡,,False,HIGH,False,
-2426,鼎元,COMMON_STOCK,電腦及週邊設備,COMPUTER_PERIPHERALS,電腦及週邊設備,精簡型電腦,,False,HIGH,False,
+2426,鼎元,COMMON_STOCK,電腦及週邊設備,OPTOELECTRONICS,光電（面板/觸控/光學）,化合物半導體元件/雷射二極體晶片,光電元件|化合物半導體|雷射二極體,False,HIGH,False,鼎元：主力為砷化鎵（GaAs）系化合物半導體元件與雷射二極體晶片研發製造，應與晶電(2448)同屬 OPTOELECTRONICS；FinMind industry_name='電腦及週邊設備'/sub_industry='精簡型電腦'為誤置分類，與真實主力業務明顯不符
 2427,三商電,COMMON_STOCK,觸控面板,OPTOELECTRONICS,光電（面板/觸控/光學）,金融提款機(ATM),,False,HIGH,False,
 2428,興勤,COMMON_STOCK,被動元件,PASSIVE_CONNECTOR,被動元件與連接器,電阻器,,False,HIGH,False,
 2430,燦坤,COMMON_STOCK,貿易百貨,RETAIL_TRADE,貿易百貨與零售,零售通路,,False,HIGH,False,
@@ -376,7 +376,7 @@ TPEx,櫃買指數,INDEX_BENCHMARK,大盤,,,,,False,,False,非真實證券（指�
 2451,創見,COMMON_STOCK,電腦及週邊設備,COMPUTER_PERIPHERALS,電腦及週邊設備,隨身碟、記憶卡讀卡機,,False,HIGH,False,
 2453,凌群,COMMON_STOCK,大數據,BIG_DATA_CLOUD,大數據與雲端運算,顧問諮詢,,False,HIGH,False,
 2454,聯發科,COMMON_STOCK,半導體,SEMICONDUCTOR,半導體,電源管理IC,,False,HIGH,False,
-2455,全新,COMMON_STOCK,半導體,SEMICONDUCTOR,半導體,晶圓製造,,False,HIGH,False,
+2455,全新,COMMON_STOCK,半導體,OPTOELECTRONICS,光電（面板/觸控/光學）,LED磊晶/雷射二極體,光電元件|LED磊晶|化合物半導體,False,HIGH,False,全新：全新光電科技主力為LED磊晶片、雷射二極體與化合物半導體元件，應與晶電(2448)/鼎元(2426)同屬 OPTOELECTRONICS；FinMind industry_name='半導體'/sub_industry='晶圓製造'為誤置分類，與真實主力業務明顯不符
 2459,敦吉,COMMON_STOCK,智慧電網,ELECTRICAL_CABLE,電器電纜與重電,高/低壓輸電設施,,False,HIGH,False,
 2479,和立,COMMON_STOCK,電子工業,SEMICONDUCTOR,半導體,IC設計,,False,MEDIUM,False,和立：類比IC設計
 2480,敦陽科,COMMON_STOCK,大數據,BIG_DATA_CLOUD,大數據與雲端運算,顧問諮詢,,False,HIGH,False,
@@ -410,7 +410,7 @@ TPEx,櫃買指數,INDEX_BENCHMARK,大盤,,,,,False,,False,非真實證券（指�
 2606,裕民,COMMON_STOCK,交通運輸及航運,SHIPPING_CONTAINER,海運（貨櫃／散裝）,散裝航運,,False,HIGH,False,
 2608,嘉里大榮,COMMON_STOCK,交通運輸及航運,SHIPPING_CONTAINER,海運（貨櫃／散裝）,海陸空貨運承攬,,False,HIGH,False,
 2609,陽明,COMMON_STOCK,交通運輸及航運,SHIPPING_CONTAINER,海運（貨櫃／散裝）,貨櫃航運,,False,HIGH,False,
-2411,飛瑞,COMMON_STOCK,其他電子業,COMPUTER_PERIPHERALS,電腦及週邊設備,電源供應器,,False,MEDIUM,False,飛瑞：電源供應器/充電系統
+2411,飛瑞,COMMON_STOCK,電子工業,COMPUTER_PERIPHERALS,電腦及週邊設備,電源供應器,,False,MEDIUM,False,飛瑞：電源供應器/充電系統
 2437,旺詮,COMMON_STOCK,電子工業,PASSIVE_CONNECTOR,被動元件與連接器,被動元件,,False,MEDIUM,False,旺詮：電阻器製造
 2448,晶電,COMMON_STOCK,光電業,OPTOELECTRONICS,光電（面板/觸控/光學）,,,False,HIGH,False,
 2610,華航,COMMON_STOCK,交通運輸及航運,SHIPPING_CONTAINER,海運（貨櫃／散裝）,海陸空大眾運輸,,False,HIGH,False,
@@ -553,7 +553,7 @@ TPEx,櫃買指數,INDEX_BENCHMARK,大盤,,,,,False,,False,非真實證券（指�
 3450,聯鈞,COMMON_STOCK,通信網路,COMMUNICATION_NETWORK,通信網路,主/被動元件,,False,HIGH,False,
 3454,晶睿,COMMON_STOCK,電腦及週邊設備,COMPUTER_PERIPHERALS,電腦及週邊設備,安全監控系統,,False,HIGH,False,
 3481,群創,COMMON_STOCK,平面顯示器,OPTOELECTRONICS,光電（面板/觸控/光學）,面板,,False,HIGH,False,
-3504,揚明光,COMMON_STOCK,電腦及週邊設備,COMPUTER_PERIPHERALS,電腦及週邊設備,金屬、塑膠模具,,False,HIGH,False,
+3504,揚明光,COMMON_STOCK,電腦及週邊設備,COMPUTER_PERIPHERALS,電腦及週邊設備,光學鏡片、鏡頭,光學元件|投影鏡頭|光學鏡片,False,HIGH,False,揚明光：主力為光學鏡頭、投影機鏡頭與光學模組，應與大立光(3008)/玉晶光(3406)同 sub_sector；FinMind industry_name='電腦及週邊設備'/sub_industry='金屬、塑膠模具'為誤置分類，與真實主力業務明顯不符
 3515,華擎,COMMON_STOCK,電腦及週邊設備,COMPUTER_PERIPHERALS,電腦及週邊設備,顯示卡,,False,HIGH,False,
 3535,晶彩科,COMMON_STOCK,印刷電路板,PCB_ELECTRONIC_MATERIALS,印刷電路板與電子材料,生產製程及檢測設備,,False,HIGH,False,
 3536,誠創,COMMON_STOCK,平面顯示器,OPTOELECTRONICS,光電（面板/觸控/光學）,背光源(發光二極體、冷陰極管),,False,HIGH,False,
@@ -562,11 +562,11 @@ TPEx,櫃買指數,INDEX_BENCHMARK,大盤,,,,,False,,False,非真實證券（指�
 3550,聯穎,COMMON_STOCK,電腦及週邊設備,COMPUTER_PERIPHERALS,電腦及週邊設備,連接線,,False,HIGH,False,
 3557,嘉威,COMMON_STOCK,其他,DIVERSIFIED_OTHER,其他（待歸類）,其他,,False,LOW,True,嘉威：業務內容需人工查證
 3563,牧德,COMMON_STOCK,印刷電路板,PCB_ELECTRONIC_MATERIALS,印刷電路板與電子材料,生產製程及檢測設備,,False,HIGH,False,
-3063,飛信,COMMON_STOCK,半導體業,DIVERSIFIED_OTHER,其他（待歸類）,,,False,LOW,True,飛信：業務內容需人工查證
+3271,其樂達,COMMON_STOCK,半導體業,DIVERSIFIED_OTHER,其他（待歸類）,,,False,LOW,True,其樂達：業務內容需人工查證
 3053,鼎營,COMMON_STOCK,其他電子業,COMPUTER_PERIPHERALS,電腦及週邊設備,,,False,LOW,True,鼎營：業務內容需人工查證
-3271,其樂達,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,其他（待歸類）,,,False,LOW,True,其樂達：業務內容需人工查證
+3474,華亞科,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,其他（待歸類）,,,False,LOW,True,industry_name='電子工業' 無系統性映射也無個股 override，需人工複核
+3063,飛信,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,其他（待歸類）,,,False,LOW,True,飛信：業務內容需人工查證
 3315,宣昶,COMMON_STOCK,電子工業,COMPUTER_PERIPHERALS,電腦及週邊設備,,,False,LOW,True,宣昶：業務內容需人工查證
-3474,華亞科,COMMON_STOCK,半導體業,SEMICONDUCTOR,半導體,,,False,HIGH,False,
 3559,全智科,COMMON_STOCK,電子工業,COMPUTER_PERIPHERALS,電腦及週邊設備,,,False,LOW,True,全智科：業務內容需人工查證
 3514,昱晶,COMMON_STOCK,光電業,OPTOELECTRONICS,光電（面板/觸控/光學）,,,False,HIGH,False,
 3576,聯合再生,COMMON_STOCK,太陽能產業,SOLAR_ENERGY,太陽能,太陽能電池模組,,False,HIGH,False,
@@ -642,10 +642,10 @@ TPEx,櫃買指數,INDEX_BENCHMARK,大盤,,,,,False,,False,非真實證券（指�
 4588,玖鼎電力,COMMON_STOCK,智慧電網,ELECTRICAL_CABLE,電器電纜與重電,能源管理服務,,False,HIGH,False,
 4590,富田-創,COMMON_STOCK,汽車,AUTOMOTIVE,汽車與零組件,其他,,False,HIGH,False,
 4720,德淵,COMMON_STOCK,醫療器材,MEDICAL_DEVICE,醫療器材,醫療器材代理,,False,HIGH,False,
-3697,F-晨星,COMMON_STOCK,電子工業,SEMICONDUCTOR,半導體,顯示驅動IC,,False,HIGH,False,F-晨星：晨星半導體，電視/顯示驅動晶片設計
-3638,F-IML,COMMON_STOCK,半導體業,OPTOELECTRONICS,光電（面板/觸控/光學）,面板（IML品牌）,,False,MEDIUM,False,F-IML：面板/顯示器品牌
+3638,F-IML,COMMON_STOCK,電子工業,OPTOELECTRONICS,光電（面板/觸控/光學）,面板（IML品牌）,,False,MEDIUM,False,F-IML：面板/顯示器品牌
 3579,尚志,COMMON_STOCK,半導體業,SEMICONDUCTOR,半導體,,,False,HIGH,False,
 4144,康聯-KY,COMMON_STOCK,生技醫療業,DIVERSIFIED_OTHER,其他（待歸類）,,,False,LOW,True,康聯-KY：業務內容需人工查證
+3697,F-晨星,COMMON_STOCK,半導體業,SEMICONDUCTOR,半導體,顯示驅動IC,,False,HIGH,False,F-晨星：晨星半導體，電視/顯示驅動晶片設計
 4190,佐登-KY,COMMON_STOCK,化學生技醫療,HOME_APPLIANCE_CONSUMER,家電與民生消費品,美容保養/美容儀器,,False,MEDIUM,False,佐登-KY：美容保養品牌
 3698,隆達,COMMON_STOCK,光電業,OPTOELECTRONICS,光電（面板/觸控/光學）,,,False,HIGH,False,
 4722,國精化,COMMON_STOCK,平面顯示器,OPTOELECTRONICS,光電（面板/觸控/光學）,化學品(如光阻劑、靶材等),,False,HIGH,False,
@@ -718,7 +718,7 @@ TPEx,櫃買指數,INDEX_BENCHMARK,大盤,,,,,False,,False,非真實證券（指�
 6201,亞弘電,COMMON_STOCK,醫療器材,MEDICAL_DEVICE,醫療器材,體溫計、血壓計,,False,HIGH,False,
 6202,盛群,COMMON_STOCK,電動車輛產業,EV_BATTERY,電動車輛與電池,電動汽車、電動機車、電動自行車,,False,HIGH,False,
 6205,詮欣,COMMON_STOCK,電腦及週邊設備,COMPUTER_PERIPHERALS,電腦及週邊設備,金屬、塑膠模具,,False,HIGH,False,
-4733,上緯,COMMON_STOCK,化學生技醫療,CHEMICAL,化學工業,複合材料/風電葉片樹脂,,False,HIGH,False,上緯：環氧樹脂與風電葉片複合材料
+4733,上緯,COMMON_STOCK,化學工業,CHEMICAL,化學工業,複合材料/風電葉片樹脂,,False,HIGH,False,上緯：環氧樹脂與風電葉片複合材料
 4984,科納-KY,COMMON_STOCK,通信網路業,COMMUNICATION_NETWORK,通信網路,,,False,HIGH,False,
 4725,信昌化,COMMON_STOCK,化學工業,CHEMICAL,化學工業,,,False,HIGH,False,
 5259,奕智博,COMMON_STOCK,光電業,OPTOELECTRONICS,光電（面板/觸控/光學）,,,False,HIGH,False,
@@ -750,15 +750,15 @@ TPEx,櫃買指數,INDEX_BENCHMARK,大盤,,,,,False,,False,非真實證券（指�
 1520,復盛,COMMON_STOCK,其他,ELECTRICAL_MACHINERY,電機機械,壓縮機/流體機械,,False,HIGH,False,復盛：空氣壓縮機/高爾夫球頭
 1523,開億,COMMON_STOCK,電機機械,ELECTRICAL_MACHINERY,電機機械,,,False,HIGH,False,
 1716,永信,COMMON_STOCK,化學生技醫療,PHARMACEUTICAL,製藥,西藥製劑,,False,HIGH,False,永信：西藥製劑大廠
+2446,全懋,COMMON_STOCK,半導體業,COMPUTER_PERIPHERALS,電腦及週邊設備,機構件/機殼,,False,LOW,True,全懋：業務內容需人工查證
 2254,巨鎧精密-創,COMMON_STOCK,電機機械,ELECTRICAL_MACHINERY,電機機械,車用機械傳動設備及零配件,,False,HIGH,False,
+2350,環電,COMMON_STOCK,其他電子業,PCB_ELECTRONIC_MATERIALS,印刷電路板與電子材料,被動元件封裝,,False,LOW,True,環電：電子封裝，業務內容需人工查證
+2361,鴻友,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,其他（待歸類）,,,False,LOW,True,industry_name='電子工業' 無系統性映射也無個股 override，需人工複核
 2418,雅新,COMMON_STOCK,電子工業,COMPUTER_PERIPHERALS,電腦及週邊設備,連接器/線材,,False,MEDIUM,False,雅新：電子線材/連接器
-2447,鼎新,COMMON_STOCK,電子工業,COMPUTER_PERIPHERALS,電腦及週邊設備,連接器,,False,LOW,True,鼎新：業務內容需人工查證
+2384,勝華,COMMON_STOCK,電子工業,OPTOELECTRONICS,光電（面板/觸控/光學）,面板（已停產轉型）,,False,MEDIUM,False,勝華：原觸控面板廠，現業務已大幅轉型
+2396,精碟,COMMON_STOCK,電子工業,COMPUTER_PERIPHERALS,電腦及週邊設備,光儲存媒體,,False,MEDIUM,False,精碟：光碟片/儲存媒體
 2403,友尚,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,其他（待歸類）,,,False,LOW,True,industry_name='電子工業' 無系統性映射也無個股 override，需人工複核
-2350,環電,COMMON_STOCK,電子工業,PCB_ELECTRONIC_MATERIALS,印刷電路板與電子材料,被動元件封裝,,False,LOW,True,環電：電子封裝，業務內容需人工查證
-2361,鴻友,COMMON_STOCK,電腦及週邊設備業,COMPUTER_PERIPHERALS,電腦及週邊設備,,,False,HIGH,False,
-2446,全懋,COMMON_STOCK,電子工業,COMPUTER_PERIPHERALS,電腦及週邊設備,機構件/機殼,,False,LOW,True,全懋：業務內容需人工查證
-2384,勝華,COMMON_STOCK,光電業,OPTOELECTRONICS,光電（面板/觸控/光學）,面板（已停產轉型）,,False,MEDIUM,False,勝華：原觸控面板廠，現業務已大幅轉型
-2396,精碟,COMMON_STOCK,光電業,COMPUTER_PERIPHERALS,電腦及週邊設備,光儲存媒體,,False,MEDIUM,False,精碟：光碟片/儲存媒體
+2447,鼎新,COMMON_STOCK,電子工業,COMPUTER_PERIPHERALS,電腦及週邊設備,連接器,,False,LOW,True,鼎新：業務內容需人工查證
 8487,愛爾達-創,COMMON_STOCK,文化創意業,CULTURAL_CREATIVE,文化創意,廣播電視/電影產業,,False,HIGH,False,
 4927,泰鼎-KY,COMMON_STOCK,印刷電路板,PCB_ELECTRONIC_MATERIALS,印刷電路板與電子材料,硬板、軟板、IC載板製造,,False,HIGH,False,
 4934,太極,COMMON_STOCK,太陽能產業,SOLAR_ENERGY,太陽能,太陽能電池模組,,False,HIGH,False,
@@ -769,7 +769,7 @@ TPEx,櫃買指數,INDEX_BENCHMARK,大盤,,,,,False,,False,非真實證券（指�
 4960,誠美材,COMMON_STOCK,平面顯示器,OPTOELECTRONICS,光電（面板/觸控/光學）,其他零組件,,False,HIGH,False,
 4967,十銓,COMMON_STOCK,電腦及週邊設備,COMPUTER_PERIPHERALS,電腦及週邊設備,隨身碟、記憶卡讀卡機,,False,HIGH,False,
 4968,立積,COMMON_STOCK,半導體,SEMICONDUCTOR,半導體,網路通訊IC,,False,HIGH,False,
-4976,佳凌,COMMON_STOCK,電腦及週邊設備,COMPUTER_PERIPHERALS,電腦及週邊設備,金屬、塑膠模具,,False,HIGH,False,
+4976,佳凌,COMMON_STOCK,電腦及週邊設備,COMPUTER_PERIPHERALS,電腦及週邊設備,光學鏡片、鏡頭,光學元件|手機鏡頭|光學鏡片,False,HIGH,False,佳凌：主力為手機相機鏡頭、光學元件與精密模具，應與大立光(3008)/玉晶光(3406)同 sub_sector；FinMind industry_name='電腦及週邊設備'/sub_industry='金屬、塑膠模具'為誤置分類，與真實主力業務明顯不符
 4977,眾達-KY,COMMON_STOCK,通信網路,COMMUNICATION_NETWORK,通信網路,光通訊設備(如光纖電纜、光傳輸設備),,False,HIGH,False,
 4989,榮科,COMMON_STOCK,印刷電路板,PCB_ELECTRONIC_MATERIALS,印刷電路板與電子材料,銅箔,,False,HIGH,False,
 4999,鑫禾,COMMON_STOCK,電腦及週邊設備,COMPUTER_PERIPHERALS,電腦及週邊設備,機構樞紐,,False,HIGH,False,
@@ -810,12 +810,10 @@ TPEx,櫃買指數,INDEX_BENCHMARK,大盤,,,,,False,,False,非真實證券（指�
 6216,居易,COMMON_STOCK,通信網路,COMMUNICATION_NETWORK,通信網路,網路設備(如數據機、網路卡、閘道器、路由器、網路電話),,False,HIGH,False,
 6224,聚鼎,COMMON_STOCK,被動元件,PASSIVE_CONNECTOR,被動元件與連接器,電阻器,,False,HIGH,False,
 6225,天瀚,COMMON_STOCK,貿易百貨,RETAIL_TRADE,貿易百貨與零售,製造商,,False,HIGH,False,
-6286,立錡,COMMON_STOCK,半導體業,SEMICONDUCTOR,半導體,,,False,HIGH,False,
 6226,光鼎,COMMON_STOCK,LED照明產業,LED_LIGHTING,LED照明,燈具/應用,,False,HIGH,False,
 6230,尼得科超眾,COMMON_STOCK,電腦及週邊設備,COMPUTER_PERIPHERALS,電腦及週邊設備,散熱片、風扇馬達、散熱模組,,False,HIGH,False,
 6235,華孚,COMMON_STOCK,電腦及週邊設備,COMPUTER_PERIPHERALS,電腦及週邊設備,金屬、塑膠模具,,False,HIGH,False,
 6239,力成,COMMON_STOCK,半導體,SEMICONDUCTOR,半導體,IC封裝測試,,False,HIGH,False,
-6255,奈普,COMMON_STOCK,光電業,COMPUTER_PERIPHERALS,電腦及週邊設備,連接器,,False,MEDIUM,False,奈普：電池連接器/電源模組
 6243,迅杰,COMMON_STOCK,半導體,SEMICONDUCTOR,半導體,輸出入介面IC,,False,HIGH,False,
 6251,定穎,COMMON_STOCK,印刷電路板,PCB_ELECTRONIC_MATERIALS,印刷電路板與電子材料,硬板、軟板、IC載板製造,,False,HIGH,False,
 6257,矽格,COMMON_STOCK,半導體,SEMICONDUCTOR,半導體,IC封裝測試,,False,HIGH,False,
@@ -828,7 +826,9 @@ TPEx,櫃買指數,INDEX_BENCHMARK,大盤,,,,,False,,False,非真實證券（指�
 6281,全國電,COMMON_STOCK,貿易百貨,RETAIL_TRADE,貿易百貨與零售,零售通路,,False,HIGH,False,
 6282,康舒,COMMON_STOCK,智慧電網,ELECTRICAL_CABLE,電器電纜與重電,高/低壓輸電設施,,False,HIGH,False,
 6283,淳安,COMMON_STOCK,電腦及週邊設備,COMPUTER_PERIPHERALS,電腦及週邊設備,其他電腦及週邊設備之零組件,,False,HIGH,False,
+6286,立錡,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,其他（待歸類）,,,False,LOW,True,industry_name='電子工業' 無系統性映射也無個股 override，需人工複核
 6285,啟碁,COMMON_STOCK,通信網路,COMMUNICATION_NETWORK,通信網路,網路設備(如數據機、網路卡、閘道器、路由器、網路電話),,False,HIGH,False,
+6255,奈普,COMMON_STOCK,電子工業,COMPUTER_PERIPHERALS,電腦及週邊設備,連接器,,False,MEDIUM,False,奈普：電池連接器/電源模組
 6288,聯嘉,COMMON_STOCK,LED照明產業,LED_LIGHTING,LED照明,燈具/應用,,False,HIGH,False,
 6289,華上,COMMON_STOCK,LED照明產業,LED_LIGHTING,LED照明,光源/磊晶,,False,HIGH,False,
 6405,悅城,COMMON_STOCK,觸控面板,OPTOELECTRONICS,光電（面板/觸控/光學）,玻璃基板,,False,HIGH,False,
@@ -938,7 +938,7 @@ TPEx,櫃買指數,INDEX_BENCHMARK,大盤,,,,,False,,False,非真實證券（指�
 1210,大成,COMMON_STOCK,食品,FOOD,食品,原物料,,False,HIGH,False,
 1213,大飲,COMMON_STOCK,其他,FOOD,食品,餐飲,,False,MEDIUM,False,大飲：飲料/餐飲相關
 1215,卜蜂,COMMON_STOCK,食品,FOOD,食品,原物料,,False,HIGH,False,
-1229,聯華,COMMON_STOCK,雲端運算,BIG_DATA_CLOUD,大數據與雲端運算,系統整合,,False,HIGH,False,
+1229,聯華,COMMON_STOCK,雲端運算,FOOD,食品,麵粉/飼料/民生食品,聯華集團|食品|麵粉|飼料,False,HIGH,False,聯華：聯華實業控股核心業務為麵粉、飼料與食品原料加工，FinMind industry_name='雲端運算'/sub_industry='系統整合'為誤置分類（系統整合業務屬集團其他成員，非本檔本業）；2026-08-01~09-08 期間連續被 LLM 以 BUSINESS_MISMATCH 否決（見 CLAUDE.md 2026-09-09 條目）
 1235,興泰,COMMON_STOCK,食品,FOOD,食品,原物料,,False,HIGH,False,
 1304,台聚,COMMON_STOCK,石化及塑橡膠,PETROCHEMICAL,石化,工業用合成樹脂,,False,HIGH,False,
 2642,宅配通,COMMON_STOCK,交通運輸及航運,SHIPPING_CONTAINER,海運（貨櫃／散裝）,海陸空貨運承攬,,False,HIGH,False,
@@ -952,7 +952,7 @@ TPEx,櫃買指數,INDEX_BENCHMARK,大盤,,,,,False,,False,非真實證券（指�
 3346,麗清,COMMON_STOCK,LED照明產業,LED_LIGHTING,LED照明,燈具/應用,,False,HIGH,False,
 3356,奇偶,COMMON_STOCK,電腦及週邊設備,COMPUTER_PERIPHERALS,電腦及週邊設備,安全監控系統,,False,HIGH,False,
 3376,新日興,COMMON_STOCK,電腦及週邊設備,COMPUTER_PERIPHERALS,電腦及週邊設備,機構樞紐,,False,HIGH,False,
-3406,玉晶光,COMMON_STOCK,LED照明產業,LED_LIGHTING,LED照明,燈具/應用,,False,HIGH,False,
+3406,玉晶光,COMMON_STOCK,LED照明產業,COMPUTER_PERIPHERALS,電腦及週邊設備,光學鏡片、鏡頭,光學元件|手機鏡頭|光學鏡片,False,HIGH,False,玉晶光：主力為手機相機鏡頭與光學元件，為大立光(3008)同業競爭對手，應與 3008 同 sub_sector；FinMind industry_name='LED照明產業'/sub_industry='燈具/應用' 為誤置分類，與真實主力業務明顯不符（2026-09-09：連續多日被 LLM 以 BUSINESS_MISMATCH/THEME_MISMATCH 否決才發現漏了這檔，與 1303 南亞為同一類 bug，見 CLAUDE.md 同日條目）
 3416,融程電,COMMON_STOCK,觸控面板,OPTOELECTRONICS,光電（面板/觸控/光學）,觸控面板,,False,HIGH,False,
 3432,台端,COMMON_STOCK,連接器,PASSIVE_CONNECTOR,被動元件與連接器,連接器設計、組裝及製造,,False,HIGH,False,
 3443,創意,COMMON_STOCK,半導體,SEMICONDUCTOR,半導體,IP設計/IC設計代工服務,,False,HIGH,False,
@@ -1015,11 +1015,11 @@ TPEx,櫃買指數,INDEX_BENCHMARK,大盤,,,,,False,,False,非真實證券（指�
 3016,嘉晶,COMMON_STOCK,半導體,SEMICONDUCTOR,半導體,晶圓製造,,False,HIGH,False,
 3033,威健,COMMON_STOCK,半導體,SEMICONDUCTOR,半導體,IC通路,,False,HIGH,False,
 6573,虹揚-KY,COMMON_STOCK,半導體業,DIVERSIFIED_OTHER,其他（待歸類）,,,False,LOW,True,虹揚-KY：業務內容需人工查證
-6525,捷敏-KY,COMMON_STOCK,半導體業,SEMICONDUCTOR,半導體,IC設計,,False,MEDIUM,False,捷敏-KY：類比IC設計
-6422,君耀-KY,COMMON_STOCK,電子零組件業,PASSIVE_CONNECTOR,被動元件與連接器,,,False,HIGH,False,
-6451,訊芯-KY,COMMON_STOCK,半導體業,SEMICONDUCTOR,半導體,,,False,HIGH,False,
-6456,GIS-KY,COMMON_STOCK,光電業,OPTOELECTRONICS,光電（面板/觸控/光學）,,,False,HIGH,False,
 6431,光麗-KY,COMMON_STOCK,電子工業,DIVERSIFIED_OTHER,其他（待歸類）,,,False,LOW,True,光麗-KY：業務內容需人工查證
+6525,捷敏-KY,COMMON_STOCK,電子工業,SEMICONDUCTOR,半導體,IC設計,,False,MEDIUM,False,捷敏-KY：類比IC設計
+6422,君耀-KY,COMMON_STOCK,電子零組件業,PASSIVE_CONNECTOR,被動元件與連接器,,,False,HIGH,False,
+6456,GIS-KY,COMMON_STOCK,光電業,OPTOELECTRONICS,光電（面板/觸控/光學）,,,False,HIGH,False,
+6451,訊芯-KY,COMMON_STOCK,半導體業,SEMICONDUCTOR,半導體,,,False,HIGH,False,
 6452,康友-KY,COMMON_STOCK,生技醫療業,BIOTECH_MEDICAL,生技醫療,學名藥/原料藥,,False,MEDIUM,False,康友-KY：學名藥與原料藥
 4169,泰宗,COMMON_STOCK,醫療器材,MEDICAL_DEVICE,醫療器材,醫療耗材,,False,HIGH,False,
 3038,全台,COMMON_STOCK,平面顯示器,OPTOELECTRONICS,光電（面板/觸控/光學）,顯示器模組,,False,HIGH,False,
@@ -1137,7 +1137,7 @@ TPEx,櫃買指數,INDEX_BENCHMARK,大盤,,,,,False,,False,非真實證券（指�
 6951,青新-創,COMMON_STOCK,其他,ENVIRONMENTAL_SERVICES,環保工程與資源循環,環保工程,,False,MEDIUM,False,青新-創：環保潔能服務
 6952,大武山,COMMON_STOCK,其他,AGRI_TECH,農業科技,農業科技業,,False,MEDIUM,False,大武山：農業科技相關
 6666,羅麗芬-KY,COMMON_STOCK,化學生技醫療,HOME_APPLIANCE_CONSUMER,家電與民生消費品,美容保養品,,False,MEDIUM,False,羅麗芬-KY：美容保養品牌
-6715,嘉基,COMMON_STOCK,電子零組件業,SEMICONDUCTOR,半導體,化合物半導體材料,,False,MEDIUM,False,嘉基：碳化矽/氮化鎵基板材料
+6715,嘉基,COMMON_STOCK,電子工業,SEMICONDUCTOR,半導體,化合物半導體材料,,False,MEDIUM,False,嘉基：碳化矽/氮化鎵基板材料
 6949,沛爾生醫-創,COMMON_STOCK,再生醫療,BIOTECH_MEDICAL,生技醫療,臨床實驗、移植技術、疾病治療,,False,HIGH,False,
 6955,邦睿生技-創,COMMON_STOCK,醫療器材,MEDICAL_DEVICE,醫療器材,醫療耗材,,False,HIGH,False,
 6957,裕慶-KY,COMMON_STOCK,其他,DIVERSIFIED_OTHER,其他（待歸類）,,,False,LOW,True,裕慶-KY：業務內容需人工查證

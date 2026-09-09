@@ -166,6 +166,55 @@ def test_research_allowlist_drops_debug_and_outcome_fields():
     assert "margin_analysis" not in text
 
 
+def test_research_input_theme_candidates_include_sub_industry_before_broad_industry():
+    """2026-09-09：修 3008/3406 等案例——sub_industry（細產業）過去從未進
+    theme_candidates，research 只拿粗分類 `industry` 去比對，即使分類完全正確
+    （sub_industry 精準對應）也會被判 MISMATCH。sub_industry 應排在 industry 之前，
+    優先被拿去驗證公司實際業務。"""
+    row = {
+        "stock_id": "3008",
+        "name": "大立光",
+        "asset_type": "COMMON_STOCK",
+        "industry": "電腦及週邊設備",
+        "sub_industry": "光學鏡片、鏡頭",
+    }
+    projected = prompt_family.research_input(
+        [row], research_date=STAGE_DATE, market_context={}
+    )
+    candidates = projected["items"][0]["theme_candidates"]
+    assert "光學鏡片、鏡頭" in candidates
+    assert candidates.index("光學鏡片、鏡頭") < candidates.index("電腦及週邊設備")
+
+
+def test_research_input_theme_candidates_dedupe_and_skip_missing_values():
+    row = {
+        "stock_id": "2330",
+        "name": "台積電",
+        "asset_type": "COMMON_STOCK",
+        "industry": "半導體",
+        "sub_industry": "半導體",
+        "theme_cluster": None,
+    }
+    projected = prompt_family.research_input(
+        [row], research_date=STAGE_DATE, market_context={}
+    )
+    assert projected["items"][0]["theme_candidates"] == ["半導體"]
+
+
+def test_research_input_respects_explicit_theme_candidates_override():
+    row = {
+        "stock_id": "1101",
+        "name": "台泥",
+        "industry": "水泥",
+        "sub_industry": "水泥",
+        "theme_candidates": ["自訂題材"],
+    }
+    projected = prompt_family.research_input(
+        [row], research_date=STAGE_DATE, market_context={}
+    )
+    assert projected["items"][0]["theme_candidates"] == ["自訂題材"]
+
+
 def test_assessment_and_reason_inputs_use_stage_allowlists():
     row = {
         **_research_item(),

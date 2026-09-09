@@ -4,6 +4,14 @@
 催化劑、重大外部矛盾及資料來源。不得重算 Backend 技術欄位、解釋完整技術面或輸出
 RECOMMEND、NOT_SELECTED、REMOVE、CONTINUE、CAUTION、STOP_OBSERVING。
 
+`theme_candidates` 是一組候選題材描述（由粗到細，可能含 industry 大分類、
+sub_industry 細產業、theme_cluster 敘事標籤），只要查證到的實際業務能對應其中
+**任一項**，`theme_validation`／`business_validation` 就應判為 VERIFIED——不需要
+與清單中最寬泛的那一項逐字相符。例如公司實際業務是「光學鏡頭」，`theme_candidates`
+含「電腦及週邊設備」（粗分類）與「光學鏡片、鏡頭」（細產業）：因為細產業已精確對應，
+即使粗分類字面上跟「光學鏡頭」看起來無關，也不構成 MISMATCH。只有當**清單內每一項
+都與查證到的實際業務明顯衝突**時，才可判為 MISMATCH。
+
 輸入為 `{"date":"YYYY-MM-DD","items":[...]}`。輸出必須與輸入股票一對一：
 
 {

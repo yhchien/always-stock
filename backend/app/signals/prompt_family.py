@@ -193,10 +193,23 @@ def research_input(
     for row in rows:
         theme = row.get("theme_candidates")
         if not isinstance(theme, list):
-            theme = [
-                value for value in (row.get("theme_cluster"), row.get("industry"))
+            # 2026-09-09：sub_industry（細產業，如「光學鏡片、鏡頭」）過去從未進
+            # theme_candidates，只有 industry（primary_sector 粗分類，如「電腦及
+            # 週邊設備」）跟 theme_cluster 會被拿去驗證。這導致即使分類完全正確
+            # （sub_industry 精準對應公司實際業務），research 仍只拿粗分類的字面
+            # 去比對，任何細產業比粗分類更精確的公司都會被判 BUSINESS_MISMATCH/
+            # THEME_MISMATCH——真實案例：大立光(3008)分類完全正確
+            # （COMPUTER_PERIPHERALS/光學鏡片、鏡頭），仍在 2026-08 被同一個理由
+            # 否決 7 次。sub_industry 排在 industry 之前，因為它是更精確的候選，
+            # 應優先被拿去對應公司實際業務。
+            theme = list(dict.fromkeys(
+                value for value in (
+                    row.get("theme_cluster"),
+                    row.get("sub_industry"),
+                    row.get("industry"),
+                )
                 if value
-            ]
+            ))
         items.append({
             "date": research_date,
             "stock": str(row.get("stock") or row.get("stock_id") or ""),

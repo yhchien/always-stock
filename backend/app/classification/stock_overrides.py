@@ -87,6 +87,38 @@ STOCK_OVERRIDES.update({
                "sub_industry='燈具/應用' 為誤置分類，與真實主力業務明顯不符"
                "（2026-09-09：連續多日被 LLM 以 BUSINESS_MISMATCH/THEME_MISMATCH 否決"
                "才發現漏了這檔，與 1303 南亞為同一類 bug，見 CLAUDE.md 同日條目）"),
+    "1229": _e("FOOD", "麵粉/飼料/民生食品", CONFIDENCE_HIGH,
+               ["聯華集團", "食品", "麵粉", "飼料"],
+               "聯華：聯華實業控股核心業務為麵粉、飼料與食品原料加工，"
+               "FinMind industry_name='雲端運算'/sub_industry='系統整合'為誤置分類"
+               "（系統整合業務屬集團其他成員，非本檔本業）；2026-08-01~09-08 期間連續"
+               "被 LLM 以 BUSINESS_MISMATCH 否決（見 CLAUDE.md 2026-09-09 條目）"),
+    "2426": _e("OPTOELECTRONICS", "化合物半導體元件/雷射二極體晶片", CONFIDENCE_HIGH,
+               ["光電元件", "化合物半導體", "雷射二極體"],
+               "鼎元：主力為砷化鎵（GaAs）系化合物半導體元件與雷射二極體晶片研發製造，"
+               "應與晶電(2448)同屬 OPTOELECTRONICS；FinMind industry_name='電腦及週邊設備'/"
+               "sub_industry='精簡型電腦'為誤置分類，與真實主力業務明顯不符"),
+    "2455": _e("OPTOELECTRONICS", "LED磊晶/雷射二極體", CONFIDENCE_HIGH,
+               ["光電元件", "LED磊晶", "化合物半導體"],
+               "全新：全新光電科技主力為LED磊晶片、雷射二極體與化合物半導體元件，"
+               "應與晶電(2448)/鼎元(2426)同屬 OPTOELECTRONICS；FinMind industry_name='半導體'/"
+               "sub_industry='晶圓製造'為誤置分類，與真實主力業務明顯不符"),
+    "3504": _e("COMPUTER_PERIPHERALS", "光學鏡片、鏡頭", CONFIDENCE_HIGH,
+               ["光學元件", "投影鏡頭", "光學鏡片"],
+               "揚明光：主力為光學鏡頭、投影機鏡頭與光學模組，應與大立光(3008)/"
+               "玉晶光(3406)同 sub_sector；FinMind industry_name='電腦及週邊設備'/"
+               "sub_industry='金屬、塑膠模具'為誤置分類，與真實主力業務明顯不符"),
+    "4976": _e("COMPUTER_PERIPHERALS", "光學鏡片、鏡頭", CONFIDENCE_HIGH,
+               ["光學元件", "手機鏡頭", "光學鏡片"],
+               "佳凌：主力為手機相機鏡頭、光學元件與精密模具，應與大立光(3008)/"
+               "玉晶光(3406)同 sub_sector；FinMind industry_name='電腦及週邊設備'/"
+               "sub_industry='金屬、塑膠模具'為誤置分類，與真實主力業務明顯不符"),
+    "6933": _e("COMPUTER_PERIPHERALS", "伺服器液冷散熱與整機櫃", CONFIDENCE_HIGH,
+               ["伺服器", "液冷散熱", "高效能運算"],
+               "AMAX-KY：主力為伺服器、高效能運算與液冷整機櫃解決方案，應與永擎(7711)同屬"
+               "COMPUTER_PERIPHERALS；原本 primary_sector=DIVERSIFIED_OTHER 且 LOW confidence/"
+               "review_required=True（FinMind industry_name='電子工業'為 catch-all 誤置），"
+               "2026-09-09 依 LLM 研究結果補上明確分類"),
 })
 
 # =============================================================================
