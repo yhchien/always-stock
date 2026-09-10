@@ -40,6 +40,9 @@ EXIT_OK = 0
 EXIT_NO_DATA = 1
 EXIT_DB_ERROR = 3
 
+# v1_frozen 新週期從這一天（含）起才參與每日模擬交易，與 Forward 策略的週期對齊。
+V1_FROZEN_START_DATE = date(2026, 9, 8)
+
 # FORWARD_V1_202609 從這一天（含）起才真正參與每日模擬交易——這個日期是
 # 2026-09-08 Freeze 決策當下，DB 裡「最新有真實交易資料」的下一個交易日
 # （2026-09-08 收盤資料已存在，2026-09-09 完全沒有任何資料，是真正未見的未來）。
@@ -47,6 +50,14 @@ EXIT_DB_ERROR = 3
 # 產生任何決策/訂單——這是 spec Part 40「不要把過去幾天 backfill 當成 Forward Day」
 # 的程式碼層保證，不只是操作流程上記得別這樣做。
 FORWARD_V1_START_DATE = date(2026, 9, 9)
+
+# 2026-09-09：v1_frozen 本身改版為 Dual-Engine，使用者明確要求它是「目前這套 Shadow
+# Portfolio 的主要 active strategy」，不要讓兩套策略同時對同一批候選各自產生
+# BUY/ADD/SELL 決策（即使兩者各自有獨立的虛擬資金池、不會真的搶同一筆錢，並存仍會讓
+# 「現在到底在跑哪一套」變得含糊）。因此每日 runner 停止自動觸發 `FORWARD_V1_202609`——
+# 它的既有歷史資料（`ShadowVirtualPortfolio`／`ShadowCompletedTrade` 等）完全不受影響，
+# 只是不會再有新的一天被自動加進去；未來要恢復只需要把這個 flag 改回 True。
+_FORWARD_V1_ENABLED = False
 
 
 def _parse_target_date_from_argv(argv: list, db) -> "date | None":
@@ -58,13 +69,16 @@ def _parse_target_date_from_argv(argv: list, db) -> "date | None":
 
 
 def _strategy_versions_for_date(target_date: date) -> list[str]:
-    """今天應該跑哪些 strategy_version。`v1_frozen` 永遠跑（既有生產策略）；
-    `FORWARD_V1_202609` 只有 `target_date >= FORWARD_V1_START_DATE` 才加入——
-    早於這個日期一律不跑，不需要另外查 manifest 或任何額外狀態。"""
+    """今天應該跑哪些 strategy_version。
+
+    `v1_frozen` 的目前週期從 2026-09-08 開始；更早日期只保留給明確指定
+    replay/backfill 的歷史分析，不會被每日 production runner 自動補進目前時間線。
+    `FORWARD_V1_202609` 目前仍停用，不再自動加入每日 runner。
+    """
     from app.signals import shadow_portfolio as sp
 
-    versions = [sp.STRATEGY_VERSION]
-    if target_date >= FORWARD_V1_START_DATE:
+    versions = [sp.STRATEGY_VERSION] if target_date >= V1_FROZEN_START_DATE else []
+    if _FORWARD_V1_ENABLED and target_date >= FORWARD_V1_START_DATE:
         versions.append(sp.STRATEGY_VERSION_FORWARD_V1)
     return versions
 
@@ -159,6 +173,10 @@ def main(argv: list) -> int:
 
     versions = _strategy_versions_for_date(target_date)
     logger.info("Shadow portfolio run start: target_date=%s strategy_versions=%s", target_date, versions)
+
+    if not versions:
+        logger.info("No active strategy version for target_date=%s; skip", target_date)
+        return EXIT_NO_DATA
 
     results = {v: _run_one_strategy_version(SessionLocal, sp, target_date=target_date, strategy_version=v) for v in versions}
 

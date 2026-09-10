@@ -25,10 +25,11 @@ const STRATEGY_META: Record<
   { label: string; badge: string; description: string }
 > = {
   v1_frozen: {
-    label: "v1（正式凍結版）",
-    badge: "LEGACY",
+    label: "v1（Dual-Engine）",
+    badge: "ACTIVE",
     description:
-      "已驗證並凍結的既有策略：固定 +10% 停利、單檔最多加碼 2 次、最多同時持有 6 個單位、35 個交易日一循環，循環結束強制清空重來。",
+      "2026-09-08 起的新週期：以報告六面向挑選強主題領導股，300,000 元做主動追強、" +
+      "100,000 元做拉回回穩，符合更強 profile 時可換股；其餘資金保留現金。",
   },
   FORWARD_V1_202609: {
     label: "FORWARD_V1_202609",
@@ -68,6 +69,11 @@ const EXIT_REASON_LABELS: Record<string, string> = {
   TAKE_PROFIT: "固定停利 +10%",
   REAL_POSITION_STOP_LOSS: "真實停損 -8%",
   CYCLE_RESET: "循環期滿強制平倉",
+  // v1_frozen Dual-Engine（2026-09-09 起）專屬出場原因
+  CONTINUATION_FAST_STOP: "Continuation 快速停損 -5%",
+  CONTINUATION_NO_FOLLOW_THROUGH: "Continuation 未證明延續（Prove-it 失敗）",
+  CONTINUATION_TRAILING_EXIT: "Continuation 從高點回吐出場",
+  PULLBACK_REAL_STOP: "Pullback 真實停損 -8%",
 }
 
 function StatBox({ label, value, tone }: { label: string; value: string; tone?: string }) {
@@ -219,6 +225,7 @@ export default function ShadowPortfolioPage() {
   const [stockStats, setStockStats] = useState<ShadowStockTradeStat[]>([])
   const [tradesLoading, setTradesLoading] = useState(true)
   const [tradesCollapsed, setTradesCollapsed] = useState(true)
+  const [strategyHelpCollapsed, setStrategyHelpCollapsed] = useState(false)
 
   // 初始展開狀態：讀 localStorage（預設收合，比照首頁 DailySignalsPanel 慣例）
   useEffect(() => {
@@ -325,6 +332,44 @@ export default function ShadowPortfolioPage() {
           ))}
         </div>
         <p className="mt-2 max-w-3xl text-xs leading-5 text-slate-500">{STRATEGY_META[strategyVersion].description}</p>
+
+        <section className="mt-4 rounded-lg border border-slate-800 bg-slate-900/40">
+          <button
+            type="button"
+            onClick={() => setStrategyHelpCollapsed((collapsed) => !collapsed)}
+            aria-expanded={!strategyHelpCollapsed}
+            className="flex w-full items-center justify-between gap-3 p-3 text-left"
+          >
+            <span className="flex items-center gap-2 text-sm font-semibold text-slate-200">
+              <span aria-hidden className="text-slate-400">{strategyHelpCollapsed ? "▸" : "▾"}</span>
+              兩個交易策略怎麼運作？
+            </span>
+            <span className="text-xs text-slate-500">{strategyHelpCollapsed ? "展開說明" : "收合說明"}</span>
+          </button>
+
+          {!strategyHelpCollapsed && (
+            <div className="grid gap-3 border-t border-slate-800 p-3 text-xs leading-5 text-slate-400 lg:grid-cols-2">
+              <div className="rounded-lg border border-sky-900/50 bg-sky-950/20 p-3">
+                <p className="font-semibold text-sky-200">v1（Dual-Engine，2026-09-08 起）</p>
+                <p className="mt-1">
+                  一半資金最多放 3 檔報告型強勢股，每檔 100,000 元。股票必須同時具備 HIGH
+                  主題、族群領導地位、龍頭支持、技術轉強或突破、相對強度與法人流向；D1 發現後，
+                  下一交易日用最高價直接進場。滿倉時，較強的 early re-acceleration 可以替換較弱的
+                  breakout。另一個 100,000 元名額保留給拉回後價格與動能重新回穩的股票。
+                </p>
+                <p className="mt-1 text-slate-500">profile 風控：-12% 停損；獲利 +10% 後，從最高收盤回落 12% 出場。</p>
+              </div>
+              <div className="rounded-lg border border-amber-900/50 bg-amber-950/20 p-3">
+                <p className="font-semibold text-amber-200">FORWARD_V1_202609（Forward Test）</p>
+                <p className="mt-1">
+                  從 2026-09-09 開始觀察，不用這次 v1 的歷史回測結果混入。它讓贏家自然發展，
+                  不設固定停利；只有在部位已獲利且再次確認時才加碼，不攤平，單檔成本不超過總權益
+                  50%，也不因滿倉強制換股。
+                </p>
+              </div>
+            </div>
+          )}
+        </section>
 
         <p className="mt-3 rounded-lg border border-sky-800/40 bg-sky-950/20 p-3 text-xs leading-5 text-sky-200">
           <strong>重要</strong>

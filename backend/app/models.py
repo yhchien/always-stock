@@ -1319,6 +1319,19 @@ class ShadowStrategyDailyDecision(Base):
     actual_position_return = Column(Float, nullable=True)
     entry_score = Column(Float, nullable=True)
     scheduled_execution_date = Column(Date, nullable=True)
+    # 2026-09-09（Dual-Engine 第二輪重寫）：v1_frozen 專屬的 Episode Price Metrics
+    # （見 shadow_portfolio.py 的 EvidenceRow），只有 v1_frozen 會寫入，其他
+    # strategy_version 維持 NULL——PART 16 要求完整保存排序資訊，方便事後回答
+    # 「為什麼錢給 A 不是 B」，不需要另外查詢 daily_price 重算。
+    episode_price_return_pct = Column(Float, nullable=True)
+    episode_low_return_pct = Column(Float, nullable=True)
+    # v1_frozen D1 Continuation evidence snapshot（只保存 signal date T 已知資料）。
+    continuation_evidence_count = Column(Integer, nullable=True)
+    continuation_evidence = Column(JSON, nullable=True)
+    continuation_eligible = Column(Boolean, nullable=True)
+    continuation_rank = Column(Integer, nullable=True)
+    continuation_skip_reason = Column(String(64), nullable=True)
+    continuation_phase = Column(String(32), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     __table_args__ = (

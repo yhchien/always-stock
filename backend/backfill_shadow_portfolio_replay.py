@@ -16,9 +16,19 @@ production 來源，SignalWatchHit/SignalObservation/SignalObservationReview 早
 production 資料的邊界情況跟沙盒 CSV 匯出當下的假設不同（例如某天 daily_price 缺筆、
 或某檔股票的 P4 episode 起訖日跟 CSV 匯出時的認定有出入）。
 
+**2026-09-09：v1_frozen 直接改版為 Dual-Engine Strategy**，使用者明確要求「直接覆蓋
+v1_frozen 本身，不建立新版本，允許 DELETE/RESET 舊有 Shadow Portfolio 紀錄後以新 Rule
+重新產生」——原本這支腳本對 `strategy_version==v1_frozen` 的 `--execute` 硬性拒絕（見
+下方已移除的舊註解）已經**不再適用**，`v1_frozen` 現在正是這支腳本主要的重跑對象。
+`SANDBOX_BENCHMARK` 三個數字（+12.05%／28 筆／46.4%）是**舊版**（單一 pullback 規則）
+v1_frozen 的歷史基準，跟新版 Dual-Engine 是完全不同的策略邏輯，**不是**這次重跑的比較
+目標，只保留在輸出裡當「這裡曾經是什麼」的歷史紀錄。
+
 用法：
-    python3 backfill_shadow_portfolio_replay.py            # dry-run，只印會跑幾天
-    python3 backfill_shadow_portfolio_replay.py --execute   # 真的寫入 DB
+    python3 backfill_shadow_portfolio_replay.py                       # dry-run
+    python3 backfill_shadow_portfolio_replay.py --execute              # 真的寫入 DB
+    python3 backfill_shadow_portfolio_replay.py --execute \\
+        --start=2026-08-01 --end=2026-09-07                            # 指定回測窗口
 """
 from __future__ import annotations
 
@@ -27,6 +37,7 @@ import time
 from collections import defaultdict
 from datetime import date
 from pathlib import Path
+from typing import Optional
 
 BACKEND_DIR = Path(__file__).resolve().parent
 if str(BACKEND_DIR) not in sys.path:
@@ -268,6 +279,15 @@ def _parse_strategy_version(argv: list, default: str) -> str:
     return default
 
 
+def _parse_date_override(argv: list, flag: str, default: date) -> date:
+    """`--start=YYYY-MM-DD`／`--end=YYYY-MM-DD`；未帶時回傳模組層級的
+    `REPLAY_START`／`REPLAY_END` 預設值（維持既有呼叫方式向後相容）。"""
+    for arg in argv:
+        if arg.startswith(flag):
+            return date.fromisoformat(arg.split("=", 1)[1].strip())
+    return default
+
+
 def main(argv: list) -> int:
     import logging
 
@@ -288,18 +308,12 @@ def main(argv: list) -> int:
         )
         return 1
 
-    # **絕對不可對 v1_frozen（LEGACY_V1_FROZEN）執行 --execute**：spec 明確要求它是
-    # 「歷史 production behavior 對照」，2026-09 起不可再覆寫/重算其交易歷史。這支腳本
-    # 對任何 strategy_version 的 --execute 都會先整段清空重建（見 `_reset_shadow_
-    # portfolio_state`），對 v1_frozen 執行就等於違反這條規則——直接在程式層面擋死，
-    # 不只是靠人記得不要打這個指令。
-    if execute and strategy_version == sp.STRATEGY_VERSION:
-        logger.error(
-            "Refusing --execute for strategy_version=%s (LEGACY_V1_FROZEN must never be "
-            "rewritten/re-replayed — read its numbers from canonical_v1_manifest.json instead)",
-            strategy_version,
-        )
-        return 1
+    replay_start = _parse_date_override(argv, "--start=", REPLAY_START)
+    replay_end = _parse_date_override(argv, "--end=", REPLAY_END)
+
+    # 2026-09-09 起 v1_frozen 已改版為 Dual-Engine（見本檔案頂部說明），使用者明確
+    # 授權對它執行 --execute（DELETE/RESET 舊紀錄後以新 Rule 重新產生）——這裡**不再**
+    # 拒絕 v1_frozen，這支腳本現在正是這次改版的主要重跑工具。
 
     sp.ensure_shadow_portfolio_tables(engine)
 
@@ -310,13 +324,13 @@ def main(argv: list) -> int:
         trade_dates = sorted(
             d[0]
             for d in db.query(DailyPrice.trade_date)
-            .filter(DailyPrice.trade_date >= REPLAY_START, DailyPrice.trade_date <= REPLAY_END)
+            .filter(DailyPrice.trade_date >= replay_start, DailyPrice.trade_date <= replay_end)
             .distinct()
             .all()
         )
 
     if not trade_dates:
-        logger.error("No trading days found in DB for %s ~ %s", REPLAY_START, REPLAY_END)
+        logger.error("No trading days found in DB for %s ~ %s", replay_start, replay_end)
         return 1
 
     logger.info(
@@ -340,7 +354,7 @@ def main(argv: list) -> int:
         deterministic 計算，重來不會產生重複副作用）。"""
         from sqlalchemy.exc import OperationalError
 
-        last_exc: Exception | None = None
+        last_exc: Optional[Exception] = None
         for attempt in range(1, retries + 1):
             try:
                 return step_fn()
@@ -478,7 +492,8 @@ def main(argv: list) -> int:
 
     if strategy_version == sp.STRATEGY_VERSION:
         print(
-            "\n(此為 LEGACY_V1_FROZEN 沙盒對照歷史基準——僅供人工核對，見 "
+            "\n(以上是 2026-09-09 改版後的 Dual-Engine v1_frozen 結果。舊版單一 pullback 規則的"
+            " v1_frozen 歷史基準——僅供對照『這裡曾經是什麼』，不是這次的比較目標，見 "
             f"canonical_v1_manifest.json：total_return_pct={SANDBOX_BENCHMARK['total_return_pct']}%, "
             f"trade_count={SANDBOX_BENCHMARK['trade_count']}, win_rate_pct={SANDBOX_BENCHMARK['win_rate_pct']}%)"
         )

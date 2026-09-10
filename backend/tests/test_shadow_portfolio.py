@@ -431,14 +431,21 @@ def test_exit_no_signal_when_nothing_triggers(db):
 # generate_exit_signal 內部，是呼叫端先做的短路判斷）
 # ---------------------------------------------------------------------------
 def test_real_stop_loss_overrides_p4_stop(db):
+    """這條測的是 `run_daily_trading_strategy` 對『非 v1_frozen』策略版本共用的通用
+    出場優先序框架（-8% 真實停損短路其他判斷），跟 v1_frozen 本身的門檻無關——2026-09-09
+    起 v1_frozen 已改版為 Dual-Engine（見 shadow_portfolio.py 檔頭說明），真實停損改成
+    Fast Stop -5%／Real Stop -8% 兩種、且優先序不再共用這條路徑，所以改用同樣繼承
+    `V1_STRATEGY_PARAMS`（setup_a/setup_b/-8%/+10%）但完全不受這次改版影響的
+    `CLEAN_NO_FIXED_TP` 驗證通用框架本身仍然正確。"""
+    V = sp.STRATEGY_VERSION_CLEAN_NO_FIXED_TP
     _seed_trading_calendar(db, D0, 5)
     obs = _seed_observation(db, stock_id="1101", stock_name="台泥", first_seen_date=D0)
     _seed_review(db, obs, D1, "STOP_OBSERVING")
 
-    portfolio = ShadowVirtualPortfolio(strategy_version=sp.STRATEGY_VERSION, cash=500000.0)
+    portfolio = ShadowVirtualPortfolio(strategy_version=V, cash=500000.0)
     db.add(portfolio)
     position = ShadowVirtualPosition(
-        strategy_version=sp.STRATEGY_VERSION, stock_id="1101", stock_name="台泥", first_seen_date=D0,
+        strategy_version=V, stock_id="1101", stock_name="台泥", first_seen_date=D0,
     )
     db.add(position)
     db.commit()
@@ -452,10 +459,14 @@ def test_real_stop_loss_overrides_p4_stop(db):
     db.commit()
     _seed_price(db, "1101", D1, close=90.0)  # -10% 部位報酬，跌破 -8% 真實停損
 
-    sp.run_daily_trading_strategy(db, target_date=D1)
+    sp.run_daily_trading_strategy(db, target_date=D1, strategy_version=V)
     decision = (
         db.query(ShadowStrategyDailyDecision)
-        .filter(ShadowStrategyDailyDecision.stock_id == "1101", ShadowStrategyDailyDecision.trade_date == D1)
+        .filter(
+            ShadowStrategyDailyDecision.strategy_version == V,
+            ShadowStrategyDailyDecision.stock_id == "1101",
+            ShadowStrategyDailyDecision.trade_date == D1,
+        )
         .first()
     )
     assert decision.action == sp.ACTION_SELL
@@ -466,8 +477,12 @@ def test_real_stop_loss_overrides_p4_stop(db):
 # 容量/現金分配
 # ---------------------------------------------------------------------------
 def test_capacity_allocation_skips_lower_ranked_candidate_when_cash_insufficient(db):
+    """通用容量/現金分配框架測試——同 `test_real_stop_loss_overrides_p4_stop` 的理由，
+    改用 `CLEAN_NO_FIXED_TP`（2026-09-09 起 v1_frozen 本身已改版為 Dual-Engine，
+    entry_score/setup_a 這套排序機制不再是 v1_frozen 實際使用的邏輯）。"""
+    V = sp.STRATEGY_VERSION_CLEAN_NO_FIXED_TP
     _seed_trading_calendar(db, D0, 5)
-    db.add(ShadowVirtualPortfolio(strategy_version=sp.STRATEGY_VERSION, cash=150000.0))
+    db.add(ShadowVirtualPortfolio(strategy_version=V, cash=150000.0))
     db.commit()
 
     # 兩檔都符合 setup_a（day_index=3, hit_count_so_far=1，只在 D2 有一筆 hit；
@@ -492,7 +507,7 @@ def test_capacity_allocation_skips_lower_ranked_candidate_when_cash_insufficient
     obs_b = _seed_observation(db, stock_id="2330", stock_name="台積電", first_seen_date=D0)
     _seed_review(db, obs_b, D2, "CAUTION", momentum_score=70.0)
 
-    sp.run_daily_trading_strategy(db, target_date=D2)
+    sp.run_daily_trading_strategy(db, target_date=D2, strategy_version=V)
     decisions = {
         d.stock_id: d.action
         for d in db.query(ShadowStrategyDailyDecision).filter(ShadowStrategyDailyDecision.trade_date == D2)
@@ -913,12 +928,17 @@ def test_generate_exit_signal_no_take_profit_when_basis_none():
     assert sp.generate_exit_signal(row, params, actual_position_return=99.0) is None
 
 
-def test_generate_exit_signal_mark_to_market_basis_unchanged_for_v1_frozen():
-    """v1_frozen 既有行為逐字不變：即使傳入很低的 actual_position_return，只要
-    mark_to_market_return_pct 達標依然觸發（因為 v1 的 basis 是 mark_to_market）。"""
-    params = sp.STRATEGY_PARAMS_BY_VERSION[sp.STRATEGY_VERSION]
-    row = _make_evidence_row(mark_to_market_return_pct=10.0)
-    sig = sp.generate_exit_signal(row, params, actual_position_return=-99.0)
+def test_generate_exit_signal_mark_to_market_basis_unchanged_for_clean_fixed_tp():
+    """`CLEAN_FIXED_TP` 仍然 spread 自 `V1_STRATEGY_PARAMS`（`take_profit_basis=
+    "actual_position"`——原測試名稱裡的『for_v1_frozen』已經不成立：2026-09-09 起
+    v1_frozen 本身改版為 Dual-Engine，`generate_exit_signal` 的固定停利機制完全不再是
+    v1_frozen 實際使用的邏輯（Dual-Engine 用 Fast Stop/Prove-it/Trailing 取代），
+    這裡改驗證仍然共用這套通用機制的 `CLEAN_FIXED_TP`。"""
+    params = sp.STRATEGY_PARAMS_BY_VERSION[sp.STRATEGY_VERSION_CLEAN_FIXED_TP]
+    row = _make_evidence_row(mark_to_market_return_pct=99.0)
+    # actual_position_return 才是這個 basis 真正判斷依據，不是 mark_to_market
+    assert sp.generate_exit_signal(row, params, actual_position_return=2.0) is None
+    sig = sp.generate_exit_signal(row, params, actual_position_return=12.0)
     assert sig is not None and sig.reason == sp.EXIT_REASON_TAKE_PROFIT
 
 

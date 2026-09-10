@@ -45,9 +45,12 @@ def test_shadow_portfolio_endpoint_returns_v1_caps_for_v1_frozen(api):
     res = client.get("/api/signals/shadow-portfolio", params={"strategy_version": "v1_frozen"})
     assert res.status_code == 200
     body = res.json()
-    assert body["max_stocks"] == 5
+    # 2026-09-09 第二輪重寫：拿掉全域 5 檔上限（PART 14），9 是兩個資金桶各自
+    # 容量上限的理論最大值（6×5萬 Starter + 3×10萬 Pullback）；max_total_units
+    # 也不再是固定值（改由兩個桶各自的容量限制，不是單一 unit 數上限）。
+    assert body["max_stocks"] == 9
     assert body["max_units_per_stock"] == 2
-    assert body["max_total_units"] == 6
+    assert body["max_total_units"] is None
     assert body["max_position_exposure_pct"] is None
     assert body["cycle_length_trading_days"] == 35
 
@@ -75,5 +78,5 @@ def test_shadow_portfolio_endpoint_unknown_strategy_version_falls_back_to_v1(api
     body = res.json()
     # strategy_version 欄位本身照原樣回傳（不偷改使用者傳入的值），但參數 fallback 回 v1
     assert body["strategy_version"] == "TYPO_VERSION"
-    assert body["max_stocks"] == 5
+    assert body["max_stocks"] == 9
     assert body["max_units_per_stock"] == 2
