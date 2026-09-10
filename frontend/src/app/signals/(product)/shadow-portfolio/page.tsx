@@ -3,12 +3,13 @@
 import { useCallback, useEffect, useState } from "react"
 
 import {
-  fetchShadowHistory,
+  fetchShadowHistoryPeriods,
   fetchShadowPendingActions,
   fetchShadowPortfolio,
   SHADOW_STRATEGY_VERSIONS,
   type ShadowCompletedTrade,
   type ShadowHistoryDay,
+  type ShadowHistoryResponse,
   type ShadowOrderAction,
   type ShadowPendingAction,
   type ShadowPortfolio,
@@ -221,6 +222,85 @@ function HistoryDayRow({
   )
 }
 
+function HistoryPeriodRow({
+  period,
+  expanded,
+  onToggle,
+  expandedDay,
+  onToggleDay,
+}: {
+  period: ShadowHistoryResponse
+  expanded: boolean
+  onToggle: () => void
+  expandedDay: string | null
+  onToggleDay: (tradeDate: string) => void
+}) {
+  const executedActionCount = period.trading_days.reduce(
+    (sum, day) => sum + day.executed_orders.length,
+    0,
+  )
+  const strategyDayCount = period.trading_days.filter((day) => !day.settlement_reset).length
+  return (
+    <div className="border-b border-slate-800/80 last:border-b-0">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={expanded}
+        className="grid w-full grid-cols-[auto_1fr_auto_auto_auto_auto] items-center gap-2 px-3 py-3 text-left text-xs hover:bg-slate-800/40 sm:gap-4"
+      >
+        <span aria-hidden className="text-slate-500">{expanded ? "▾" : "▸"}</span>
+        <span className="font-mono text-slate-200">
+          {period.start_date ?? "—"} ～ {period.end_date ?? "—"}
+        </span>
+        <span className="text-slate-400">{strategyDayCount} 日 + 結算</span>
+        <span className={returnTone(period.period_return_pct)}>{formatPct(period.period_return_pct)}</span>
+        <span className="text-slate-400">
+          勝率 {period.win_rate_pct === null ? "—" : `${period.win_rate_pct.toFixed(1)}%`}
+        </span>
+        <span className="text-right text-slate-500">{executedActionCount} 筆動作</span>
+      </button>
+
+      {expanded && (
+        <div className="border-t border-slate-800 bg-slate-950/40 p-3">
+          <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-5">
+            <StatBox label="期間起始權益" value={formatMoney(period.start_equity)} />
+            <StatBox label="期間結束權益" value={formatMoney(period.end_equity)} />
+            <StatBox label="期間報酬" value={formatPct(period.period_return_pct)} tone={returnTone(period.period_return_pct)} />
+            <StatBox
+              label="勝率（已平倉）"
+              value={period.win_rate_pct === null ? "—" : `${period.win_rate_pct.toFixed(2)}%`}
+              tone={period.win_rate_pct !== null && period.win_rate_pct >= 50 ? "text-red-300" : "text-slate-100"}
+            />
+            <StatBox label="成交動作" value={`${executedActionCount} 筆`} />
+          </div>
+          <p className="mb-3 text-[11px] text-amber-300/80">
+            {strategyDayCount} 個策略交易日後，{period.end_date} 完成期末結算；下一循環本金重設為 {formatMoney(period.settlement_cash)} 元。
+            期間報酬依實際結算成交價計算。
+          </p>
+          <div className="overflow-hidden rounded-lg border border-slate-800">
+            <div className="grid grid-cols-[auto_1fr_auto_auto_auto_auto] gap-2 bg-slate-900 px-3 py-2 text-[10px] text-slate-500 sm:gap-4">
+              <span />
+              <span>交易日</span>
+              <span>日報酬</span>
+              <span>累積</span>
+              <span>總權益</span>
+              <span className="text-right">動作</span>
+            </div>
+            {period.trading_days.map((day) => (
+              <HistoryDayRow
+                key={day.trade_date}
+                day={day}
+                expanded={expandedDay === day.trade_date}
+                onToggle={() => onToggleDay(day.trade_date)}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function ShadowPortfolioPage() {
   const [strategyVersion, setStrategyVersion] = useState<ShadowStrategyVersion>("v1_frozen")
 
@@ -250,15 +330,12 @@ export default function ShadowPortfolioPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  const [history, setHistory] = useState<Awaited<ReturnType<typeof fetchShadowHistory>> | null>(null)
+  const [historyPeriods, setHistoryPeriods] = useState<Awaited<ReturnType<typeof fetchShadowHistoryPeriods>> | null>(null)
   const [historyLoading, setHistoryLoading] = useState(true)
   const [historyError, setHistoryError] = useState<string | null>(null)
   const [historyCollapsed, setHistoryCollapsed] = useState(false)
-  const [expandedHistoryDate, setExpandedHistoryDate] = useState<string | null>(null)
-  const [historyStartInput, setHistoryStartInput] = useState("")
-  const [historyEndInput, setHistoryEndInput] = useState("")
-  const [historyRequestedStart, setHistoryRequestedStart] = useState("")
-  const [historyRequestedEnd, setHistoryRequestedEnd] = useState("")
+  const [expandedHistoryPeriod, setExpandedHistoryPeriod] = useState<string | null>(null)
+  const [expandedHistoryDay, setExpandedHistoryDay] = useState<string | null>(null)
   const [strategyHelpCollapsed, setStrategyHelpCollapsed] = useState(false)
 
   useEffect(() => {
@@ -289,18 +366,13 @@ export default function ShadowPortfolioPage() {
       setHistoryLoading(true)
       setHistoryError(null)
       try {
-        const res = await fetchShadowHistory(
-          {
-            strategyVersion,
-            startDate: historyRequestedStart || undefined,
-            endDate: historyRequestedEnd || undefined,
-          },
+        const res = await fetchShadowHistoryPeriods(
+          { strategyVersion },
           { signal: controller.signal },
         )
-        setHistory(res)
-        setHistoryStartInput(res.start_date ?? "")
-        setHistoryEndInput(res.end_date ?? "")
-        setExpandedHistoryDate(null)
+        setHistoryPeriods(res)
+        setExpandedHistoryPeriod(null)
+        setExpandedHistoryDay(null)
       } catch (reason: unknown) {
         if (!controller.signal.aborted) {
           setHistoryError(reason instanceof Error ? reason.message : "歷史回放資料載入失敗")
@@ -311,25 +383,9 @@ export default function ShadowPortfolioPage() {
     }
     void run()
     return () => controller.abort()
-  }, [strategyVersion, historyRequestedStart, historyRequestedEnd])
+  }, [strategyVersion])
 
-  const applyHistoryRange = () => {
-    if (historyStartInput && historyEndInput && historyStartInput > historyEndInput) {
-      setHistoryError("歷史回放的起始日不能晚於結束日")
-      return
-    }
-    setHistoryError(null)
-    setHistoryRequestedStart(historyStartInput)
-    setHistoryRequestedEnd(historyEndInput)
-  }
-
-  const resetHistoryRange = () => {
-    setHistoryError(null)
-    setHistoryStartInput("")
-    setHistoryEndInput("")
-    setHistoryRequestedStart("")
-    setHistoryRequestedEnd("")
-  }
+  const latestHistoricalPeriod = historyPeriods?.periods[historyPeriods.periods.length - 1] ?? null
 
   return (
     <main className="mx-auto min-h-screen max-w-5xl px-4 py-6 text-slate-100">
@@ -453,8 +509,8 @@ export default function ShadowPortfolioPage() {
             />
             <StatBox
               label="歷史回放報酬"
-              value={historyLoading ? "載入中" : formatPct(history?.period_return_pct)}
-              tone={returnTone(history?.period_return_pct)}
+              value={historyLoading ? "載入中" : formatPct(latestHistoricalPeriod?.period_return_pct)}
+              tone={returnTone(latestHistoricalPeriod?.period_return_pct)}
             />
             <StatBox label="現金" value={formatMoney(portfolio.cash)} />
             <StatBox label="持股數" value={`${portfolio.position_count} / ${portfolio.max_stocks}`} />
@@ -551,104 +607,59 @@ export default function ShadowPortfolioPage() {
             >
               <span className="flex items-center gap-2 text-sm font-semibold text-slate-200">
                 <span aria-hidden className="shrink-0 text-slate-400">{historyCollapsed ? "▸" : "▾"}</span>
-                {history
-                  ? `歷史 ${history.trading_day_count} 個交易日回放（${history.start_date ?? "—"} ～ ${history.end_date ?? "—"}）`
-                  : "歷史交易日回放"}
+                {historyPeriods
+                  ? `歷史交易區間（${historyPeriods.periods.length} 個已結算循環）`
+                  : "歷史交易區間"}
               </span>
               <span className="shrink-0 text-xs text-slate-500">
-                {historyCollapsed ? "點擊展開" : history ? `${history.trading_day_count} 個實際交易日` : "收合"}
+                {historyCollapsed ? "點擊展開" : historyPeriods ? "點開區間查看 25 個交易日" : "收合"}
               </span>
             </button>
 
             {!historyCollapsed && (
               <div className="border-t border-slate-800 p-3">
                 <p className="mb-3 text-xs leading-5 text-slate-500">
-                  歷史資料會持續 append，不會因為新週期開始而覆蓋舊紀錄。未指定日期時優先顯示最近一個已完成結算區間，
-                  尚未有結算時才顯示最新 25 個有回放資料的交易日；也可以自訂任意起訖日。
-                  點擊任一交易日可查看當日權益、成交動作與完成交易。
+                  這裡只顯示已完成結算的 25 個交易日循環；目前尚未結算的新循環不會混進歷史區。
+                  每個區間一列，點開後再查看該區間的每日權益、成交動作與完成交易。
                 </p>
-                <div className="mb-3 flex flex-wrap items-end gap-2 rounded-lg border border-slate-800 bg-slate-950/30 p-3">
-                  <label className="grid gap-1 text-[11px] text-slate-500">
-                    起始日
-                    <input
-                      type="date"
-                      value={historyStartInput}
-                      onChange={(event) => setHistoryStartInput(event.target.value)}
-                      className="rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-xs text-slate-200"
-                    />
-                  </label>
-                  <label className="grid gap-1 text-[11px] text-slate-500">
-                    結束日
-                    <input
-                      type="date"
-                      value={historyEndInput}
-                      onChange={(event) => setHistoryEndInput(event.target.value)}
-                      className="rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-xs text-slate-200"
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    onClick={applyHistoryRange}
-                    className="rounded bg-sky-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-600"
-                  >
-                    查詢區間
-                  </button>
-                  <button
-                    type="button"
-                    onClick={resetHistoryRange}
-                    className="rounded border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
-                  >
-                    最新 25 個交易日
-                  </button>
-                </div>
                 {historyLoading && <p className="text-sm text-slate-500">正在載入歷史回放…</p>}
                 {historyError && (
                   <p className="rounded border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-100">
                     {historyError}
                   </p>
                 )}
-                {!historyLoading && !historyError && history && history.trading_days.length === 0 && (
+                {!historyLoading && !historyError && historyPeriods && historyPeriods.periods.length === 0 && (
                   <p className="rounded-lg border border-slate-800 bg-slate-900/50 p-4 text-sm text-slate-500">
-                    這個策略在指定期間沒有歷史回放資料。
+                    目前還沒有已完成結算的歷史區間。
                   </p>
                 )}
-                {!historyLoading && !historyError && history && history.trading_days.length > 0 && (
-                  <>
-                    <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-5">
-                      <StatBox label="期間起始權益" value={formatMoney(history.start_equity)} />
-                      <StatBox label="期間結束權益" value={formatMoney(history.end_equity)} />
-                      <StatBox label="期間報酬" value={formatPct(history.period_return_pct)} tone={returnTone(history.period_return_pct)} />
-                      <StatBox
-                        label="勝率（已平倉）"
-                        value={history.win_rate_pct === null ? "—" : `${history.win_rate_pct.toFixed(2)}%`}
-                        tone={history.win_rate_pct !== null && history.win_rate_pct >= 50 ? "text-red-300" : "text-slate-100"}
-                      />
-                      <StatBox label="成交動作" value={`${history.trading_days.reduce((sum, day) => sum + day.executed_orders.length, 0)} 筆`} />
+                {!historyLoading && !historyError && historyPeriods && historyPeriods.periods.length > 0 && (
+                  <div className="overflow-hidden rounded-lg border border-slate-800">
+                    <div className="grid grid-cols-[auto_1fr_auto_auto_auto_auto] gap-2 bg-slate-900 px-3 py-2 text-[10px] text-slate-500 sm:gap-4">
+                      <span />
+                      <span>已結算區間</span>
+                      <span>交易日（含結算）</span>
+                      <span>報酬</span>
+                      <span>勝率</span>
+                      <span className="text-right">成交動作</span>
                     </div>
-                    {history.settlement_cash !== null && (
-                      <p className="mb-3 text-[11px] text-amber-300/80">
-                        {history.trading_days.filter((day) => day.settlement_reset).map((day) => day.trade_date).join("、")} 期末已按最低價全部賣出，下一循環資產重設為 {formatMoney(history.settlement_cash)} 元；期間報酬依實際結算成交價計算。
-                      </p>
-                    )}
-                    <div className="overflow-hidden rounded-lg border border-slate-800">
-                      <div className="grid grid-cols-[auto_1fr_auto_auto_auto_auto] gap-2 bg-slate-900 px-3 py-2 text-[10px] text-slate-500 sm:gap-4">
-                        <span />
-                        <span>交易日</span>
-                        <span>日報酬</span>
-                        <span>累積</span>
-                        <span>總權益</span>
-                        <span className="text-right">動作</span>
-                      </div>
-                      {history.trading_days.map((day) => (
-                        <HistoryDayRow
-                          key={day.trade_date}
-                          day={day}
-                          expanded={expandedHistoryDate === day.trade_date}
-                          onToggle={() => setExpandedHistoryDate((current) => current === day.trade_date ? null : day.trade_date)}
+                    {historyPeriods.periods.map((period) => {
+                      const periodKey = `${period.start_date}-${period.end_date}`
+                      return (
+                        <HistoryPeriodRow
+                          key={periodKey}
+                          period={period}
+                          expanded={expandedHistoryPeriod === periodKey}
+                          onToggle={() => {
+                            setExpandedHistoryPeriod((current) => current === periodKey ? null : periodKey)
+                            setExpandedHistoryDay(null)
+                          }}
+                          expandedDay={expandedHistoryPeriod === periodKey ? expandedHistoryDay : null}
+                          onToggleDay={(tradeDate) => setExpandedHistoryDay((current) => current === tradeDate ? null : tradeDate)}
                         />
-                      ))}
-                    </div>
-                  </>
+                      )
+                    })}
+                  </div>
                 )}
               </div>
             )}

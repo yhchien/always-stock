@@ -27,9 +27,14 @@ v1_frozen 的歷史基準，跟新版 Dual-Engine 是完全不同的策略邏輯
 用法：
     python3 backfill_shadow_portfolio_replay.py                       # dry-run
     python3 backfill_shadow_portfolio_replay.py --execute              # 真的寫入 DB
+    python3 backfill_shadow_portfolio_replay.py --execute --append     # 只接續，不刪任何既有資料
     python3 backfill_shadow_portfolio_replay.py --execute \\
         --start=2026-08-01 --end=2026-09-04 --settle-at-end \\
         --settlement-date=2026-09-07                                  # 9/4 訊號窗口，9/7 行政結算
+    # 若確定只要重算同一段日期，才加 --replace-range；區間外的歷史仍保留
+    python3 backfill_shadow_portfolio_replay.py --execute --replace-range \\
+        --start=2026-08-01 --end=2026-09-04 --settle-at-end \\
+        --settlement-date=2026-09-07
 """
 from __future__ import annotations
 
@@ -227,32 +232,22 @@ def compute_full_metrics(db, *, strategy_version: str, initial_capital: float) -
     }
 
 
-def _reset_shadow_portfolio_state(session_factory, strategy_version: str, logger) -> None:
-    """每次 `--execute` 一律先清空這個 strategy_version 的所有 shadow 表再重跑。
+def _replace_shadow_portfolio_range(
+    session_factory,
+    strategy_version: str,
+    start_date: date,
+    end_date: date,
+    logger,
+) -> None:
+    """Replace only rows in an explicitly requested replay date range.
 
-    **絕對不能假設「重跑整支 script」對已存在的 portfolio 狀態是安全的**——
-    `ShadowVirtualPosition`／`ShadowVirtualPortfolio.cash` 是「目前最新狀態」，不是
-    逐日 append-only 紀錄。若上一輪跑到一半失敗（例如遠端連線中斷）沒清空就重跑，
-    重新從第一天開始的迴圈會拿「已經跑到後面某天累積出來的持倉/現金」去跟「第一天的
-    證據」做判斷，等於把未來的狀態誤植回過去，整個回放會全部錯亂（這是真的撞過的
-    bug，不是假設性風險）。`ShadowStrategyDailyDecision` 的 idempotency 只保證「同一天
-    不會重複決策」，保證不了「整個 replay 從頭安全重跑」。
-    **2026-09-08 修正**：原本漏清 `ShadowCompletedTrade`——那張表的 model docstring
-    寫「不受 35 交易日循環強制重置影響」，講的是 `check_and_apply_cycle_reset`（策略
-    正常運作時的循環重置，永久紀錄本來就該保留），跟這支 backfill script 的「整個重跑」
-    是完全不同的情境；backfill 重跑必須連已平倉的永久紀錄都清空重建，不然每次重新驗證
-    都會在這張表疊加重複列（真的撞過：同一個 8/7~9/4 窗口 4 次 backfill 疊出 63 筆，
-    但實際只有 24 筆不重複的交易，直接汙染了正式站「交易紀錄」頁面顯示的資料）。
+    Normal replay is append-only. This opt-in cleanup is only for rerunning the
+    same dates after a rule change or an interrupted run; dates outside this
+    range are preserved.
 
-    **2026-09（本輪）再犯同一種錯誤，順手修正**：新增 `ShadowMissedCandidate`／
-    `ShadowWinnerTracking`（FORWARD_V1_202609 專用）時，忘記把這兩張新表也加進這裡
-    一起清空——第二次重跑 FORWARD_V1_202609（補 winner tracking 接線）時，
-    `ShadowMissedCandidate` 撞到上一輪殘留資料的 unique constraint 直接整支腳本
-    crash，crash 當下 `ShadowVirtualPosition`/`ShadowStrategyOrder` 等表已經被清空
-    重建到一半（第一次成功執行過的部分早被清光，第二次跑到一半又中斷），DB 處於
-    「兩次執行混在一起」的破碎狀態，必須整個重跑一次才能恢復乾淨。教訓：**任何新增
-    的 `strategy_version`-scoped 表，只要會被這支 backfill script 寫入，就必須同步
-    加進這個函式**，不能只在新增 model 的當下記得，事後很容易忘記回頭補。
+    `ShadowVirtualPosition`／`ShadowVirtualPortfolio` 是目前循環的 working
+    state，因此替換明確日期範圍時會重建它們；歷史快照、決策、訂單、成交與
+    winner/missed records 則只刪除該範圍內的資料。其他循環永遠不受影響。
     """
     from app.models import (
         ShadowCompletedTrade, ShadowMissedCandidate, ShadowPortfolioDailySnapshot, ShadowPositionLot,
@@ -274,29 +269,53 @@ def _reset_shadow_portfolio_state(session_factory, strategy_version: str, logger
         db.query(ShadowVirtualPosition).filter(ShadowVirtualPosition.strategy_version == strategy_version).delete(
             synchronize_session=False
         )
-        db.query(ShadowStrategyOrder).filter(ShadowStrategyOrder.strategy_version == strategy_version).delete(
-            synchronize_session=False
-        )
+        db.query(ShadowStrategyOrder).filter(
+            ShadowStrategyOrder.strategy_version == strategy_version,
+            (
+                ((ShadowStrategyOrder.signal_date >= start_date) &
+                 (ShadowStrategyOrder.signal_date <= end_date)) |
+                ((ShadowStrategyOrder.scheduled_execution_date >= start_date) &
+                 (ShadowStrategyOrder.scheduled_execution_date <= end_date))
+            ),
+        ).delete(synchronize_session=False)
         db.query(ShadowStrategyDailyDecision).filter(
-            ShadowStrategyDailyDecision.strategy_version == strategy_version
+            ShadowStrategyDailyDecision.strategy_version == strategy_version,
+            ShadowStrategyDailyDecision.trade_date >= start_date,
+            ShadowStrategyDailyDecision.trade_date <= end_date,
         ).delete(synchronize_session=False)
         db.query(ShadowPortfolioDailySnapshot).filter(
-            ShadowPortfolioDailySnapshot.strategy_version == strategy_version
+            ShadowPortfolioDailySnapshot.strategy_version == strategy_version,
+            ShadowPortfolioDailySnapshot.trade_date >= start_date,
+            ShadowPortfolioDailySnapshot.trade_date <= end_date,
         ).delete(synchronize_session=False)
         db.query(ShadowCompletedTrade).filter(
-            ShadowCompletedTrade.strategy_version == strategy_version
+            ShadowCompletedTrade.strategy_version == strategy_version,
+            # A settlement date can also be the first signal date of the next
+            # cycle.  Scope completed-trade replacement by entry date so a
+            # prior cycle's lots settled on that boundary remain immutable.
+            ShadowCompletedTrade.entry_execution_date >= start_date,
+            ShadowCompletedTrade.entry_execution_date <= end_date,
         ).delete(synchronize_session=False)
         db.query(ShadowMissedCandidate).filter(
-            ShadowMissedCandidate.strategy_version == strategy_version
+            ShadowMissedCandidate.strategy_version == strategy_version,
+            ShadowMissedCandidate.trade_date >= start_date,
+            ShadowMissedCandidate.trade_date <= end_date,
         ).delete(synchronize_session=False)
         db.query(ShadowWinnerTracking).filter(
-            ShadowWinnerTracking.strategy_version == strategy_version
+            ShadowWinnerTracking.strategy_version == strategy_version,
+            ShadowWinnerTracking.trade_date >= start_date,
+            ShadowWinnerTracking.trade_date <= end_date,
         ).delete(synchronize_session=False)
         db.query(ShadowVirtualPortfolio).filter(ShadowVirtualPortfolio.strategy_version == strategy_version).delete(
             synchronize_session=False
         )
         db.commit()
-    logger.info("Reset all shadow portfolio state for strategy_version=%s before replay", strategy_version)
+    logger.info(
+        "Replace replay range %s~%s for strategy_version=%s; other dates preserved",
+        start_date,
+        end_date,
+        strategy_version,
+    )
 
 
 def _parse_strategy_version(argv: list, default: str) -> str:
@@ -335,6 +354,8 @@ def main(argv: list) -> int:
     logger = logging.getLogger(__name__)
 
     execute = "--execute" in argv
+    append = "--append" in argv
+    replace_range = "--replace-range" in argv
 
     from app.database import SessionLocal, engine
     from app.models import DailyPrice
@@ -359,9 +380,6 @@ def main(argv: list) -> int:
 
     sp.ensure_shadow_portfolio_tables(engine)
 
-    if execute:
-        _reset_shadow_portfolio_state(SessionLocal, strategy_version, logger)
-
     with SessionLocal() as db:
         trade_dates = sorted(
             d[0]
@@ -383,6 +401,22 @@ def main(argv: list) -> int:
             trade_dates[-1],
         )
         return 1
+
+    if execute and replace_range:
+        cleanup_end = max(replay_end, settlement_date)
+        _replace_shadow_portfolio_range(
+            SessionLocal,
+            strategy_version,
+            replay_start,
+            cleanup_end,
+            logger,
+        )
+    elif execute:
+        logger.info(
+            "Append replay for strategy_version=%s without deleting existing history%s",
+            strategy_version,
+            " (explicit --append)" if append else "",
+        )
 
     logger.info(
         "Replay window: %s ~ %s (%d trading days), strategy_version=%s, execute=%s",

@@ -2865,6 +2865,25 @@ export interface ShadowHistoryResponse {
   trading_days: ShadowHistoryDay[]
 }
 
+export interface ShadowHistoryPeriodsResponse {
+  strategy_version: string
+  periods: ShadowHistoryResponse[]
+}
+
+export async function fetchShadowHistoryPeriods(
+  params?: { strategyVersion?: string },
+  options?: FetchOptions,
+): Promise<ShadowHistoryPeriodsResponse> {
+  const qs = params?.strategyVersion
+    ? `?strategy_version=${encodeURIComponent(params.strategyVersion)}`
+    : ""
+  const res = await apiFetch(`${API_BASE}/api/signals/shadow-portfolio/history/periods${qs}`, {
+    signal: options?.signal,
+  })
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "模擬交易歷史區間載入失敗"))
+  return res.json()
+}
+
 export async function fetchShadowHistory(
   params?: { strategyVersion?: string; startDate?: string; endDate?: string },
   options?: FetchOptions,

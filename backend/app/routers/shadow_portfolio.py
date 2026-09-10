@@ -326,6 +326,13 @@ class ShadowHistoryResponse(BaseModel):
     trading_days: List[ShadowHistoryDayResponse]
 
 
+class ShadowHistoryPeriodsResponse(BaseModel):
+    """已完成結算的循環清單；尚未結算的目前循環不屬於歷史回放。"""
+
+    strategy_version: str
+    periods: List[ShadowHistoryResponse]
+
+
 def _completed_trade_response(trade: ShadowCompletedTrade) -> ShadowCompletedTradeResponse:
     return ShadowCompletedTradeResponse(
         id=trade.id,
@@ -583,6 +590,61 @@ def get_shadow_history(
         settlement_cash=settlement_cash,
         trading_days=days,
     )
+
+
+@router.get("/history/periods", response_model=ShadowHistoryPeriodsResponse)
+def get_shadow_history_periods(
+    strategy_version: str = STRATEGY_VERSION,
+    db: Session = Depends(get_db),
+) -> ShadowHistoryPeriodsResponse:
+    """Return each completed 25-trading-day settlement interval separately.
+
+    A new live cycle begins on the settlement date but remains outside this
+    endpoint until its own period-end settlement is recorded.  This keeps the
+    historical section stable while the current cycle continues to append
+    snapshots and pending orders.
+    """
+    settlement_dates = [
+        row[0]
+        for row in db.query(ShadowCompletedTrade.exit_execution_date)
+        .filter(
+            ShadowCompletedTrade.strategy_version == strategy_version,
+            ShadowCompletedTrade.exit_reason == "PERIOD_END_SETTLEMENT",
+        )
+        .distinct()
+        .order_by(ShadowCompletedTrade.exit_execution_date.asc())
+        .all()
+    ]
+    snapshot_date_query = (
+        db.query(ShadowPortfolioDailySnapshot.trade_date)
+        .filter(ShadowPortfolioDailySnapshot.strategy_version == strategy_version)
+        .distinct()
+    )
+    periods: List[ShadowHistoryResponse] = []
+    previous_settlement: Optional[date] = None
+    for settlement_date in settlement_dates:
+        period_snapshots = snapshot_date_query.filter(
+            ShadowPortfolioDailySnapshot.trade_date <= settlement_date,
+        )
+        if previous_settlement is not None:
+            period_snapshots = period_snapshots.filter(
+                ShadowPortfolioDailySnapshot.trade_date > previous_settlement,
+            )
+        first_period_snapshot = period_snapshots.order_by(
+            ShadowPortfolioDailySnapshot.trade_date.asc(),
+        ).first()
+        if first_period_snapshot is not None:
+            period = get_shadow_history(
+                strategy_version=strategy_version,
+                start_date=first_period_snapshot[0],
+                end_date=settlement_date,
+                db=db,
+            )
+            if period.trading_days:
+                periods.append(period)
+        previous_settlement = settlement_date
+
+    return ShadowHistoryPeriodsResponse(strategy_version=strategy_version, periods=periods)
 
 
 TradeSortBy = Literal["return_desc", "return_asc", "entry_date_desc", "entry_date_asc"]

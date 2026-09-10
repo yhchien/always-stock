@@ -259,3 +259,74 @@ def test_shadow_history_default_prefers_latest_completed_settlement_interval(api
     assert body["start_date"] == "2026-08-03"
     assert body["end_date"] == "2026-09-07"
     assert body["trading_day_count"] == 3
+
+
+def test_shadow_history_periods_returns_only_completed_intervals(api):
+    client, db = api
+    snapshot_dates = [
+        (date(2026, 8, 3), 600000.0),
+        (date(2026, 9, 7), 620000.0),
+        (date(2026, 9, 8), 600000.0),
+        (date(2026, 10, 14), 630000.0),
+        (date(2026, 10, 15), 640000.0),  # 第二循環尚未結算，不應出現在歷史區
+    ]
+    db.add_all(
+        [
+            ShadowPortfolioDailySnapshot(
+                strategy_version="v1_frozen",
+                trade_date=trade_date,
+                cash=equity,
+                invested_cost=0.0,
+                market_value=0.0,
+                total_equity=equity,
+                total_return_pct=(equity / 600000.0 - 1.0) * 100.0,
+                realized_pnl=0.0,
+                unrealized_pnl=0.0,
+                position_count=0,
+                total_units=0,
+            )
+            for trade_date, equity in snapshot_dates
+        ]
+    )
+    db.add_all(
+        [
+            ShadowCompletedTrade(
+                strategy_version="v1_frozen",
+                cycle_number=cycle_number,
+                stock_id=stock_id,
+                stock_name=stock_name,
+                entry_type="CONTINUATION_STARTER",
+                entry_signal_date=exit_date - timedelta(days=5),
+                entry_execution_date=exit_date - timedelta(days=4),
+                entry_price=1000.0,
+                exit_reason="PERIOD_END_SETTLEMENT",
+                exit_signal_date=exit_date,
+                exit_execution_date=exit_date,
+                exit_price=1100.0,
+                shares=100.0,
+                allocation=100000.0,
+                realized_pnl=10000.0,
+                realized_return_pct=10.0,
+                holding_days=5,
+                followed_by_rotation=False,
+            )
+            for cycle_number, stock_id, stock_name, exit_date in [
+                (1, "2330", "台積電", date(2026, 9, 7)),
+                (2, "2317", "鴻海", date(2026, 10, 14)),
+            ]
+        ]
+    )
+    db.commit()
+
+    res = client.get(
+        "/api/signals/shadow-portfolio/history/periods",
+        params={"strategy_version": "v1_frozen"},
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert len(body["periods"]) == 2
+    assert [(p["start_date"], p["end_date"]) for p in body["periods"]] == [
+        ("2026-08-03", "2026-09-07"),
+        ("2026-09-08", "2026-10-14"),
+    ]
+    assert body["periods"][1]["trading_days"][-1]["trade_date"] == "2026-10-14"
