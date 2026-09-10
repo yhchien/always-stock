@@ -6,6 +6,8 @@ param 回傳該策略自己的資金/曝險規則，不能不管傳入哪個版�
 """
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -14,7 +16,13 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import get_db
 from app.main import app
-from app.models import Base, ShadowVirtualPortfolio
+from app.models import (
+    Base,
+    ShadowCompletedTrade,
+    ShadowPortfolioDailySnapshot,
+    ShadowStrategyOrder,
+    ShadowVirtualPortfolio,
+)
 from app.signals import shadow_portfolio as sp
 
 
@@ -80,3 +88,82 @@ def test_shadow_portfolio_endpoint_unknown_strategy_version_falls_back_to_v1(api
     assert body["strategy_version"] == "TYPO_VERSION"
     assert body["max_stocks"] == 9
     assert body["max_units_per_stock"] == 2
+
+
+def test_shadow_history_endpoint_groups_daily_performance_and_transactions(api):
+    client, db = api
+    db.add_all(
+        [
+            ShadowPortfolioDailySnapshot(
+                strategy_version="v1_frozen",
+                trade_date=date(2026, 8, 3),
+                cash=500000.0,
+                invested_cost=100000.0,
+                market_value=101000.0,
+                total_equity=601000.0,
+                total_return_pct=0.1666667,
+                realized_pnl=0.0,
+                unrealized_pnl=1000.0,
+                position_count=1,
+                total_units=1,
+            ),
+            ShadowPortfolioDailySnapshot(
+                strategy_version="v1_frozen",
+                trade_date=date(2026, 8, 4),
+                cash=500000.0,
+                invested_cost=100000.0,
+                market_value=102000.0,
+                total_equity=602000.0,
+                total_return_pct=0.3333333,
+                realized_pnl=0.0,
+                unrealized_pnl=2000.0,
+                position_count=1,
+                total_units=1,
+            ),
+            ShadowStrategyOrder(
+                strategy_version="v1_frozen",
+                stock_id="2330",
+                stock_name="台積電",
+                action="BUY",
+                signal_date=date(2026, 8, 3),
+                scheduled_execution_date=date(2026, 8, 4),
+                status="EXECUTED",
+                units=1,
+                planned_amount=100000.0,
+                execution_price=1000.0,
+            ),
+            ShadowCompletedTrade(
+                strategy_version="v1_frozen",
+                cycle_number=1,
+                stock_id="2330",
+                stock_name="台積電",
+                entry_type="EARLY_HEALTHY_PULLBACK",
+                entry_signal_date=date(2026, 8, 3),
+                entry_execution_date=date(2026, 8, 4),
+                entry_price=1000.0,
+                exit_reason="P4_STOP",
+                exit_signal_date=date(2026, 8, 4),
+                exit_execution_date=date(2026, 8, 4),
+                exit_price=1020.0,
+                shares=100.0,
+                allocation=100000.0,
+                realized_pnl=2000.0,
+                realized_return_pct=2.0,
+                holding_days=1,
+                followed_by_rotation=False,
+            ),
+        ]
+    )
+    db.commit()
+
+    res = client.get(
+        "/api/signals/shadow-portfolio/history",
+        params={"strategy_version": "v1_frozen", "start_date": "2026-08-01", "end_date": "2026-09-07"},
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["trading_day_count"] == 2
+    assert body["period_return_pct"] == pytest.approx(0.3333333)
+    assert body["trading_days"][1]["trade_date"] == "2026-08-04"
+    assert len(body["trading_days"][1]["executed_orders"]) == 1
+    assert len(body["trading_days"][1]["completed_trades"]) == 1

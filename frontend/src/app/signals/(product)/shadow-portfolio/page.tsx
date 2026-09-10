@@ -3,19 +3,16 @@
 import { useCallback, useEffect, useState } from "react"
 
 import {
-  fetchShadowCompletedTrades,
+  fetchShadowHistory,
   fetchShadowPendingActions,
   fetchShadowPortfolio,
-  fetchShadowTradesByStock,
   SHADOW_STRATEGY_VERSIONS,
   type ShadowCompletedTrade,
+  type ShadowHistoryDay,
   type ShadowOrderAction,
   type ShadowPendingAction,
   type ShadowPortfolio,
-  type ShadowStockStatSortBy,
-  type ShadowStockTradeStat,
   type ShadowStrategyVersion,
-  type ShadowTradeSortBy,
 } from "@/lib/api"
 
 const STRATEGY_VERSION_STORAGE_KEY = "always-stock:shadow-portfolio:strategy-version"
@@ -146,45 +143,72 @@ function TradeCard({ trade }: { trade: ShadowCompletedTrade }) {
   )
 }
 
-const TRADES_COLLAPSED_KEY = "always-stock:shadow-portfolio:trades-collapsed"
-
-const TRADE_SORT_OPTIONS: Array<{ value: ShadowTradeSortBy; label: string }> = [
-  { value: "entry_date_desc", label: "進場日期新到舊" },
-  { value: "return_desc", label: "報酬率高到低" },
-  { value: "return_asc", label: "報酬率低到高" },
-]
-
-const STOCK_SORT_OPTIONS: Array<{ value: ShadowStockStatSortBy; label: string }> = [
-  { value: "trade_count_desc", label: "操作次數多到少" },
-  { value: "avg_return_desc", label: "平均報酬高到低" },
-  { value: "avg_return_asc", label: "平均報酬低到高" },
-]
-
-function SortChip<T extends string>({
-  options,
-  value,
-  onChange,
+function HistoryDayRow({
+  day,
+  expanded,
+  onToggle,
 }: {
-  options: Array<{ value: T; label: string }>
-  value: T
-  onChange: (v: T) => void
+  day: ShadowHistoryDay
+  expanded: boolean
+  onToggle: () => void
 }) {
   return (
-    <div className="flex flex-wrap gap-1.5">
-      {options.map((opt) => (
-        <button
-          key={opt.value}
-          type="button"
-          onClick={() => onChange(opt.value)}
-          className={`rounded-lg px-2.5 py-1 text-xs transition-colors ${
-            value === opt.value
-              ? "bg-sky-500/15 text-sky-100"
-              : "border border-slate-700 text-slate-400 hover:border-slate-500 hover:text-slate-200"
-          }`}
-        >
-          {opt.label}
-        </button>
-      ))}
+    <div className="border-b border-slate-800/80 last:border-b-0">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={expanded}
+        className="grid w-full grid-cols-[auto_1fr_auto_auto_auto_auto] items-center gap-2 px-3 py-2.5 text-left text-xs hover:bg-slate-800/40 sm:gap-4"
+      >
+        <span aria-hidden className="text-slate-500">{expanded ? "▾" : "▸"}</span>
+        <span className="font-mono text-slate-200">{day.trade_date}</span>
+        <span className={returnTone(day.daily_return_pct)}>{formatPct(day.daily_return_pct)}</span>
+        <span className={returnTone(day.total_return_pct)}>{formatPct(day.total_return_pct)}</span>
+        <span className="text-slate-400">{formatMoney(day.total_equity)}</span>
+        <span className="text-right text-slate-500">{day.executed_orders.length} 筆動作</span>
+      </button>
+
+      {expanded && (
+        <div className="grid gap-3 border-t border-slate-800 bg-slate-950/40 px-4 py-3 sm:grid-cols-2">
+          <div>
+            <p className="mb-2 text-[11px] font-semibold text-slate-300">當日成交動作</p>
+            {day.executed_orders.length === 0 ? (
+              <p className="text-xs text-slate-500">當日沒有成交。</p>
+            ) : (
+              <div className="space-y-2">
+                {day.executed_orders.map((order) => {
+                  const meta = ACTION_META[order.action]
+                  return (
+                    <div key={order.id} className={`rounded border p-2 ${meta.tone}`}>
+                      <div className="flex items-center justify-between gap-2 text-xs">
+                        <span className="font-semibold text-slate-100">
+                          {meta.emoji} {meta.label} <span className="font-mono">{order.stock_id}</span> {order.stock_name}
+                        </span>
+                        <span className="text-slate-300">
+                          {order.execution_price !== null ? `@ ${order.execution_price.toFixed(2)}` : "—"}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-[11px] text-slate-500">
+                        {order.reason ?? order.entry_pattern ?? "—"}・{order.units} 單位
+                      </p>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+          <div>
+            <p className="mb-2 text-[11px] font-semibold text-slate-300">當日完成交易</p>
+            {day.completed_trades.length === 0 ? (
+              <p className="text-xs text-slate-500">當日沒有平倉交易。</p>
+            ) : (
+              <div className="space-y-2">
+                {day.completed_trades.map((trade) => <TradeCard key={trade.id} trade={trade} />)}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -192,7 +216,7 @@ function SortChip<T extends string>({
 export default function ShadowPortfolioPage() {
   const [strategyVersion, setStrategyVersion] = useState<ShadowStrategyVersion>("v1_frozen")
 
-  // 讀 localStorage 記住上次選擇（比照本頁 tradesCollapsed 既有慣例）
+  // 讀 localStorage 記住上次選擇
   useEffect(() => {
     try {
       const saved = window.localStorage.getItem(STRATEGY_VERSION_STORAGE_KEY)
@@ -218,33 +242,12 @@ export default function ShadowPortfolioPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  const [tradeView, setTradeView] = useState<"list" | "by-stock">("list")
-  const [tradeSortBy, setTradeSortBy] = useState<ShadowTradeSortBy>("entry_date_desc")
-  const [stockSortBy, setStockSortBy] = useState<ShadowStockStatSortBy>("trade_count_desc")
-  const [trades, setTrades] = useState<ShadowCompletedTrade[]>([])
-  const [stockStats, setStockStats] = useState<ShadowStockTradeStat[]>([])
-  const [tradesLoading, setTradesLoading] = useState(true)
-  const [tradesCollapsed, setTradesCollapsed] = useState(true)
+  const [history, setHistory] = useState<Awaited<ReturnType<typeof fetchShadowHistory>> | null>(null)
+  const [historyLoading, setHistoryLoading] = useState(true)
+  const [historyError, setHistoryError] = useState<string | null>(null)
+  const [historyCollapsed, setHistoryCollapsed] = useState(false)
+  const [expandedHistoryDate, setExpandedHistoryDate] = useState<string | null>(null)
   const [strategyHelpCollapsed, setStrategyHelpCollapsed] = useState(false)
-
-  // 初始展開狀態：讀 localStorage（預設收合，比照首頁 DailySignalsPanel 慣例）
-  useEffect(() => {
-    try {
-      const saved = window.localStorage.getItem(TRADES_COLLAPSED_KEY)
-      if (saved === "false") setTradesCollapsed(false)
-    } catch {
-      // ignore
-    }
-  }, [])
-
-  const persistTradesCollapsed = useCallback((next: boolean) => {
-    setTradesCollapsed(next)
-    try {
-      window.localStorage.setItem(TRADES_COLLAPSED_KEY, String(next))
-    } catch {
-      // ignore
-    }
-  }, [])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -269,33 +272,28 @@ export default function ShadowPortfolioPage() {
   }, [strategyVersion])
 
   useEffect(() => {
-    if (tradesCollapsed) return // 收合時不打 API，展開才載入（比照首頁面板慣例）
     const controller = new AbortController()
     async function run() {
-      setTradesLoading(true)
+      setHistoryLoading(true)
+      setHistoryError(null)
       try {
-        if (tradeView === "list") {
-          const res = await fetchShadowCompletedTrades(
-            { strategyVersion, sortBy: tradeSortBy },
-            { signal: controller.signal },
-          )
-          setTrades(res.trades)
-        } else {
-          const res = await fetchShadowTradesByStock(
-            { strategyVersion, sortBy: stockSortBy },
-            { signal: controller.signal },
-          )
-          setStockStats(res.stats)
+        const res = await fetchShadowHistory(
+          { strategyVersion, startDate: "2026-08-01", endDate: "2026-09-07" },
+          { signal: controller.signal },
+        )
+        setHistory(res)
+        setExpandedHistoryDate(null)
+      } catch (reason: unknown) {
+        if (!controller.signal.aborted) {
+          setHistoryError(reason instanceof Error ? reason.message : "歷史回放資料載入失敗")
         }
-      } catch {
-        // 靜默失敗——交易紀錄區塊不影響上面的 portfolio/actions 主要內容
       } finally {
-        if (!controller.signal.aborted) setTradesLoading(false)
+        if (!controller.signal.aborted) setHistoryLoading(false)
       }
     }
     void run()
     return () => controller.abort()
-  }, [strategyVersion, tradesCollapsed, tradeView, tradeSortBy, stockSortBy])
+  }, [strategyVersion])
 
   return (
     <main className="mx-auto min-h-screen max-w-5xl px-4 py-6 text-slate-100">
@@ -481,102 +479,64 @@ export default function ShadowPortfolioPage() {
           <section className="mt-6 rounded-lg border border-slate-800">
             <button
               type="button"
-              onClick={() => persistTradesCollapsed(!tradesCollapsed)}
-              aria-expanded={!tradesCollapsed}
+              onClick={() => setHistoryCollapsed((collapsed) => !collapsed)}
+              aria-expanded={!historyCollapsed}
               className="flex w-full items-center justify-between gap-2 p-3 text-left"
             >
               <span className="flex items-center gap-2 text-sm font-semibold text-slate-200">
-                <span aria-hidden className="shrink-0 text-slate-400">
-                  {tradesCollapsed ? "▸" : "▾"}
-                </span>
-                交易紀錄（永久保存，不受循環重置影響）
+                <span aria-hidden className="shrink-0 text-slate-400">{historyCollapsed ? "▸" : "▾"}</span>
+                歷史 25 個交易日回放（2026-08-01 ～ 2026-09-07）
               </span>
-              {tradesCollapsed && (
-                <span className="shrink-0 text-xs text-slate-500">點擊展開</span>
-              )}
+              <span className="shrink-0 text-xs text-slate-500">
+                {historyCollapsed ? "點擊展開" : history ? `${history.trading_day_count} 個實際交易日` : "收合"}
+              </span>
             </button>
 
-            {!tradesCollapsed && (
-              <div className="border-t border-slate-800 p-3 pt-3">
-                <div className="mb-2 flex flex-wrap items-center justify-end gap-2">
-                  <div className="flex gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => setTradeView("list")}
-                      className={`rounded-lg px-2.5 py-1 text-xs transition-colors ${
-                        tradeView === "list"
-                          ? "bg-sky-500/15 text-sky-100"
-                          : "border border-slate-700 text-slate-400 hover:border-slate-500 hover:text-slate-200"
-                      }`}
-                    >
-                      逐筆列表
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setTradeView("by-stock")}
-                      className={`rounded-lg px-2.5 py-1 text-xs transition-colors ${
-                        tradeView === "by-stock"
-                          ? "bg-sky-500/15 text-sky-100"
-                          : "border border-slate-700 text-slate-400 hover:border-slate-500 hover:text-slate-200"
-                      }`}
-                    >
-                      依股票統計
-                    </button>
-                  </div>
-                </div>
-
-                {tradeView === "list" ? (
-                  <SortChip options={TRADE_SORT_OPTIONS} value={tradeSortBy} onChange={setTradeSortBy} />
-                ) : (
-                  <SortChip options={STOCK_SORT_OPTIONS} value={stockSortBy} onChange={setStockSortBy} />
+            {!historyCollapsed && (
+              <div className="border-t border-slate-800 p-3">
+                <p className="mb-3 text-xs leading-5 text-slate-500">
+                  這是指定期間的歷史回放，不會混入目前 2026-09-08 起的 live cycle。點擊任一交易日，
+                  可查看當日權益、成交動作與完成交易。
+                </p>
+                {historyLoading && <p className="text-sm text-slate-500">正在載入歷史回放…</p>}
+                {historyError && (
+                  <p className="rounded border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-100">
+                    {historyError}
+                  </p>
                 )}
-
-                <div className="mt-3">
-                  {tradesLoading && <p className="text-sm text-slate-500">正在載入交易紀錄…</p>}
-                  {!tradesLoading && tradeView === "list" && trades.length === 0 && (
-                    <p className="rounded-lg border border-slate-800 bg-slate-900/50 p-4 text-sm text-slate-500">
-                      目前還沒有已平倉的交易。
-                    </p>
-                  )}
-                  {!tradesLoading && tradeView === "list" && trades.length > 0 && (
-                    <div className="grid gap-2 sm:grid-cols-2">
-                      {trades.map((t) => (
-                        <TradeCard key={t.id} trade={t} />
+                {!historyLoading && !historyError && history && history.trading_days.length === 0 && (
+                  <p className="rounded-lg border border-slate-800 bg-slate-900/50 p-4 text-sm text-slate-500">
+                    這個策略在指定期間沒有歷史回放資料。
+                  </p>
+                )}
+                {!historyLoading && !historyError && history && history.trading_days.length > 0 && (
+                  <>
+                    <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                      <StatBox label="期間起始權益" value={formatMoney(history.start_equity)} />
+                      <StatBox label="期間結束權益" value={formatMoney(history.end_equity)} />
+                      <StatBox label="期間報酬" value={formatPct(history.period_return_pct)} tone={returnTone(history.period_return_pct)} />
+                      <StatBox label="成交動作" value={`${history.trading_days.reduce((sum, day) => sum + day.executed_orders.length, 0)} 筆`} />
+                    </div>
+                    <div className="overflow-hidden rounded-lg border border-slate-800">
+                      <div className="grid grid-cols-[auto_1fr_auto_auto_auto_auto] gap-2 bg-slate-900 px-3 py-2 text-[10px] text-slate-500 sm:gap-4">
+                        <span />
+                        <span>交易日</span>
+                        <span>日報酬</span>
+                        <span>累積</span>
+                        <span>總權益</span>
+                        <span className="text-right">動作</span>
+                      </div>
+                      {history.trading_days.map((day) => (
+                        <HistoryDayRow
+                          key={day.trade_date}
+                          day={day}
+                          expanded={expandedHistoryDate === day.trade_date}
+                          onToggle={() => setExpandedHistoryDate((current) => current === day.trade_date ? null : day.trade_date)}
+                        />
                       ))}
                     </div>
-                  )}
-                  {!tradesLoading && tradeView === "by-stock" && stockStats.length === 0 && (
-                    <p className="rounded-lg border border-slate-800 bg-slate-900/50 p-4 text-sm text-slate-500">
-                      目前還沒有已平倉的交易。
-                    </p>
-                  )}
-                  {!tradesLoading && tradeView === "by-stock" && stockStats.length > 0 && (
-                    <div className="grid gap-2 sm:grid-cols-2">
-                      {stockStats.map((s) => (
-                        <article
-                          key={s.stock_id}
-                          className="rounded-lg border border-slate-800 bg-slate-900/50 p-3"
-                        >
-                          <div className="flex items-center justify-between">
-                            <span className="text-sm font-semibold text-slate-100">
-                              <span className="font-mono">{s.stock_id}</span> {s.stock_name}
-                            </span>
-                            <span className="text-xs text-slate-400">操作 {s.trade_count} 次</span>
-                          </div>
-                          <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-slate-400">
-                            <span className={returnTone(s.avg_return_pct)}>
-                              平均報酬 {formatPct(s.avg_return_pct)}
-                            </span>
-                            <span>勝率 {s.win_rate_pct.toFixed(1)}%</span>
-                            <span className={returnTone(s.total_realized_pnl)}>
-                              累積損益 {formatMoney(s.total_realized_pnl)} 元
-                            </span>
-                          </div>
-                        </article>
-                      ))}
-                    </div>
-                  )}
-                </div>
+                  </>
+                )}
               </div>
             )}
           </section>

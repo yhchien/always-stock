@@ -2817,6 +2817,62 @@ export interface ShadowCompletedTradesResponse {
   trades: ShadowCompletedTrade[]
 }
 
+export interface ShadowHistoryOrder {
+  id: number
+  action: ShadowOrderAction
+  stock_id: string
+  stock_name: string
+  signal_date: string
+  scheduled_execution_date: string
+  status: ShadowOrderStatus
+  reason: string | null
+  entry_pattern: string | null
+  units: number
+  planned_amount: number | null
+  execution_price: number | null
+}
+
+export interface ShadowHistoryDay {
+  trade_date: string
+  cash: number
+  invested_cost: number
+  market_value: number | null
+  total_equity: number
+  total_return_pct: number
+  daily_return_pct: number
+  realized_pnl: number
+  unrealized_pnl: number | null
+  position_count: number
+  total_units: number
+  executed_orders: ShadowHistoryOrder[]
+  completed_trades: ShadowCompletedTrade[]
+}
+
+export interface ShadowHistoryResponse {
+  strategy_version: string
+  start_date: string | null
+  end_date: string | null
+  trading_day_count: number
+  start_equity: number | null
+  end_equity: number | null
+  period_return_pct: number | null
+  trading_days: ShadowHistoryDay[]
+}
+
+export async function fetchShadowHistory(
+  params?: { strategyVersion?: string; startDate?: string; endDate?: string },
+  options?: FetchOptions,
+): Promise<ShadowHistoryResponse> {
+  const qs = new URLSearchParams()
+  if (params?.strategyVersion) qs.set("strategy_version", params.strategyVersion)
+  if (params?.startDate) qs.set("start_date", params.startDate)
+  if (params?.endDate) qs.set("end_date", params.endDate)
+  const url = `${API_BASE}/api/signals/shadow-portfolio/history${qs.toString() ? `?${qs.toString()}` : ""}`
+  const res = await apiFetch(url, { signal: options?.signal })
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "模擬交易歷史回放載入失敗"))
+  return res.json()
+}
+
 export interface ShadowStockTradeStat {
   stock_id: string
   stock_name: string

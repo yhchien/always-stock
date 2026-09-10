@@ -5,8 +5,9 @@
 不需要登入）：
 - GET /api/signals/shadow-portfolio                  目前 portfolio 摘要 + 持倉列表
 - GET /api/signals/shadow-portfolio/actions           目前 PENDING 的訂單（下一交易日預計動作）
-- GET /api/signals/shadow-portfolio/trades            逐筆已平倉交易（可排序/篩選 cycle）
-- GET /api/signals/shadow-portfolio/trades/by-stock   依股票分組統計（次數/平均報酬排序）
+    - GET /api/signals/shadow-portfolio/history          歷史回放逐交易日表現 + 當日交易
+    - GET /api/signals/shadow-portfolio/trades            逐筆已平倉交易（可排序/篩選 cycle）
+    - GET /api/signals/shadow-portfolio/trades/by-stock   依股票分組統計（次數/平均報酬排序）
 
 只讀既有 shadow_* 表，不觸發任何策略運算（策略運算只在 `run_shadow_portfolio.py`／
 `backfill_shadow_portfolio_replay.py` 這兩個背景 script 裡執行）。
@@ -101,6 +102,21 @@ class ShadowPendingActionResponse(BaseModel):
 class ShadowPendingActionsResponse(BaseModel):
     strategy_version: str
     actions: List[ShadowPendingActionResponse]
+
+
+class ShadowHistoryOrderResponse(BaseModel):
+    id: int
+    action: str
+    stock_id: str
+    stock_name: str
+    signal_date: date
+    scheduled_execution_date: date
+    status: str
+    reason: Optional[str] = None
+    entry_pattern: Optional[str] = None
+    units: int
+    planned_amount: Optional[float] = None
+    execution_price: Optional[float] = None
 
 
 def _latest_close(db: Session, stock_id: str) -> Optional[float]:
@@ -275,6 +291,180 @@ class ShadowCompletedTradeResponse(BaseModel):
 class ShadowCompletedTradesResponse(BaseModel):
     strategy_version: str
     trades: List[ShadowCompletedTradeResponse]
+
+
+class ShadowHistoryDayResponse(BaseModel):
+    trade_date: date
+    cash: float
+    invested_cost: float
+    market_value: Optional[float] = None
+    total_equity: float
+    total_return_pct: float
+    daily_return_pct: float
+    realized_pnl: float
+    unrealized_pnl: Optional[float] = None
+    position_count: int
+    total_units: int
+    executed_orders: List[ShadowHistoryOrderResponse]
+    completed_trades: List[ShadowCompletedTradeResponse]
+
+
+class ShadowHistoryResponse(BaseModel):
+    strategy_version: str
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+    trading_day_count: int
+    start_equity: Optional[float] = None
+    end_equity: Optional[float] = None
+    period_return_pct: Optional[float] = None
+    trading_days: List[ShadowHistoryDayResponse]
+
+
+def _completed_trade_response(trade: ShadowCompletedTrade) -> ShadowCompletedTradeResponse:
+    return ShadowCompletedTradeResponse(
+        id=trade.id,
+        cycle_number=trade.cycle_number,
+        stock_id=trade.stock_id,
+        stock_name=trade.stock_name,
+        entry_type=trade.entry_type,
+        entry_signal_date=trade.entry_signal_date,
+        entry_execution_date=trade.entry_execution_date,
+        entry_price=trade.entry_price,
+        entry_day_index=trade.entry_day_index,
+        entry_hit_count=trade.entry_hit_count,
+        entry_momentum=trade.entry_momentum,
+        entry_p4_decision=trade.entry_p4_decision,
+        entry_mark_to_market_return=trade.entry_mark_to_market_return,
+        exit_reason=trade.exit_reason,
+        exit_signal_date=trade.exit_signal_date,
+        exit_execution_date=trade.exit_execution_date,
+        exit_price=trade.exit_price,
+        shares=trade.shares,
+        allocation=trade.allocation,
+        realized_pnl=trade.realized_pnl,
+        realized_return_pct=trade.realized_return_pct,
+        holding_days=trade.holding_days,
+        followed_by_rotation=trade.followed_by_rotation,
+    )
+
+
+@router.get("/history", response_model=ShadowHistoryResponse)
+def get_shadow_history(
+    strategy_version: str = STRATEGY_VERSION,
+    start_date: date = Query(default=date(2026, 8, 1)),
+    end_date: date = Query(default=date(2026, 9, 7)),
+    db: Session = Depends(get_db),
+) -> ShadowHistoryResponse:
+    """Return a bounded historical replay grouped by trading day.
+
+    This endpoint deliberately reads snapshots and executed orders instead of the
+    current portfolio singleton.  That keeps the 8/1~9/7 historical replay visible
+    after the live portfolio has moved into the 9/8+ cycle.
+    """
+    if end_date < start_date:
+        return ShadowHistoryResponse(
+            strategy_version=strategy_version,
+            start_date=start_date,
+            end_date=end_date,
+            trading_day_count=0,
+            trading_days=[],
+        )
+
+    snapshots = (
+        db.query(ShadowPortfolioDailySnapshot)
+        .filter(
+            ShadowPortfolioDailySnapshot.strategy_version == strategy_version,
+            ShadowPortfolioDailySnapshot.trade_date >= start_date,
+            ShadowPortfolioDailySnapshot.trade_date <= end_date,
+        )
+        .order_by(ShadowPortfolioDailySnapshot.trade_date.asc())
+        .all()
+    )
+    orders = (
+        db.query(ShadowStrategyOrder)
+        .filter(
+            ShadowStrategyOrder.strategy_version == strategy_version,
+            ShadowStrategyOrder.status == "EXECUTED",
+            ShadowStrategyOrder.scheduled_execution_date >= start_date,
+            ShadowStrategyOrder.scheduled_execution_date <= end_date,
+        )
+        .order_by(ShadowStrategyOrder.scheduled_execution_date.asc(), ShadowStrategyOrder.id.asc())
+        .all()
+    )
+    completed_trades = (
+        db.query(ShadowCompletedTrade)
+        .filter(
+            ShadowCompletedTrade.strategy_version == strategy_version,
+            ShadowCompletedTrade.exit_execution_date >= start_date,
+            ShadowCompletedTrade.exit_execution_date <= end_date,
+        )
+        .order_by(ShadowCompletedTrade.exit_execution_date.asc(), ShadowCompletedTrade.id.asc())
+        .all()
+    )
+    orders_by_date: dict[date, List[ShadowHistoryOrderResponse]] = {}
+    for order in orders:
+        orders_by_date.setdefault(order.scheduled_execution_date, []).append(
+            ShadowHistoryOrderResponse(
+                id=order.id,
+                action=order.action,
+                stock_id=order.stock_id,
+                stock_name=order.stock_name,
+                signal_date=order.signal_date,
+                scheduled_execution_date=order.scheduled_execution_date,
+                status=order.status,
+                reason=order.reason,
+                entry_pattern=order.entry_pattern,
+                units=order.units,
+                planned_amount=order.planned_amount,
+                execution_price=order.execution_price,
+            )
+        )
+    trades_by_date: dict[date, List[ShadowCompletedTradeResponse]] = {}
+    for trade in completed_trades:
+        trades_by_date.setdefault(trade.exit_execution_date, []).append(_completed_trade_response(trade))
+
+    params = _resolve_params(strategy_version)
+    previous_equity = float(params["initial_capital"])
+    days: List[ShadowHistoryDayResponse] = []
+    for snapshot in snapshots:
+        equity = float(snapshot.total_equity)
+        daily_return_pct = (equity / previous_equity - 1.0) * 100.0 if previous_equity else 0.0
+        days.append(
+            ShadowHistoryDayResponse(
+                trade_date=snapshot.trade_date,
+                cash=snapshot.cash,
+                invested_cost=snapshot.invested_cost,
+                market_value=snapshot.market_value,
+                total_equity=equity,
+                total_return_pct=snapshot.total_return_pct,
+                daily_return_pct=daily_return_pct,
+                realized_pnl=snapshot.realized_pnl,
+                unrealized_pnl=snapshot.unrealized_pnl,
+                position_count=snapshot.position_count,
+                total_units=snapshot.total_units,
+                executed_orders=orders_by_date.get(snapshot.trade_date, []),
+                completed_trades=trades_by_date.get(snapshot.trade_date, []),
+            )
+        )
+        previous_equity = equity
+
+    start_equity = days[0].total_equity if days else None
+    end_equity = days[-1].total_equity if days else None
+    period_return_pct = (
+        (end_equity / float(params["initial_capital"]) - 1.0) * 100.0
+        if end_equity is not None and params["initial_capital"]
+        else None
+    )
+    return ShadowHistoryResponse(
+        strategy_version=strategy_version,
+        start_date=days[0].trade_date if days else start_date,
+        end_date=days[-1].trade_date if days else end_date,
+        trading_day_count=len(days),
+        start_equity=start_equity,
+        end_equity=end_equity,
+        period_return_pct=period_return_pct,
+        trading_days=days,
+    )
 
 
 TradeSortBy = Literal["return_desc", "return_asc", "entry_date_desc", "entry_date_asc"]
