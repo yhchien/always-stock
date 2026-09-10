@@ -28,7 +28,8 @@ v1_frozen 的歷史基準，跟新版 Dual-Engine 是完全不同的策略邏輯
     python3 backfill_shadow_portfolio_replay.py                       # dry-run
     python3 backfill_shadow_portfolio_replay.py --execute              # 真的寫入 DB
     python3 backfill_shadow_portfolio_replay.py --execute \\
-        --start=2026-08-01 --end=2026-09-07 --settle-at-end             # 指定回測窗口並在終點結算
+        --start=2026-08-01 --end=2026-09-04 --settle-at-end \\
+        --settlement-date=2026-09-07                                  # 9/4 訊號窗口，9/7 行政結算
 """
 from __future__ import annotations
 
@@ -315,6 +316,14 @@ def _parse_date_override(argv: list, flag: str, default: date) -> date:
     return default
 
 
+def _parse_optional_date_override(argv: list, flag: str) -> Optional[date]:
+    """Parse an optional date such as ``--settlement-date=YYYY-MM-DD``."""
+    for arg in argv:
+        if arg.startswith(flag):
+            return date.fromisoformat(arg.split("=", 1)[1].strip())
+    return None
+
+
 def _settle_at_end_requested(argv: list) -> bool:
     return "--settle-at-end" in argv
 
@@ -342,6 +351,7 @@ def main(argv: list) -> int:
     replay_start = _parse_date_override(argv, "--start=", REPLAY_START)
     replay_end = _parse_date_override(argv, "--end=", REPLAY_END)
     settle_at_end = _settle_at_end_requested(argv)
+    settlement_date_override = _parse_optional_date_override(argv, "--settlement-date=")
 
     # 2026-09-09 起 v1_frozen 已改版為 Dual-Engine（見本檔案頂部說明），使用者明確
     # 授權對它執行 --execute（DELETE/RESET 舊紀錄後以新 Rule 重新產生）——這裡**不再**
@@ -363,6 +373,15 @@ def main(argv: list) -> int:
 
     if not trade_dates:
         logger.error("No trading days found in DB for %s ~ %s", replay_start, replay_end)
+        return 1
+
+    settlement_date = settlement_date_override or trade_dates[-1]
+    if settlement_date < trade_dates[-1]:
+        logger.error(
+            "Settlement date %s cannot be earlier than replay end %s",
+            settlement_date,
+            trade_dates[-1],
+        )
         return 1
 
     logger.info(
@@ -496,17 +515,32 @@ def main(argv: list) -> int:
         )
 
     if settle_at_end:
+        # When the administrative settlement is after the last signal day, create
+        # the settlement-date close snapshot before selling.  This preserves the
+        # period-end equity curve at 9/7 while keeping 9/4 as the last strategy
+        # decision day.
+        if settlement_date != trade_dates[-1]:
+            def _step_settlement_snapshot():
+                with SessionLocal() as db:
+                    snapshot = sp.create_portfolio_daily_snapshot(
+                        db, target_date=settlement_date, strategy_version=strategy_version
+                    )
+                    db.commit()
+                    return snapshot.total_equity, snapshot.total_return_pct
+
+            _with_retry(_step_settlement_snapshot)
+
         def _step_settle_at_end():
             with SessionLocal() as db:
                 settled = sp.settle_shadow_portfolio_at_period_end(
-                    db, target_date=trade_dates[-1], strategy_version=strategy_version
+                    db, target_date=settlement_date, strategy_version=strategy_version
                 )
                 db.commit()
                 return settled
 
         settled_lots = _with_retry(_step_settle_at_end)
-        print(f"\n  [期末結算] {trade_dates[-1]} 已平倉 {settled_lots} 個 lot，下一循環本金重設為 600,000")
-        logger.info("Period-end settlement on %s: %d lots settled; portfolio reset", trade_dates[-1], settled_lots)
+        print(f"\n  [期末結算] {settlement_date} 已平倉 {settled_lots} 個 lot，下一循環本金重設為 600,000")
+        logger.info("Period-end settlement on %s: %d lots settled; portfolio reset", settlement_date, settled_lots)
 
     initial_capital = sp.STRATEGY_PARAMS_BY_VERSION[strategy_version]["initial_capital"]
     with SessionLocal() as db:

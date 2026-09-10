@@ -363,10 +363,11 @@ def get_shadow_history(
 ) -> ShadowHistoryResponse:
     """Return a bounded historical replay grouped by trading day.
 
-    If neither boundary is supplied, use the latest 25 available replay days for
-    this strategy.  Explicit boundaries let the UI inspect any appended historical
-    interval, while the endpoint deliberately reads immutable snapshots and
-    executed orders instead of the current portfolio singleton.
+    If neither boundary is supplied, use the latest completed settlement interval
+    for this strategy; before the first settlement, fall back to the latest 25
+    available replay days. Explicit boundaries let the UI inspect any appended
+    historical interval, while the endpoint deliberately reads immutable snapshots
+    and executed orders instead of the current portfolio singleton.
     """
     snapshot_date_query = (
         db.query(ShadowPortfolioDailySnapshot.trade_date)
@@ -374,16 +375,51 @@ def get_shadow_history(
         .distinct()
     )
     if start_date is None and end_date is None:
-        recent_dates = [
-            row[0]
-            for row in snapshot_date_query
-            .order_by(ShadowPortfolioDailySnapshot.trade_date.desc())
-            .limit(25)
-            .all()
-        ]
-        if recent_dates:
-            start_date = min(recent_dates)
-            end_date = max(recent_dates)
+        latest_settlement = (
+            db.query(ShadowCompletedTrade.exit_execution_date)
+            .filter(
+                ShadowCompletedTrade.strategy_version == strategy_version,
+                ShadowCompletedTrade.exit_reason == "PERIOD_END_SETTLEMENT",
+            )
+            .distinct()
+            .order_by(ShadowCompletedTrade.exit_execution_date.desc())
+            .first()
+        )
+        if latest_settlement is not None:
+            end_date = latest_settlement[0]
+            previous_settlement = (
+                db.query(ShadowCompletedTrade.exit_execution_date)
+                .filter(
+                    ShadowCompletedTrade.strategy_version == strategy_version,
+                    ShadowCompletedTrade.exit_reason == "PERIOD_END_SETTLEMENT",
+                    ShadowCompletedTrade.exit_execution_date < end_date,
+                )
+                .distinct()
+                .order_by(ShadowCompletedTrade.exit_execution_date.desc())
+                .first()
+            )
+            period_snapshots = snapshot_date_query.filter(
+                ShadowPortfolioDailySnapshot.trade_date <= end_date,
+            )
+            if previous_settlement is not None:
+                period_snapshots = period_snapshots.filter(
+                    ShadowPortfolioDailySnapshot.trade_date > previous_settlement[0],
+                )
+            first_period_snapshot = period_snapshots.order_by(
+                ShadowPortfolioDailySnapshot.trade_date.asc(),
+            ).first()
+            start_date = first_period_snapshot[0] if first_period_snapshot is not None else end_date
+        else:
+            recent_dates = [
+                row[0]
+                for row in snapshot_date_query
+                .order_by(ShadowPortfolioDailySnapshot.trade_date.desc())
+                .limit(25)
+                .all()
+            ]
+            if recent_dates:
+                start_date = min(recent_dates)
+                end_date = max(recent_dates)
     else:
         if start_date is None:
             earliest = snapshot_date_query.order_by(ShadowPortfolioDailySnapshot.trade_date.asc()).first()

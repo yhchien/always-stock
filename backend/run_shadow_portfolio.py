@@ -40,24 +40,21 @@ EXIT_OK = 0
 EXIT_NO_DATA = 1
 EXIT_DB_ERROR = 3
 
-# v1_frozen 新週期從這一天（含）起才參與每日模擬交易，與 Forward 策略的週期對齊。
-V1_FROZEN_START_DATE = date(2026, 9, 8)
+# 兩個策略的新週期都以 2026-09-07 的收盤訊號作為起點；訂單於下一個
+# 交易日 2026-09-08 才執行。9/7 同時是上一段回放的期末結算日。
+V1_FROZEN_START_DATE = date(2026, 9, 7)
 
 # FORWARD_V1_202609 從這一天（含）起才真正參與每日模擬交易——這個日期是
-# 2026-09-08 Freeze 決策當下，DB 裡「最新有真實交易資料」的下一個交易日
-# （2026-09-08 收盤資料已存在，2026-09-09 完全沒有任何資料，是真正未見的未來）。
+# 2026-09-07 是本輪明確指定的 Forward 起始訊號日；9/7 晚上產生訊號，
+# 9/8 才是 BUY/SELL 的模擬成交日。
 # 早於這個日期的 target_date，即使 self-healing 補跑到，也絕對不會對 FORWARD_V1_202609
 # 產生任何決策/訂單——這是 spec Part 40「不要把過去幾天 backfill 當成 Forward Day」
 # 的程式碼層保證，不只是操作流程上記得別這樣做。
-FORWARD_V1_START_DATE = date(2026, 9, 9)
+FORWARD_V1_START_DATE = date(2026, 9, 7)
 
-# 2026-09-09：v1_frozen 本身改版為 Dual-Engine，使用者明確要求它是「目前這套 Shadow
-# Portfolio 的主要 active strategy」，不要讓兩套策略同時對同一批候選各自產生
-# BUY/ADD/SELL 決策（即使兩者各自有獨立的虛擬資金池、不會真的搶同一筆錢，並存仍會讓
-# 「現在到底在跑哪一套」變得含糊）。因此每日 runner 停止自動觸發 `FORWARD_V1_202609`——
-# 它的既有歷史資料（`ShadowVirtualPortfolio`／`ShadowCompletedTrade` 等）完全不受影響，
-# 只是不會再有新的一天被自動加進去；未來要恢復只需要把這個 flag 改回 True。
-_FORWARD_V1_ENABLED = False
+# 兩套策略都保留各自獨立的 shadow portfolio，並從同一個 9/7 訊號日開始
+# forward test；它們不共用持倉或資金，不會互相覆蓋。
+_FORWARD_V1_ENABLED = True
 
 
 def _parse_target_date_from_argv(argv: list, db) -> "date | None":
@@ -71,9 +68,9 @@ def _parse_target_date_from_argv(argv: list, db) -> "date | None":
 def _strategy_versions_for_date(target_date: date) -> list[str]:
     """今天應該跑哪些 strategy_version。
 
-    `v1_frozen` 的目前週期從 2026-09-08 開始；更早日期只保留給明確指定
+    `v1_frozen` 的目前週期從 2026-09-07 開始；更早日期只保留給明確指定
     replay/backfill 的歷史分析，不會被每日 production runner 自動補進目前時間線。
-    `FORWARD_V1_202609` 目前仍停用，不再自動加入每日 runner。
+    `FORWARD_V1_202609` 同樣從 2026-09-07 起加入每日 runner。
     """
     from app.signals import shadow_portfolio as sp
 

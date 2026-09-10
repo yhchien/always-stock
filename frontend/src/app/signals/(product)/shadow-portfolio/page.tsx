@@ -25,14 +25,14 @@ const STRATEGY_META: Record<
     label: "v1（Dual-Engine）",
     badge: "ACTIVE",
     description:
-      "2026-09-08 起的新週期：把資金分成 Continuation、Pullback、Opportunity 三個桶，" +
+      "2026-09-07 起的新週期：把資金分成 Continuation、Pullback、Opportunity 三個桶，" +
       "用報告證據找強勢延續股，也保留拉回回穩與換股機會。",
   },
   FORWARD_V1_202609: {
     label: "FORWARD_V1_202609",
     badge: "FORWARD TEST",
     description:
-      "2026-09-09 起正式 Forward Test：用較寬鬆的原始進場規則追蹤候選股，讓贏家續抱與加碼；" +
+      "2026-09-07 起正式 Forward Test：用較寬鬆的原始進場規則追蹤候選股，讓贏家續抱與加碼；" +
       "動能超過 80 仍可進場；不固定停利、不攤平，單檔成本最多占總權益 50%。",
   },
 }
@@ -68,7 +68,7 @@ const EXIT_REASON_LABELS: Record<string, string> = {
   REAL_POSITION_STOP_LOSS: "真實停損 -8%",
   FORWARD_HIGH_MOMENTUM_ROTATION: "Forward 高動能換股",
   CYCLE_RESET: "循環期滿強制平倉",
-  // v1_frozen Dual-Engine（2026-09-09 起）專屬出場原因
+  // v1_frozen Dual-Engine（2026-09-07 起）專屬出場原因
   CONTINUATION_FAST_STOP: "Continuation 快速停損 -5%",
   CONTINUATION_NO_FOLLOW_THROUGH: "Continuation 未證明延續（Prove-it 失敗）",
   CONTINUATION_TRAILING_EXIT: "Continuation 從高點回吐出場",
@@ -384,7 +384,7 @@ export default function ShadowPortfolioPage() {
           {!strategyHelpCollapsed && (
             <div className="grid gap-3 border-t border-slate-800 p-3 text-xs leading-5 text-slate-400 lg:grid-cols-2">
               <div className="rounded-lg border border-sky-900/50 bg-sky-950/20 p-3">
-                <p className="font-semibold text-sky-200">v1（Dual-Engine，2026-09-08 起）</p>
+                <p className="font-semibold text-sky-200">v1（Dual-Engine，2026-09-07 起）</p>
                 <p className="mt-2 font-medium text-slate-300">這套策略在做什麼？</p>
                 <p className="mt-1">它把 600,000 元拆成三個用途不同的資金桶，不是看到動能分數高就直接買：</p>
                 <ul className="mt-1 list-disc space-y-1 pl-4">
@@ -403,7 +403,7 @@ export default function ShadowPortfolioPage() {
               <div className="rounded-lg border border-amber-900/50 bg-amber-950/20 p-3">
                 <p className="font-semibold text-amber-200">FORWARD_V1_202609（Forward Test）</p>
                 <p className="mt-2 font-medium text-slate-300">這套策略在做什麼？</p>
-                <p className="mt-1">它是從 2026-09-09 開始獨立觀察的新版本，不把 v1 Dual-Engine 的歷史績效混進來。它沿用原本的兩種進場型態：</p>
+                <p className="mt-1">它是從 2026-09-07 的收盤訊號開始獨立觀察的新版本，不把 v1 Dual-Engine 的歷史績效混進來；買賣會在下一個交易日模擬成交。它沿用原本的兩種進場型態：</p>
                 <ul className="mt-1 list-disc space-y-1 pl-4">
                   <li><span className="text-slate-300">Early healthy pullback：</span>小幅拉回、仍在健康區間的候選。</li>
                   <li><span className="text-slate-300">Deep pullback：</span>較深幅度回落、但仍符合動能與 P4 條件的候選。</li>
@@ -444,12 +444,17 @@ export default function ShadowPortfolioPage() {
 
       {portfolio && (
         <>
-          <section className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+          <section className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-7">
             <StatBox label="總權益" value={formatMoney(portfolio.total_equity)} />
             <StatBox
-              label="累積報酬"
+              label="目前循環報酬"
               value={formatPct(portfolio.total_return_pct)}
               tone={returnTone(portfolio.total_return_pct)}
+            />
+            <StatBox
+              label="歷史回放報酬"
+              value={historyLoading ? "載入中" : formatPct(history?.period_return_pct)}
+              tone={returnTone(history?.period_return_pct)}
             />
             <StatBox label="現金" value={formatMoney(portfolio.cash)} />
             <StatBox label="持股數" value={`${portfolio.position_count} / ${portfolio.max_stocks}`} />
@@ -558,8 +563,9 @@ export default function ShadowPortfolioPage() {
             {!historyCollapsed && (
               <div className="border-t border-slate-800 p-3">
                 <p className="mb-3 text-xs leading-5 text-slate-500">
-                  歷史資料會持續 append，不會因為新週期開始而覆蓋舊紀錄。未指定日期時顯示這個策略最新
-                  25 個有回放資料的交易日，也可以自訂任意起訖日；點擊任一交易日可查看當日權益、成交動作與完成交易。
+                  歷史資料會持續 append，不會因為新週期開始而覆蓋舊紀錄。未指定日期時優先顯示最近一個已完成結算區間，
+                  尚未有結算時才顯示最新 25 個有回放資料的交易日；也可以自訂任意起訖日。
+                  點擊任一交易日可查看當日權益、成交動作與完成交易。
                 </p>
                 <div className="mb-3 flex flex-wrap items-end gap-2 rounded-lg border border-slate-800 bg-slate-950/30 p-3">
                   <label className="grid gap-1 text-[11px] text-slate-500">

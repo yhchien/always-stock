@@ -200,3 +200,62 @@ def test_shadow_history_defaults_to_latest_25_appended_days(api):
     assert body["trading_day_count"] == 25
     assert body["start_date"] == "2026-08-02"
     assert body["end_date"] == "2026-08-26"
+
+
+def test_shadow_history_default_prefers_latest_completed_settlement_interval(api):
+    client, db = api
+    snapshot_dates = [
+        (date(2026, 8, 3), 600000.0),
+        (date(2026, 9, 4), 620000.0),
+        (date(2026, 9, 7), 625000.0),
+        (date(2026, 9, 8), 600000.0),
+        (date(2026, 9, 9), 600000.0),
+    ]
+    db.add_all(
+        [
+            ShadowPortfolioDailySnapshot(
+                strategy_version="v1_frozen",
+                trade_date=trade_date,
+                cash=equity,
+                invested_cost=0.0,
+                market_value=0.0,
+                total_equity=equity,
+                total_return_pct=(equity / 600000.0 - 1.0) * 100.0,
+                realized_pnl=0.0,
+                unrealized_pnl=0.0,
+                position_count=0,
+                total_units=0,
+            )
+            for trade_date, equity in snapshot_dates
+        ]
+    )
+    db.add(
+        ShadowCompletedTrade(
+            strategy_version="v1_frozen",
+            cycle_number=1,
+            stock_id="2330",
+            stock_name="台積電",
+            entry_type="CONTINUATION_STARTER",
+            entry_signal_date=date(2026, 9, 1),
+            entry_execution_date=date(2026, 9, 2),
+            entry_price=1000.0,
+            exit_reason="PERIOD_END_SETTLEMENT",
+            exit_signal_date=date(2026, 9, 7),
+            exit_execution_date=date(2026, 9, 7),
+            exit_price=1100.0,
+            shares=100.0,
+            allocation=100000.0,
+            realized_pnl=10000.0,
+            realized_return_pct=10.0,
+            holding_days=5,
+            followed_by_rotation=False,
+        )
+    )
+    db.commit()
+
+    res = client.get("/api/signals/shadow-portfolio/history", params={"strategy_version": "v1_frozen"})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["start_date"] == "2026-08-03"
+    assert body["end_date"] == "2026-09-07"
+    assert body["trading_day_count"] == 3
