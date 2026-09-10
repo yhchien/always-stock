@@ -115,7 +115,7 @@ def compute_full_metrics(db, *, strategy_version: str, initial_capital: float) -
     純讀取、不寫入——sanity replay 跑完後、5 Gates 驗證腳本、以及任何要產這張表的
     報告都呼叫這個函式，避免同一組指標在多個地方各自重算一次容易對不起來。
     """
-    from app.models import ShadowPortfolioDailySnapshot
+    from app.models import ShadowCompletedTrade, ShadowPortfolioDailySnapshot
 
     trades = _reconstruct_trades(db, strategy_version)
     trade_count = len(trades)
@@ -127,16 +127,43 @@ def compute_full_metrics(db, *, strategy_version: str, initial_capital: float) -
         .first()
     )
     final_equity = final_snapshot.total_equity if final_snapshot else initial_capital
+    if final_snapshot:
+        # 回放期末的行政結算以 SELL 的最低價成交；daily snapshot 是結算前的收盤估值，
+        # 因此要把未實現損益換成 PERIOD_END_SETTLEMENT 的實現損益後再算最終報酬。
+        settlement_pnl = sum(
+            float(trade.realized_pnl)
+            for trade in db.query(ShadowCompletedTrade).filter(
+                ShadowCompletedTrade.strategy_version == strategy_version,
+                ShadowCompletedTrade.exit_execution_date == final_snapshot.trade_date,
+                ShadowCompletedTrade.exit_reason == "PERIOD_END_SETTLEMENT",
+            ).all()
+        )
+        if settlement_pnl:
+            final_equity = (
+                float(final_snapshot.total_equity)
+                - float(final_snapshot.unrealized_pnl or 0.0)
+                + settlement_pnl
+            )
     gross_return_pct = (final_equity - initial_capital) / initial_capital * 100.0
 
     # Max drawdown：從逐日權益曲線算 peak-to-trough
-    equity_curve = [
-        row[0]
-        for row in db.query(ShadowPortfolioDailySnapshot.total_equity)
-        .filter(ShadowPortfolioDailySnapshot.strategy_version == strategy_version)
-        .order_by(ShadowPortfolioDailySnapshot.trade_date.asc())
-        .all()
-    ]
+    settlement_pnl_by_date = defaultdict(float)
+    for trade in db.query(ShadowCompletedTrade).filter(
+        ShadowCompletedTrade.strategy_version == strategy_version,
+        ShadowCompletedTrade.exit_reason == "PERIOD_END_SETTLEMENT",
+    ).all():
+        settlement_pnl_by_date[trade.exit_execution_date] += float(trade.realized_pnl)
+    equity_curve = []
+    for trade_date, equity, unrealized_pnl in db.query(
+        ShadowPortfolioDailySnapshot.trade_date,
+        ShadowPortfolioDailySnapshot.total_equity,
+        ShadowPortfolioDailySnapshot.unrealized_pnl,
+    ).filter(
+        ShadowPortfolioDailySnapshot.strategy_version == strategy_version
+    ).order_by(ShadowPortfolioDailySnapshot.trade_date.asc()).all():
+        if trade_date in settlement_pnl_by_date:
+            equity = float(equity) - float(unrealized_pnl or 0.0) + settlement_pnl_by_date[trade_date]
+        equity_curve.append(float(equity))
     max_drawdown_pct = 0.0
     peak = initial_capital
     for equity in equity_curve:

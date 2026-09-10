@@ -173,7 +173,7 @@ function HistoryDayRow({
         <div className="grid gap-3 border-t border-slate-800 bg-slate-950/40 px-4 py-3 sm:grid-cols-2">
           {day.settlement_reset && (
             <p className="sm:col-span-2 rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-              期末結算：已全部賣出，下一循環本金重設為 {formatMoney(day.settlement_cash)} 元；上方總權益仍是結算前的績效。
+              期末結算：已按期末可用最低價全部賣出；結算後下一循環本金重設為 {formatMoney(day.settlement_cash)} 元。
             </p>
           )}
           <div>
@@ -530,7 +530,7 @@ export default function ShadowPortfolioPage() {
                     </div>
                     {history.settlement_cash !== null && (
                       <p className="mb-3 text-[11px] text-amber-300/80">
-                        9/7 期末已全部賣出，下一循環資產重設為 {formatMoney(history.settlement_cash)} 元；期間報酬以結算前權益計算。
+                        9/7 期末已按最低價全部賣出，下一循環資產重設為 {formatMoney(history.settlement_cash)} 元；期間報酬依實際結算成交價計算。
                       </p>
                     )}
                     <div className="overflow-hidden rounded-lg border border-slate-800">

@@ -441,24 +441,50 @@ def get_shadow_history(
     }
     params = _resolve_params(strategy_version)
     settlement_cash = float(params["initial_capital"]) if settlement_dates else None
+    settlement_equity_by_date: dict[date, float] = {}
+    settlement_realized_pnl_by_date: dict[date, float] = {}
+    if settlement_dates:
+        snapshots_by_date = {snapshot.trade_date: snapshot for snapshot in snapshots}
+        for settlement_date in settlement_dates:
+            snapshot = snapshots_by_date.get(settlement_date)
+            if snapshot is None:
+                continue
+            settlement_pnl = sum(
+                float(trade.realized_pnl)
+                for trade in completed_trades
+                if trade.exit_execution_date == settlement_date
+                and trade.exit_reason == "PERIOD_END_SETTLEMENT"
+            )
+            # Snapshot 是期末結算前的收盤估值；把未實現損益換成實際以最低價
+            # 平倉後的已實現損益，才是遵守 SELL 成交規則的期末權益。
+            settlement_equity_by_date[settlement_date] = (
+                float(snapshot.total_equity) - float(snapshot.unrealized_pnl or 0.0) + settlement_pnl
+            )
+            settlement_realized_pnl_by_date[settlement_date] = (
+                float(snapshot.realized_pnl) + settlement_pnl
+            )
     previous_equity = float(params["initial_capital"])
     days: List[ShadowHistoryDayResponse] = []
     for snapshot in snapshots:
-        equity = float(snapshot.total_equity)
+        is_settlement_day = snapshot.trade_date in settlement_equity_by_date
+        equity = settlement_equity_by_date.get(snapshot.trade_date, float(snapshot.total_equity))
         daily_return_pct = (equity / previous_equity - 1.0) * 100.0 if previous_equity else 0.0
         days.append(
             ShadowHistoryDayResponse(
                 trade_date=snapshot.trade_date,
-                cash=snapshot.cash,
-                invested_cost=snapshot.invested_cost,
-                market_value=snapshot.market_value,
+                cash=equity if is_settlement_day else snapshot.cash,
+                invested_cost=0.0 if is_settlement_day else snapshot.invested_cost,
+                market_value=0.0 if is_settlement_day else snapshot.market_value,
                 total_equity=equity,
-                total_return_pct=snapshot.total_return_pct,
+                total_return_pct=(equity / float(params["initial_capital"]) - 1.0) * 100.0
+                if is_settlement_day
+                else snapshot.total_return_pct,
                 daily_return_pct=daily_return_pct,
-                realized_pnl=snapshot.realized_pnl,
-                unrealized_pnl=snapshot.unrealized_pnl,
-                position_count=snapshot.position_count,
-                total_units=snapshot.total_units,
+                realized_pnl=(settlement_realized_pnl_by_date[snapshot.trade_date]
+                              if is_settlement_day else snapshot.realized_pnl),
+                unrealized_pnl=0.0 if is_settlement_day else snapshot.unrealized_pnl,
+                position_count=0 if is_settlement_day else snapshot.position_count,
+                total_units=0 if is_settlement_day else snapshot.total_units,
                 settlement_reset=snapshot.trade_date in settlement_dates,
                 settlement_cash=settlement_cash if snapshot.trade_date in settlement_dates else None,
                 executed_orders=orders_by_date.get(snapshot.trade_date, []),

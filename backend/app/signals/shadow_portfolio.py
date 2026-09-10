@@ -3489,7 +3489,8 @@ def settle_shadow_portfolio_at_period_end(
     """在指定回放終點平倉，並把下一循環本金重設為 initial_capital。
 
     這是歷史回放用的行政性結算，不是每日策略出場規則：
-    - 以 target_date 收盤價建立 SELL/ShadowCompletedTrade；
+    - 以 target_date 可用的最低價建立 SELL/ShadowCompletedTrade（回放窗口最後一天
+      沒有下一個交易日可執行，因此把 target_date 視為期末行政結算日）；
     - 保留結算前的 daily snapshot，讓期間報酬不被「重設本金」抹掉；
     - 清空目前持倉與 pending order，讓下一循環從固定本金開始。
 
@@ -3502,11 +3503,15 @@ def settle_shadow_portfolio_at_period_end(
     settled = 0
 
     for stock_id, position in positions.items():
-        close = _latest_close(db, stock_id=stock_id, as_of=target_date)
+        price_row = (
+            db.query(DailyPrice.low_price)
+            .filter(DailyPrice.stock_id == stock_id, DailyPrice.trade_date == target_date)
+            .first()
+        )
         lots = db.query(ShadowPositionLot).filter(ShadowPositionLot.position_id == position.id).all()
         total_allocation = sum(float(lot.allocation) for lot in lots)
         total_units = len(lots)
-        exit_price = close
+        exit_price = float(price_row[0]) if price_row is not None and price_row[0] is not None else None
         if exit_price is None:
             # 跟一般 cycle reset 相同：資料缺口時採 entry price 的保守 fallback。
             exit_price = float(lots[0].entry_price) if lots else 0.0
