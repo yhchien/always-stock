@@ -431,6 +431,8 @@ EXIT_REASON_REAL_STOP_LOSS = "REAL_POSITION_STOP_LOSS"
 # 35 交易日循環強制重置（見 check_and_apply_cycle_reset）——不是策略訊號觸發的
 # 正常出場，是行政性強制平倉，exit_execution_date 就是觸發當天，不等 T+1
 EXIT_REASON_CYCLE_RESET = "CYCLE_RESET"
+# 回測窗口結束的行政性結算；和 35 交易日循環重置分開，避免把兩種原因混在一起。
+EXIT_REASON_PERIOD_END_SETTLEMENT = "PERIOD_END_SETTLEMENT"
 
 ACTION_WATCH = "WATCH"
 ACTION_BUY = "BUY"
@@ -3479,3 +3481,79 @@ def check_and_apply_cycle_reset(
     portfolio.cycle_start_trade_date = None  # 下次呼叫的第一天會重新設定
 
     return True
+
+
+def settle_shadow_portfolio_at_period_end(
+    db: Session, *, target_date: date, strategy_version: str = STRATEGY_VERSION
+) -> int:
+    """在指定回放終點平倉，並把下一循環本金重設為 initial_capital。
+
+    這是歷史回放用的行政性結算，不是每日策略出場規則：
+    - 以 target_date 收盤價建立 SELL/ShadowCompletedTrade；
+    - 保留結算前的 daily snapshot，讓期間報酬不被「重設本金」抹掉；
+    - 清空目前持倉與 pending order，讓下一循環從固定本金開始。
+
+    生產每日流程不會呼叫這個函式；只有 backfill replay 明確帶
+    ``--settle-at-end`` 時才會使用。
+    """
+    params = STRATEGY_PARAMS_BY_VERSION[strategy_version]
+    portfolio = _get_or_create_portfolio(db, strategy_version)
+    positions = _load_positions(db, strategy_version)
+    settled = 0
+
+    for stock_id, position in positions.items():
+        close = _latest_close(db, stock_id=stock_id, as_of=target_date)
+        lots = db.query(ShadowPositionLot).filter(ShadowPositionLot.position_id == position.id).all()
+        total_allocation = sum(float(lot.allocation) for lot in lots)
+        total_units = len(lots)
+        exit_price = close
+        if exit_price is None:
+            # 跟一般 cycle reset 相同：資料缺口時採 entry price 的保守 fallback。
+            exit_price = float(lots[0].entry_price) if lots else 0.0
+
+        db.add(
+            ShadowStrategyOrder(
+                strategy_version=strategy_version,
+                stock_id=stock_id,
+                stock_name=position.stock_name,
+                action=ACTION_SELL,
+                signal_date=target_date,
+                scheduled_execution_date=target_date,
+                status=ORDER_STATUS_EXECUTED,
+                reason=EXIT_REASON_PERIOD_END_SETTLEMENT,
+                units=total_units,
+                planned_amount=total_allocation,
+                execution_price=exit_price,
+                executed_at=datetime.utcnow(),
+            )
+        )
+        for lot in lots:
+            proceeds = lot.shares * exit_price
+            portfolio.cash += proceeds
+            portfolio.realized_pnl_cumulative += proceeds - lot.allocation
+            _record_completed_trade(
+                db,
+                strategy_version=strategy_version,
+                cycle_number=portfolio.cycle_number,
+                lot=lot,
+                stock_id=stock_id,
+                stock_name=position.stock_name,
+                exit_reason=EXIT_REASON_PERIOD_END_SETTLEMENT,
+                exit_signal_date=target_date,
+                exit_execution_date=target_date,
+                exit_price=exit_price,
+            )
+            db.delete(lot)
+            settled += 1
+        db.delete(position)
+
+    db.query(ShadowStrategyOrder).filter(
+        ShadowStrategyOrder.strategy_version == strategy_version,
+        ShadowStrategyOrder.status == ORDER_STATUS_PENDING,
+    ).update({"status": "CANCELLED"}, synchronize_session=False)
+
+    portfolio.cash = params["initial_capital"]
+    portfolio.realized_pnl_cumulative = 0.0
+    portfolio.cycle_number += 1
+    portfolio.cycle_start_trade_date = None
+    return settled

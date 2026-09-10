@@ -2844,6 +2844,8 @@ export interface ShadowHistoryDay {
   unrealized_pnl: number | null
   position_count: number
   total_units: number
+  settlement_reset: boolean
+  settlement_cash: number | null
   executed_orders: ShadowHistoryOrder[]
   completed_trades: ShadowCompletedTrade[]
 }
@@ -2856,6 +2858,10 @@ export interface ShadowHistoryResponse {
   start_equity: number | null
   end_equity: number | null
   period_return_pct: number | null
+  completed_trade_count: number
+  winning_trade_count: number
+  win_rate_pct: number | null
+  settlement_cash: number | null
   trading_days: ShadowHistoryDay[]
 }
 

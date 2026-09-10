@@ -305,6 +305,8 @@ class ShadowHistoryDayResponse(BaseModel):
     unrealized_pnl: Optional[float] = None
     position_count: int
     total_units: int
+    settlement_reset: bool = False
+    settlement_cash: Optional[float] = None
     executed_orders: List[ShadowHistoryOrderResponse]
     completed_trades: List[ShadowCompletedTradeResponse]
 
@@ -317,6 +319,10 @@ class ShadowHistoryResponse(BaseModel):
     start_equity: Optional[float] = None
     end_equity: Optional[float] = None
     period_return_pct: Optional[float] = None
+    completed_trade_count: int = 0
+    winning_trade_count: int = 0
+    win_rate_pct: Optional[float] = None
+    settlement_cash: Optional[float] = None
     trading_days: List[ShadowHistoryDayResponse]
 
 
@@ -423,7 +429,18 @@ def get_shadow_history(
     for trade in completed_trades:
         trades_by_date.setdefault(trade.exit_execution_date, []).append(_completed_trade_response(trade))
 
+    completed_trade_count = len(completed_trades)
+    winning_trade_count = sum(1 for trade in completed_trades if float(trade.realized_return_pct) > 0)
+    win_rate_pct = (
+        winning_trade_count / completed_trade_count * 100.0 if completed_trade_count else None
+    )
+    settlement_dates = {
+        trade.exit_execution_date
+        for trade in completed_trades
+        if trade.exit_reason == "PERIOD_END_SETTLEMENT"
+    }
     params = _resolve_params(strategy_version)
+    settlement_cash = float(params["initial_capital"]) if settlement_dates else None
     previous_equity = float(params["initial_capital"])
     days: List[ShadowHistoryDayResponse] = []
     for snapshot in snapshots:
@@ -442,6 +459,8 @@ def get_shadow_history(
                 unrealized_pnl=snapshot.unrealized_pnl,
                 position_count=snapshot.position_count,
                 total_units=snapshot.total_units,
+                settlement_reset=snapshot.trade_date in settlement_dates,
+                settlement_cash=settlement_cash if snapshot.trade_date in settlement_dates else None,
                 executed_orders=orders_by_date.get(snapshot.trade_date, []),
                 completed_trades=trades_by_date.get(snapshot.trade_date, []),
             )
@@ -463,6 +482,10 @@ def get_shadow_history(
         start_equity=start_equity,
         end_equity=end_equity,
         period_return_pct=period_return_pct,
+        completed_trade_count=completed_trade_count,
+        winning_trade_count=winning_trade_count,
+        win_rate_pct=win_rate_pct,
+        settlement_cash=settlement_cash,
         trading_days=days,
     )
 

@@ -28,7 +28,7 @@ v1_frozen 的歷史基準，跟新版 Dual-Engine 是完全不同的策略邏輯
     python3 backfill_shadow_portfolio_replay.py                       # dry-run
     python3 backfill_shadow_portfolio_replay.py --execute              # 真的寫入 DB
     python3 backfill_shadow_portfolio_replay.py --execute \\
-        --start=2026-08-01 --end=2026-09-07                            # 指定回測窗口
+        --start=2026-08-01 --end=2026-09-07 --settle-at-end             # 指定回測窗口並在終點結算
 """
 from __future__ import annotations
 
@@ -288,6 +288,10 @@ def _parse_date_override(argv: list, flag: str, default: date) -> date:
     return default
 
 
+def _settle_at_end_requested(argv: list) -> bool:
+    return "--settle-at-end" in argv
+
+
 def main(argv: list) -> int:
     import logging
 
@@ -310,6 +314,7 @@ def main(argv: list) -> int:
 
     replay_start = _parse_date_override(argv, "--start=", REPLAY_START)
     replay_end = _parse_date_override(argv, "--end=", REPLAY_END)
+    settle_at_end = _settle_at_end_requested(argv)
 
     # 2026-09-09 起 v1_frozen 已改版為 Dual-Engine（見本檔案頂部說明），使用者明確
     # 授權對它執行 --execute（DELETE/RESET 舊紀錄後以新 Rule 重新產生）——這裡**不再**
@@ -462,6 +467,19 @@ def main(argv: list) -> int:
             "%s executed=%s decided=%s equity=%.0f return=%.2f%%",
             d, executed, decided, snapshot_equity, snapshot_return_pct,
         )
+
+    if settle_at_end:
+        def _step_settle_at_end():
+            with SessionLocal() as db:
+                settled = sp.settle_shadow_portfolio_at_period_end(
+                    db, target_date=trade_dates[-1], strategy_version=strategy_version
+                )
+                db.commit()
+                return settled
+
+        settled_lots = _with_retry(_step_settle_at_end)
+        print(f"\n  [期末結算] {trade_dates[-1]} 已平倉 {settled_lots} 個 lot，下一循環本金重設為 600,000")
+        logger.info("Period-end settlement on %s: %d lots settled; portfolio reset", trade_dates[-1], settled_lots)
 
     initial_capital = sp.STRATEGY_PARAMS_BY_VERSION[strategy_version]["initial_capital"]
     with SessionLocal() as db:

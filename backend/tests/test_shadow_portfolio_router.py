@@ -164,6 +164,9 @@ def test_shadow_history_endpoint_groups_daily_performance_and_transactions(api):
     body = res.json()
     assert body["trading_day_count"] == 2
     assert body["period_return_pct"] == pytest.approx(0.3333333)
+    assert body["completed_trade_count"] == 1
+    assert body["winning_trade_count"] == 1
+    assert body["win_rate_pct"] == pytest.approx(100.0)
     assert body["trading_days"][1]["trade_date"] == "2026-08-04"
     assert len(body["trading_days"][1]["executed_orders"]) == 1
     assert len(body["trading_days"][1]["completed_trades"]) == 1

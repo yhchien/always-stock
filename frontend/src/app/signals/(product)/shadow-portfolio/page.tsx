@@ -71,6 +71,7 @@ const EXIT_REASON_LABELS: Record<string, string> = {
   CONTINUATION_NO_FOLLOW_THROUGH: "Continuation 未證明延續（Prove-it 失敗）",
   CONTINUATION_TRAILING_EXIT: "Continuation 從高點回吐出場",
   PULLBACK_REAL_STOP: "Pullback 真實停損 -8%",
+  PERIOD_END_SETTLEMENT: "回測期末結算",
 }
 
 function StatBox({ label, value, tone }: { label: string; value: string; tone?: string }) {
@@ -170,6 +171,11 @@ function HistoryDayRow({
 
       {expanded && (
         <div className="grid gap-3 border-t border-slate-800 bg-slate-950/40 px-4 py-3 sm:grid-cols-2">
+          {day.settlement_reset && (
+            <p className="sm:col-span-2 rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+              期末結算：已全部賣出，下一循環本金重設為 {formatMoney(day.settlement_cash)} 元；上方總權益仍是結算前的績效。
+            </p>
+          )}
           <div>
             <p className="mb-2 text-[11px] font-semibold text-slate-300">當日成交動作</p>
             {day.executed_orders.length === 0 ? (
@@ -511,12 +517,22 @@ export default function ShadowPortfolioPage() {
                 )}
                 {!historyLoading && !historyError && history && history.trading_days.length > 0 && (
                   <>
-                    <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                    <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-5">
                       <StatBox label="期間起始權益" value={formatMoney(history.start_equity)} />
                       <StatBox label="期間結束權益" value={formatMoney(history.end_equity)} />
                       <StatBox label="期間報酬" value={formatPct(history.period_return_pct)} tone={returnTone(history.period_return_pct)} />
+                      <StatBox
+                        label="勝率（已平倉）"
+                        value={history.win_rate_pct === null ? "—" : `${history.win_rate_pct.toFixed(2)}%`}
+                        tone={history.win_rate_pct !== null && history.win_rate_pct >= 50 ? "text-red-300" : "text-slate-100"}
+                      />
                       <StatBox label="成交動作" value={`${history.trading_days.reduce((sum, day) => sum + day.executed_orders.length, 0)} 筆`} />
                     </div>
+                    {history.settlement_cash !== null && (
+                      <p className="mb-3 text-[11px] text-amber-300/80">
+                        9/7 期末已全部賣出，下一循環資產重設為 {formatMoney(history.settlement_cash)} 元；期間報酬以結算前權益計算。
+                      </p>
+                    )}
                     <div className="overflow-hidden rounded-lg border border-slate-800">
                       <div className="grid grid-cols-[auto_1fr_auto_auto_auto_auto] gap-2 bg-slate-900 px-3 py-2 text-[10px] text-slate-500 sm:gap-4">
                         <span />
