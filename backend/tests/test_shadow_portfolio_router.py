@@ -6,7 +6,7 @@ param 回傳該策略自己的資金/曝險規則，不能不管傳入哪個版�
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -169,3 +169,34 @@ def test_shadow_history_endpoint_groups_daily_performance_and_transactions(api):
     assert body["trading_days"][1]["trade_date"] == "2026-08-04"
     assert len(body["trading_days"][1]["executed_orders"]) == 1
     assert len(body["trading_days"][1]["completed_trades"]) == 1
+
+
+def test_shadow_history_defaults_to_latest_25_appended_days(api):
+    client, db = api
+    first_date = date(2026, 8, 1)
+    db.add_all(
+        [
+            ShadowPortfolioDailySnapshot(
+                strategy_version="v1_frozen",
+                trade_date=first_date + timedelta(days=offset),
+                cash=600000.0,
+                invested_cost=0.0,
+                market_value=0.0,
+                total_equity=600000.0 + offset,
+                total_return_pct=offset / 600000.0 * 100.0,
+                realized_pnl=float(offset),
+                unrealized_pnl=0.0,
+                position_count=0,
+                total_units=0,
+            )
+            for offset in range(26)
+        ]
+    )
+    db.commit()
+
+    res = client.get("/api/signals/shadow-portfolio/history", params={"strategy_version": "v1_frozen"})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["trading_day_count"] == 25
+    assert body["start_date"] == "2026-08-02"
+    assert body["end_date"] == "2026-08-26"

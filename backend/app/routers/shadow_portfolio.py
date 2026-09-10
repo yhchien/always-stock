@@ -5,7 +5,7 @@
 不需要登入）：
 - GET /api/signals/shadow-portfolio                  目前 portfolio 摘要 + 持倉列表
 - GET /api/signals/shadow-portfolio/actions           目前 PENDING 的訂單（下一交易日預計動作）
-    - GET /api/signals/shadow-portfolio/history          歷史回放逐交易日表現 + 當日交易
+- GET /api/signals/shadow-portfolio/history          歷史回放逐交易日表現 + 當日交易
     - GET /api/signals/shadow-portfolio/trades            逐筆已平倉交易（可排序/篩選 cycle）
     - GET /api/signals/shadow-portfolio/trades/by-stock   依股票分組統計（次數/平均報酬排序）
 
@@ -357,16 +357,49 @@ def _completed_trade_response(trade: ShadowCompletedTrade) -> ShadowCompletedTra
 @router.get("/history", response_model=ShadowHistoryResponse)
 def get_shadow_history(
     strategy_version: str = STRATEGY_VERSION,
-    start_date: date = Query(default=date(2026, 8, 1)),
-    end_date: date = Query(default=date(2026, 9, 7)),
+    start_date: Optional[date] = Query(default=None),
+    end_date: Optional[date] = Query(default=None),
     db: Session = Depends(get_db),
 ) -> ShadowHistoryResponse:
     """Return a bounded historical replay grouped by trading day.
 
-    This endpoint deliberately reads snapshots and executed orders instead of the
-    current portfolio singleton.  That keeps the 8/1~9/7 historical replay visible
-    after the live portfolio has moved into the 9/8+ cycle.
+    If neither boundary is supplied, use the latest 25 available replay days for
+    this strategy.  Explicit boundaries let the UI inspect any appended historical
+    interval, while the endpoint deliberately reads immutable snapshots and
+    executed orders instead of the current portfolio singleton.
     """
+    snapshot_date_query = (
+        db.query(ShadowPortfolioDailySnapshot.trade_date)
+        .filter(ShadowPortfolioDailySnapshot.strategy_version == strategy_version)
+        .distinct()
+    )
+    if start_date is None and end_date is None:
+        recent_dates = [
+            row[0]
+            for row in snapshot_date_query
+            .order_by(ShadowPortfolioDailySnapshot.trade_date.desc())
+            .limit(25)
+            .all()
+        ]
+        if recent_dates:
+            start_date = min(recent_dates)
+            end_date = max(recent_dates)
+    else:
+        if start_date is None:
+            earliest = snapshot_date_query.order_by(ShadowPortfolioDailySnapshot.trade_date.asc()).first()
+            start_date = earliest[0] if earliest is not None else end_date
+        if end_date is None:
+            latest = snapshot_date_query.order_by(ShadowPortfolioDailySnapshot.trade_date.desc()).first()
+            end_date = latest[0] if latest is not None else start_date
+
+    # Keep a well-typed empty response when this strategy has no replay data yet.
+    if start_date is None or end_date is None:
+        return ShadowHistoryResponse(
+            strategy_version=strategy_version,
+            trading_day_count=0,
+            trading_days=[],
+        )
+
     if end_date < start_date:
         return ShadowHistoryResponse(
             strategy_version=strategy_version,

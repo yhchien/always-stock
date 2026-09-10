@@ -255,6 +255,10 @@ export default function ShadowPortfolioPage() {
   const [historyError, setHistoryError] = useState<string | null>(null)
   const [historyCollapsed, setHistoryCollapsed] = useState(false)
   const [expandedHistoryDate, setExpandedHistoryDate] = useState<string | null>(null)
+  const [historyStartInput, setHistoryStartInput] = useState("")
+  const [historyEndInput, setHistoryEndInput] = useState("")
+  const [historyRequestedStart, setHistoryRequestedStart] = useState("")
+  const [historyRequestedEnd, setHistoryRequestedEnd] = useState("")
   const [strategyHelpCollapsed, setStrategyHelpCollapsed] = useState(false)
 
   useEffect(() => {
@@ -286,10 +290,16 @@ export default function ShadowPortfolioPage() {
       setHistoryError(null)
       try {
         const res = await fetchShadowHistory(
-          { strategyVersion, startDate: "2026-08-01", endDate: "2026-09-07" },
+          {
+            strategyVersion,
+            startDate: historyRequestedStart || undefined,
+            endDate: historyRequestedEnd || undefined,
+          },
           { signal: controller.signal },
         )
         setHistory(res)
+        setHistoryStartInput(res.start_date ?? "")
+        setHistoryEndInput(res.end_date ?? "")
         setExpandedHistoryDate(null)
       } catch (reason: unknown) {
         if (!controller.signal.aborted) {
@@ -301,7 +311,25 @@ export default function ShadowPortfolioPage() {
     }
     void run()
     return () => controller.abort()
-  }, [strategyVersion])
+  }, [strategyVersion, historyRequestedStart, historyRequestedEnd])
+
+  const applyHistoryRange = () => {
+    if (historyStartInput && historyEndInput && historyStartInput > historyEndInput) {
+      setHistoryError("歷史回放的起始日不能晚於結束日")
+      return
+    }
+    setHistoryError(null)
+    setHistoryRequestedStart(historyStartInput)
+    setHistoryRequestedEnd(historyEndInput)
+  }
+
+  const resetHistoryRange = () => {
+    setHistoryError(null)
+    setHistoryStartInput("")
+    setHistoryEndInput("")
+    setHistoryRequestedStart("")
+    setHistoryRequestedEnd("")
+  }
 
   return (
     <main className="mx-auto min-h-screen max-w-5xl px-4 py-6 text-slate-100">
@@ -394,7 +422,7 @@ export default function ShadowPortfolioPage() {
                   <li>晚上收盤後才產生訊號，所以 BUY／ADD 使用下一個交易日的最高價模擬成交。</li>
                   <li>SELL 也是晚上產生，所以使用下一個交易日的最低價模擬成交。</li>
                   <li>每次 ADD 都會增加投入成本，持倉報酬以新的加權平均成本計算。</li>
-                  <li>回測區間最後一天會強制結算；本頁的歷史區間目前是 2026-08-01 至 2026-09-07。</li>
+                  <li>回測區間最後一天會強制結算；歷史回放可用日期選擇器查看任意已累積的交易日區間。</li>
                 </ul>
                 <p className="mt-2 text-slate-500">簡單說：Dual-Engine 比較像「分桶管理、主動挑更強的延續股」；Forward Test 比較像「保留原始候選、讓贏家續抱並在獲利後加碼」。</p>
               </div>
@@ -518,7 +546,9 @@ export default function ShadowPortfolioPage() {
             >
               <span className="flex items-center gap-2 text-sm font-semibold text-slate-200">
                 <span aria-hidden className="shrink-0 text-slate-400">{historyCollapsed ? "▸" : "▾"}</span>
-                歷史 25 個交易日回放（2026-08-01 ～ 2026-09-07）
+                {history
+                  ? `歷史 ${history.trading_day_count} 個交易日回放（${history.start_date ?? "—"} ～ ${history.end_date ?? "—"}）`
+                  : "歷史交易日回放"}
               </span>
               <span className="shrink-0 text-xs text-slate-500">
                 {historyCollapsed ? "點擊展開" : history ? `${history.trading_day_count} 個實際交易日` : "收合"}
@@ -528,9 +558,43 @@ export default function ShadowPortfolioPage() {
             {!historyCollapsed && (
               <div className="border-t border-slate-800 p-3">
                 <p className="mb-3 text-xs leading-5 text-slate-500">
-                  這是指定期間的歷史回放，不會混入目前 2026-09-08 起的 live cycle。點擊任一交易日，
-                  可查看當日權益、成交動作與完成交易。
+                  歷史資料會持續 append，不會因為新週期開始而覆蓋舊紀錄。未指定日期時顯示這個策略最新
+                  25 個有回放資料的交易日，也可以自訂任意起訖日；點擊任一交易日可查看當日權益、成交動作與完成交易。
                 </p>
+                <div className="mb-3 flex flex-wrap items-end gap-2 rounded-lg border border-slate-800 bg-slate-950/30 p-3">
+                  <label className="grid gap-1 text-[11px] text-slate-500">
+                    起始日
+                    <input
+                      type="date"
+                      value={historyStartInput}
+                      onChange={(event) => setHistoryStartInput(event.target.value)}
+                      className="rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-xs text-slate-200"
+                    />
+                  </label>
+                  <label className="grid gap-1 text-[11px] text-slate-500">
+                    結束日
+                    <input
+                      type="date"
+                      value={historyEndInput}
+                      onChange={(event) => setHistoryEndInput(event.target.value)}
+                      className="rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-xs text-slate-200"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={applyHistoryRange}
+                    className="rounded bg-sky-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-600"
+                  >
+                    查詢區間
+                  </button>
+                  <button
+                    type="button"
+                    onClick={resetHistoryRange}
+                    className="rounded border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
+                  >
+                    最新 25 個交易日
+                  </button>
+                </div>
                 {historyLoading && <p className="text-sm text-slate-500">正在載入歷史回放…</p>}
                 {historyError && (
                   <p className="rounded border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-100">
@@ -557,7 +621,7 @@ export default function ShadowPortfolioPage() {
                     </div>
                     {history.settlement_cash !== null && (
                       <p className="mb-3 text-[11px] text-amber-300/80">
-                        9/7 期末已按最低價全部賣出，下一循環資產重設為 {formatMoney(history.settlement_cash)} 元；期間報酬依實際結算成交價計算。
+                        {history.trading_days.filter((day) => day.settlement_reset).map((day) => day.trade_date).join("、")} 期末已按最低價全部賣出，下一循環資產重設為 {formatMoney(history.settlement_cash)} 元；期間報酬依實際結算成交價計算。
                       </p>
                     )}
                     <div className="overflow-hidden rounded-lg border border-slate-800">
