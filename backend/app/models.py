@@ -1256,6 +1256,9 @@ class ShadowPositionLot(Base):
         Integer, ForeignKey("shadow_virtual_positions.id", ondelete="CASCADE"), nullable=False, index=True
     )
     entry_type = Column(String(32), nullable=False)  # EARLY_HEALTHY_PULLBACK | DEEP_PULLBACK
+    # 資金來源帳本：CONTINUATION | PULLBACK | OPPORTUNITY。舊資料可為 NULL，
+    # 回放/查詢時依 entry_type fallback，避免既有 production rows 需要人工回填。
+    funding_bucket = Column(String(32), nullable=True)
     entry_signal_date = Column(Date, nullable=False)
     entry_execution_date = Column(Date, nullable=False)
     entry_price = Column(Float, nullable=False)
@@ -1388,6 +1391,7 @@ class ShadowCompletedTrade(Base):
     stock_name = Column(String, nullable=False)
 
     entry_type = Column(String(32), nullable=False)  # EARLY_HEALTHY_PULLBACK | DEEP_PULLBACK
+    funding_bucket = Column(String(32), nullable=True)
     entry_signal_date = Column(Date, nullable=False)
     entry_execution_date = Column(Date, nullable=False)
     entry_price = Column(Float, nullable=False)

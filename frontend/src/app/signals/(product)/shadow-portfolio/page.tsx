@@ -25,14 +25,15 @@ const STRATEGY_META: Record<
     label: "v1（Dual-Engine）",
     badge: "ACTIVE",
     description:
-      "2026-09-08 起的新週期：以報告六面向挑選強主題領導股，300,000 元做主動追強、" +
-      "100,000 元做拉回回穩，符合更強 profile 時可換股；其餘資金保留現金。",
+      "2026-09-08 起的新週期：把資金分成 Continuation、Pullback、Opportunity 三個桶，" +
+      "用報告證據找強勢延續股，也保留拉回回穩與換股機會。",
   },
   FORWARD_V1_202609: {
     label: "FORWARD_V1_202609",
     badge: "FORWARD TEST",
     description:
-      "2026-09-09 起正式 Forward Test：無固定停利（讓贏家自然發展）、加碼不設上限但絕不攤平（須先確認目前部位獲利）、單一持股成本不得超過總權益 50%、無強制循環重置、無 Rotation（滿倉/現金不足時寧可錯過候選也不強制換股）。",
+      "2026-09-09 起正式 Forward Test：用較寬鬆的原始進場規則追蹤候選股，讓贏家續抱與加碼；" +
+      "動能超過 80 仍可進場；不固定停利、不攤平，單檔成本最多占總權益 50%。",
   },
 }
 
@@ -65,6 +66,7 @@ const EXIT_REASON_LABELS: Record<string, string> = {
   OFFICIAL_EXIT: "追蹤期滿",
   TAKE_PROFIT: "固定停利 +10%",
   REAL_POSITION_STOP_LOSS: "真實停損 -8%",
+  FORWARD_HIGH_MOMENTUM_ROTATION: "Forward 高動能換股",
   CYCLE_RESET: "循環期滿強制平倉",
   // v1_frozen Dual-Engine（2026-09-09 起）專屬出場原因
   CONTINUATION_FAST_STOP: "Continuation 快速停損 -5%",
@@ -355,21 +357,46 @@ export default function ShadowPortfolioPage() {
             <div className="grid gap-3 border-t border-slate-800 p-3 text-xs leading-5 text-slate-400 lg:grid-cols-2">
               <div className="rounded-lg border border-sky-900/50 bg-sky-950/20 p-3">
                 <p className="font-semibold text-sky-200">v1（Dual-Engine，2026-09-08 起）</p>
-                <p className="mt-1">
-                  一半資金最多放 3 檔報告型強勢股，每檔 100,000 元。股票必須同時具備 HIGH
-                  主題、族群領導地位、龍頭支持、技術轉強或突破、相對強度與法人流向；D1 發現後，
-                  下一交易日用最高價直接進場。滿倉時，較強的 early re-acceleration 可以替換較弱的
-                  breakout。另一個 100,000 元名額保留給拉回後價格與動能重新回穩的股票。
-                </p>
-                <p className="mt-1 text-slate-500">profile 風控：-12% 停損；獲利 +10% 後，從最高收盤回落 12% 出場。</p>
+                <p className="mt-2 font-medium text-slate-300">這套策略在做什麼？</p>
+                <p className="mt-1">它把 600,000 元拆成三個用途不同的資金桶，不是看到動能分數高就直接買：</p>
+                <ul className="mt-1 list-disc space-y-1 pl-4">
+                  <li><span className="text-slate-300">Continuation 核心桶：</span>300,000 元，最多 3 檔，每檔 100,000 元，找報告判定為 HIGH 主題、領導股，且技術／相對強度／法人流向等證據至少有足夠正向支持的「正在延續」股票。</li>
+                  <li><span className="text-slate-300">Pullback 核心桶：</span>100,000 元，最多 1 檔，找先回落、但價格與動能重新回穩的股票；還在下跌或尚未確認時只觀察，不急著買。</li>
+                  <li><span className="text-slate-300">Opportunity 機會桶：</span>最多 300,000 元、最多 3 檔。Continuation 核心桶滿了後，若出現同樣高品質但更強的候選，才用可用現金進場或替換較弱的機會部位；不會寫死特定股票。</li>
+                </ul>
+                <p className="mt-2 font-medium text-slate-300">每天如何決策？</p>
+                <ol className="mt-1 list-decimal space-y-1 pl-4">
+                  <li>收盤後讀取當天報告與魚尾追蹤資料，建立候選排序。</li>
+                  <li>符合報告 profile 的強勢延續股可直接進場；一般 Starter 則要等下一個評估日通過 prove-it 才確認，否則退出。這一版的確認是狀態確認，目前不另外投入第二筆資金。</li>
+                  <li>持倉先檢查停損與失效；資金桶已滿時，只接受更強、且符合即時證據條件的換股。</li>
+                </ol>
+                <p className="mt-2 text-slate-500">風控：Starter 快速失敗約 -5%；確認後約 -8% 停損；profile 部位最多 -12%，獲利達 +10% 後從最高收盤回吐 12% 出場。Pullback 以實際持倉 -8% 停損。</p>
               </div>
               <div className="rounded-lg border border-amber-900/50 bg-amber-950/20 p-3">
                 <p className="font-semibold text-amber-200">FORWARD_V1_202609（Forward Test）</p>
-                <p className="mt-1">
-                  從 2026-09-09 開始觀察，不用這次 v1 的歷史回測結果混入。它讓贏家自然發展，
-                  不設固定停利；只有在部位已獲利且再次確認時才加碼，不攤平，單檔成本不超過總權益
-                  50%，也不因滿倉強制換股。
-                </p>
+                <p className="mt-2 font-medium text-slate-300">這套策略在做什麼？</p>
+                <p className="mt-1">它是從 2026-09-09 開始獨立觀察的新版本，不把 v1 Dual-Engine 的歷史績效混進來。它沿用原本的兩種進場型態：</p>
+                <ul className="mt-1 list-disc space-y-1 pl-4">
+                  <li><span className="text-slate-300">Early healthy pullback：</span>小幅拉回、仍在健康區間的候選。</li>
+                  <li><span className="text-slate-300">Deep pullback：</span>較深幅度回落、但仍符合動能與 P4 條件的候選。</li>
+                  <li><span className="text-slate-300">BUY：</span>符合進場條件就用一個 100,000 元單位建立部位；<span className="text-slate-300">ADD：</span>同一檔再次符合條件時才考慮加碼，而且目前部位必須已經獲利，絕不攤平。動能超過 80 的候選不會被上限直接排除。</li>
+                </ul>
+                <p className="mt-2 font-medium text-slate-300">它和 Dual-Engine 最大的差異</p>
+                <ul className="mt-1 list-disc space-y-1 pl-4">
+                  <li>不設固定停利，讓已經上漲的股票繼續發展；但仍有實際部位 -8% 停損與 P4／官方結束訊號。</li>
+                  <li>最多同時持有 5 檔不同股票；不設總單位上限，但單檔成本不得超過當下總權益 50%，也不做 35 交易日循環重置。</li>
+                  <li>滿倉時不普遍換股；只有候選當日重新被 P3 選中、動能超過 80、專用 entry score 至少 6，且比持有至少 2 個交易日的虧損弱部位高至少 5 分時，才允許每天換掉 1 檔。已獲利 +10% 以上的 winner 不會被換掉。</li>
+                </ul>
+              </div>
+              <div className="rounded-lg border border-slate-800 bg-slate-950/30 p-3 lg:col-span-2">
+                <p className="font-semibold text-slate-300">兩套策略共用的回測／模擬成交方式</p>
+                <ul className="mt-1 grid gap-x-6 gap-y-1 sm:grid-cols-2">
+                  <li>晚上收盤後才產生訊號，所以 BUY／ADD 使用下一個交易日的最高價模擬成交。</li>
+                  <li>SELL 也是晚上產生，所以使用下一個交易日的最低價模擬成交。</li>
+                  <li>每次 ADD 都會增加投入成本，持倉報酬以新的加權平均成本計算。</li>
+                  <li>回測區間最後一天會強制結算；本頁的歷史區間目前是 2026-08-01 至 2026-09-07。</li>
+                </ul>
+                <p className="mt-2 text-slate-500">簡單說：Dual-Engine 比較像「分桶管理、主動挑更強的延續股」；Forward Test 比較像「保留原始候選、讓贏家續抱並在獲利後加碼」。</p>
               </div>
             </div>
           )}

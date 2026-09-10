@@ -144,6 +144,7 @@ def ensure_shadow_portfolio_tables(engine: Engine) -> None:
     )
     _ensure_shadow_virtual_portfolio_cycle_columns(engine)
     _ensure_shadow_strategy_daily_decision_episode_columns(engine)
+    _ensure_shadow_funding_bucket_columns(engine)
 
 
 def _ensure_shadow_virtual_portfolio_cycle_columns(engine: Engine) -> None:
@@ -191,6 +192,36 @@ def _ensure_shadow_strategy_daily_decision_episode_columns(engine: Engine) -> No
     with engine.begin() as conn:
         for name in missing:
             conn.execute(text(wanted[name]))
+
+
+def _ensure_shadow_funding_bucket_columns(engine: Engine) -> None:
+    """Add the funding-ledger field used by the Dual-Engine opportunity pool.
+
+    Existing rows are intentionally left NULL.  The replay/runtime helpers infer
+    the legacy bucket from ``entry_type`` when this field is absent, while all new
+    lots persist their actual funding source.
+    """
+    inspector = inspect(engine)
+    wanted = {
+        "shadow_position_lots": {
+            "funding_bucket": "ALTER TABLE shadow_position_lots ADD COLUMN funding_bucket VARCHAR(32)",
+        },
+        "shadow_completed_trades": {
+            "funding_bucket": "ALTER TABLE shadow_completed_trades ADD COLUMN funding_bucket VARCHAR(32)",
+        },
+    }
+    missing_by_table = {}
+    for table, columns in wanted.items():
+        if table not in inspector.get_table_names():
+            continue
+        existing = {c["name"] for c in inspector.get_columns(table)}
+        missing_by_table[table] = [name for name in columns if name not in existing]
+    if not any(missing_by_table.values()):
+        return
+    with engine.begin() as conn:
+        for table, columns in missing_by_table.items():
+            for name in columns:
+                conn.execute(text(wanted[table][name]))
 
 # ---------------------------------------------------------------------------
 # 凍結參數 —— 逐字對應 fishtail_backtest/backtest/run_all.py 的 BASELINE_PARAMS。
@@ -266,16 +297,20 @@ DUAL_ENGINE_PARAMS: Dict[str, Any] = {
     "initial_capital": 600000.0,
     "unit_capital": 100000.0,
     # PART 14：拿掉全域 5 檔上限，改由兩個資金桶各自的容量限制風險。以目前
-    # 凍結配置，Continuation 是 300,000 / 100,000 = 3 檔，Pullback 是
-    # 100,000 / 100,000 = 1 檔，所以 API 的資訊性上限是 4 檔；orchestrator
-    # 仍不拿它做任何 `len(...) >= max_stocks` 的硬性檢查。
-    "max_stocks": 4,
+    # 凍結配置，Continuation 核心是 3 檔、Pullback 是 1 檔，Opportunity
+    # 最多再開 3 檔，所以 API 的資訊性上限是 7 檔；Dual-Engine orchestrator
+    # 仍不拿它做全域 `len(...) >= max_stocks` 的硬性檢查。
+    "max_stocks": 7,
     "continuation_bucket_cap": 300000.0,
     # Validated 2026-09-10 report-profile allocation: half the account is the
     # aggressive continuation sleeve, one additional 100k slot remains for a
     # pullback recovery, and the rest stays in cash when no qualified setup is
     # present.
     "pullback_bucket_cap": 100000.0,
+    # 額外機會池最多 3 個 unit；實際能用幾個仍受決策當下現金限制，
+    # 因此初始 600k 帳戶在兩個核心桶滿載後通常可開 2 檔，第三檔要有
+    # 額外獲利或其他已釋放資金才會通過。
+    "opportunity_bucket_cap": 300000.0,
     "continuation_starter_capital": 100000.0,
     "continuation_confirm_scale_in_capital": 0.0,
     # Report-profile rotation is point-in-time only: a stronger early
@@ -291,6 +326,10 @@ DUAL_ENGINE_PARAMS: Dict[str, Any] = {
         "victim_max_return_pct": 0.0,
         "victim_min_holding_trading_days": 1,
         "victim_require_starter": True,
+        # Opportunity positions may rotate within the same report-profile tier
+        # when a later candidate has materially stronger point-in-time momentum.
+        "opportunity_equal_profile_momentum_delta": 5.0,
+        "opportunity_victim_max_return_pct": 25.0,
     },
     # 2026-09-10：Starter 改到 D1。D1 不再用價格漲幅篩選，而是用既有 P3/Phase 2
     # evidence families 做 deterministic quality gate；momentum 只保留寬鬆的 data-quality
@@ -396,8 +435,28 @@ STRATEGY_PARAMS_BY_VERSION: Dict[str, Dict[str, Any]] = {
         "max_units_per_stock": None,
         "max_total_units": None,
         "max_position_exposure_pct": 0.50,
-        "setup_a": V1_STRATEGY_PARAMS["setup_a"],
-        "setup_b": V1_STRATEGY_PARAMS["setup_b"],
+        # Forward Test keeps the lower momentum floors, but does not reject a
+        # candidate merely because it has already accelerated above the old
+        # 80/85 ceiling.  Very high-momentum candidates are still subject to
+        # the separate, stricter rotation gate below.
+        "setup_a": {**V1_STRATEGY_PARAMS["setup_a"], "momentum_max": None},
+        "setup_b": {**V1_STRATEGY_PARAMS["setup_b"], "momentum_max": None},
+        "forward_rotation": {
+            "enabled": True,
+            "candidate_momentum_min": 80.0,
+            # The shared score intentionally peaks around momentum 75, so a
+            # genuine >80 chase candidate naturally scores lower.  Use a
+            # separate quality floor for this lane instead of making the
+            # high-momentum rotation gate impossible to reach.
+            "candidate_entry_score_min": 6.0,
+            "candidate_p4_excluded": "STOP_OBSERVING",
+            "candidate_exclude_official_exit": True,
+            "candidate_require_fresh_p3": True,
+            "victim_max_return_pct": 0.0,
+            "victim_min_holding_trading_days": 2,
+            "candidate_momentum_delta": 5.0,
+            "winner_protection_pct": 10.0,
+        },
         "take_profit_signal_pct": None,
         "take_profit_basis": None,
         "real_stop_loss_pct": V1_STRATEGY_PARAMS["real_stop_loss_pct"],
@@ -428,6 +487,8 @@ EXIT_REASON_P4_STOP = "P4_STOP"
 EXIT_REASON_OFFICIAL_EXIT = "OFFICIAL_EXIT"
 EXIT_REASON_TAKE_PROFIT = "TAKE_PROFIT"
 EXIT_REASON_REAL_STOP_LOSS = "REAL_POSITION_STOP_LOSS"
+# FORWARD_V1：只在新候選明顯更強、且舊部位仍虧損時使用；不會替換 winner。
+EXIT_REASON_FORWARD_HIGH_MOMENTUM_ROTATION = "FORWARD_HIGH_MOMENTUM_ROTATION"
 # 35 交易日循環強制重置（見 check_and_apply_cycle_reset）——不是策略訊號觸發的
 # 正常出場，是行政性強制平倉，exit_execution_date 就是觸發當天，不等 T+1
 EXIT_REASON_CYCLE_RESET = "CYCLE_RESET"
@@ -459,6 +520,12 @@ ORDER_STATUS_EXECUTED = "EXECUTED"
 # ---------------------------------------------------------------------------
 ENGINE_CONTINUATION = "CONTINUATION"
 ENGINE_PULLBACK_RECOVERY = "PULLBACK_RECOVERY"
+
+# 三本資金帳。Opportunity 是 Continuation 核心桶滿載時的額外資金池，
+# 不代表第三種選股邏輯。
+FUNDING_BUCKET_CONTINUATION = "CONTINUATION"
+FUNDING_BUCKET_PULLBACK = "PULLBACK"
+FUNDING_BUCKET_OPPORTUNITY = "OPPORTUNITY"
 
 ENTRY_TYPE_CONTINUATION_STARTER = "CONTINUATION_STARTER"
 ENTRY_TYPE_CONTINUATION_CONFIRM_SCALE_IN = "CONTINUATION_CONFIRMATION_SCALE_IN"
@@ -548,8 +615,14 @@ class ExitSignal:
     row: EvidenceRow
 
 
-def _in_range(value: Optional[float], lo: float, hi: float) -> bool:
-    return value is not None and lo <= value <= hi
+def _in_range(value: Optional[float], lo: float, hi: Optional[float]) -> bool:
+    """Inclusive range with an optional open upper bound.
+
+    Forward Test deliberately leaves the momentum ceiling open so a later
+    high-momentum candidate can be considered by its explicit rotation gate,
+    while the older frozen strategies retain their numeric ceilings.
+    """
+    return value is not None and lo <= value and (hi is None or value <= hi)
 
 
 def _matches_setup_a(row: EvidenceRow, cfg: dict) -> bool:
@@ -1537,6 +1610,26 @@ def _position_units(db: Session, position_id: int) -> int:
     )
 
 
+def _funding_bucket_for_entry_type(entry_type: Optional[str]) -> str:
+    """Map legacy/new entry types to the capital ledger they consume."""
+    if entry_type in _PULLBACK_ENTRY_TYPES:
+        return FUNDING_BUCKET_PULLBACK
+    return FUNDING_BUCKET_CONTINUATION
+
+
+def _lot_funding_bucket(lot: ShadowPositionLot) -> str:
+    """Return a lot's persisted funding bucket, with a legacy-data fallback."""
+    return lot.funding_bucket or _funding_bucket_for_entry_type(lot.entry_type)
+
+
+def _position_funding_bucket(lots: List[ShadowPositionLot]) -> str:
+    """A position keeps the funding ledger of its first lot for its lifetime."""
+    if not lots:
+        return FUNDING_BUCKET_CONTINUATION
+    first_lot = min(lots, key=lambda lot: (lot.entry_execution_date, lot.id))
+    return _lot_funding_bucket(first_lot)
+
+
 def _position_average_entry_price(db: Session, position_id: int) -> Optional[float]:
     lots = db.query(ShadowPositionLot).filter(ShadowPositionLot.position_id == position_id).all()
     total_shares = sum(lot.shares for lot in lots)
@@ -1595,6 +1688,7 @@ def _record_completed_trade(
         stock_id=stock_id,
         stock_name=stock_name,
         entry_type=lot.entry_type,
+        funding_bucket=_lot_funding_bucket(lot),
         entry_signal_date=lot.entry_signal_date,
         entry_execution_date=lot.entry_execution_date,
         entry_price=lot.entry_price,
@@ -1748,6 +1842,10 @@ def execute_pending_strategy_orders(
                 ShadowPositionLot(
                     position_id=position.id,
                     entry_type=order.entry_pattern or "UNKNOWN",
+                    funding_bucket=(
+                        snapshot.get("funding_bucket")
+                        or _funding_bucket_for_entry_type(order.entry_pattern)
+                    ),
                     entry_signal_date=order.signal_date,
                     entry_execution_date=target_date,
                     entry_price=price,
@@ -2052,6 +2150,7 @@ def _dual_engine_bucket_cost(
     lots_by_stock: Dict[str, List[ShadowPositionLot]],
     exclude_stock_ids: set,
     engine: str,
+    funding_bucket: Optional[str] = None,
 ) -> float:
     """目前（扣掉今天已判定出場的股票）某個 engine 的資金桶總成本——PART 13/35 的
     `MAX_CONTINUATION_EXPOSURE`／`MAX_PULLBACK_EXPOSURE` 都是對 lot `allocation`
@@ -2068,11 +2167,19 @@ def _dual_engine_bucket_cost(
         lots = lots_by_stock.get(stock_id, [])
         if _position_engine(lots) != engine:
             continue
+        if funding_bucket is not None and _position_funding_bucket(lots) != funding_bucket:
+            continue
         total += sum(lot.allocation for lot in lots)
     return total
 
 
-def _dual_engine_pending_reservation(db: Session, *, strategy_version: str, engine: str) -> float:
+def _dual_engine_pending_reservation(
+    db: Session,
+    *,
+    strategy_version: str,
+    engine: str,
+    funding_bucket: Optional[str] = None,
+) -> float:
     """PART 42：計算 Bucket exposure 時必須包含 EXECUTED open positions + PENDING
     BUY + PENDING CONFIRMATION_SCALE_IN——避免上一輪出現過的真實 bug（pending 訂單
     卡在排隊沒被算進容量檢查，等它終於成交時桶子已經超過上限）。`planned_amount`
@@ -2101,7 +2208,32 @@ def _dual_engine_pending_reservation(db: Session, *, strategy_version: str, engi
         )
         .all()
     )
-    return sum(o.planned_amount or 0.0 for o in rows)
+    total = 0.0
+    for order in rows:
+        snapshot = order.signal_snapshot or {}
+        order_bucket = snapshot.get("funding_bucket") or _funding_bucket_for_entry_type(order.entry_pattern)
+        if funding_bucket is None or order_bucket == funding_bucket:
+            total += order.planned_amount or 0.0
+    return total
+
+
+def _dual_engine_pending_cash_reservation(db: Session, *, strategy_version: str) -> float:
+    """Cash already promised to pending BUY/ADD orders.
+
+    The opportunity pool may use only cash that is not already reserved by any
+    other pending order.  This keeps the extra pool from creating orders that
+    later fail merely because the queue was built on the same decision day.
+    """
+    rows = (
+        db.query(ShadowStrategyOrder)
+        .filter(
+            ShadowStrategyOrder.strategy_version == strategy_version,
+            ShadowStrategyOrder.status == ORDER_STATUS_PENDING,
+            ShadowStrategyOrder.action.in_([ACTION_BUY, ACTION_ADD]),
+        )
+        .all()
+    )
+    return sum(order.planned_amount or 0.0 for order in rows)
 
 
 def _weighted_avg_cost_asof(lots: List[ShadowPositionLot], asof: date) -> Optional[float]:
@@ -2536,42 +2668,78 @@ def _run_v1_dual_engine_daily_strategy(
     projected_stocks = {sid for sid in positions if sid not in decided_exits}
     continuation_bucket_used = _dual_engine_bucket_cost(
         db, positions=positions, lots_by_stock=lots_by_stock, exclude_stock_ids=exiting_stock_ids,
-        engine=ENGINE_CONTINUATION,
+        engine=ENGINE_CONTINUATION, funding_bucket=FUNDING_BUCKET_CONTINUATION,
+    )
+    opportunity_bucket_used = _dual_engine_bucket_cost(
+        db, positions=positions, lots_by_stock=lots_by_stock, exclude_stock_ids=exiting_stock_ids,
+        engine=ENGINE_CONTINUATION, funding_bucket=FUNDING_BUCKET_OPPORTUNITY,
     )
     pullback_bucket_used = _dual_engine_bucket_cost(
         db, positions=positions, lots_by_stock=lots_by_stock, exclude_stock_ids=exiting_stock_ids,
-        engine=ENGINE_PULLBACK_RECOVERY,
+        engine=ENGINE_PULLBACK_RECOVERY, funding_bucket=FUNDING_BUCKET_PULLBACK,
     )
     # PART 42：還在排隊等成交的 PENDING 訂單也要算進佔用——否則卡住很久才成交的
     # 訂單會讓桶子事後超過上限。
     continuation_bucket_used += _dual_engine_pending_reservation(
-        db, strategy_version=strategy_version, engine=ENGINE_CONTINUATION
+        db, strategy_version=strategy_version, engine=ENGINE_CONTINUATION,
+        funding_bucket=FUNDING_BUCKET_CONTINUATION,
+    )
+    opportunity_bucket_used += _dual_engine_pending_reservation(
+        db, strategy_version=strategy_version, engine=ENGINE_CONTINUATION,
+        funding_bucket=FUNDING_BUCKET_OPPORTUNITY,
     )
     pullback_bucket_used += _dual_engine_pending_reservation(
-        db, strategy_version=strategy_version, engine=ENGINE_PULLBACK_RECOVERY
+        db, strategy_version=strategy_version, engine=ENGINE_PULLBACK_RECOVERY,
+        funding_bucket=FUNDING_BUCKET_PULLBACK,
     )
 
     _EPS = 1e-6
     starter_capital = params["continuation_starter_capital"]
     confirm_capital = params["continuation_confirm_scale_in_capital"]
     pullback_capital = params["unit_capital"]
+    opportunity_bucket_cap = params.get("opportunity_bucket_cap", 0.0)
+    opportunity_cash_available = max(
+        0.0,
+        float(portfolio.cash) - _dual_engine_pending_cash_reservation(
+            db, strategy_version=strategy_version
+        ),
+    )
+    # The pool's capital ceiling and the account's immediately spendable cash
+    # are separate constraints.  Do not shrink the whole pool to current cash:
+    # an existing 100k Opportunity lot must still leave room for a second lot
+    # when the account has another 100k available.
+    opportunity_capacity = opportunity_bucket_cap
+    opportunity_cash_remaining = opportunity_cash_available
     rotation_cfg = params.get("continuation_rotation") or {}
     profile_rotation_enabled = bool(starter_cfg.get("report_profile_rotation"))
 
     accepted_confirmations: Dict[str, EntrySignal] = {}
     skipped_confirmations: Dict[str, EntrySignal] = {}
     for stock_id, sig in confirmations.items():
-        if continuation_bucket_used + confirm_capital > params["continuation_bucket_cap"] + _EPS:
+        position_bucket = _position_funding_bucket(lots_by_stock.get(stock_id, []))
+        if position_bucket == FUNDING_BUCKET_OPPORTUNITY:
+            bucket_full = (
+                opportunity_bucket_used + confirm_capital > opportunity_capacity + _EPS
+                or confirm_capital > opportunity_cash_remaining + _EPS
+            )
+        else:
+            bucket_full = continuation_bucket_used + confirm_capital > params["continuation_bucket_cap"] + _EPS
+        if bucket_full:
             # 桶子已滿，這筆 Confirmation Scale-in 沒有空間——position 維持 STARTER
             # 狀態（不強制平倉，只是這次沒有加碼；下一個評估日會再重新判斷一次）。
             skipped_confirmations[stock_id] = sig
             continuation_skip_reason_by_stock[stock_id] = "CAPACITY"
             continue
-        continuation_bucket_used += confirm_capital
+        if position_bucket == FUNDING_BUCKET_OPPORTUNITY:
+            opportunity_bucket_used += confirm_capital
+            opportunity_cash_remaining -= confirm_capital
+        else:
+            continuation_bucket_used += confirm_capital
         accepted_confirmations[stock_id] = sig
         continuation_skip_reason_by_stock[stock_id] = "SELECTED"
 
     accepted_new: Dict[str, EntrySignal] = {}
+    new_funding_bucket_by_stock: Dict[str, str] = {}
     skipped_capacity: Dict[str, EntrySignal] = {}
 
     def _rotation_candidate_allowed(sig: EntrySignal) -> bool:
@@ -2610,7 +2778,7 @@ def _run_v1_dual_engine_daily_strategy(
         a fresh re-acceleration therefore outranks a confirmed breakout, while
         an equal-quality candidate does not cause churn.
         """
-        max_return = (
+        default_max_return = (
             starter_cfg.get("report_profile_rotation_max_victim_return_pct", 15.0)
             if profile_rotation_enabled else rotation_cfg.get("victim_max_return_pct", -2.0)
         )
@@ -2628,8 +2796,26 @@ def _run_v1_dual_engine_daily_strategy(
                 victim_profile = _REPORT_PROFILE_ENTRY_TO_PROFILE.get(
                     first_lot.entry_type if first_lot is not None else ""
                 )
-                if victim_profile is None or _REPORT_PROFILE_PRIORITY.get(victim_profile, 99) <= candidate_priority:
+                victim_priority = _REPORT_PROFILE_PRIORITY.get(victim_profile, 99)
+                if victim_profile is None or victim_priority < candidate_priority:
                     continue
+                if victim_priority == candidate_priority:
+                    # Core Continuation positions do not churn merely because
+                    # another candidate has the same profile.  Opportunity
+                    # positions may be replaced when the new candidate is
+                    # objectively stronger on the decision date.
+                    if _position_funding_bucket(lots) != FUNDING_BUCKET_OPPORTUNITY:
+                        continue
+                    victim_momentum = first_lot.entry_momentum if first_lot is not None else None
+                    candidate_momentum = candidate.row.momentum_score
+                    if (
+                        victim_momentum is None
+                        or candidate_momentum is None
+                        or candidate_momentum < victim_momentum + rotation_cfg.get(
+                            "opportunity_equal_profile_momentum_delta", 5.0
+                        )
+                    ):
+                        continue
             if rotation_cfg.get("victim_require_starter", True) and len(lots) != 1:
                 continue
             if _trading_days_elapsed_since(
@@ -2637,7 +2823,12 @@ def _run_v1_dual_engine_daily_strategy(
             ) < rotation_cfg.get("victim_min_holding_trading_days", 2):
                 continue
             current_return = actual_return_by_stock.get(stock_id)
-            if current_return is None or current_return > max_return:
+            victim_max_return = default_max_return
+            if _position_funding_bucket(lots) == FUNDING_BUCKET_OPPORTUNITY:
+                victim_max_return = rotation_cfg.get(
+                    "opportunity_victim_max_return_pct", default_max_return
+                )
+            if current_return is None or current_return > victim_max_return:
                 continue
             candidates.append((current_return, lots[0].entry_execution_date, stock_id))
         if not candidates:
@@ -2647,6 +2838,7 @@ def _run_v1_dual_engine_daily_strategy(
 
     for sig in continuation_candidates:
         stock_id = sig.row.stock_id
+        funding_bucket: Optional[str] = None
         if continuation_bucket_used + starter_capital > params["continuation_bucket_cap"] + _EPS:
             if _rotation_candidate_allowed(sig):
                 victim_stock_id = _rotation_victim(sig)
@@ -2657,18 +2849,42 @@ def _run_v1_dual_engine_daily_strategy(
                         row=victim_evidence,
                     )
                     continuation_skip_reason_by_stock[victim_stock_id] = "ROTATION"
-                    continuation_bucket_used -= sum(
-                        lot.allocation for lot in lots_by_stock.get(victim_stock_id, [])
-                    )
+                    victim_cost = sum(lot.allocation for lot in lots_by_stock.get(victim_stock_id, []))
+                    if _position_funding_bucket(lots_by_stock.get(victim_stock_id, [])) == FUNDING_BUCKET_OPPORTUNITY:
+                        opportunity_bucket_used -= victim_cost
+                    else:
+                        continuation_bucket_used -= victim_cost
+                    # The sell and replacement BUY are both scheduled for the
+                    # next execution day; the order executor processes SELLs
+                    # first, so the released cash is available to the replacement.
+                    opportunity_cash_remaining += victim_cost
                     projected_stocks.discard(victim_stock_id)
             if continuation_bucket_used + starter_capital > params["continuation_bucket_cap"] + _EPS:
-                skipped_capacity[stock_id] = sig
-                continuation_skip_reason_by_stock[stock_id] = "CAPACITY"
-                continue
+                # Core Continuation 滿載後，只有通過與 rotation 相同的 point-in-time
+                # 強勢候選門檻，才可使用獨立 Opportunity 資金池；不會把 Pullback
+                # 預算挪過來，也不會靠股票代號/日期例外。
+                if (
+                    _rotation_candidate_allowed(sig)
+                    and opportunity_bucket_used + starter_capital <= opportunity_capacity + _EPS
+                    and starter_capital <= opportunity_cash_remaining + _EPS
+                ):
+                    funding_bucket = FUNDING_BUCKET_OPPORTUNITY
+                    opportunity_bucket_used += starter_capital
+                    opportunity_cash_remaining -= starter_capital
+                else:
+                    skipped_capacity[stock_id] = sig
+                    continuation_skip_reason_by_stock[stock_id] = "CAPACITY"
+                    continue
+            else:
+                funding_bucket = FUNDING_BUCKET_CONTINUATION
+        else:
+            funding_bucket = FUNDING_BUCKET_CONTINUATION
         accepted_new[stock_id] = sig
+        new_funding_bucket_by_stock[stock_id] = funding_bucket
         continuation_skip_reason_by_stock[stock_id] = "SELECTED"
         projected_stocks.add(stock_id)
-        continuation_bucket_used += starter_capital
+        if funding_bucket == FUNDING_BUCKET_CONTINUATION:
+            continuation_bucket_used += starter_capital
 
     for sig, _prev_row in pullback_candidates:
         stock_id = sig.row.stock_id
@@ -2727,6 +2943,7 @@ def _run_v1_dual_engine_daily_strategy(
             "first_seen_date": evidence.first_seen_date.isoformat(),
             "continuation_phase": continuation_phase_by_stock.get(stock_id),
             "continuation_evidence": evidence.continuation_evidence,
+            "funding_bucket": _position_funding_bucket(lots_by_stock.get(stock_id, [])),
         }
         db.add(
             ShadowStrategyOrder(
@@ -2787,6 +3004,11 @@ def _run_v1_dual_engine_daily_strategy(
         evidence = sig.row
         is_continuation = sig.entry_type in _CONTINUATION_ENTRY_TYPES
         planned_amount = starter_capital if is_continuation else pullback_capital
+        funding_bucket = (
+            new_funding_bucket_by_stock.get(stock_id)
+            if is_continuation
+            else FUNDING_BUCKET_PULLBACK
+        )
         snapshot = {
             "day_index": evidence.day_index, "hit_count_so_far": evidence.hit_count_so_far,
             "momentum_score": evidence.momentum_score, "p4_decision": evidence.p4_decision,
@@ -2796,6 +3018,7 @@ def _run_v1_dual_engine_daily_strategy(
             "first_seen_date": evidence.first_seen_date.isoformat(),
             "continuation_phase": continuation_phase_by_stock.get(stock_id, "D1_STARTER"),
             "continuation_evidence": evidence.continuation_evidence,
+            "funding_bucket": funding_bucket,
         }
         db.add(
             ShadowStrategyOrder(
@@ -3023,6 +3246,91 @@ def run_daily_trading_strategy(
     accepted: Dict[str, EntrySignal] = {}
     skipped_capacity: Dict[str, Tuple[EntrySignal, str]] = {}
     skipped_not_profitable: Dict[str, EntrySignal] = {}
+    rotation_cfg = params.get("forward_rotation") or {}
+    rotation_source_by_stock: Dict[str, str] = {}
+    rotation_used = False
+
+    def _try_forward_high_momentum_rotation(sig: EntrySignal) -> Optional[str]:
+        """Replace one weak non-winner with a materially stronger candidate.
+
+        This is intentionally narrower than ordinary Forward Test entry:
+        high momentum is a reason to consider rotation, not a reason to churn
+        a profitable position.  The function only uses evidence available on
+        ``target_date`` and returns the victim stock id when a rotation is
+        accepted.
+        """
+        nonlocal rotation_used, projected_cash, projected_units
+        if rotation_used or not rotation_cfg.get("enabled"):
+            return None
+        if sig.row.momentum_score is None:
+            return None
+        if sig.row.momentum_score < rotation_cfg.get("candidate_momentum_min", 80.0):
+            return None
+        if sig.entry_score < rotation_cfg.get("candidate_entry_score_min", 7.0):
+            return None
+        if rotation_cfg.get("candidate_require_fresh_p3") and not sig.row.p3_selected_today:
+            return None
+        if sig.row.p4_decision == rotation_cfg.get("candidate_p4_excluded", "STOP_OBSERVING"):
+            return None
+        if rotation_cfg.get("candidate_exclude_official_exit") and sig.row.is_official_exit_signal_day:
+            return None
+
+        victim_candidates = []
+        for victim_stock_id, victim_position in positions.items():
+            if victim_stock_id == sig.row.stock_id or victim_stock_id in decided_exits:
+                continue
+            victim_return = actual_return_by_stock.get(victim_stock_id)
+            if victim_return is None:
+                continue
+            if victim_return > rotation_cfg.get("victim_max_return_pct", 0.0):
+                continue
+            if victim_return >= rotation_cfg.get("winner_protection_pct", 10.0):
+                continue
+
+            victim_evidence = evidence_by_stock.get(victim_stock_id)
+            if victim_evidence is None or victim_evidence.momentum_score is None:
+                continue
+            if sig.row.momentum_score < victim_evidence.momentum_score + rotation_cfg.get(
+                "candidate_momentum_delta", 5.0
+            ):
+                continue
+
+            lots = db.query(ShadowPositionLot).filter(
+                ShadowPositionLot.position_id == victim_position.id
+            ).all()
+            if not lots:
+                continue
+            first_lot = min(lots, key=lambda lot: (lot.entry_execution_date, lot.id))
+            if _trading_days_elapsed_since(
+                db, since=first_lot.entry_execution_date, as_of=target_date
+            ) < rotation_cfg.get("victim_min_holding_trading_days", 2):
+                continue
+            victim_candidates.append((victim_return, victim_evidence.momentum_score, victim_stock_id))
+
+        if not victim_candidates:
+            return None
+
+        # Prefer the weakest current position; stock_id is a deterministic tie-breaker.
+        _victim_return, _victim_momentum, victim_stock_id = min(
+            victim_candidates, key=lambda item: (item[0], item[1], item[2])
+        )
+        victim_position = positions[victim_stock_id]
+        victim_evidence = evidence_by_stock[victim_stock_id]
+        victim_cost = _position_cost(db, victim_position.id)
+        victim_units = _position_units(db, victim_position.id)
+        decided_exits[victim_stock_id] = ExitSignal(
+            reason=EXIT_REASON_FORWARD_HIGH_MOMENTUM_ROTATION,
+            row=victim_evidence,
+        )
+        rotation_source_by_stock[sig.row.stock_id] = victim_stock_id
+        rotation_used = True
+        projected_stocks.discard(victim_stock_id)
+        projected_units = max(0, projected_units - victim_units)
+        # The SELL order is executed before the replacement BUY on the same
+        # execution date, so the released cost is available to the candidate.
+        projected_cash += victim_cost
+        return victim_stock_id
+
     for sig in candidates:
         stock_id = sig.row.stock_id
         already_held = stock_id in projected_stocks
@@ -3044,7 +3352,8 @@ def run_daily_trading_strategy(
 
         skip_reason: Optional[str] = None
         if not already_held and len(projected_stocks) >= params["max_stocks"]:
-            skip_reason = SKIP_REASON_PORTFOLIO_FULL
+            if _try_forward_high_momentum_rotation(sig) is None:
+                skip_reason = SKIP_REASON_PORTFOLIO_FULL
         elif params.get("max_units_per_stock") is not None and existing_units >= params["max_units_per_stock"]:
             skip_reason = SKIP_REASON_PORTFOLIO_FULL
         elif params.get("max_total_units") is not None and projected_units >= params["max_total_units"]:
@@ -3115,7 +3424,13 @@ def run_daily_trading_strategy(
                 strategy_version=strategy_version, stock_id=stock_id, stock_name=evidence.stock_name,
                 action=action, signal_date=target_date,
                 scheduled_execution_date=next_weekday_guess(target_date),
-                status=ORDER_STATUS_PENDING, reason=f"entry_score={sig.entry_score:.2f}",
+                status=ORDER_STATUS_PENDING,
+                reason=(
+                    f"HIGH_MOMENTUM_ROTATION from {rotation_source_by_stock[stock_id]}；"
+                    f"entry_score={sig.entry_score:.2f}"
+                    if stock_id in rotation_source_by_stock
+                    else f"entry_score={sig.entry_score:.2f}"
+                ),
                 entry_pattern=sig.entry_type, units=1,
                 planned_amount=params["unit_capital"], signal_snapshot=snapshot,
             )
@@ -3124,7 +3439,12 @@ def run_daily_trading_strategy(
             ShadowStrategyDailyDecision(
                 strategy_version=strategy_version, trade_date=target_date,
                 stock_id=stock_id, stock_name=evidence.stock_name, action=action,
-                action_reason=f"{sig.entry_type} entry_score={sig.entry_score:.2f}",
+                action_reason=(
+                    f"HIGH_MOMENTUM_ROTATION from {rotation_source_by_stock[stock_id]}；"
+                    f"{sig.entry_type} entry_score={sig.entry_score:.2f}"
+                    if stock_id in rotation_source_by_stock
+                    else f"{sig.entry_type} entry_score={sig.entry_score:.2f}"
+                ),
                 entry_pattern=sig.entry_type, p3_selected_today=evidence.p3_selected_today,
                 hit_count=evidence.hit_count_so_far, momentum_score=evidence.momentum_score,
                 mark_to_market_return_pct=evidence.mark_to_market_return_pct, p4_decision=evidence.p4_decision,

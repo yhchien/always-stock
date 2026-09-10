@@ -1015,7 +1015,7 @@ def test_cycle_reset_is_noop_for_forward_v1(db):
 FV1 = sp.STRATEGY_VERSION_FORWARD_V1
 
 
-def _seed_setup_a_universe(db, *, stock_id="1101", stock_name="台泥"):
+def _seed_setup_a_universe(db, *, stock_id="1101", stock_name="台泥", momentum_score=75.0):
     """讓 `stock_id` 在 D2 觸發 EARLY_HEALTHY_PULLBACK（setup_a：day_index 2~3、
     hit_count_so_far==1、momentum 68~80、tracking return -2.5~0、p4=CAUTION）。跟既有
     `test_capacity_allocation_skips_lower_ranked_candidate_when_cash_insufficient` 用
@@ -1026,7 +1026,29 @@ def _seed_setup_a_universe(db, *, stock_id="1101", stock_name="台泥"):
     _seed_price(db, stock_id, D2, open_=98.0, close=98.0)  # tracking return=-2.0%
     _seed_hit(db, stock_id=stock_id, stock_name=stock_name, snapshot_date_=D0)
     obs = _seed_observation(db, stock_id=stock_id, stock_name=stock_name, first_seen_date=D0)
-    _seed_review(db, obs, D2, "CAUTION", momentum_score=75.0)
+    _seed_review(db, obs, D2, "CAUTION", momentum_score=momentum_score)
+
+
+def test_forward_v1_allows_momentum_above_old_ceiling(db):
+    """Forward Test 不再用舊的 80 分上限把已加速的候選直接排除。"""
+    _seed_setup_a_universe(db, momentum_score=90.0)
+    db.add(ShadowVirtualPortfolio(strategy_version=FV1, cash=600000.0))
+    db.commit()
+
+    sp.run_daily_trading_strategy(db, target_date=D2, strategy_version=FV1)
+    db.commit()
+
+    decision = (
+        db.query(ShadowStrategyDailyDecision)
+        .filter(
+            ShadowStrategyDailyDecision.strategy_version == FV1,
+            ShadowStrategyDailyDecision.trade_date == D2,
+            ShadowStrategyDailyDecision.stock_id == "1101",
+        )
+        .first()
+    )
+    assert decision is not None
+    assert decision.action == sp.ACTION_BUY
 
 
 def test_forward_v1_blocks_add_when_position_not_profitable(db):
