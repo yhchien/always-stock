@@ -265,10 +265,11 @@ STRATEGY_VERSION_FORWARD_V1 = "FORWARD_V1_202609"
 DUAL_ENGINE_PARAMS: Dict[str, Any] = {
     "initial_capital": 600000.0,
     "unit_capital": 100000.0,
-    # PART 14：拿掉全域 5 檔上限，改由兩個資金桶各自的容量限制風險。9 只是
-    # 「6×5萬 Starter + 3×10萬 Pullback」的理論最大值，純資訊性欄位（給 API 顯示用），
-    # orchestrator 不會拿它做任何 `len(...) >= max_stocks` 的硬性檢查。
-    "max_stocks": 9,
+    # PART 14：拿掉全域 5 檔上限，改由兩個資金桶各自的容量限制風險。以目前
+    # 凍結配置，Continuation 是 300,000 / 100,000 = 3 檔，Pullback 是
+    # 100,000 / 100,000 = 1 檔，所以 API 的資訊性上限是 4 檔；orchestrator
+    # 仍不拿它做任何 `len(...) >= max_stocks` 的硬性檢查。
+    "max_stocks": 4,
     "continuation_bucket_cap": 300000.0,
     # Validated 2026-09-10 report-profile allocation: half the account is the
     # aggressive continuation sleeve, one additional 100k slot remains for a
