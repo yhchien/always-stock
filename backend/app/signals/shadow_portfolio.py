@@ -534,6 +534,7 @@ ENTRY_TYPE_CONTINUATION_FINAL_CONFIRM = "CONTINUATION_FINAL_CONFIRM"
 ENTRY_TYPE_CONTINUATION_EARLY_REACCEL = "CONTINUATION_EARLY_REACCEL"
 ENTRY_TYPE_CONTINUATION_BREAKOUT_SURGE = "CONTINUATION_BREAKOUT_SURGE"
 ENTRY_TYPE_CONTINUATION_BREAKOUT_CONFIRMED = "CONTINUATION_BREAKOUT_CONFIRMED"
+ENTRY_TYPE_CONTINUATION_SUSTAINED_BREAKOUT = "CONTINUATION_SUSTAINED_BREAKOUT"
 ENTRY_TYPE_CONTINUATION_PULLBACK_RIDE = "CONTINUATION_PULLBACK_RIDE"
 ENTRY_TYPE_PULLBACK_RECOVERY = "PULLBACK_RECOVERY_ENTRY"
 
@@ -545,6 +546,7 @@ _CONTINUATION_ENTRY_TYPES = frozenset({
     ENTRY_TYPE_CONTINUATION_EARLY_REACCEL,
     ENTRY_TYPE_CONTINUATION_BREAKOUT_SURGE,
     ENTRY_TYPE_CONTINUATION_BREAKOUT_CONFIRMED,
+    ENTRY_TYPE_CONTINUATION_SUSTAINED_BREAKOUT,
     ENTRY_TYPE_CONTINUATION_PULLBACK_RIDE,
 })
 _PULLBACK_ENTRY_TYPES = frozenset({ENTRY_TYPE_PULLBACK_RECOVERY})
@@ -805,6 +807,7 @@ _REPORT_PROFILE_PRIORITY = {
     "REPORT_EARLY_REACCEL": 0,
     "REPORT_BREAKOUT_SURGE": 1,
     "REPORT_BREAKOUT_CONFIRMED": 1,
+    "REPORT_SUSTAINED_BREAKOUT": 1,
     "REPORT_PULLBACK_RIDE": 2,
 }
 
@@ -812,6 +815,7 @@ _REPORT_PROFILE_ENTRY_TYPES = {
     "REPORT_EARLY_REACCEL": "CONTINUATION_EARLY_REACCEL",
     "REPORT_BREAKOUT_SURGE": "CONTINUATION_BREAKOUT_SURGE",
     "REPORT_BREAKOUT_CONFIRMED": "CONTINUATION_BREAKOUT_CONFIRMED",
+    "REPORT_SUSTAINED_BREAKOUT": "CONTINUATION_SUSTAINED_BREAKOUT",
     "REPORT_PULLBACK_RIDE": "CONTINUATION_PULLBACK_RIDE",
 }
 _REPORT_PROFILE_ENTRY_TO_PROFILE = {
@@ -1049,6 +1053,8 @@ def _report_profile(evidence: Optional[Dict[str, Any]]) -> Optional[str]:
         rsup = float(f.get("rs_rank_improvement_5d") or 0)
         rsi60 = float(f.get("return_percentile_60d") or 0)
         dh = float(f.get("distance_to_high_20d") or 0)
+        distance_to_ma20 = float(f.get("distance_to_ma20") or 0)
+        trend_efficiency = float(f.get("trend_efficiency_20d") or 0)
     except (TypeError, ValueError):
         return None
 
@@ -1061,6 +1067,9 @@ def _report_profile(evidence: Optional[Dict[str, Any]]) -> Optional[str]:
     decision = str(f.get("decision") or "").upper()
     leader_supported = f.get("leader_supports_theme") is True
     is_leader = "LEADER" in report_type and "LAGGARD" not in report_type
+    role_family = str(
+        ((evidence or {}).get("families") or {}).get("role", {}).get("value") or ""
+    ).upper()
 
     if theme != "HIGH" or not is_leader or decision not in {"RECOMMEND", "BUY"}:
         return None
@@ -1083,6 +1092,28 @@ def _report_profile(evidence: Optional[Dict[str, Any]]) -> Optional[str]:
     )
     if early_reaccel:
         return "REPORT_EARLY_REACCEL"
+
+    # High-momentum continuation: only an independent leader with a sustained
+    # trend may use the separate Opportunity sleeve.  Rank-jump, MA20-distance
+    # and trend-efficiency gates reject late vertical chases while keeping the
+    # core Continuation and Pullback rules unchanged.
+    sustained_breakout = (
+        technical == "breakout"
+        and quality == "extended_chase"
+        and mom > 84.0
+        and role_family == "INDEPENDENT_LEADER"
+        and r20 >= 30.0
+        and rs >= 95.0
+        and rsi >= 95.0
+        and 0.0 <= rsup <= 20.0
+        and distance_to_ma20 <= 25.0
+        and trend_efficiency >= 0.35
+        and institution == "accelerating"
+        and sector in {"inflow", "cooling"}
+        and leader_supported
+    )
+    if sustained_breakout:
+        return "REPORT_SUSTAINED_BREAKOUT"
 
     # Immediate breakout/chase: deliberately narrower than "high momentum".
     # It requires six-dimensional agreement so a single high score cannot
@@ -2839,6 +2870,25 @@ def _run_v1_dual_engine_daily_strategy(
     for sig in continuation_candidates:
         stock_id = sig.row.stock_id
         funding_bucket: Optional[str] = None
+        # Sustained high-momentum entries are isolated from the 300k
+        # Continuation core.  They can use only the separate Opportunity pool
+        # and never trigger a core-position rotation.
+        if sig.entry_type == ENTRY_TYPE_CONTINUATION_SUSTAINED_BREAKOUT:
+            if (
+                opportunity_bucket_used + starter_capital <= opportunity_capacity + _EPS
+                and starter_capital <= opportunity_cash_remaining + _EPS
+            ):
+                funding_bucket = FUNDING_BUCKET_OPPORTUNITY
+                opportunity_bucket_used += starter_capital
+                opportunity_cash_remaining -= starter_capital
+                accepted_new[stock_id] = sig
+                new_funding_bucket_by_stock[stock_id] = funding_bucket
+                continuation_skip_reason_by_stock[stock_id] = "SELECTED"
+                projected_stocks.add(stock_id)
+            else:
+                skipped_capacity[stock_id] = sig
+                continuation_skip_reason_by_stock[stock_id] = "CAPACITY"
+            continue
         if continuation_bucket_used + starter_capital > params["continuation_bucket_cap"] + _EPS:
             if _rotation_candidate_allowed(sig):
                 victim_stock_id = _rotation_victim(sig)
