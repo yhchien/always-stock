@@ -531,6 +531,7 @@ ENTRY_TYPE_CONTINUATION_STARTER = "CONTINUATION_STARTER"
 ENTRY_TYPE_CONTINUATION_CONFIRM_SCALE_IN = "CONTINUATION_CONFIRMATION_SCALE_IN"
 ENTRY_TYPE_CONTINUATION_EARLY_CONFIRM = "CONTINUATION_EARLY_CONFIRM"
 ENTRY_TYPE_CONTINUATION_FINAL_CONFIRM = "CONTINUATION_FINAL_CONFIRM"
+ENTRY_TYPE_CONTINUATION_EARLY_HIGH_MOMENTUM = "CONTINUATION_EARLY_HIGH_MOMENTUM"
 ENTRY_TYPE_CONTINUATION_EARLY_REACCEL = "CONTINUATION_EARLY_REACCEL"
 ENTRY_TYPE_CONTINUATION_BREAKOUT_SURGE = "CONTINUATION_BREAKOUT_SURGE"
 ENTRY_TYPE_CONTINUATION_BREAKOUT_CONFIRMED = "CONTINUATION_BREAKOUT_CONFIRMED"
@@ -543,6 +544,7 @@ ENTRY_TYPE_PULLBACK_RECOVERY = "PULLBACK_RECOVERY_ENTRY"
 # 不會被誤判成獨立的初始進場型態，但也不能拿它來判斷 engine 本身。
 _CONTINUATION_ENTRY_TYPES = frozenset({
     ENTRY_TYPE_CONTINUATION_STARTER,
+    ENTRY_TYPE_CONTINUATION_EARLY_HIGH_MOMENTUM,
     ENTRY_TYPE_CONTINUATION_EARLY_REACCEL,
     ENTRY_TYPE_CONTINUATION_BREAKOUT_SURGE,
     ENTRY_TYPE_CONTINUATION_BREAKOUT_CONFIRMED,
@@ -804,6 +806,7 @@ _SNAPSHOT_WATCHLIST_CACHE: Dict[date, Dict[str, Optional[float]]] = {}
 _SNAPSHOT_WATCHLIST_PAYLOAD_CACHE: Dict[date, Dict[str, dict]] = {}
 
 _REPORT_PROFILE_PRIORITY = {
+    "REPORT_EARLY_HIGH_MOMENTUM": 0,
     "REPORT_EARLY_REACCEL": 0,
     "REPORT_BREAKOUT_SURGE": 1,
     "REPORT_BREAKOUT_CONFIRMED": 1,
@@ -812,6 +815,7 @@ _REPORT_PROFILE_PRIORITY = {
 }
 
 _REPORT_PROFILE_ENTRY_TYPES = {
+    "REPORT_EARLY_HIGH_MOMENTUM": "CONTINUATION_EARLY_HIGH_MOMENTUM",
     "REPORT_EARLY_REACCEL": "CONTINUATION_EARLY_REACCEL",
     "REPORT_BREAKOUT_SURGE": "CONTINUATION_BREAKOUT_SURGE",
     "REPORT_BREAKOUT_CONFIRMED": "CONTINUATION_BREAKOUT_CONFIRMED",
@@ -941,6 +945,8 @@ def _continuation_evidence_from_payload(
         "return_60d": metrics.get("return_60d", momentum_payload.get("return_60d")),
         "momentum_score": metrics.get("momentum_score", momentum_payload.get("momentum_score")),
         "return_percentile_60d": momentum_payload.get("return_percentile_60d"),
+        "score_confidence": metrics.get("score_confidence", momentum_payload.get("score_confidence")),
+        "feature_coverage": metrics.get("feature_coverage", momentum_payload.get("feature_coverage")),
         "rs_market_percentile_20d": metrics.get(
             "rs_market_percentile_20d", momentum_payload.get("rs_market_percentile_20d")
         ),
@@ -1055,6 +1061,7 @@ def _report_profile(evidence: Optional[Dict[str, Any]]) -> Optional[str]:
         dh = float(f.get("distance_to_high_20d") or 0)
         distance_to_ma20 = float(f.get("distance_to_ma20") or 0)
         trend_efficiency = float(f.get("trend_efficiency_20d") or 0)
+        feature_coverage = float(f.get("feature_coverage") or 0)
     except (TypeError, ValueError):
         return None
 
@@ -1066,6 +1073,7 @@ def _report_profile(evidence: Optional[Dict[str, Any]]) -> Optional[str]:
     institution = str(f.get("institution_flow_momentum") or "").lower()
     decision = str(f.get("decision") or "").upper()
     leader_supported = f.get("leader_supports_theme") is True
+    score_confidence = str(f.get("score_confidence") or "").upper()
     is_leader = "LEADER" in report_type and "LAGGARD" not in report_type
     role_family = str(
         ((evidence or {}).get("families") or {}).get("role", {}).get("value") or ""
@@ -1092,6 +1100,26 @@ def _report_profile(evidence: Optional[Dict[str, Any]]) -> Optional[str]:
     )
     if early_reaccel:
         return "REPORT_EARLY_REACCEL"
+
+    # Early high-momentum setup: catch leaders whose three forward-looking
+    # report dimensions are already strong, while the 20-day return still
+    # has not exceeded 10%.  This is intentionally a core Continuation entry,
+    # not an Opportunity/chase entry; it is designed for cases like 1560
+    # before the price move has fully appeared in the trailing return.
+    early_high_momentum = (
+        technical in {"early_turn", "breakout"}
+        and mom >= 85.0
+        and rs >= 90.0
+        and rsi >= 90.0
+        and r20 <= 10.0
+        and leader_supported
+        and institution == "accelerating"
+        and sector in {"inflow", "cooling"}
+        and score_confidence == "HIGH"
+        and feature_coverage >= 0.9
+    )
+    if early_high_momentum:
+        return "REPORT_EARLY_HIGH_MOMENTUM"
 
     # High-momentum continuation: only an independent leader with a sustained
     # trend may use the separate Opportunity sleeve.  Rank-jump, MA20-distance
@@ -2368,9 +2396,9 @@ def _run_v1_dual_engine_daily_strategy(
 
     以下是規格書沒有逐字規定、由本次實作明確選定並在此註明的實作假設（PART 44/59
     的精神：這些是邏輯/優先序的必要選擇，不是為了衝高報酬而調整的參數）：
-    - Continuation STARTER 狀態的出場優先序：Fast Fail（-3%）> Confirmation/
+    - Continuation STARTER 狀態的出場優先序：Fast Fail（-5%）> Confirmation/
       Not-Confirmed（兩者互斥，用同一個 if/else 決定）。CONFIRMED 狀態的出場優先序：
-      Confirmed Hard Stop（-6%）> P4_STOP > Trailing——真實停損永遠最先短路。
+      Confirmed Hard Stop（-8%）> P4_STOP > Trailing——真實停損永遠最先短路。
       Pullback 的出場優先序：Real Stop（-8%）> P4_STOP > Recovery Failure。
     - PART 19「D3 只能處理已存在 Starter」的「D3」，本次實作解讀為「Starter 執行後
       第一次被評估的那一天」，不是硬性要求 `evidence.day_index == 3`——這是為了正確

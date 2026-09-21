@@ -27,7 +27,7 @@ const STRATEGY_META: Record<
     badge: "ACTIVE",
     description:
       "2026-09-07 起的新週期：把資金分成 Continuation、Pullback、Opportunity 三個桶，" +
-      "用報告證據找強勢延續股，也保留拉回回穩與換股機會。",
+      "用報告證據找強勢延續股（含早期高動能），也保留拉回回穩與換股機會。",
   },
   FORWARD_V1_202609: {
     label: "FORWARD_V1_202609",
@@ -70,10 +70,13 @@ const EXIT_REASON_LABELS: Record<string, string> = {
   FORWARD_HIGH_MOMENTUM_ROTATION: "Forward 高動能換股",
   CYCLE_RESET: "循環期滿強制平倉",
   // v1_frozen Dual-Engine（2026-09-07 起）專屬出場原因
-  CONTINUATION_FAST_STOP: "Continuation 快速停損 -5%",
-  CONTINUATION_NO_FOLLOW_THROUGH: "Continuation 未證明延續（Prove-it 失敗）",
+  CONTINUATION_STARTER_FAST_FAIL: "Continuation Starter 快速停損 -5%",
+  CONTINUATION_NOT_CONFIRMED: "Continuation 未證明延續（Prove-it 失敗）",
+  CONTINUATION_CONFIRMED_STOP: "Continuation 確認後停損 -8%",
   CONTINUATION_TRAILING_EXIT: "Continuation 從高點回吐出場",
+  CONTINUATION_ROTATION: "Continuation 輪動換股",
   PULLBACK_REAL_STOP: "Pullback 真實停損 -8%",
+  PULLBACK_RECOVERY_FAILED: "Pullback 回穩失敗",
   PERIOD_END_SETTLEMENT: "回測期末結算",
 }
 
@@ -439,22 +442,51 @@ export default function ShadowPortfolioPage() {
 
           {!strategyHelpCollapsed && (
             <div className="grid gap-3 border-t border-slate-800 p-3 text-xs leading-5 text-slate-400 lg:grid-cols-2">
-              <div className="rounded-lg border border-sky-900/50 bg-sky-950/20 p-3">
+              <div className="rounded-lg border border-sky-900/50 bg-sky-950/20 p-3 lg:col-span-2">
                 <p className="font-semibold text-sky-200">v1（Dual-Engine，2026-09-07 起）</p>
-                <p className="mt-2 font-medium text-slate-300">這套策略在做什麼？</p>
-                <p className="mt-1">它把 600,000 元拆成三個用途不同的資金桶，不是看到動能分數高就直接買：</p>
+                <p className="mt-2 font-medium text-slate-300">核心概念與資金桶</p>
+                <p className="mt-1">它不是看到動能分數高就直接買，而是先判斷「哪一種證據組合成立」，再把交易放進對應資金桶。</p>
                 <ul className="mt-1 list-disc space-y-1 pl-4">
-                  <li><span className="text-slate-300">Continuation 核心桶：</span>300,000 元，最多 3 檔，每檔 100,000 元，找報告判定為 HIGH 主題、領導股，且技術／相對強度／法人流向等證據至少有足夠正向支持的「正在延續」股票。</li>
-                  <li><span className="text-slate-300">Pullback 核心桶：</span>100,000 元，最多 1 檔，找先回落、但價格與動能重新回穩的股票；還在下跌或尚未確認時只觀察，不急著買。</li>
-                  <li><span className="text-slate-300">Opportunity 機會桶：</span>最多 300,000 元、最多 3 檔。Continuation 核心桶滿了後，若出現同樣高品質但更強的候選，才用可用現金進場或替換較弱的機會部位；不會寫死特定股票。</li>
+                  <li><span className="text-slate-300">Continuation：</span>300,000 元，找 HIGH 題材、領導股與強勢延續；首次買進 100,000 元。</li>
+                  <li><span className="text-slate-300">Pullback：</span>100,000 元，先觀察拉回，等價格與動能回穩後才買。</li>
+                  <li><span className="text-slate-300">Opportunity：</span>最多 300,000 元，是核心桶滿載後的額外機會池，不是另一套選股邏輯。</li>
+                  <li>Confirmation 目前只確認持倉狀態，不另外投入第二筆資金；每 35 個交易日結算並重設 600,000 元本金。</li>
                 </ul>
-                <p className="mt-2 font-medium text-slate-300">每天如何決策？</p>
-                <ol className="mt-1 list-decimal space-y-1 pl-4">
-                  <li>收盤後讀取當天報告與魚尾追蹤資料，建立候選排序。</li>
-                  <li>符合報告 profile 的強勢延續股可直接進場；一般 Starter 則要等下一個評估日通過 prove-it 才確認，否則退出。這一版的確認是狀態確認，目前不另外投入第二筆資金。</li>
-                  <li>持倉先檢查停損與失效；資金桶已滿時，只接受更強、且符合即時證據條件的換股。</li>
-                </ol>
-                <p className="mt-2 text-slate-500">風控：Starter 快速失敗約 -5%；確認後約 -8% 停損；profile 部位最多 -12%，獲利達 +10% 後從最高收盤回吐 12% 出場。Pullback 以實際持倉 -8% 停損。</p>
+
+                <p className="mt-3 font-medium text-slate-300">Continuation 的七項證據</p>
+                <p className="mt-1">Role、Freshness、Watch quality、Relative strength、Institutional flow、Price structure、Momentum。可用證據至少 2 項，正向證據至少達可用數的 3 項門檻；LAGGARD、P4_STOP、結構損壞、流動性失敗或資料可疑會排除。</p>
+
+                <p className="mt-3 font-medium text-slate-300">新的 Early High Momentum 參數</p>
+                <ul className="mt-1 list-disc space-y-1 pl-4">
+                  <li>動能 ≥85；市場 RS ≥90；產業 RS ≥90；20 日報酬 ≤10%。</li>
+                  <li>技術狀態為 early_turn 或 breakout，法人動能為 accelerating，產業輪動為 inflow 或 cooling。</li>
+                  <li>題材 HIGH、角色 LEADER 且 leader 支持題材；資料信心 HIGH、特徵覆蓋率 ≥90%。</li>
+                  <li>啟動後歸入 Continuation 核心桶，直接建立 100,000 元 Starter，不進 Opportunity 追價桶。</li>
+                </ul>
+
+                <p className="mt-3 font-medium text-slate-300">其他 Continuation 買進 profile</p>
+                <ul className="mt-1 list-disc space-y-1 pl-4">
+                  <li><span className="text-slate-300">Early Reaccel：</span>動能 74–84、early_turn、RS 與排名改善支持重新加速。</li>
+                  <li><span className="text-slate-300">Breakout Surge / Confirmed：</span>突破、短期報酬、產業／市場 RS 與法人流向同步確認。</li>
+                  <li><span className="text-slate-300">Sustained Breakout：</span>獨立領導股已形成持續突破，且趨勢效率、均線距離與排名改善仍健康。</li>
+                  <li><span className="text-slate-300">Pullback Ride：</span>強勢股整理後仍維持高相對強度與可接受的高點距離。</li>
+                </ul>
+
+                <p className="mt-3 font-medium text-slate-300">Pullback Recovery 何時買？</p>
+                <p className="mt-1">先只記錄 WATCH：魚尾 Day 2–7、episode 報酬 -15% 至 -4%、動能 ≥55 且 P4 未停止。只有在相對低點回升 ≥3 個百分點、今日收盤高於前日、動能 ≥60 且沒有惡化超過 2 分，並且最近 4 個交易日內有有效觀察，才用 Pullback 桶買進。</p>
+
+                <p className="mt-3 font-medium text-slate-300">不買的原因</p>
+                <p className="mt-1">證據不足、沒有任何 profile、尚未完成 Pullback 回穩、不是新的魚尾 Day 1、P4_STOP 或硬排除、ETF／不在魚尾 universe、資金桶或現金不足、已有持股、資料品質可疑，都會記錄為不買或只觀察。Opportunity 滿載時還要通過前 10 名、至少 6 項證據、動能 70–84、RS ≥90 等即時輪動條件。</p>
+
+                <p className="mt-3 font-medium text-slate-300">賣出條件與優先序</p>
+                <ul className="mt-1 list-disc space-y-1 pl-4">
+                  <li>一般 Starter：第一個完整確認日未通過延續確認就出場；實際持倉 ≤ -5% 快速停損。</li>
+                  <li>Profile 直接進場：實際持倉 ≤ -12% 停損；獲利達 +10% 後，從最高收盤回吐 ≥6% 出場。</li>
+                  <li>一般確認後 Continuation：實際持倉 ≤ -8% 停損，接著才看其他失效／追蹤條件。</li>
+                  <li>Pullback：實際持倉 ≤ -8%、P4_STOP、官方週期結束，或回穩後 4 個交易日內跌破觀察低點。</li>
+                  <li>公司行動或價格資料可疑時，當天暫停判斷，避免誤買誤賣。</li>
+                </ul>
+                <p className="mt-2 text-slate-500">所有訊號都在收盤後產生；BUY/ADD 使用下一交易日最高價模擬成交，SELL 使用下一交易日最低價模擬成交。線上「下一交易日動作」是待執行訊號，不是已成交。</p>
               </div>
               <div className="rounded-lg border border-amber-900/50 bg-amber-950/20 p-3">
                 <p className="font-semibold text-amber-200">FORWARD_V1_202609（Forward Test）</p>

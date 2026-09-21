@@ -151,6 +151,73 @@ WATCH_CFG = sp.DUAL_ENGINE_PARAMS["pullback_watch"]
 RECOVERY_CFG = sp.DUAL_ENGINE_PARAMS["pullback_recovery"]
 
 
+def test_report_profile_catches_early_high_momentum_before_20d_move():
+    evidence = {
+        "families": {"role": {"value": "INDEPENDENT_LEADER"}},
+        "report_features": {
+            "theme_fit": "HIGH",
+            "report_type": "LEADER",
+            "decision": "RECOMMEND",
+            "technical_status": "breakout",
+            "leader_supports_theme": True,
+            "momentum_score": 91.2,
+            "rs_market_percentile_20d": 91.6,
+            "rs_industry_percentile_20d": 90.0,
+            "return_20d": 8.97,
+            "institution_flow_momentum": "accelerating",
+            "sector_rotation_status": "cooling",
+            "score_confidence": "HIGH",
+            "feature_coverage": 1.0,
+        },
+    }
+    assert sp._report_profile(evidence) == "REPORT_EARLY_HIGH_MOMENTUM"
+    assert sp._profile_entry_type(evidence, enabled=True) == (
+        sp.ENTRY_TYPE_CONTINUATION_EARLY_HIGH_MOMENTUM
+    )
+
+
+def test_report_profile_does_not_catch_after_20d_move_exceeds_ten_percent():
+    evidence = {
+        "report_features": {
+            "theme_fit": "HIGH",
+            "report_type": "LEADER",
+            "decision": "RECOMMEND",
+            "technical_status": "breakout",
+            "leader_supports_theme": True,
+            "momentum_score": 91.2,
+            "rs_market_percentile_20d": 91.6,
+            "rs_industry_percentile_20d": 90.0,
+            "return_20d": 10.01,
+            "institution_flow_momentum": "accelerating",
+            "sector_rotation_status": "cooling",
+            "score_confidence": "HIGH",
+            "feature_coverage": 1.0,
+        },
+    }
+    assert sp._report_profile(evidence) is None
+
+
+def test_report_profile_requires_strong_market_and_industry_confirmation():
+    evidence = {
+        "report_features": {
+            "theme_fit": "HIGH",
+            "report_type": "LEADER",
+            "decision": "RECOMMEND",
+            "technical_status": "breakout",
+            "leader_supports_theme": True,
+            "momentum_score": 91.2,
+            "rs_market_percentile_20d": 89.9,
+            "rs_industry_percentile_20d": 90.0,
+            "return_20d": 8.97,
+            "institution_flow_momentum": "accelerating",
+            "sector_rotation_status": "cooling",
+            "score_confidence": "HIGH",
+            "feature_coverage": 1.0,
+        },
+    }
+    assert sp._report_profile(evidence) is None
+
+
 # ---------------------------------------------------------------------------
 # PART 48 — Episode Price（pure function）
 # ---------------------------------------------------------------------------
