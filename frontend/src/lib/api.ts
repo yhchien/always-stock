@@ -2705,7 +2705,9 @@ export type ShadowOrderStatus = "PENDING" | "EXECUTED" | "CANCELLED" | "FAILED"
 export interface ShadowPosition {
   stock_id: string
   stock_name: string
+  /** Fish-tail cohort date; not the date on which the first lot was bought. */
   first_seen_date: string
+  first_entry_execution_date: string
   units: number
   total_shares: number
   average_entry_price: number

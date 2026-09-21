@@ -48,7 +48,10 @@ def _resolve_params(strategy_version: str) -> dict:
 class ShadowPositionResponse(BaseModel):
     stock_id: str
     stock_name: str
+    # `first_seen_date` is the fish-tail cohort date used by the strategy.  It
+    # is not an execution date and must not be shown as the first buy date.
     first_seen_date: date
+    first_entry_execution_date: date
     units: int
     total_shares: float
     average_entry_price: float
@@ -160,6 +163,13 @@ def get_shadow_portfolio(
     positions: List[ShadowPositionResponse] = []
     for pos in positions_rows:
         lots = db.query(ShadowPositionLot).filter(ShadowPositionLot.position_id == pos.id).all()
+        # A healthy position always has at least one lot.  Keep the endpoint
+        # defensive for legacy/orphaned rows so a malformed position cannot
+        # take down the entire portfolio page.
+        first_entry_execution_date = min(
+            (lot.entry_execution_date for lot in lots),
+            default=pos.first_seen_date,
+        )
         total_shares = sum(lot.shares for lot in lots)
         total_cost = sum(lot.allocation for lot in lots)
         average_entry_price = total_cost / total_shares if total_shares else 0.0
@@ -176,6 +186,7 @@ def get_shadow_portfolio(
                 stock_id=pos.stock_id,
                 stock_name=pos.stock_name,
                 first_seen_date=pos.first_seen_date,
+                first_entry_execution_date=first_entry_execution_date,
                 units=len(lots),
                 total_shares=total_shares,
                 average_entry_price=average_entry_price,

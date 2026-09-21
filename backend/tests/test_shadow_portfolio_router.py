@@ -18,10 +18,12 @@ from app.database import get_db
 from app.main import app
 from app.models import (
     Base,
+    ShadowPositionLot,
     ShadowCompletedTrade,
     ShadowPortfolioDailySnapshot,
     ShadowStrategyOrder,
     ShadowVirtualPortfolio,
+    ShadowVirtualPosition,
 )
 from app.signals import shadow_portfolio as sp
 
@@ -60,6 +62,48 @@ def test_shadow_portfolio_endpoint_returns_v1_caps_for_v1_frozen(api):
     assert body["max_total_units"] is None
     assert body["max_position_exposure_pct"] is None
     assert body["cycle_length_trading_days"] == 35
+
+
+def test_shadow_portfolio_position_exposes_first_actual_execution_date(api):
+    client, db = api
+    position = ShadowVirtualPosition(
+        strategy_version="v1_frozen",
+        stock_id="6112",
+        stock_name="邁達特",
+        # This is the fish-tail cohort date, not an execution date.
+        first_seen_date=date(2026, 9, 14),
+    )
+    db.add(position)
+    db.flush()
+    db.add_all(
+        [
+            ShadowPositionLot(
+                position_id=position.id,
+                entry_type="EARLY_HEALTHY_PULLBACK",
+                entry_signal_date=date(2026, 9, 15),
+                entry_execution_date=date(2026, 9, 16),
+                entry_price=50.9,
+                shares=100000.0 / 50.9,
+                allocation=100000.0,
+            ),
+            ShadowPositionLot(
+                position_id=position.id,
+                entry_type="PULLBACK_RECOVERY_ENTRY",
+                entry_signal_date=date(2026, 9, 16),
+                entry_execution_date=date(2026, 9, 17),
+                entry_price=49.5,
+                shares=100000.0 / 49.5,
+                allocation=100000.0,
+            ),
+        ]
+    )
+    db.commit()
+
+    res = client.get("/api/signals/shadow-portfolio", params={"strategy_version": "v1_frozen"})
+    assert res.status_code == 200
+    position_payload = res.json()["positions"][0]
+    assert position_payload["first_seen_date"] == "2026-09-14"
+    assert position_payload["first_entry_execution_date"] == "2026-09-16"
 
 
 def test_shadow_portfolio_endpoint_returns_forward_v1_caps_not_v1_hardcode(api):

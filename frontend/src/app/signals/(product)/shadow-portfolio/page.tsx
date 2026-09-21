@@ -591,7 +591,7 @@ export default function ShadowPortfolioPage() {
                       <span>現價 {pos.latest_close?.toFixed(2) ?? "—"}</span>
                       <span>未實現損益 {formatMoney(pos.unrealized_pnl)}</span>
                     </div>
-                    <p className="mt-2 text-[11px] text-slate-500">首次進場 {pos.first_seen_date}</p>
+                    <p className="mt-2 text-[11px] text-slate-500">首次買進 {pos.first_entry_execution_date}</p>
                   </article>
                 ))}
               </div>
