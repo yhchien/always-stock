@@ -23,15 +23,15 @@ const STRATEGY_META: Record<
   { label: string; badge: string; description: string }
 > = {
   v1_frozen: {
-    label: "v1（Dual-Engine）",
-    badge: "ACTIVE",
+    label: "v1（Dual-Engine／雙引擎）",
+    badge: "ACTIVE（啟用中）",
     description:
       "2026-09-07 起的新週期：把資金分成 Continuation、Pullback、Opportunity 三個桶，" +
       "用報告證據找強勢延續股（含早期高動能），也保留拉回回穩與換股機會。",
   },
   FORWARD_V1_202609: {
-    label: "FORWARD_V1_202609",
-    badge: "FORWARD TEST",
+    label: "FORWARD_V1_202609（前向測試）",
+    badge: "FORWARD TEST（測試中）",
     description:
       "2026-09-07 起正式 Forward Test：用較寬鬆的原始進場規則追蹤候選股，讓贏家續抱與加碼；" +
       "動能超過 80 仍可進場；不固定停利、不攤平，單檔成本最多占總權益 50%。",
@@ -57,27 +57,48 @@ function returnTone(value: number | null | undefined): string {
 }
 
 const ACTION_META: Record<ShadowOrderAction, { emoji: string; label: string; tone: string }> = {
-  BUY: { emoji: "🟢", label: "BUY", tone: "border-emerald-500/50 bg-emerald-500/10" },
-  ADD: { emoji: "🔵", label: "ADD", tone: "border-sky-500/50 bg-sky-500/10" },
-  SELL: { emoji: "🔴", label: "SELL", tone: "border-rose-500/50 bg-rose-500/10" },
+  BUY: { emoji: "🟢", label: "BUY（買進）", tone: "border-emerald-500/50 bg-emerald-500/10" },
+  ADD: { emoji: "🔵", label: "ADD（加碼）", tone: "border-sky-500/50 bg-sky-500/10" },
+  SELL: { emoji: "🔴", label: "SELL（賣出）", tone: "border-rose-500/50 bg-rose-500/10" },
 }
 
 const EXIT_REASON_LABELS: Record<string, string> = {
-  P4_STOP: "P4 判定失效",
-  OFFICIAL_EXIT: "追蹤期滿",
-  TAKE_PROFIT: "固定停利 +10%",
-  REAL_POSITION_STOP_LOSS: "真實停損 -8%",
-  FORWARD_HIGH_MOMENTUM_ROTATION: "Forward 高動能換股",
-  CYCLE_RESET: "循環期滿強制平倉",
+  P4_STOP: "P4_STOP（P4 停止觀察）",
+  OFFICIAL_EXIT: "OFFICIAL_EXIT（魚尾週期結束）",
+  TAKE_PROFIT: "TAKE_PROFIT（固定停利 +10%）",
+  REAL_POSITION_STOP_LOSS: "REAL_POSITION_STOP_LOSS（實際持倉停損 -8%）",
+  FORWARD_HIGH_MOMENTUM_ROTATION: "FORWARD_HIGH_MOMENTUM_ROTATION（前向測試高動能換股）",
+  CYCLE_RESET: "CYCLE_RESET（循環期滿強制平倉）",
   // v1_frozen Dual-Engine（2026-09-07 起）專屬出場原因
-  CONTINUATION_STARTER_FAST_FAIL: "Continuation Starter 快速停損 -5%",
-  CONTINUATION_NOT_CONFIRMED: "Continuation 未證明延續（Prove-it 失敗）",
-  CONTINUATION_CONFIRMED_STOP: "Continuation 確認後停損 -8%",
-  CONTINUATION_TRAILING_EXIT: "Continuation 從高點回吐出場",
-  CONTINUATION_ROTATION: "Continuation 輪動換股",
-  PULLBACK_REAL_STOP: "Pullback 真實停損 -8%",
-  PULLBACK_RECOVERY_FAILED: "Pullback 回穩失敗",
-  PERIOD_END_SETTLEMENT: "回測期末結算",
+  CONTINUATION_STARTER_FAST_FAIL: "CONTINUATION_STARTER_FAST_FAIL（延續 Starter 快速停損 -5%）",
+  CONTINUATION_NOT_CONFIRMED: "CONTINUATION_NOT_CONFIRMED（未證明延續）",
+  CONTINUATION_CONFIRMED_STOP: "CONTINUATION_CONFIRMED_STOP（確認後停損 -8%）",
+  CONTINUATION_TRAILING_EXIT: "CONTINUATION_TRAILING_EXIT（從高點回吐出場）",
+  CONTINUATION_ROTATION: "CONTINUATION_ROTATION（延續引擎輪動換股）",
+  PULLBACK_REAL_STOP: "PULLBACK_REAL_STOP（拉回部位實際停損 -8%）",
+  PULLBACK_RECOVERY_FAILED: "PULLBACK_RECOVERY_FAILED（拉回回穩失敗）",
+  PERIOD_END_SETTLEMENT: "PERIOD_END_SETTLEMENT（回測期末結算）",
+}
+
+const ENTRY_PATTERN_LABELS: Record<string, string> = {
+  CONTINUATION_STARTER: "CONTINUATION_STARTER（延續 Starter 首次進場）",
+  CONTINUATION_EARLY_HIGH_MOMENTUM: "CONTINUATION_EARLY_HIGH_MOMENTUM（早期高動能）",
+  CONTINUATION_EARLY_REACCEL: "CONTINUATION_EARLY_REACCEL（早期重新加速）",
+  CONTINUATION_BREAKOUT_SURGE: "CONTINUATION_BREAKOUT_SURGE（突破爆發）",
+  CONTINUATION_BREAKOUT_CONFIRMED: "CONTINUATION_BREAKOUT_CONFIRMED（突破確認）",
+  CONTINUATION_SUSTAINED_BREAKOUT: "CONTINUATION_SUSTAINED_BREAKOUT（持續突破）",
+  CONTINUATION_PULLBACK_RIDE: "CONTINUATION_PULLBACK_RIDE（強勢整理續抱）",
+  PULLBACK_RECOVERY_ENTRY: "PULLBACK_RECOVERY_ENTRY（拉回回穩進場）",
+}
+
+function formatEntryPattern(value: string | null | undefined): string {
+  if (!value) return "—"
+  return ENTRY_PATTERN_LABELS[value] ?? value
+}
+
+function formatActionReason(value: string | null | undefined): string {
+  if (!value) return "—"
+  return EXIT_REASON_LABELS[value] ?? ENTRY_PATTERN_LABELS[value] ?? value
 }
 
 function StatBox({ label, value, tone }: { label: string; value: string; tone?: string }) {
@@ -102,9 +123,9 @@ function ActionCard({ action }: { action: ShadowPendingAction }) {
         </span>
       </div>
       {action.entry_pattern && (
-        <p className="mt-1 text-xs text-slate-400">進場型態：{action.entry_pattern}</p>
+        <p className="mt-1 text-xs text-slate-400">進場型態：{formatEntryPattern(action.entry_pattern)}</p>
       )}
-      {action.reason && <p className="mt-1 text-xs leading-5 text-slate-400">原因：{action.reason}</p>}
+      {action.reason && <p className="mt-1 text-xs leading-5 text-slate-400">原因：{formatActionReason(action.reason)}</p>}
       <p className="mt-2 text-[11px] text-slate-500">
         訊號日 {action.signal_date} → 預計執行 {action.scheduled_execution_date}
       </p>
@@ -130,7 +151,7 @@ function TradeCard({ trade }: { trade: ShadowCompletedTrade }) {
         <span>損益 {formatMoney(trade.realized_pnl)} 元</span>
       </div>
       <p className="mt-2 text-[11px] text-slate-500">
-        進場型態 {trade.entry_type}・進場時動能 {trade.entry_momentum?.toFixed(1) ?? "—"}・
+        進場型態 {formatEntryPattern(trade.entry_type)}・進場時動能 {trade.entry_momentum?.toFixed(1) ?? "—"}・
         進場時報酬 {formatPct(trade.entry_mark_to_market_return)}
       </p>
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
@@ -201,7 +222,7 @@ function HistoryDayRow({
                         </span>
                       </div>
                       <p className="mt-1 text-[11px] text-slate-500">
-                        {order.reason ?? order.entry_pattern ?? "—"}・{order.units} 單位
+                        {formatActionReason(order.reason ?? order.entry_pattern)}・{order.units} 單位
                       </p>
                     </div>
                   )
@@ -447,61 +468,70 @@ export default function ShadowPortfolioPage() {
                 <p className="mt-2 font-medium text-slate-300">核心概念與資金桶</p>
                 <p className="mt-1">它不是看到動能分數高就直接買，而是先判斷「哪一種證據組合成立」，再把交易放進對應資金桶。</p>
                 <ul className="mt-1 list-disc space-y-1 pl-4">
-                  <li><span className="text-slate-300">Continuation：</span>300,000 元，找 HIGH 題材、領導股與強勢延續；首次買進 100,000 元。</li>
-                  <li><span className="text-slate-300">Pullback：</span>100,000 元，先觀察拉回，等價格與動能回穩後才買。</li>
-                  <li><span className="text-slate-300">Opportunity：</span>最多 300,000 元，是核心桶滿載後的額外機會池，不是另一套選股邏輯。</li>
-                  <li>Confirmation 目前只確認持倉狀態，不另外投入第二筆資金；每 35 個交易日結算並重設 600,000 元本金。</li>
+                  <li><span className="text-slate-300">Continuation（強勢延續引擎）：</span>300,000 元，找 HIGH（高題材匹配）與 LEADER（領導股）；首次買進 100,000 元。</li>
+                  <li><span className="text-slate-300">Pullback（拉回回穩引擎）：</span>100,000 元，先觀察拉回，等價格與動能回穩後才買。</li>
+                  <li><span className="text-slate-300">Opportunity（機會資金桶）：</span>最多 300,000 元，是核心桶滿載後的額外機會池，不是另一套選股邏輯。</li>
+                  <li><span className="text-slate-300">Confirmation（確認）：</span>目前只確認持倉狀態，不另外投入第二筆資金；每 35 個交易日結算並重設 600,000 元本金。</li>
                 </ul>
 
                 <p className="mt-3 font-medium text-slate-300">Continuation 的七項證據</p>
-                <p className="mt-1">Role、Freshness、Watch quality、Relative strength、Institutional flow、Price structure、Momentum。可用證據至少 2 項，正向證據至少達可用數的 3 項門檻；LAGGARD、P4_STOP、結構損壞、流動性失敗或資料可疑會排除。</p>
+                <ul className="mt-1 list-disc space-y-1 pl-4">
+                  <li><span className="text-slate-300">Role（角色）：</span>是否為 LEADER（領導股）。</li>
+                  <li><span className="text-slate-300">Freshness（動能新鮮度）：</span>動能是否剛出現或仍在延續。</li>
+                  <li><span className="text-slate-300">Watch quality（魚尾品質）：</span>追蹤品質是否為 READY（可進一步評估）。</li>
+                  <li><span className="text-slate-300">Relative strength（相對強度）：</span>相對大盤是否強勢。</li>
+                  <li><span className="text-slate-300">Institutional flow（法人流向）：</span>法人是否參與且流向改善。</li>
+                  <li><span className="text-slate-300">Price structure（價格結構）：</span>是否接近高點且結構沒有破壞。</li>
+                  <li><span className="text-slate-300">Momentum（動能）：</span>綜合動能分數是否達標。</li>
+                </ul>
+                <p className="mt-1">可用證據至少 2 項，正向證據至少達可用數的 3 項門檻；LAGGARD（落後股）、P4_STOP（P4 停止觀察）、結構損壞、流動性失敗或資料可疑會排除。</p>
 
-                <p className="mt-3 font-medium text-slate-300">新的 Early High Momentum 參數</p>
+                <p className="mt-3 font-medium text-slate-300">新的 Early High Momentum（早期高動能）參數</p>
                 <ul className="mt-1 list-disc space-y-1 pl-4">
                   <li>動能 ≥85；市場 RS ≥90；產業 RS ≥90；20 日報酬 ≤10%。</li>
-                  <li>技術狀態為 early_turn 或 breakout，法人動能為 accelerating，產業輪動為 inflow 或 cooling。</li>
-                  <li>題材 HIGH、角色 LEADER 且 leader 支持題材；資料信心 HIGH、特徵覆蓋率 ≥90%。</li>
-                  <li>啟動後歸入 Continuation 核心桶，直接建立 100,000 元 Starter，不進 Opportunity 追價桶。</li>
+                  <li>技術狀態為 early_turn（早期轉折）或 breakout（突破），法人動能為 accelerating（加速），產業輪動為 inflow（流入）或 cooling（降溫但仍可接受）。</li>
+                  <li>題材 HIGH（高匹配）、角色 LEADER（領導股）且 leader_supports_theme（領導股支持題材）；資料信心 HIGH（高）、特徵覆蓋率 ≥90%。</li>
+                  <li>啟動後歸入 Continuation（強勢延續）核心桶，直接建立 100,000 元 Starter（首次進場），不進 Opportunity（機會桶）追價。</li>
                 </ul>
 
                 <p className="mt-3 font-medium text-slate-300">其他 Continuation 買進 profile</p>
                 <ul className="mt-1 list-disc space-y-1 pl-4">
-                  <li><span className="text-slate-300">Early Reaccel：</span>動能 74–84、early_turn、RS 與排名改善支持重新加速。</li>
-                  <li><span className="text-slate-300">Breakout Surge / Confirmed：</span>突破、短期報酬、產業／市場 RS 與法人流向同步確認。</li>
-                  <li><span className="text-slate-300">Sustained Breakout：</span>獨立領導股已形成持續突破，且趨勢效率、均線距離與排名改善仍健康。</li>
-                  <li><span className="text-slate-300">Pullback Ride：</span>強勢股整理後仍維持高相對強度與可接受的高點距離。</li>
+                  <li><span className="text-slate-300">Early Reaccel（早期重新加速）：</span>動能 74–84、early_turn（早期轉折），RS 與排名改善支持重新加速。</li>
+                  <li><span className="text-slate-300">Breakout Surge（突破爆發）／Breakout Confirmed（突破確認）：</span>突破、短期報酬、產業／市場 RS 與法人流向同步確認。</li>
+                  <li><span className="text-slate-300">Sustained Breakout（持續突破）：</span>獨立領導股已形成持續突破，且趨勢效率、均線距離與排名改善仍健康。</li>
+                  <li><span className="text-slate-300">Pullback Ride（強勢整理續抱）：</span>強勢股整理後仍維持高相對強度與可接受的高點距離。</li>
                 </ul>
 
-                <p className="mt-3 font-medium text-slate-300">Pullback Recovery 何時買？</p>
-                <p className="mt-1">先只記錄 WATCH：魚尾 Day 2–7、episode 報酬 -15% 至 -4%、動能 ≥55 且 P4 未停止。只有在相對低點回升 ≥3 個百分點、今日收盤高於前日、動能 ≥60 且沒有惡化超過 2 分，並且最近 4 個交易日內有有效觀察，才用 Pullback 桶買進。</p>
+                <p className="mt-3 font-medium text-slate-300">Pullback Recovery（拉回回穩）何時買？</p>
+                <p className="mt-1">先只記錄 WATCH（觀察）：魚尾 Day 2–7、episode 報酬（本輪價格路徑報酬）-15% 至 -4%、動能 ≥55 且 P4 未停止。只有在相對低點回升 ≥3 個百分點、今日收盤高於前日、動能 ≥60 且沒有惡化超過 2 分，並且最近 4 個交易日內有有效觀察，才用 Pullback（拉回桶）買進。</p>
 
                 <p className="mt-3 font-medium text-slate-300">不買的原因</p>
-                <p className="mt-1">證據不足、沒有任何 profile、尚未完成 Pullback 回穩、不是新的魚尾 Day 1、P4_STOP 或硬排除、ETF／不在魚尾 universe、資金桶或現金不足、已有持股、資料品質可疑，都會記錄為不買或只觀察。Opportunity 滿載時還要通過前 10 名、至少 6 項證據、動能 70–84、RS ≥90 等即時輪動條件。</p>
+                <p className="mt-1">證據不足、沒有任何 profile（進場型態）、尚未完成 Pullback（拉回）回穩、不是新的魚尾 Day 1、P4_STOP（P4 停止觀察）或硬排除、ETF（指數型基金）／不在魚尾 universe（候選範圍）、資金桶或現金不足、已有持股、資料品質可疑，都會記錄為不買或只觀察。Opportunity（機會桶）滿載時還要通過前 10 名、至少 6 項證據、動能 70–84、RS（相對強度）≥90 等即時輪動條件。</p>
 
-                <p className="mt-3 font-medium text-slate-300">賣出條件與優先序</p>
+                <p className="mt-3 font-medium text-slate-300">賣出條件與優先序（Exit conditions）</p>
                 <ul className="mt-1 list-disc space-y-1 pl-4">
-                  <li>一般 Starter：第一個完整確認日未通過延續確認就出場；實際持倉 ≤ -5% 快速停損。</li>
-                  <li>Profile 直接進場：實際持倉 ≤ -12% 停損；獲利達 +10% 後，從最高收盤回吐 ≥6% 出場。</li>
-                  <li>一般確認後 Continuation：實際持倉 ≤ -8% 停損，接著才看其他失效／追蹤條件。</li>
-                  <li>Pullback：實際持倉 ≤ -8%、P4_STOP、官方週期結束，或回穩後 4 個交易日內跌破觀察低點。</li>
+                  <li>一般 Starter（首次進場）：第一個完整確認日未通過延續確認就出場；實際持倉 ≤ -5% 快速停損。</li>
+                  <li>Profile（進場型態）直接進場：實際持倉 ≤ -12% 停損；獲利達 +10% 後，從最高收盤回吐 ≥6% 出場。</li>
+                  <li>一般確認後 Continuation（強勢延續）：實際持倉 ≤ -8% 停損，接著才看其他失效／追蹤條件。</li>
+                  <li>Pullback（拉回部位）：實際持倉 ≤ -8%、P4_STOP（停止觀察）、OFFICIAL_EXIT（魚尾週期結束），或回穩後 4 個交易日內跌破觀察低點。</li>
                   <li>公司行動或價格資料可疑時，當天暫停判斷，避免誤買誤賣。</li>
                 </ul>
                 <p className="mt-2 text-slate-500">所有訊號都在收盤後產生；BUY/ADD 使用下一交易日最高價模擬成交，SELL 使用下一交易日最低價模擬成交。線上「下一交易日動作」是待執行訊號，不是已成交。</p>
               </div>
               <div className="rounded-lg border border-amber-900/50 bg-amber-950/20 p-3">
-                <p className="font-semibold text-amber-200">FORWARD_V1_202609（Forward Test）</p>
+                <p className="font-semibold text-amber-200">FORWARD_V1_202609（Forward Test／前向測試）</p>
                 <p className="mt-2 font-medium text-slate-300">這套策略在做什麼？</p>
                 <p className="mt-1">它是從 2026-09-07 的收盤訊號開始獨立觀察的新版本，不把 v1 Dual-Engine 的歷史績效混進來；買賣會在下一個交易日模擬成交。它沿用原本的兩種進場型態：</p>
                 <ul className="mt-1 list-disc space-y-1 pl-4">
-                  <li><span className="text-slate-300">Early healthy pullback：</span>小幅拉回、仍在健康區間的候選。</li>
-                  <li><span className="text-slate-300">Deep pullback：</span>較深幅度回落、但仍符合動能與 P4 條件的候選。</li>
-                  <li><span className="text-slate-300">BUY：</span>符合進場條件就用一個 100,000 元單位建立部位；<span className="text-slate-300">ADD：</span>同一檔再次符合條件時才考慮加碼，而且目前部位必須已經獲利，絕不攤平。動能超過 80 的候選不會被上限直接排除。</li>
+                  <li><span className="text-slate-300">Early healthy pullback（健康小幅拉回）：</span>小幅拉回、仍在健康區間的候選。</li>
+                  <li><span className="text-slate-300">Deep pullback（深度拉回）：</span>較深幅度回落、但仍符合動能與 P4 條件的候選。</li>
+                  <li><span className="text-slate-300">BUY（買進）：</span>符合進場條件就用一個 100,000 元單位建立部位；<span className="text-slate-300">ADD（加碼）：</span>同一檔再次符合條件時才考慮加碼，而且目前部位必須已經獲利，絕不攤平。動能超過 80 的候選不會被上限直接排除。</li>
                 </ul>
                 <p className="mt-2 font-medium text-slate-300">它和 Dual-Engine 最大的差異</p>
                 <ul className="mt-1 list-disc space-y-1 pl-4">
                   <li>不設固定停利，讓已經上漲的股票繼續發展；但仍有實際部位 -8% 停損與 P4／官方結束訊號。</li>
                   <li>最多同時持有 5 檔不同股票；不設總單位上限，但單檔成本不得超過當下總權益 50%，也不做 35 交易日循環重置。</li>
-                  <li>滿倉時不普遍換股；只有候選當日重新被 P3 選中、動能超過 80、專用 entry score 至少 6，且比持有至少 2 個交易日的虧損弱部位高至少 5 分時，才允許每天換掉 1 檔。已獲利 +10% 以上的 winner 不會被換掉。</li>
+                  <li>滿倉時不普遍換股；只有候選當日重新被 P3 選中、動能超過 80、專用 entry score（進場評分）至少 6，且比持有至少 2 個交易日的虧損弱部位高至少 5 分時，才允許每天換掉 1 檔。已獲利 +10% 以上的 winner（獲利部位）不會被換掉。</li>
                 </ul>
               </div>
               <div className="rounded-lg border border-slate-800 bg-slate-950/30 p-3 lg:col-span-2">
