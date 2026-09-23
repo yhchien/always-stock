@@ -306,6 +306,7 @@ V1_STRATEGY_PARAMS: Dict[str, Any] = {
 CYCLE_LENGTH_TRADING_DAYS = 35
 
 STRATEGY_VERSION_V1_FROZEN = "v1_frozen"
+STRATEGY_VERSION_REPAIR_6933 = "REPAIR_6933_202609"
 STRATEGY_VERSION_CLEAN_FIXED_TP = "CLEAN_FIXED_TP"
 STRATEGY_VERSION_CLEAN_NO_FIXED_TP = "CLEAN_NO_FIXED_TP"
 STRATEGY_VERSION_FORWARD_V1 = "FORWARD_V1_202609"
@@ -483,6 +484,10 @@ DUAL_ENGINE_PARAMS: Dict[str, Any] = {
 
 STRATEGY_PARAMS_BY_VERSION: Dict[str, Dict[str, Any]] = {
     STRATEGY_VERSION_V1_FROZEN: DUAL_ENGINE_PARAMS,
+    # 6933 repair replay: an isolated copy of the Dual-Engine parameters so
+    # the proposed retention/top-up behavior can be replayed without
+    # rewriting v1_frozen's append-only production history.
+    STRATEGY_VERSION_REPAIR_6933: {**DUAL_ENGINE_PARAMS},
     STRATEGY_VERSION_CLEAN_FIXED_TP: {
         **V1_STRATEGY_PARAMS,
         "take_profit_basis": "actual_position",
@@ -3466,7 +3471,7 @@ def run_daily_trading_strategy(
     RECOVERY）；`CLEAN_FIXED_TP`／`CLEAN_NO_FIXED_TP`／`FORWARD_V1_202609` 完全不受
     影響，繼續走下面原本的通用邏輯。
     """
-    if strategy_version == STRATEGY_VERSION_V1_FROZEN:
+    if strategy_version in {STRATEGY_VERSION_V1_FROZEN, STRATEGY_VERSION_REPAIR_6933}:
         return _run_v1_dual_engine_daily_strategy(db, target_date=target_date, strategy_version=strategy_version)
 
     params = STRATEGY_PARAMS_BY_VERSION[strategy_version]
