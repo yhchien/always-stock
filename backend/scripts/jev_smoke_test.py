@@ -16,16 +16,19 @@ def main() -> int:
     try:
         result = evaluate(
             state={
-                "message": "The support agent confirmed that the customer's payment was refunded.",
+                "company": "台積電",
+                "news": "公司公告新增先進製程訂單，並提供來源日期與 URL。",
                 "source": "always-stock Jev Gateway smoke test",
             },
             questions={
-                "refunded": {
-                    "type": "boolean",
-                    "instructions": "Was money returned to the customer?",
+                "business_relevance": {
+                    "type": "choice",
+                    "instructions": "How directly does this news concern the named company's own business?",
                     "criteria": {
-                        "true": "The payment was refunded.",
-                        "false": "No refund was issued.",
+                        "DIRECT": "Directly concerns the company's own business.",
+                        "INDIRECT": "Concerns a related industry or supply-chain relationship.",
+                        "UNRELATED": "Does not materially concern the company.",
+                        "UNKNOWN": "The supplied evidence is insufficient.",
                     },
                 }
             },
@@ -35,7 +38,9 @@ def main() -> int:
         if exc.status_code is not None:
             details.append("status=" + str(exc.status_code))
         if exc.response_body:
-            details.append("response=" + exc.response_body)
+            # Do not print gateway response bodies: they are not needed for
+            # the smoke-test result and could contain sensitive request data.
+            details.append("response_body_present=true")
         print(" ".join(details))
         return 1
 

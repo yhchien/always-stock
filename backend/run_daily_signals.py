@@ -119,6 +119,7 @@ def main(argv: list) -> int:
         from app.observation_schema import ensure_observation_tables
         from app.outcome_schema import ensure_outcome_tables
         from app.signals.outcome_metrics import refresh_incremental_outcomes
+        from app.signals.jev_shadow import ensure_jev_cache_table
         from app.signals.pipeline import run_signal_pipeline_sync
         from app.trading_calendar import is_trading_day
     except Exception:
@@ -148,8 +149,9 @@ def main(argv: list) -> int:
     try:
         ensure_observation_tables(engine)
         ensure_outcome_tables(engine)
+        ensure_jev_cache_table(engine)
     except Exception:
-        logger.exception("Failed to ensure P4/P6 additive signal tables")
+        logger.exception("Failed to ensure P4/P6/Jev additive signal tables")
         return EXIT_DB_ERROR
 
     # 建 SignalGenerationJob（triggered_by="cron"）

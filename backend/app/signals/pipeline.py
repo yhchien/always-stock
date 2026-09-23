@@ -38,6 +38,7 @@ from app.signals import (
     classification,
     filters,
     global_selector,
+    jev_shadow,
     llm_caller,
     observation_lifecycle,
     prompt_family,
@@ -607,6 +608,17 @@ def run_signal_pipeline_sync(
                 len(research_failures),
             )
 
+            # Jev Shadow Mode：只讀取既有 research evidence（含 sources），在
+            # explanation 前獨立產生比較資料。此旁路的任何錯誤都不可影響 P3/P4。
+            jev_shadow_report = jev_shadow.run_shadow_safe(
+                db, research_results, target_date
+            )
+            processing_summary["jev_shadow"] = {
+                "status": jev_shadow_report.get("status"),
+                "mode": jev_shadow_report.get("mode"),
+                "summary": jev_shadow_report.get("summary") or {},
+            }
+
             # Step 6a：逐檔 assessment（eligibility / true veto；不是正式推薦）
             backend_pre_removed = []
             assessment_inputs = []
@@ -798,6 +810,7 @@ def run_signal_pipeline_sync(
                 failed_summary["technical_failures"] = technical_failures
                 failed_summary["research_results"] = research_results
                 failed_summary["compact_selection_cards"] = selection_cards
+                failed_summary["jev_shadow"] = jev_shadow_report
                 failed_summary["selection_summary"] = {
                     "phase2_eligible_count": processing_summary.get(
                         "llm_eligible_count", 0
@@ -1041,6 +1054,7 @@ def run_signal_pipeline_sync(
                 "capacity": selection_result.get("capacity"),
             }
             final_summary["processing_summary"] = processing_summary
+            final_summary["jev_shadow"] = jev_shadow_report
             # M27：把 deterministic conviction / watch_intensity 蓋回每筆 watchlist item
             # （不依賴 LLM；regime 為全市場一致）
             for item in final_payload.get("watchlist", []):
@@ -1515,6 +1529,9 @@ def _run_p4_tracking_only_day(
         "selection_rationale": "Valid trading day with no P3 candidates.",
     }
     summary["processing_summary"] = processing_summary
+    summary["jev_shadow"] = jev_shadow_report if "jev_shadow_report" in locals() else jev_shadow.empty_report(
+        jev_shadow.current_mode(), status="NO_P3_CANDIDATES"
+    )
     _set_progress(
         db,
         job,

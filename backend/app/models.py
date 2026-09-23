@@ -366,6 +366,38 @@ class SignalSnapshot(Base):
     )
 
 
+class JevEvaluationCache(Base):
+    """Reusable, point-in-time cache for Jev Shadow Mode evaluations.
+
+    The cache key includes the source content/thesis/history/question/model
+    versions, so a repeated URL alone can never incorrectly reuse a result.
+    This table is additive and is intentionally separate from the production
+    P3/P4 snapshot tables.
+    """
+
+    __tablename__ = "jev_evaluation_cache"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    cache_key = Column(String(64), nullable=False, unique=True, index=True)
+    stock_id = Column(String(32), nullable=False, index=True)
+    news_id = Column(String(64), nullable=True, index=True)
+    source_url = Column(Text, nullable=True)
+    source_published_at = Column(String(32), nullable=True, index=True)
+    input_hash = Column(String(64), nullable=False)
+    historical_evidence_version = Column(String(64), nullable=False)
+    question_version = Column(String(64), nullable=False)
+    model = Column(String(64), nullable=False)
+    status = Column(String(32), nullable=False)
+    evidence = Column(JSON, nullable=True)
+    raw_model_output = Column(JSON, nullable=True)
+    usage = Column(JSON, nullable=True)
+    latency_ms = Column(Integer, nullable=True)
+    error_message = Column(Text, nullable=True)
+    evaluated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class SignalWatchHit(Base):
     """
     M23 訊號追蹤命中表

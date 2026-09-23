@@ -1127,6 +1127,21 @@ def test_p3_pipeline_three_buckets_only_recommend_gets_reason_and_observation(
     session_factory,
     monkeypatch,
 ):
+    # Jev shadow is explicitly a sidecar: the production result below must be
+    # identical to the existing selector path even when Shadow Mode is on.
+    monkeypatch.setenv("JEV_MODE", "shadow")
+    monkeypatch.setattr(
+        pipeline_mod.jev_shadow,
+        "run_shadow_safe",
+        lambda db, research, target_date: {
+            "schema_version": "jev_shadow_report_v1",
+            "mode": "shadow",
+            "status": "COMPLETED",
+            "summary": {"api_call_count": 0},
+            "evidence": [],
+            "comparison": [],
+        },
+    )
     candidates = [
         {
             "stock_id": str(1000 + index),
@@ -1280,6 +1295,9 @@ def test_p3_pipeline_three_buckets_only_recommend_gets_reason_and_observation(
         assert processing["global_selection_not_selected_count"] == 20
         assert processing["long_reason_requested_count"] == 10
         assert processing["selection_complete"] is True
+        assert processing["jev_shadow"]["mode"] == "shadow"
+        assert [item["stock"] for item in snap.watchlist] == [str(1000 + i) for i in range(10)]
+        assert all(item["type"] == "LEADER" for item in snap.watchlist)
 
 
 def test_p3_global_selection_failure_is_atomic_and_writes_no_observation(

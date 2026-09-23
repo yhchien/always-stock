@@ -178,6 +178,7 @@ def _ensure_m23_tables() -> None:
     from app.database import Base, engine
     from app.models import (  # noqa: F401 — 觸發 metadata 註冊
         MarginTrade,
+        JevEvaluationCache,
         SignalExpectationPrice,
         SignalGenerationJob,
         SignalObservation,
@@ -197,6 +198,7 @@ def _ensure_m23_tables() -> None:
             bind=engine,
             tables=[
                 MarginTrade.__table__,
+                JevEvaluationCache.__table__,
                 SignalExpectationPrice.__table__,
                 SignalGenerationJob.__table__,
                 SignalObservation.__table__,
