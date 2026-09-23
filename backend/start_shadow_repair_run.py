@@ -2,8 +2,8 @@
 
 Example:
     python start_shadow_repair_run.py \
-      --run-key incident-2026-09-21-3094 \
-      --title "3094 decision-day repair" \
+      --run-key incident-2026-09-22-6933 \
+      --title "6933 decision-day repair" \
       --anchor-date 2026-09-21 \
       --baseline-strategy v1_frozen \
       --candidate-strategy FORWARD_V1_202609 \

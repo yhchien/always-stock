@@ -101,7 +101,7 @@ export default function ShadowRepairLabPage() {
         <h1 className="mt-2 text-2xl font-semibold text-slate-100">策略修正實驗</h1>
         <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-400">
           以問題發生當天的決策前狀態為基準，同時保存 Baseline（原策略）與 Candidate（修正版）。
-          3094 只是其中一個事件；未來任何股票或規則修正都會在同一個實驗時間軸留下紀錄。
+          6933 只是其中一個事件；未來任何股票或規則修正都會在同一個實驗時間軸留下紀錄。
         </p>
       </header>
 
