@@ -1292,6 +1292,9 @@ class ShadowStrategyOrder(Base):
     entry_pattern = Column(String(32), nullable=True)
     units = Column(Integer, nullable=False, default=1)
     planned_amount = Column(Float, nullable=True)
+    # If a full-size BUY/ADD is forced while the virtual cash ledger is short,
+    # keep the estimated/actual external cash contribution required to fund it.
+    cash_topup_required = Column(Float, nullable=True)
     signal_snapshot = Column(JSON, nullable=True)
     execution_price = Column(Float, nullable=True)
     executed_at = Column(DateTime, nullable=True)
@@ -1335,6 +1338,8 @@ class ShadowStrategyDailyDecision(Base):
     continuation_rank = Column(Integer, nullable=True)
     continuation_skip_reason = Column(String(64), nullable=True)
     continuation_phase = Column(String(32), nullable=True)
+    # Estimated external cash needed to keep a full 100,000-unit entry.
+    cash_topup_required = Column(Float, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     __table_args__ = (
@@ -1364,6 +1369,9 @@ class ShadowPortfolioDailySnapshot(Base):
     total_units = Column(Integer, nullable=False)
     pending_buy_count = Column(Integer, nullable=False, default=0)
     pending_sell_count = Column(Integer, nullable=False, default=0)
+    # Current outstanding external cash contribution, including forced pending
+    # BUY/ADD orders and an already negative virtual cash balance.
+    cash_topup_required = Column(Float, nullable=False, default=0.0)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     __table_args__ = (

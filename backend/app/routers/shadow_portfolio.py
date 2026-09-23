@@ -65,6 +65,7 @@ class ShadowPortfolioResponse(BaseModel):
     strategy_version: str
     initial_capital: float
     cash: float
+    cash_topup_required: float = 0.0
     realized_pnl_cumulative: float
     invested_cost: Optional[float] = None
     market_value: Optional[float] = None
@@ -100,6 +101,7 @@ class ShadowPendingActionResponse(BaseModel):
     entry_pattern: Optional[str] = None
     units: int
     planned_amount: Optional[float] = None
+    cash_topup_required: Optional[float] = None
 
 
 class ShadowPendingActionsResponse(BaseModel):
@@ -120,6 +122,7 @@ class ShadowHistoryOrderResponse(BaseModel):
     units: int
     planned_amount: Optional[float] = None
     execution_price: Optional[float] = None
+    cash_topup_required: Optional[float] = None
 
 
 def _latest_close(db: Session, stock_id: str) -> Optional[float]:
@@ -153,6 +156,17 @@ def get_shadow_portfolio(
         .order_by(ShadowPortfolioDailySnapshot.trade_date.desc())
         .first()
     )
+    pending_cash_topup = (
+        db.query(func.coalesce(func.sum(ShadowStrategyOrder.cash_topup_required), 0.0))
+        .filter(
+            ShadowStrategyOrder.strategy_version == strategy_version,
+            ShadowStrategyOrder.status == "PENDING",
+            ShadowStrategyOrder.action.in_(["BUY", "ADD"]),
+        )
+        .scalar()
+        or 0.0
+    )
+    cash_topup_required = max(0.0, -float(cash)) + float(pending_cash_topup)
 
     positions_rows = (
         db.query(ShadowVirtualPosition)
@@ -216,6 +230,7 @@ def get_shadow_portfolio(
         strategy_version=strategy_version,
         initial_capital=params["initial_capital"],
         cash=cash,
+        cash_topup_required=cash_topup_required,
         realized_pnl_cumulative=realized_pnl,
         invested_cost=latest_snapshot.invested_cost if latest_snapshot else None,
         market_value=latest_snapshot.market_value if latest_snapshot else None,
@@ -267,6 +282,7 @@ def get_shadow_pending_actions(
                 entry_pattern=o.entry_pattern,
                 units=o.units,
                 planned_amount=o.planned_amount,
+                cash_topup_required=o.cash_topup_required,
             )
             for o in orders
         ],
@@ -307,6 +323,7 @@ class ShadowCompletedTradesResponse(BaseModel):
 class ShadowHistoryDayResponse(BaseModel):
     trade_date: date
     cash: float
+    cash_topup_required: float = 0.0
     invested_cost: float
     market_value: Optional[float] = None
     total_equity: float
@@ -334,6 +351,7 @@ class ShadowHistoryResponse(BaseModel):
     winning_trade_count: int = 0
     win_rate_pct: Optional[float] = None
     settlement_cash: Optional[float] = None
+    max_cash_topup_required: float = 0.0
     trading_days: List[ShadowHistoryDayResponse]
 
 
@@ -510,6 +528,7 @@ def get_shadow_history(
                 units=order.units,
                 planned_amount=order.planned_amount,
                 execution_price=order.execution_price,
+                cash_topup_required=order.cash_topup_required,
             )
         )
     trades_by_date: dict[date, List[ShadowCompletedTradeResponse]] = {}
@@ -560,6 +579,7 @@ def get_shadow_history(
             ShadowHistoryDayResponse(
                 trade_date=snapshot.trade_date,
                 cash=equity if is_settlement_day else snapshot.cash,
+                cash_topup_required=0.0 if is_settlement_day else float(snapshot.cash_topup_required or 0.0),
                 invested_cost=0.0 if is_settlement_day else snapshot.invested_cost,
                 market_value=0.0 if is_settlement_day else snapshot.market_value,
                 total_equity=equity,
@@ -587,6 +607,10 @@ def get_shadow_history(
         if end_equity is not None and params["initial_capital"]
         else None
     )
+    max_cash_topup_required = max(
+        (float(day.cash_topup_required or 0.0) for day in days),
+        default=0.0,
+    )
     return ShadowHistoryResponse(
         strategy_version=strategy_version,
         start_date=days[0].trade_date if days else start_date,
@@ -599,6 +623,7 @@ def get_shadow_history(
         winning_trade_count=winning_trade_count,
         win_rate_pct=win_rate_pct,
         settlement_cash=settlement_cash,
+        max_cash_topup_required=max_cash_topup_required,
         trading_days=days,
     )
 

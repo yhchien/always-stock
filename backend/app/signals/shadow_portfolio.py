@@ -145,6 +145,7 @@ def ensure_shadow_portfolio_tables(engine: Engine) -> None:
     _ensure_shadow_virtual_portfolio_cycle_columns(engine)
     _ensure_shadow_strategy_daily_decision_episode_columns(engine)
     _ensure_shadow_funding_bucket_columns(engine)
+    _ensure_shadow_cash_topup_columns(engine)
 
 
 def _ensure_shadow_virtual_portfolio_cycle_columns(engine: Engine) -> None:
@@ -215,6 +216,46 @@ def _ensure_shadow_funding_bucket_columns(engine: Engine) -> None:
         if table not in inspector.get_table_names():
             continue
         existing = {c["name"] for c in inspector.get_columns(table)}
+        missing_by_table[table] = [name for name in columns if name not in existing]
+    if not any(missing_by_table.values()):
+        return
+    with engine.begin() as conn:
+        for table, columns in missing_by_table.items():
+            for name in columns:
+                conn.execute(text(wanted[table][name]))
+
+
+def _ensure_shadow_cash_topup_columns(engine: Engine) -> None:
+    """Persist the funding request created by a forced full-size entry.
+
+    ``create_all`` does not alter existing production tables, so these columns
+    must be added explicitly for the live database as well as replay SQLite
+    databases.
+    """
+    inspector = inspect(engine)
+    wanted = {
+        "shadow_strategy_orders": {
+            "cash_topup_required": (
+                "ALTER TABLE shadow_strategy_orders ADD COLUMN cash_topup_required FLOAT"
+            ),
+        },
+        "shadow_strategy_daily_decisions": {
+            "cash_topup_required": (
+                "ALTER TABLE shadow_strategy_daily_decisions ADD COLUMN cash_topup_required FLOAT"
+            ),
+        },
+        "shadow_portfolio_daily_snapshots": {
+            "cash_topup_required": (
+                "ALTER TABLE shadow_portfolio_daily_snapshots "
+                "ADD COLUMN cash_topup_required FLOAT NOT NULL DEFAULT 0"
+            ),
+        },
+    }
+    missing_by_table = {}
+    for table, columns in wanted.items():
+        if table not in inspector.get_table_names():
+            continue
+        existing = {column["name"] for column in inspector.get_columns(table)}
         missing_by_table[table] = [name for name in columns if name not in existing]
     if not any(missing_by_table.values()):
         return
@@ -313,6 +354,9 @@ DUAL_ENGINE_PARAMS: Dict[str, Any] = {
     "opportunity_bucket_cap": 300000.0,
     "continuation_starter_capital": 100000.0,
     "continuation_confirm_scale_in_capital": 0.0,
+    # A qualified entry keeps its full 100k allocation even when the cash
+    # ledger is short; the shortfall is surfaced as an external cash request.
+    "force_full_unit_with_cash_topup": True,
     # Report-profile rotation is point-in-time only: a stronger early
     # re-acceleration may replace a weaker breakout profile when capacity is
     # full. It never uses future returns.
@@ -1958,12 +2002,24 @@ def execute_pending_strategy_orders(
                 continue
             price = float(price_row[0])
             requested_allocation = order.planned_amount or params["unit_capital"]
-            allocation = min(requested_allocation, portfolio.cash)
-            if allocation < requested_allocation - 1e-6:
-                order.status = "FAILED"
-                order.reason = (order.reason or "") + "；執行時現金不足，訂單失敗"
-                executed["failed"] += 1
-                continue
+            force_full_unit = bool(params.get("force_full_unit_with_cash_topup"))
+            execution_topup = max(0.0, requested_allocation - float(portfolio.cash))
+            if force_full_unit:
+                # BUY/ADD is always a full unit.  If the virtual cash ledger is
+                # short, keep the order alive and record the external cash that
+                # must be supplied instead of silently failing the trade.
+                if execution_topup > 0:
+                    order.cash_topup_required = max(
+                        float(order.cash_topup_required or 0.0), execution_topup
+                    )
+                allocation = requested_allocation
+            else:
+                allocation = min(requested_allocation, portfolio.cash)
+                if allocation < requested_allocation - 1e-6:
+                    order.status = "FAILED"
+                    order.reason = (order.reason or "") + "；執行時現金不足，訂單失敗"
+                    executed["failed"] += 1
+                    continue
             shares = allocation / price
             portfolio.cash -= allocation
 
@@ -2382,6 +2438,22 @@ def _dual_engine_pending_cash_reservation(db: Session, *, strategy_version: str)
         .all()
     )
     return sum(order.planned_amount or 0.0 for order in rows)
+
+
+def _dual_engine_pending_cash_topup_required(
+    db: Session, *, strategy_version: str
+) -> float:
+    """Return estimated external cash needed by already queued forced entries."""
+    rows = (
+        db.query(ShadowStrategyOrder)
+        .filter(
+            ShadowStrategyOrder.strategy_version == strategy_version,
+            ShadowStrategyOrder.status == ORDER_STATUS_PENDING,
+            ShadowStrategyOrder.action.in_([ACTION_BUY, ACTION_ADD]),
+        )
+        .all()
+    )
+    return sum(max(float(order.cash_topup_required or 0.0), 0.0) for order in rows)
 
 
 def _weighted_avg_cost_asof(lots: List[ShadowPositionLot], asof: date) -> Optional[float]:
@@ -3068,12 +3140,11 @@ def _run_v1_dual_engine_daily_strategy(
 
     # Pullback has its own bucket cap, but it still consumes the same real
     # portfolio cash.  Account for pending reservations, today's planned
-    # sells, and the continuation orders accepted above before accepting a
-    # Pullback candidate.  Without this ledger, retaining a protected
-    # continuation position could leave a later Pullback order queued even
-    # though the executor would fail it for insufficient cash.
-    pullback_cash_remaining = max(
-        0.0,
+    # sells, and the continuation orders accepted above to estimate the
+    # external cash request.  A qualified Pullback candidate is still accepted
+    # at a full unit when this ledger is short; the shortage is persisted and
+    # shown to the user instead of turning into a failed order.
+    pullback_cash_remaining = (
         float(portfolio.cash)
         - _dual_engine_pending_cash_reservation(
             db, strategy_version=strategy_version
@@ -3091,22 +3162,30 @@ def _run_v1_dual_engine_daily_strategy(
                 + min(actual_return_by_stock.get(stock_id) or 0.0, 0.0) / 100.0,
             )
             for stock_id in decided_exits
+            )
+            - len(accepted_confirmations) * confirm_capital
+            - len(accepted_new) * starter_capital
         )
-        - len(accepted_confirmations) * confirm_capital
-        - len(accepted_new) * starter_capital,
-    )
+    cash_topup_required_by_stock: Dict[str, float] = {}
 
     for sig, _prev_row in pullback_candidates:
         stock_id = sig.row.stock_id
-        if (
-            pullback_bucket_used + pullback_capital > params["pullback_bucket_cap"] + _EPS
-            or pullback_capital > pullback_cash_remaining + _EPS
-        ):
+        if pullback_bucket_used + pullback_capital > params["pullback_bucket_cap"] + _EPS:
             skipped_capacity[stock_id] = sig
             continue
         accepted_new[stock_id] = sig
         projected_stocks.add(stock_id)
         pullback_bucket_used += pullback_capital
+        if params.get("force_full_unit_with_cash_topup"):
+            cash_topup_required_by_stock[stock_id] = max(
+                0.0, pullback_capital - pullback_cash_remaining
+            )
+        elif pullback_capital > pullback_cash_remaining + _EPS:
+            skipped_capacity[stock_id] = sig
+            accepted_new.pop(stock_id, None)
+            projected_stocks.discard(stock_id)
+            pullback_bucket_used -= pullback_capital
+            continue
         pullback_cash_remaining -= pullback_capital
 
     counts = {
@@ -3241,6 +3320,7 @@ def _run_v1_dual_engine_daily_strategy(
                 scheduled_execution_date=next_weekday_guess(target_date),
                 status=ORDER_STATUS_PENDING, reason=sig.entry_type, entry_pattern=sig.entry_type, units=1,
                 planned_amount=planned_amount, signal_snapshot=snapshot,
+                cash_topup_required=cash_topup_required_by_stock.get(stock_id),
             )
         )
         db.add(
@@ -3253,6 +3333,7 @@ def _run_v1_dual_engine_daily_strategy(
                 p4_decision=evidence.p4_decision, scheduled_execution_date=next_weekday_guess(target_date),
                 episode_price_return_pct=evidence.episode_price_return_pct,
                 episode_low_return_pct=evidence.episode_low_return_pct,
+                cash_topup_required=cash_topup_required_by_stock.get(stock_id),
                 **_continuation_decision_fields(
                     evidence,
                     phase=(continuation_phase_by_stock.get(stock_id, "D1_STARTER")
@@ -3893,6 +3974,9 @@ def create_portfolio_daily_snapshot(
         .scalar()
         or 0
     )
+    pending_cash_topup_required = _dual_engine_pending_cash_topup_required(
+        db, strategy_version=strategy_version
+    )
 
     snapshot = (
         db.query(ShadowPortfolioDailySnapshot)
@@ -3917,6 +4001,9 @@ def create_portfolio_daily_snapshot(
     snapshot.total_units = total_units
     snapshot.pending_buy_count = pending_buy_count
     snapshot.pending_sell_count = pending_sell_count
+    snapshot.cash_topup_required = max(
+        0.0, -float(portfolio.cash)
+    ) + pending_cash_topup_required
 
     return snapshot
 

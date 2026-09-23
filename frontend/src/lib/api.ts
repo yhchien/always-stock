@@ -2721,6 +2721,7 @@ export interface ShadowPortfolio {
   strategy_version: string
   initial_capital: number
   cash: number
+  cash_topup_required: number
   realized_pnl_cumulative: number
   invested_cost: number | null
   market_value: number | null
@@ -2758,6 +2759,7 @@ export interface ShadowPendingAction {
   entry_pattern: string | null
   units: number
   planned_amount: number | null
+  cash_topup_required: number | null
 }
 
 export interface ShadowPendingActionsResponse {
@@ -2832,11 +2834,13 @@ export interface ShadowHistoryOrder {
   units: number
   planned_amount: number | null
   execution_price: number | null
+  cash_topup_required: number | null
 }
 
 export interface ShadowHistoryDay {
   trade_date: string
   cash: number
+  cash_topup_required: number
   invested_cost: number
   market_value: number | null
   total_equity: number
@@ -2864,6 +2868,7 @@ export interface ShadowHistoryResponse {
   winning_trade_count: number
   win_rate_pct: number | null
   settlement_cash: number | null
+  max_cash_topup_required: number
   trading_days: ShadowHistoryDay[]
 }
 

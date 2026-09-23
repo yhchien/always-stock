@@ -126,6 +126,11 @@ function ActionCard({ action }: { action: ShadowPendingAction }) {
         <p className="mt-1 text-xs text-slate-400">進場型態：{formatEntryPattern(action.entry_pattern)}</p>
       )}
       {action.reason && <p className="mt-1 text-xs leading-5 text-slate-400">原因：{formatActionReason(action.reason)}</p>}
+      {action.cash_topup_required !== null && action.cash_topup_required > 0 && (
+        <p className="mt-2 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-xs text-amber-200">
+          預估需額外補款 {formatMoney(action.cash_topup_required)} 元，仍維持完整 100,000 元買進
+        </p>
+      )}
       <p className="mt-2 text-[11px] text-slate-500">
         訊號日 {action.signal_date} → 預計執行 {action.scheduled_execution_date}
       </p>
@@ -203,6 +208,11 @@ function HistoryDayRow({
               期末結算：已按期末可用最低價全部賣出；結算後下一循環本金重設為 {formatMoney(day.settlement_cash)} 元。
             </p>
           )}
+          {day.cash_topup_required > 0 && (
+            <p className="sm:col-span-2 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+              當日需額外補款 {formatMoney(day.cash_topup_required)} 元；買進仍以完整 100,000 元單位執行。
+            </p>
+          )}
           <div>
             <p className="mb-2 text-[11px] font-semibold text-slate-300">當日成交動作</p>
             {day.executed_orders.length === 0 ? (
@@ -224,6 +234,11 @@ function HistoryDayRow({
                       <p className="mt-1 text-[11px] text-slate-500">
                         {formatActionReason(order.reason ?? order.entry_pattern)}・{order.units} 單位
                       </p>
+                      {order.cash_topup_required !== null && order.cash_topup_required > 0 && (
+                        <p className="mt-1 text-[11px] text-amber-300">
+                          實際需補款 {formatMoney(order.cash_topup_required)} 元
+                        </p>
+                      )}
                     </div>
                   )
                 })}
@@ -286,10 +301,11 @@ function HistoryPeriodRow({
 
       {expanded && (
         <div className="border-t border-slate-800 bg-slate-950/40 p-3">
-          <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-5">
+          <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-6">
             <StatBox label="期間起始權益" value={formatMoney(period.start_equity)} />
             <StatBox label="期間結束權益" value={formatMoney(period.end_equity)} />
             <StatBox label="期間報酬" value={formatPct(period.period_return_pct)} tone={returnTone(period.period_return_pct)} />
+            <StatBox label="最高需補款" value={formatMoney(period.max_cash_topup_required)} />
             <StatBox
               label="勝率（已平倉）"
               value={period.win_rate_pct === null ? "—" : `${period.win_rate_pct.toFixed(2)}%`}
@@ -506,7 +522,7 @@ export default function ShadowPortfolioPage() {
                 <p className="mt-1">先只記錄 WATCH（觀察）：魚尾 Day 2–7、episode 報酬（本輪價格路徑報酬）-15% 至 -4%、動能 ≥55 且 P4 未停止。只有在相對低點回升 ≥3 個百分點、今日收盤高於前日、動能 ≥60 且沒有惡化超過 2 分，並且最近 4 個交易日內有有效觀察，才用 Pullback（拉回桶）買進。</p>
 
                 <p className="mt-3 font-medium text-slate-300">不買的原因</p>
-                <p className="mt-1">證據不足、沒有任何 profile（進場型態）、尚未完成 Pullback（拉回）回穩、不是新的魚尾 Day 1、P4_STOP（P4 停止觀察）或硬排除、ETF（指數型基金）／不在魚尾 universe（候選範圍）、資金桶或現金不足、已有持股、資料品質可疑，都會記錄為不買或只觀察。Opportunity（機會桶）滿載時還要通過前 10 名、至少 6 項證據、動能 70–84、RS（相對強度）≥90 等即時輪動條件。</p>
+                <p className="mt-1">證據不足、沒有任何 profile（進場型態）、尚未完成 Pullback（拉回）回穩、不是新的魚尾 Day 1、P4_STOP（P4 停止觀察）或硬排除、ETF（指數型基金）／不在魚尾 universe（候選範圍）、已有持股、資料品質可疑，都會記錄為不買或只觀察。Opportunity（機會桶）滿載時還要通過前 10 名、至少 6 項證據、動能 70–84、RS（相對強度）≥90 等即時輪動條件。符合條件但現金不足時，Dual-Engine（雙引擎）仍建立完整 100,000 元買單，並在動作、快照與歷史顯示需額外補款金額。</p>
 
                 <p className="mt-3 font-medium text-slate-300">賣出條件與優先序（Exit conditions）</p>
                 <ul className="mt-1 list-disc space-y-1 pl-4">
@@ -516,7 +532,7 @@ export default function ShadowPortfolioPage() {
                   <li>Pullback（拉回部位）：實際持倉 ≤ -8%、P4_STOP（停止觀察）、OFFICIAL_EXIT（魚尾週期結束），或回穩後 4 個交易日內跌破觀察低點。</li>
                   <li>公司行動或價格資料可疑時，當天暫停判斷，避免誤買誤賣。</li>
                 </ul>
-                <p className="mt-2 text-slate-500">所有訊號都在收盤後產生；BUY/ADD 使用下一交易日最高價模擬成交，SELL 使用下一交易日最低價模擬成交。線上「下一交易日動作」是待執行訊號，不是已成交。</p>
+                <p className="mt-2 text-slate-500">所有訊號都在收盤後產生；BUY/ADD 使用下一交易日最高價模擬成交，SELL 使用下一交易日最低價模擬成交。線上「下一交易日動作」是待執行訊號，不是已成交。若買單造成現金不足，現金會先顯示為負數，需額外補款會獨立記錄，不會被當成策略獲利。</p>
               </div>
               <div className="rounded-lg border border-amber-900/50 bg-amber-950/20 p-3">
                 <p className="font-semibold text-amber-200">FORWARD_V1_202609（Forward Test／前向測試）</p>
@@ -562,7 +578,7 @@ export default function ShadowPortfolioPage() {
 
       {portfolio && (
         <>
-          <section className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-7">
+          <section className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-8">
             <StatBox label="總權益" value={formatMoney(portfolio.total_equity)} />
             <StatBox
               label="目前循環報酬"
@@ -575,6 +591,11 @@ export default function ShadowPortfolioPage() {
               tone={returnTone(latestHistoricalPeriod?.period_return_pct)}
             />
             <StatBox label="現金" value={formatMoney(portfolio.cash)} />
+            <StatBox
+              label="需額外補款"
+              value={formatMoney(portfolio.cash_topup_required)}
+              tone={portfolio.cash_topup_required > 0 ? "text-amber-300" : "text-slate-100"}
+            />
             <StatBox label="持股數" value={`${portfolio.position_count} / ${portfolio.max_stocks}`} />
             <StatBox
               label="單位數"

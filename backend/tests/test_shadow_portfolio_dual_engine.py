@@ -826,6 +826,41 @@ def test_pending_starter_executes_planned_amount_not_strategy_unit_capital(db):
     assert portfolio.cash == pytest.approx(550000.0)
 
 
+def test_forced_full_unit_records_cash_topup_instead_of_failing(db):
+    """A qualified full-size entry is kept at 100k and exposes the funding gap."""
+    db.add(ShadowVirtualPortfolio(strategy_version=V, cash=90000.0))
+    db.add(
+        DailyPrice(
+            stock_id="1101", trade_date=D1, open_price=100.0,
+            high_price=100.0, low_price=99.0, close_price=100.0,
+        )
+    )
+    order = ShadowStrategyOrder(
+        strategy_version=V, stock_id="1101", stock_name="台泥",
+        action=sp.ACTION_BUY, signal_date=D0,
+        scheduled_execution_date=D1, status=sp.ORDER_STATUS_PENDING,
+        reason=sp.ENTRY_TYPE_PULLBACK_RECOVERY,
+        entry_pattern=sp.ENTRY_TYPE_PULLBACK_RECOVERY, units=1,
+        planned_amount=100000.0, cash_topup_required=10000.0,
+        signal_snapshot={"first_seen_date": D0.isoformat()},
+    )
+    db.add(order)
+    db.commit()
+
+    result = sp.execute_pending_strategy_orders(db, target_date=D1, strategy_version=V)
+    db.flush()
+    lot = db.query(ShadowPositionLot).first()
+    portfolio = db.query(ShadowVirtualPortfolio).filter(ShadowVirtualPortfolio.strategy_version == V).first()
+
+    assert result["buy"] == 1
+    assert result["failed"] == 0
+    assert lot.allocation == pytest.approx(100000.0)
+    assert lot.shares == pytest.approx(1000.0)
+    assert portfolio.cash == pytest.approx(-10000.0)
+    assert order.status == sp.ORDER_STATUS_EXECUTED
+    assert order.cash_topup_required == pytest.approx(10000.0)
+
+
 def test_end_to_end_pullback_recovery_creates_buy_order(db):
     _seed_calendar(db, D0, 3)
     db.add(ShadowVirtualPortfolio(strategy_version=V, cash=600000.0))
