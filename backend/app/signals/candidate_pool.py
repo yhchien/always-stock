@@ -629,8 +629,12 @@ def _load_tracking_status(
         db.query(
             SignalWatchHit.stock_id,
             SignalWatchHit.snapshot_date,
+            SignalWatchHit.baseline_trade_date,
+            SignalWatchHit.baseline_price,
             SignalWatchHit.max_positive_return_pct,
+            SignalWatchHit.max_positive_return_trade_date,
             SignalWatchHit.max_negative_return_pct,
+            SignalWatchHit.max_negative_return_trade_date,
         )
         .filter(SignalWatchHit.stock_id.in_(list(stock_ids)))
         .all()
@@ -657,6 +661,18 @@ def _load_tracking_status(
     )
     trade_dates_sorted = sorted({d[0] for d in trade_date_rows})
     trade_index = {d: i for i, d in enumerate(trade_dates_sorted)}
+    current_close_rows = (
+        db.query(DailyPrice.stock_id, DailyPrice.close_price)
+        .filter(
+            DailyPrice.stock_id.in_(list(by_stock)),
+            DailyPrice.trade_date == target_date,
+            DailyPrice.close_price.isnot(None),
+        )
+        .all()
+    )
+    current_close_by_stock = {
+        row.stock_id: float(row.close_price) for row in current_close_rows
+    }
 
     out: Dict[str, Dict[str, Any]] = {}
     for sid, rows in by_stock.items():
@@ -668,6 +684,55 @@ def _load_tracking_status(
         neg_values = [r.max_negative_return_pct for r in rows if r.max_negative_return_pct is not None]
         max_pos = max(pos_values) if pos_values else None
         max_neg = min(neg_values) if neg_values else None
+        max_pos_date = next(
+            (
+                r.max_positive_return_trade_date
+                for r in rows
+                if r.max_positive_return_pct == max_pos
+            ),
+            None,
+        )
+        max_neg_date = next(
+            (
+                r.max_negative_return_trade_date
+                for r in rows
+                if r.max_negative_return_pct == max_neg
+            ),
+            None,
+        )
+
+        # P4 runs before the post-pipeline archive refresh.  Recalculate the
+        # current day's close return here so a same-day recovery can participate
+        # in FAILED_FOLLOW_THROUGH before the lifecycle state machine decides.
+        # This deliberately refreshes only the extrema; it does not run archive
+        # settlement or delete any active hit rows.
+        baseline_row = next(
+            (
+                r
+                for r in reversed(rows)
+                if r.baseline_trade_date is not None
+                and r.baseline_price not in (None, 0)
+            ),
+            None,
+        )
+        if baseline_row is not None and baseline_row.baseline_trade_date < target_date:
+            current_price = current_close_by_stock.get(sid)
+            if current_price is not None:
+                current_return = (
+                    (float(current_price) - float(baseline_row.baseline_price))
+                    / float(baseline_row.baseline_price)
+                    * 100.0
+                )
+                if current_return > 0 and (
+                    max_pos is None or current_return > max_pos
+                ):
+                    max_pos = current_return
+                    max_pos_date = target_date
+                if current_return < 0 and (
+                    max_neg is None or current_return < max_neg
+                ):
+                    max_neg = current_return
+                    max_neg_date = target_date
         hit_count = len({r.snapshot_date for r in rows})
 
         days_since = sum(1 for d in trade_dates_sorted if first_seen < d <= target_date)
@@ -690,7 +755,9 @@ def _load_tracking_status(
             "consecutive_hit_count": consecutive_hits,
             "independent_hit_count": independent_episodes,
             "max_positive_return_pct": max_pos,
+            "max_positive_return_trade_date": max_pos_date,
             "max_negative_return_pct": max_neg,
+            "max_negative_return_trade_date": max_neg_date,
             "failed_follow_through": failed,
         }
     return out

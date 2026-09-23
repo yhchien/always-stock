@@ -710,6 +710,40 @@ def test_tracking_status_populated_from_signal_watch_hits(db):
     assert cand["failed_follow_through"] is True
 
 
+def test_tracking_status_refreshes_current_day_close_before_failed_gate(db):
+    """當日收盤已突破 +3% 時，不得使用前一日 stale max_pos 誤判失敗。"""
+    from app.signals.candidate_pool import _load_tracking_status
+
+    _seed_min_candidate_for(db, "2330")
+    _seed_signal_watch_hit(
+        db,
+        stock_id="2330",
+        snapshot_date=date(2026, 4, 13),
+        max_positive_return_pct=2.5,
+        max_negative_return_pct=-7.0,
+    )
+    hit = db.query(SignalWatchHit).filter(SignalWatchHit.stock_id == "2330").one()
+    hit.baseline_trade_date = date(2026, 4, 14)
+    hit.baseline_price = 100.0
+    current_price = (
+        db.query(DailyPrice)
+        .filter(
+            DailyPrice.stock_id == "2330",
+            DailyPrice.trade_date == date(2026, 4, 22),
+        )
+        .one()
+    )
+    current_price.close_price = 104.0
+    db.commit()
+
+    status = _load_tracking_status(db, ["2330"], date(2026, 4, 22))["2330"]
+
+    assert status["max_positive_return_pct"] == 4.0
+    assert status["max_positive_return_trade_date"] == date(2026, 4, 22)
+    assert status["max_negative_return_pct"] == -7.0
+    assert status["failed_follow_through"] is False
+
+
 def test_tracking_status_not_failed_when_days_under_threshold(db):
     """days_since=2 → 還沒到 3 個交易日驗證期 → failed_follow_through=False。"""
     _seed_min_candidate_for(db, "2330")

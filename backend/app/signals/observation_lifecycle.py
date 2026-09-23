@@ -630,6 +630,22 @@ def build_current_tracking_evidence(
             # 供 composite risk pending 判斷是否應該直接視為 REVERSAL_FAILURE。
             "reversal_failure_check": reversal_check,
             "episode_returns": returns_by_observation.get(observation.id) or {},
+            # Keep the exact inputs to FAILED_FOLLOW_THROUGH visible in P4
+            # evidence.  In particular, this proves whether the current day's
+            # close was included before the lifecycle decision was made.
+            "tracking_performance": {
+                "first_seen_date": candidate.get("first_seen_date"),
+                "days_since_first_seen": candidate.get("days_since_first_seen"),
+                "max_positive_return_pct": candidate.get("max_positive_return_pct"),
+                "max_positive_return_trade_date": candidate.get(
+                    "max_positive_return_trade_date"
+                ),
+                "max_negative_return_pct": candidate.get("max_negative_return_pct"),
+                "max_negative_return_trade_date": candidate.get(
+                    "max_negative_return_trade_date"
+                ),
+                "failed_follow_through": candidate.get("failed_follow_through"),
+            },
             "market_rs": candidate.get("rs_market_percentile_20d"),
             "peer_rs": candidate.get("rs_industry_percentile_20d"),
             "rs_rank_improvement": candidate.get("rs_rank_improvement_5d"),
