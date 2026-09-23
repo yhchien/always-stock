@@ -2946,3 +2946,113 @@ export async function fetchShadowTradesByStock(
   if (!res.ok) throw new Error(await buildErrorMessage(res, "模擬交易個股統計載入失敗"))
   return res.json()
 }
+
+// Shadow Repair Lab（策略邊跑邊修實驗）
+export interface ShadowRepairRun {
+  id: number
+  run_key: string
+  title: string
+  baseline_strategy_version: string
+  candidate_strategy_version: string
+  anchor_trade_date: string
+  cycle_number: number | null
+  status: string
+  initial_capital: number
+  notes: string | null
+  created_at: string
+  archived_at: string | null
+}
+
+export interface ShadowRepairRevision {
+  id: number
+  revision_no: number
+  effective_trade_date: string
+  effective_execution_date: string | null
+  title: string
+  trigger_stock_id: string | null
+  trigger_stock_name: string | null
+  reason: string
+  before_strategy_label: string
+  after_strategy_label: string
+  before_config: Record<string, unknown> | null
+  after_config: Record<string, unknown> | null
+  before_commit_sha: string | null
+  after_commit_sha: string | null
+  impact_scope: string
+  created_at: string
+}
+
+export interface ShadowRepairDiff {
+  id: number
+  revision_id: number | null
+  trade_date: string
+  stock_id: string
+  stock_name: string
+  baseline_action: string | null
+  candidate_action: string | null
+  baseline_reason: string | null
+  candidate_reason: string | null
+  baseline_entry_pattern: string | null
+  candidate_entry_pattern: string | null
+  baseline_position_units: number | null
+  candidate_position_units: number | null
+  baseline_cash: number | null
+  candidate_cash: number | null
+  baseline_topup_required: number | null
+  candidate_topup_required: number | null
+  difference_type: string
+  details: Record<string, unknown> | null
+}
+
+export interface ShadowRepairDailyState {
+  trade_date: string
+  revision_id: number | null
+  track: "BASELINE" | "CANDIDATE" | string
+  cash: number
+  invested_cost: number
+  market_value: number | null
+  total_equity: number
+  total_return_pct: number
+  cash_topup_required: number
+  position_count: number
+  total_units: number
+  positions: Array<Record<string, unknown>> | null
+  executed_orders: Array<Record<string, unknown>> | null
+  pending_orders: Array<Record<string, unknown>> | null
+}
+
+export interface ShadowRepairArchive {
+  cycle_number: number
+  start_trade_date: string
+  end_trade_date: string
+  baseline_final_equity: number | null
+  candidate_final_equity: number | null
+  baseline_return_pct: number | null
+  candidate_return_pct: number | null
+  return_delta_pct: number | null
+  revision_count: number
+  summary: Record<string, unknown> | null
+}
+
+export interface ShadowRepairLabResponse {
+  runs: ShadowRepairRun[]
+  selected_run: ShadowRepairRun | null
+  revisions: ShadowRepairRevision[]
+  diffs: ShadowRepairDiff[]
+  daily_states: ShadowRepairDailyState[]
+  archives: ShadowRepairArchive[]
+}
+
+export async function fetchShadowRepairLab(
+  params?: { runKey?: string; onlyDifferences?: boolean; limit?: number },
+  options?: FetchOptions,
+): Promise<ShadowRepairLabResponse> {
+  const qs = new URLSearchParams()
+  if (params?.runKey) qs.set("run_key", params.runKey)
+  if (params?.onlyDifferences !== undefined) qs.set("only_differences", String(params.onlyDifferences))
+  if (params?.limit !== undefined) qs.set("limit", String(params.limit))
+  const url = `${API_BASE}/api/signals/shadow-portfolio/repair-lab${qs.toString() ? `?${qs}` : ""}`
+  const res = await apiFetch(url, { signal: options?.signal })
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "策略修正實驗資料載入失敗"))
+  return res.json()
+}

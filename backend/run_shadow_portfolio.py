@@ -65,7 +65,7 @@ def _parse_target_date_from_argv(argv: list, db) -> "date | None":
     return archive.resolve_archive_as_of_trade_date(db)
 
 
-def _strategy_versions_for_date(target_date: date) -> list[str]:
+def _strategy_versions_for_date(target_date: date, SessionLocal=None) -> list[str]:
     """今天應該跑哪些 strategy_version。
 
     `v1_frozen` 的目前週期從 2026-09-07 開始；更早日期只保留給明確指定
@@ -77,6 +77,20 @@ def _strategy_versions_for_date(target_date: date) -> list[str]:
     versions = [sp.STRATEGY_VERSION] if target_date >= V1_FROZEN_START_DATE else []
     if _FORWARD_V1_ENABLED and target_date >= FORWARD_V1_START_DATE:
         versions.append(sp.STRATEGY_VERSION_FORWARD_V1)
+    if SessionLocal is not None:
+        from app.models import ShadowRepairRun
+
+        with SessionLocal() as db:
+            repair_versions = {
+                version
+                for run in db.query(ShadowRepairRun).filter(ShadowRepairRun.status == "ACTIVE").all()
+                if target_date >= run.anchor_trade_date
+                for version in (run.baseline_strategy_version, run.candidate_strategy_version)
+                if version in sp.STRATEGY_PARAMS_BY_VERSION
+            }
+        for version in sorted(repair_versions):
+            if version not in versions:
+                versions.append(version)
     return versions
 
 
@@ -116,6 +130,36 @@ def _run_one_strategy_version(SessionLocal, sp, *, target_date: date, strategy_v
                 db.commit()
                 if updated:
                     logger.info("[%s] update_winner_tracking: %d rows", strategy_version, updated)
+
+        # Repair Lab is append-only and observational: it never changes the
+        # active strategy's positions or orders.  When a baseline/candidate
+        # pair is running, copy both completed states and all stock-level
+        # decision differences into the repair timeline for this date.
+        with SessionLocal() as db:
+            from app.models import ShadowRepairRun
+            from app.signals.shadow_repair_lab import (
+                record_daily_diffs_for_run,
+                record_daily_state_from_strategy,
+            )
+
+            repair_runs = db.query(ShadowRepairRun).filter(ShadowRepairRun.status == "ACTIVE").all()
+            for repair_run in repair_runs:
+                if strategy_version == repair_run.baseline_strategy_version:
+                    record_daily_state_from_strategy(
+                        db, run_id=repair_run.id, trade_date=target_date,
+                        track="BASELINE", strategy_version=strategy_version,
+                    )
+                if strategy_version == repair_run.candidate_strategy_version:
+                    record_daily_state_from_strategy(
+                        db, run_id=repair_run.id, trade_date=target_date,
+                        track="CANDIDATE", strategy_version=strategy_version,
+                    )
+                if strategy_version in {
+                    repair_run.baseline_strategy_version,
+                    repair_run.candidate_strategy_version,
+                }:
+                    record_daily_diffs_for_run(db, run=repair_run, trade_date=target_date)
+            db.commit()
 
         return True
     except Exception:
@@ -168,7 +212,7 @@ def main(argv: list) -> int:
         logger.info("target_date=%s has no daily_price rows; treating as non-trading day, skip", target_date)
         return EXIT_NO_DATA
 
-    versions = _strategy_versions_for_date(target_date)
+    versions = _strategy_versions_for_date(target_date, SessionLocal)
     logger.info("Shadow portfolio run start: target_date=%s strategy_versions=%s", target_date, versions)
 
     if not versions:

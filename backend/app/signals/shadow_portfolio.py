@@ -107,6 +107,11 @@ from app.models import (
     ShadowVirtualPortfolio,
     ShadowVirtualPosition,
     ShadowWinnerTracking,
+    ShadowRepairRun,
+    ShadowRepairRevision,
+    ShadowRepairDecisionDiff,
+    ShadowRepairDailyState,
+    ShadowRepairCycleArchive,
     SignalObservation,
     SignalObservationReview,
     SignalSnapshot,
@@ -140,6 +145,11 @@ def ensure_shadow_portfolio_tables(engine: Engine) -> None:
             ShadowCompletedTrade.__table__,
             ShadowMissedCandidate.__table__,
             ShadowWinnerTracking.__table__,
+            ShadowRepairRun.__table__,
+            ShadowRepairRevision.__table__,
+            ShadowRepairDecisionDiff.__table__,
+            ShadowRepairDailyState.__table__,
+            ShadowRepairCycleArchive.__table__,
         ],
     )
     _ensure_shadow_virtual_portfolio_cycle_columns(engine)

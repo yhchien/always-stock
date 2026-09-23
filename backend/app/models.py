@@ -1489,3 +1489,137 @@ class ShadowWinnerTracking(Base):
             name="uq_shadow_winner_strategy_stock_first_seen_date",
         ),
     )
+
+
+class ShadowRepairRun(Base):
+    """A whole-strategy live-repair experiment.
+
+    This is deliberately separate from ``strategy_version``.  A repair run
+    starts at an incident's decision date, compares the old and repaired
+    strategy from the same checkpoint, and remains immutable after its cycle
+    is archived.
+    """
+    __tablename__ = "shadow_repair_runs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_key = Column(String(64), nullable=False, unique=True, index=True)
+    title = Column(String(200), nullable=False)
+    baseline_strategy_version = Column(String(64), nullable=False)
+    candidate_strategy_version = Column(String(64), nullable=False)
+    anchor_trade_date = Column(Date, nullable=False, index=True)
+    cycle_number = Column(Integer, nullable=True)
+    status = Column(String(32), nullable=False, default="ACTIVE")  # ACTIVE | ARCHIVED
+    initial_capital = Column(Float, nullable=False)
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    archived_at = Column(DateTime, nullable=True)
+
+
+class ShadowRepairRevision(Base):
+    """Append-only strategy change log for a repair run."""
+    __tablename__ = "shadow_repair_revisions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(Integer, nullable=False, index=True)
+    revision_no = Column(Integer, nullable=False)
+    effective_trade_date = Column(Date, nullable=False, index=True)
+    effective_execution_date = Column(Date, nullable=True)
+    title = Column(String(200), nullable=False)
+    trigger_stock_id = Column(String, nullable=True)
+    trigger_stock_name = Column(String, nullable=True)
+    reason = Column(Text, nullable=False)
+    before_strategy_label = Column(String(200), nullable=False)
+    after_strategy_label = Column(String(200), nullable=False)
+    before_config = Column(JSON, nullable=True)
+    after_config = Column(JSON, nullable=True)
+    before_commit_sha = Column(String(64), nullable=True)
+    after_commit_sha = Column(String(64), nullable=True)
+    impact_scope = Column(String(32), nullable=False, default="WHOLE_STRATEGY")
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("run_id", "revision_no", name="uq_shadow_repair_revision_no"),
+    )
+
+
+class ShadowRepairDecisionDiff(Base):
+    """One stock/day old-vs-repaired decision comparison, kept forever."""
+    __tablename__ = "shadow_repair_decision_diffs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(Integer, nullable=False, index=True)
+    revision_id = Column(Integer, nullable=True, index=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    stock_id = Column(String, nullable=False, index=True)
+    stock_name = Column(String, nullable=False)
+    baseline_action = Column(String(32), nullable=True)
+    candidate_action = Column(String(32), nullable=True)
+    baseline_reason = Column(Text, nullable=True)
+    candidate_reason = Column(Text, nullable=True)
+    baseline_entry_pattern = Column(String(64), nullable=True)
+    candidate_entry_pattern = Column(String(64), nullable=True)
+    baseline_position_units = Column(Integer, nullable=True)
+    candidate_position_units = Column(Integer, nullable=True)
+    baseline_cash = Column(Float, nullable=True)
+    candidate_cash = Column(Float, nullable=True)
+    baseline_topup_required = Column(Float, nullable=True)
+    candidate_topup_required = Column(Float, nullable=True)
+    difference_type = Column(String(32), nullable=False)  # ACTION | POSITION | CASH | TOPUP | NONE
+    details = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "run_id", "trade_date", "stock_id", name="uq_shadow_repair_diff_run_date_stock"
+        ),
+    )
+
+
+class ShadowRepairDailyState(Base):
+    """Full old/new portfolio state at each repair-run trading date."""
+    __tablename__ = "shadow_repair_daily_states"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(Integer, nullable=False, index=True)
+    revision_id = Column(Integer, nullable=True, index=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    track = Column(String(16), nullable=False)  # BASELINE | CANDIDATE
+    cash = Column(Float, nullable=False)
+    invested_cost = Column(Float, nullable=False)
+    market_value = Column(Float, nullable=True)
+    total_equity = Column(Float, nullable=False)
+    total_return_pct = Column(Float, nullable=False)
+    cash_topup_required = Column(Float, nullable=False, default=0.0)
+    position_count = Column(Integer, nullable=False, default=0)
+    total_units = Column(Integer, nullable=False, default=0)
+    positions = Column(JSON, nullable=True)
+    executed_orders = Column(JSON, nullable=True)
+    pending_orders = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("run_id", "trade_date", "track", name="uq_shadow_repair_state_run_date_track"),
+    )
+
+
+class ShadowRepairCycleArchive(Base):
+    """Immutable cycle-end summary for the live-repair experiment."""
+    __tablename__ = "shadow_repair_cycle_archives"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(Integer, nullable=False, index=True)
+    cycle_number = Column(Integer, nullable=False)
+    start_trade_date = Column(Date, nullable=False)
+    end_trade_date = Column(Date, nullable=False)
+    baseline_final_equity = Column(Float, nullable=True)
+    candidate_final_equity = Column(Float, nullable=True)
+    baseline_return_pct = Column(Float, nullable=True)
+    candidate_return_pct = Column(Float, nullable=True)
+    return_delta_pct = Column(Float, nullable=True)
+    revision_count = Column(Integer, nullable=False, default=0)
+    summary = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("run_id", "cycle_number", name="uq_shadow_repair_archive_run_cycle"),
+    )
