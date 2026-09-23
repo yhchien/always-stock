@@ -218,6 +218,76 @@ def test_report_profile_requires_strong_market_and_industry_confirmation():
     assert sp._report_profile(evidence) is None
 
 
+def test_rotation_rebound_protection_keeps_valid_high_momentum_pullback():
+    evidence = {
+        "families": {
+            "relative_strength": {"value": 99.0, "positive": True},
+        },
+        "report_features": {
+            "theme_fit": "HIGH",
+            "report_type": "LEADER",
+            "decision": "RECOMMEND",
+            "technical_status": "distribution",
+            "entry_quality": "pullback_setup",
+            "leader_supports_theme": True,
+            "momentum_score": 81.9,
+            "rs_market_percentile_20d": 99.0,
+            "rs_industry_percentile_20d": 96.0,
+            "return_20d": 18.0,
+            "distance_to_high_20d": -7.0,
+            "sector_rotation_status": "inflow",
+            "institution_flow_momentum": "neutral",
+        },
+    }
+    row = _row(
+        momentum_score=81.9,
+        continuation_evidence_count=5,
+        continuation_hard_excluded=False,
+        continuation_evidence=evidence,
+        p4_decision="CAUTION",
+    )
+    cfg = sp.DUAL_ENGINE_PARAMS["continuation_rotation"]["rebound_protection"]
+
+    assert sp._rotation_victim_is_rebound_protected(row, cfg) is True
+
+
+def test_rotation_rebound_protection_does_not_override_hard_stop():
+    row = _row(
+        momentum_score=81.9,
+        continuation_evidence_count=5,
+        continuation_hard_excluded=True,
+        p4_decision="STOP_OBSERVING",
+    )
+    cfg = sp.DUAL_ENGINE_PARAMS["continuation_rotation"]["rebound_protection"]
+
+    assert sp._rotation_victim_is_rebound_protected(row, cfg) is False
+
+
+def test_rotation_rebound_protection_handles_stale_pullback_evidence():
+    """A stale/empty review row must not rotate a valid Pullback Ride early."""
+    row = _row(
+        momentum_score=56.7,
+        continuation_evidence_count=0,
+        continuation_hard_excluded=False,
+        continuation_evidence={"families": {}, "report_features": {}},
+        p4_decision="CAUTION",
+    )
+    cfg = sp.DUAL_ENGINE_PARAMS["continuation_rotation"]["rebound_protection"]
+
+    assert sp._rotation_victim_is_rebound_protected(
+        row,
+        cfg,
+        entry_type=sp.ENTRY_TYPE_CONTINUATION_PULLBACK_RIDE,
+        actual_position_return=-8.1,
+    ) is True
+    assert sp._rotation_victim_is_rebound_protected(
+        row,
+        cfg,
+        entry_type=sp.ENTRY_TYPE_CONTINUATION_PULLBACK_RIDE,
+        actual_position_return=-12.0,
+    ) is False
+
+
 # ---------------------------------------------------------------------------
 # PART 48 — Episode Price（pure function）
 # ---------------------------------------------------------------------------

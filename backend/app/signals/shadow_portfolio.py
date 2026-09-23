@@ -330,6 +330,26 @@ DUAL_ENGINE_PARAMS: Dict[str, Any] = {
         # when a later candidate has materially stronger point-in-time momentum.
         "opportunity_equal_profile_momentum_delta": 5.0,
         "opportunity_victim_max_return_pct": 25.0,
+        # A capacity rotation is not allowed to sell a still-valid pullback
+        # continuation merely because a new candidate is available.  This is
+        # deliberately point-in-time only: it protects a high-momentum,
+        # high-relative-strength setup without using tomorrow's outcome.
+        "rebound_protection": {
+            "enabled": True,
+            "min_momentum": 80.0,
+            "min_relative_strength": 90.0,
+            "min_evidence_count": 5,
+            "allowed_profiles": ("REPORT_PULLBACK_RIDE", "REPORT_EARLY_REACCEL"),
+            "allowed_entry_quality": ("pullback_setup",),
+            "allowed_technical_status": ("distribution", "early_turn"),
+            # The current P3/P4 snapshot can be stale or incomplete on the
+            # rotation date.  A direct Pullback Ride therefore gets a small
+            # thesis-protection window and may only leave through its own
+            # stop/trailing/P4 rules, not through capacity replacement.
+            "protected_entry_types": ("CONTINUATION_PULLBACK_RIDE",),
+            "protected_p4_decisions": (None, "CAUTION"),
+            "protected_max_loss_pct": -12.0,
+        },
     },
     # 2026-09-10：Starter 改到 D1。D1 不再用價格漲幅篩選，而是用既有 P3/Phase 2
     # evidence families 做 deterministic quality gate；momentum 只保留寬鬆的 data-quality
@@ -1190,6 +1210,75 @@ def _report_profile(evidence: Optional[Dict[str, Any]]) -> Optional[str]:
     if pullback_ride:
         return "REPORT_PULLBACK_RIDE"
     return None
+
+
+def _rotation_victim_is_rebound_protected(
+    row: EvidenceRow,
+    cfg: Optional[Dict[str, Any]],
+    *,
+    entry_type: Optional[str] = None,
+    actual_position_return: Optional[float] = None,
+) -> bool:
+    """Keep a still-valid high-momentum pullback out of capacity rotation.
+
+    This is intentionally a *retention* guard, not an entry signal.  It only
+    reads the evidence available on the rotation decision date.  A true hard
+    exclusion, P4 stop, or suspicious corporate-action row always bypasses the
+    guard and may exit through the normal higher-priority path.
+    """
+    if not cfg or not cfg.get("enabled", False):
+        return False
+    if row.corporate_action_suspect or row.continuation_hard_excluded:
+        return False
+    if row.p4_decision == "STOP_OBSERVING":
+        return False
+
+    # A report-profile Pullback Ride is specifically intended to capture a
+    # pullback that can re-accelerate.  On the day a new candidate competes for
+    # capacity, a stale/empty P3 evidence row must not turn that setup into a
+    # forced sell.  The normal profile stop is still checked earlier in the
+    # orchestrator, so this guard cannot override a real loss limit.
+    protected_entry_types = set(cfg.get("protected_entry_types") or ())
+    protected_decisions = tuple(cfg.get("protected_p4_decisions") or ())
+    if (
+        entry_type in protected_entry_types
+        and row.p4_decision in protected_decisions
+        and (
+            actual_position_return is None
+            or actual_position_return > cfg.get("protected_max_loss_pct", -12.0)
+        )
+    ):
+        return True
+
+    if row.momentum_score is None or row.momentum_score < cfg.get("min_momentum", 80.0):
+        return False
+    if row.continuation_evidence_count < cfg.get("min_evidence_count", 5):
+        return False
+
+    evidence = row.continuation_evidence or {}
+    features = evidence.get("report_features") or {}
+    families = evidence.get("families") or {}
+    relative_strength = features.get("rs_market_percentile_20d")
+    if relative_strength is None:
+        relative_strength = (families.get("relative_strength") or {}).get("value")
+    if relative_strength is None or relative_strength < cfg.get("min_relative_strength", 90.0):
+        return False
+
+    profile = _report_profile(evidence)
+    allowed_profiles = set(cfg.get("allowed_profiles") or ())
+    if allowed_profiles and profile not in allowed_profiles:
+        return False
+
+    entry_quality = str(features.get("entry_quality") or "").lower()
+    technical_status = str(features.get("technical_status") or "").lower()
+    allowed_entry_quality = set(cfg.get("allowed_entry_quality") or ())
+    allowed_technical_status = set(cfg.get("allowed_technical_status") or ())
+    if allowed_entry_quality and entry_quality not in allowed_entry_quality:
+        return False
+    if allowed_technical_status and technical_status not in allowed_technical_status:
+        return False
+
+    return True
 
 
 def _profile_entry_type(evidence: Optional[Dict[str, Any]], *, enabled: bool) -> str:
@@ -2875,6 +2964,19 @@ def _run_v1_dual_engine_daily_strategy(
                         )
                     ):
                         continue
+            # Capacity alone is not a thesis invalidation.  Keep a high-quality
+            # pullback/re-acceleration setup in place when it still has strong
+            # momentum and relative strength; if the Opportunity bucket has no
+            # room, the new candidate is recorded as capacity-limited instead
+            # of forcing a sell of this incumbent.
+            victim_current_evidence = evidence_by_stock.get(stock_id)
+            if victim_current_evidence is not None and _rotation_victim_is_rebound_protected(
+                victim_current_evidence,
+                rotation_cfg.get("rebound_protection"),
+                entry_type=first_lot.entry_type if first_lot is not None else None,
+                actual_position_return=actual_return_by_stock.get(stock_id),
+            ):
+                continue
             if rotation_cfg.get("victim_require_starter", True) and len(lots) != 1:
                 continue
             if _trading_days_elapsed_since(
@@ -2964,14 +3066,48 @@ def _run_v1_dual_engine_daily_strategy(
         if funding_bucket == FUNDING_BUCKET_CONTINUATION:
             continuation_bucket_used += starter_capital
 
+    # Pullback has its own bucket cap, but it still consumes the same real
+    # portfolio cash.  Account for pending reservations, today's planned
+    # sells, and the continuation orders accepted above before accepting a
+    # Pullback candidate.  Without this ledger, retaining a protected
+    # continuation position could leave a later Pullback order queued even
+    # though the executor would fail it for insufficient cash.
+    pullback_cash_remaining = max(
+        0.0,
+        float(portfolio.cash)
+        - _dual_engine_pending_cash_reservation(
+            db, strategy_version=strategy_version
+        )
+        + sum(
+            # Do not assume a losing sell releases its original allocation.
+            # The next-day execution price is unknown, so use today's known
+            # mark-to-market value for loss-making exits and the original cost
+            # for profitable/unknown exits.  This prevents a second BUY from
+            # being queued when the first sell will release slightly less cash.
+            sum(lot.allocation for lot in lots_by_stock.get(stock_id, []))
+            * max(
+                0.0,
+                1.0
+                + min(actual_return_by_stock.get(stock_id) or 0.0, 0.0) / 100.0,
+            )
+            for stock_id in decided_exits
+        )
+        - len(accepted_confirmations) * confirm_capital
+        - len(accepted_new) * starter_capital,
+    )
+
     for sig, _prev_row in pullback_candidates:
         stock_id = sig.row.stock_id
-        if pullback_bucket_used + pullback_capital > params["pullback_bucket_cap"] + _EPS:
+        if (
+            pullback_bucket_used + pullback_capital > params["pullback_bucket_cap"] + _EPS
+            or pullback_capital > pullback_cash_remaining + _EPS
+        ):
             skipped_capacity[stock_id] = sig
             continue
         accepted_new[stock_id] = sig
         projected_stocks.add(stock_id)
         pullback_bucket_used += pullback_capital
+        pullback_cash_remaining -= pullback_capital
 
     counts = {
         "buy": 0, "confirm": 0, "sell": 0, "hold": 0, "watch": 0, "pullback_watch": 0,
