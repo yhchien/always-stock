@@ -31,7 +31,12 @@ def main() -> int:
             },
         )
     except JevClientError as exc:
-        print("Jev Gateway smoke test failed: " + str(exc))
+        details = ["Jev Gateway smoke test failed: " + str(exc)]
+        if exc.status_code is not None:
+            details.append("status=" + str(exc.status_code))
+        if exc.response_body:
+            details.append("response=" + exc.response_body)
+        print(" ".join(details))
         return 1
 
     print(json.dumps({
