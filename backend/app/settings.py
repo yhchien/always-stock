@@ -21,6 +21,11 @@ def get_openai_api_key() -> str:
     return os.getenv("OPENAI_API_KEY", "").strip()
 
 
+def get_jev_api_key() -> str:
+    """Return the Vercel AI Gateway key used for Jev evaluations."""
+    return os.getenv("AI_GATEWAY_API_KEY", "").strip()
+
+
 def get_openai_model() -> str:
     value = os.getenv("OPENAI_MODEL", "").strip()
     return value or DEFAULT_OPENAI_MODEL
