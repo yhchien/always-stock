@@ -130,7 +130,7 @@ def record_decision_diff(
     position_changed = baseline_position_units != candidate_position_units
     cash_changed = baseline_cash is not None and candidate_cash is not None and abs(baseline_cash - candidate_cash) > 1e-6
     topup_changed = baseline_topup_required != candidate_topup_required
-    difference_type = "ACTION" if action_changed else "POSITION" if position_changed else "CASH" if cash_changed else "TOPUP" if topup_changed else "NONE"
+    difference_type = "ACTION" if action_changed else "POSITION" if position_changed else "TOPUP" if topup_changed else "CASH" if cash_changed else "NONE"
     row = (
         db.query(ShadowRepairDecisionDiff)
         .filter(
@@ -191,11 +191,7 @@ def _orders_payload(db: Session, strategy_version: str, trade_date: date) -> tup
         db.query(ShadowStrategyOrder)
         .filter(
             ShadowStrategyOrder.strategy_version == strategy_version,
-            (
-                (ShadowStrategyOrder.status == "PENDING")
-                | (ShadowStrategyOrder.status == "EXECUTED")
-                & (ShadowStrategyOrder.executed_at.is_not(None))
-            ),
+            ShadowStrategyOrder.status.in_(("PENDING", "EXECUTED")),
         )
         .order_by(ShadowStrategyOrder.id.asc())
         .all()
@@ -203,7 +199,6 @@ def _orders_payload(db: Session, strategy_version: str, trade_date: date) -> tup
     executed: list[dict[str, Any]] = []
     pending: list[dict[str, Any]] = []
     for order in rows:
-        executed_on = order.executed_at.date() if order.executed_at else None
         item = {
             "id": order.id,
             "stock_id": order.stock_id,
@@ -220,10 +215,13 @@ def _orders_payload(db: Session, strategy_version: str, trade_date: date) -> tup
             "execution_price": order.execution_price,
             "executed_at": order.executed_at.isoformat() if order.executed_at else None,
         }
-        if order.status == "PENDING":
-            pending.append(item)
-        elif order.status == "EXECUTED" and executed_on == trade_date:
+        # Historical replays may be executed days after the market date, so
+        # scheduled_execution_date is the immutable date for this snapshot.
+        if order.status == "EXECUTED" and order.scheduled_execution_date == trade_date:
             executed.append(item)
+        elif order.signal_date <= trade_date < order.scheduled_execution_date:
+            item["status"] = "PENDING_AT_SNAPSHOT"
+            pending.append(item)
     return executed, pending
 
 
@@ -325,6 +323,10 @@ def record_daily_diffs_for_run(
         old = baseline.get(stock_id)
         new = candidate.get(stock_id)
         stock_name = (new or old).stock_name
+        cash_relevant = any(
+            row is not None and row.action in {"BUY", "ADD", "SELL"}
+            for row in (old, new)
+        )
         record_decision_diff(
             db,
             run_id=run.id,
@@ -340,10 +342,10 @@ def record_daily_diffs_for_run(
             candidate_entry_pattern=new.entry_pattern if new else None,
             baseline_position_units=old.position_units if old else None,
             candidate_position_units=new.position_units if new else None,
-            baseline_cash=baseline_snapshot.cash if baseline_snapshot else None,
-            candidate_cash=candidate_snapshot.cash if candidate_snapshot else None,
-            baseline_topup_required=baseline_snapshot.cash_topup_required if baseline_snapshot else None,
-            candidate_topup_required=candidate_snapshot.cash_topup_required if candidate_snapshot else None,
+            baseline_cash=baseline_snapshot.cash if baseline_snapshot and cash_relevant else None,
+            candidate_cash=candidate_snapshot.cash if candidate_snapshot and cash_relevant else None,
+            baseline_topup_required=(baseline_snapshot.cash_topup_required if baseline_snapshot and cash_relevant else None),
+            candidate_topup_required=(candidate_snapshot.cash_topup_required if candidate_snapshot and cash_relevant else None),
         )
         count += 1
     return count
