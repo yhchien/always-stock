@@ -225,6 +225,19 @@ def _orders_payload(db: Session, strategy_version: str, trade_date: date) -> tup
     return executed, pending
 
 
+def _decision_topup_for_stock(db: Session, strategy_version: str, stock_id: str, trade_date: date) -> float:
+    """Return only this stock's planned top-up for its decision date."""
+    return sum(
+        max(float(order.cash_topup_required or 0.0), 0.0)
+        for order in db.query(ShadowStrategyOrder).filter(
+            ShadowStrategyOrder.strategy_version == strategy_version,
+            ShadowStrategyOrder.stock_id == stock_id,
+            ShadowStrategyOrder.signal_date == trade_date,
+            ShadowStrategyOrder.status.in_(("PENDING", "EXECUTED")),
+        ).all()
+    )
+
+
 def record_daily_state_from_strategy(
     db: Session,
     *,
@@ -323,10 +336,11 @@ def record_daily_diffs_for_run(
         old = baseline.get(stock_id)
         new = candidate.get(stock_id)
         stock_name = (new or old).stock_name
-        cash_relevant = any(
-            row is not None and row.action in {"BUY", "ADD", "SELL"}
-            for row in (old, new)
-        )
+        baseline_topup = _decision_topup_for_stock(db, run.baseline_strategy_version, stock_id, trade_date)
+        candidate_topup = _decision_topup_for_stock(db, run.candidate_strategy_version, stock_id, trade_date)
+        action_changed = (old.action if old else None) != (new.action if new else None)
+        position_changed = (old.position_units if old else None) != (new.position_units if new else None)
+        cash_relevant = action_changed or position_changed or abs(baseline_topup - candidate_topup) > 1e-6
         record_decision_diff(
             db,
             run_id=run.id,
@@ -344,8 +358,8 @@ def record_daily_diffs_for_run(
             candidate_position_units=new.position_units if new else None,
             baseline_cash=baseline_snapshot.cash if baseline_snapshot and cash_relevant else None,
             candidate_cash=candidate_snapshot.cash if candidate_snapshot and cash_relevant else None,
-            baseline_topup_required=(baseline_snapshot.cash_topup_required if baseline_snapshot and cash_relevant else None),
-            candidate_topup_required=(candidate_snapshot.cash_topup_required if candidate_snapshot and cash_relevant else None),
+            baseline_topup_required=baseline_topup if cash_relevant else None,
+            candidate_topup_required=candidate_topup if cash_relevant else None,
         )
         count += 1
     return count
