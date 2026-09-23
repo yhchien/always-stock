@@ -9,6 +9,7 @@ from __future__ import annotations
 import sys
 from datetime import date, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 if str(BACKEND_DIR) not in sys.path:
@@ -46,6 +47,44 @@ def test_strategy_versions_for_date_forward_gate_is_still_date_bound(monkeypatch
     assert on_start == [sp.STRATEGY_VERSION, sp.STRATEGY_VERSION_FORWARD_V1]
 
 
+def test_active_repair_run_is_added_to_daily_action_version_list():
+    """GitHub Actions uses the same runner; an ACTIVE Repair Lab run must be
+    picked up from production metadata without hard-coding its version in YAML."""
+
+    class FakeQuery:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            return [SimpleNamespace(
+                status="ACTIVE",
+                anchor_trade_date=date(2026, 9, 21),
+                baseline_strategy_version=sp.STRATEGY_VERSION,
+                candidate_strategy_version=sp.STRATEGY_VERSION_REPAIR_6933,
+            )]
+
+    class FakeDb:
+        def query(self, model):
+            return FakeQuery()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    class FakeSessionLocal:
+        def __call__(self):
+            return FakeDb()
+
+    versions = runner._strategy_versions_for_date(date(2026, 9, 23), FakeSessionLocal())
+    assert versions == [
+        sp.STRATEGY_VERSION,
+        sp.STRATEGY_VERSION_FORWARD_V1,
+        sp.STRATEGY_VERSION_REPAIR_6933,
+    ]
+
+
 def test_one_strategy_version_failure_does_not_block_others(monkeypatch):
     """`v1_frozen` 當天執行途中拋例外，`FORWARD_V1_202609` 仍然要照跑且成功——
     不能因為其中一個 strategy_version 出錯就讓整支腳本直接放棄其他版本。"""
@@ -58,6 +97,16 @@ def test_one_strategy_version_failure_does_not_block_others(monkeypatch):
             return False
         def commit(self):
             pass
+
+        def query(self, model):
+            class EmptyQuery:
+                def filter(self, *args, **kwargs):
+                    return self
+
+                def all(self):
+                    return []
+
+            return EmptyQuery()
 
     def fake_session_local():
         return DummySession()
