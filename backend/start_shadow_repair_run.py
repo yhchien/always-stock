@@ -2,7 +2,7 @@
 
 Example:
     python start_shadow_repair_run.py \
-      --run-key incident-2026-09-22-6933 \
+      --run-key incident-2026-09-21-6933 \
       --title "6933 decision-day repair" \
       --anchor-date 2026-09-21 \
       --baseline-strategy v1_frozen \
