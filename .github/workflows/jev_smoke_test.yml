@@ -19,7 +19,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install smoke-test dependency
-        run: python -m pip install --quiet requests
+        run: python -m pip install --quiet requests python-dotenv
 
       - name: Call Jev through Vercel AI Gateway
         working-directory: backend
