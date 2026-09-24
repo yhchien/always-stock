@@ -59,6 +59,23 @@ DEFAULT_TRACKING_MODEL = os.getenv(
     llm_caller.DEFAULT_RESEARCH_MODEL,
 ).strip()
 
+
+def _json_safe(value: Any) -> Any:
+    """Convert date-like values before assigning data to JSON columns.
+
+    Tracking evidence is assembled from SQLAlchemy query results, so date
+    columns arrive as ``datetime.date`` objects. PostgreSQL JSON values must
+    contain JSON primitives; keep the evidence shape intact while converting
+    dates to ISO-8601 strings at the persistence boundary.
+    """
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
+
 STATUS_OBSERVING = "OBSERVING"
 STATUS_CAUTION = "CAUTION"
 STATUS_STOPPED = "STOPPED"
@@ -722,7 +739,10 @@ def build_current_tracking_evidence(
                 "baseline_quality": observation.baseline_quality,
             },
         }
-    return result
+    return {
+        observation_id: _json_safe(evidence)
+        for observation_id, evidence in result.items()
+    }
 
 
 def run_tracking_assessments(
@@ -1695,12 +1715,12 @@ def run_daily_observation_reviews(
                 archive.settle_stock_for_p4_stop(
                     db, stock_id=sid, as_of_trade_date=review_date
                 )
-        observation.latest_snapshot_json = {
+        observation.latest_snapshot_json = _json_safe({
             "review_date": review_date.isoformat(),
             "decision": decision.decision,
             "backend_evidence": evidence,
             "external_assessment": external,
-        }
+        })
         observation.updated_at = datetime.utcnow()
         review_outputs.append(
             {
@@ -2921,12 +2941,14 @@ def _upsert_review(
     row.reason = decision.reason
     row.caution_dimensions = decision.caution_dimensions
     row.failed_dimensions = decision.failed_dimensions
-    evidence_with_prompt = dict(backend_evidence)
+    evidence_with_prompt = _json_safe(dict(backend_evidence))
     evidence_with_prompt["_prompt_metadata"] = prompt_family.prompt_metadata()
     row.backend_evidence_json = evidence_with_prompt
-    row.external_assessment_json = external_assessment
-    row.market_context_json = market_context
-    row.persistence_warning_json = backend_evidence.get("persistence_warning") or {}
+    row.external_assessment_json = _json_safe(external_assessment)
+    row.market_context_json = _json_safe(market_context)
+    row.persistence_warning_json = _json_safe(
+        backend_evidence.get("persistence_warning") or {}
+    )
     row.technical_status = decision.technical_status
     row.momentum_score = backend_evidence.get("momentum_score")
     row.prompt_version = current_tracking_prompt_version()

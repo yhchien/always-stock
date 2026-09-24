@@ -2169,6 +2169,12 @@ def test_build_current_tracking_evidence_runs_without_mocking(db):
     assert "hard_exclusion" in evidence
     assert "tracking_state" in evidence
     assert "deterministic_signals" in evidence
+    # SQLAlchemy Date columns must be converted before evidence is stored in
+    # PostgreSQL JSON columns; this is the production persistence boundary.
+    import json
+
+    json.dumps(evidence)
+    assert isinstance(evidence["tracking_performance"]["first_seen_date"], str)
 
 
 # ===================== M27 Market Regime v2 §37 Regression =====================
