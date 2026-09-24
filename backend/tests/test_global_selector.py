@@ -808,8 +808,8 @@ def test_stressed_market_recommend_with_weak_resilience_is_contract_invalid(monk
             cards, {}, selection_date=SELECTION_DATE, market_environment=_stressed_env()
         )
     assert exc.value.code == "GLOBAL_SELECTION_CONTRACT_INVALID"
-    # retry_enabled 預設 true -> max_attempts=3，全部都送一樣的非法回應才會用盡
-    assert len(calls) == 3
+    # retry_enabled 預設 true -> max_attempts=2，最多 initial + 1 次 corrective retry
+    assert len(calls) == 2
 
 
 @pytest.mark.parametrize("effective_state", ["BULL_STRESSED", "VOLATILE_STRESSED", "RISK_OFF"])

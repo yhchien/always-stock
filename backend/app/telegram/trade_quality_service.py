@@ -1,7 +1,8 @@
 """Telegram trade quality 包裝層。
 
-呼叫既有 `run_trade_quality_for_user(db, user=None, ...)` 跑分析（user=None 自動跳過
-M25 DB cache 讀寫），再把結果寫進 `telegram_trade_quality_snapshots`。
+優先讀既有 M25 shared snapshot，miss 時才呼叫既有
+`run_trade_quality_for_user(...)` 並把結果寫回 shared cache，再同步寫入
+`telegram_trade_quality_snapshots`。
 
 入口：
 - run_for_stock(db, chat_id, stock_id) — list run <id> / list run all 共用
@@ -16,9 +17,14 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
+from app.auth import ensure_demo_user
 from app.industry_flow_service import get_latest_industry_trade_date
-from app.models import TelegramTradeQualitySnapshot
+from app.models import StockMaster, TelegramTradeQualitySnapshot
 from app.routers.analysis import TradeQualityResponse, run_trade_quality_for_user
+from app.trade_quality_cache import (
+    load_latest_ok_snapshot_for_stock_date,
+    snapshot_to_response_dict,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,15 +48,39 @@ def run_for_stock(
     使用 DB 最近交易日當 buy_date（Telegram 沒有「買進日」概念）。
     異常時寫一筆 status='failed' 並回傳錯誤訊息給 caller 推送給使用者。
     """
-    try:
-        run_result = run_trade_quality_for_user(
+    snapshot_trade_date = get_latest_industry_trade_date(db)
+    response: Optional[TradeQualityResponse] = None
+
+    # M25 每日快照與 Telegram 報表內容相同；跨 process 也能命中，
+    # 避免 daily workflow 和 Telegram workflow 各打一份 OpenAI request。
+    if snapshot_trade_date is not None:
+        shared_row = load_latest_ok_snapshot_for_stock_date(
             db,
-            user=None,  # Telegram 不寫 M25 snapshot，借用 user=None 路徑
             stock_id=stock_id,
-            buy_date_input=None,  # 自動 fallback 到 latest trade date
-            persist_db_cache=False,
-            use_db_cache=False,
+            snapshot_trade_date=snapshot_trade_date,
         )
+        stock = db.get(StockMaster, stock_id)
+        if shared_row is not None and stock is not None:
+            payload = snapshot_to_response_dict(shared_row)
+            payload["stock_name"] = stock.stock_name
+            response = TradeQualityResponse(**payload)
+
+    try:
+        if response is None:
+            # Telegram 沒有 user/buy-date 概念；在 auth-disabled 部署使用共用
+            # demo user，讓 miss 後的結果也能寫入 M25，供後續入口共用。
+            shared_user = ensure_demo_user(db)
+            run_result = run_trade_quality_for_user(
+                db,
+                user=shared_user,
+                stock_id=stock_id,
+                buy_date_input=snapshot_trade_date,
+                persist_db_cache=True,
+                use_db_cache=True,
+                persist_source=source,
+                snapshot_trade_date_override=snapshot_trade_date,
+            )
+            response = run_result.response
     except Exception as exc:
         logger.exception("Telegram trade quality run failed chat=%s stock=%s", chat_id, stock_id)
         _save_failed(
@@ -66,8 +96,6 @@ def run_for_stock(
             error_message=f"分析失敗：{exc}",
         )
 
-    response = run_result.response
-    snapshot_trade_date = get_latest_industry_trade_date(db)
     if snapshot_trade_date is None:
         # DB 暫無交易日 — 不寫 DB 但仍把 response 回給 caller
         logger.warning(

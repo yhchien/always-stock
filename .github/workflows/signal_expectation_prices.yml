@@ -1,4 +1,4 @@
-name: Signal Expectation Prices
+name: Signal Expectation Prices (disabled)
 
 on:
   # 接在 daily_signals.yml 完成後（不論 success / failure 都啟動，內部會自行判斷有無新訊號）
@@ -15,17 +15,13 @@ on:
 jobs:
   run_expectation_prices:
     runs-on: ubuntu-latest
+    # M26 expectation price 已暫停；保留 workflow 檔與歷史資料，避免誤刪。
+    if: ${{ false }}
     # 通常一天新進股 5~20 檔 × ~15s/檔 ≈ 5 min；保留 60 min buffer 給異常天（黑天鵝大波段）
     timeout-minutes: 60
 
     env:
       TZ: Asia/Taipei
-
-    # 僅在 daily_signals 成功時跑（workflow_run 觸發時 conclusion 才會有值）。
-    # workflow_dispatch 沒有 workflow_run，event 名稱判斷成立後 conclusion 為空 → 也允許跑。
-    if: |
-      github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
 
     steps:
       - uses: actions/checkout@v4

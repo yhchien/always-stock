@@ -126,6 +126,34 @@ def load_snapshot(
     )
 
 
+def load_latest_ok_snapshot_for_stock_date(
+    db: Session,
+    *,
+    stock_id: str,
+    snapshot_trade_date: date,
+) -> Optional[WatchlistTradeQualitySnapshot]:
+    """讀同一股票、同一交易日的任一使用者完整快照。
+
+    這是跨入口的 read-through cache：Telegram 沒有 user/buy-date 概念，
+    因此只用股票與 snapshot_trade_date 對齊 M25 結果。買進日可能不同，
+    但 Telegram 報表本身不顯示買進日，適合拿來避免重複打同一份每日分析。
+    """
+    rows = (
+        db.query(WatchlistTradeQualitySnapshot)
+        .filter(
+            WatchlistTradeQualitySnapshot.stock_id == stock_id,
+            WatchlistTradeQualitySnapshot.snapshot_trade_date == snapshot_trade_date,
+            WatchlistTradeQualitySnapshot.status == "ok",
+        )
+        .order_by(WatchlistTradeQualitySnapshot.generated_at.desc())
+        .all()
+    )
+    for row in rows:
+        if is_snapshot_complete(row):
+            return row
+    return None
+
+
 def load_latest_ok_snapshot(
     db: Session,
     *,

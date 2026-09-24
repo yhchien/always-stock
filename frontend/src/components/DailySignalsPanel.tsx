@@ -31,6 +31,9 @@ import { Dialog } from "@base-ui/react/dialog"
 import { CanonicalSectorTag } from "@/components/CanonicalSectorTag"
 import SignalAssetBadge from "@/components/SignalAssetBadge"
 import SignalEmotionCard, { type EmotionTone } from "@/components/SignalEmotionCard"
+
+// M26 expectation price 暫停：保留型別/API 供歷史資料相容，但不載入、不渲染、不提供手動重跑入口。
+const SHOW_EXPECTATION_PRICE = false
 import {
   isSignalProcessingIncomplete,
   SignalIncompleteWarning,
@@ -753,13 +756,14 @@ function SignalCard({
             ) : null}
           </div>
 
-          {/* 預測價區間（保守 / 夢想） */}
-          <div className="flex items-center justify-end">
-            <ExpectationPriceChips
-              expectation={expectation}
-              currentPrice={quote?.price ?? null}
-            />
-          </div>
+          {SHOW_EXPECTATION_PRICE ? (
+            <div className="flex items-center justify-end">
+              <ExpectationPriceChips
+                expectation={expectation}
+                currentPrice={quote?.price ?? null}
+              />
+            </div>
+          ) : null}
         </div>
       </SignalEmotionCard>
 
@@ -806,7 +810,7 @@ function SignalDetailDialog({
 
   // 觸發重新預測後輪詢拉新結果（簡化版：3 秒一次、最多 8 次 = 24s）
   useEffect(() => {
-    if (pollKey === 0) return
+    if (!SHOW_EXPECTATION_PRICE || pollKey === 0) return
     let cancelled = false
     let attempts = 0
     const tick = async () => {
@@ -924,18 +928,19 @@ function SignalDetailDialog({
             <MomentumPanel item={item} />
           </div>
 
-          {/* 預測價區間（資金行情可期待價格） */}
-          <div className="mt-4">
-            <ExpectationPricePanel
-              expectation={expectation}
-              stockId={item.stock}
-              isAuthed={isAuthed}
-              quotaReached={quotaReached}
-              onRegenerate={handleRegenerate}
-              regenerating={regenerating}
-              regenerateError={regenError}
-            />
-          </div>
+          {SHOW_EXPECTATION_PRICE ? (
+            <div className="mt-4">
+              <ExpectationPricePanel
+                expectation={expectation}
+                stockId={item.stock}
+                isAuthed={isAuthed}
+                quotaReached={quotaReached}
+                onRegenerate={handleRegenerate}
+                regenerating={regenerating}
+                regenerateError={regenError}
+              />
+            </div>
+          ) : null}
 
           {/* 2026-05-25：融資融券專屬結構化分析卡（比重 大盤 30% / 個股 70%） */}
           {/* 2026-05-27：暫時隱藏紅色框框（改回顯示請把 SHOW_MARGIN_ANALYSIS 改 true） */}
@@ -1244,6 +1249,10 @@ export default function DailySignalsPanel({
   // 載入當日 snapshot 對應的 expectation prices
   const loadExpectations = useCallback(
     async (snapshotDate: string | undefined) => {
+      if (!SHOW_EXPECTATION_PRICE) {
+        setExpectations([])
+        return
+      }
       if (!snapshotDate) {
         setExpectations([])
         return

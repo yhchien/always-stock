@@ -29,7 +29,7 @@ REASON_VERSION = "v7_reason"
 # DEFAULT_DECISION_MODEL 時意外連帶影響這裡。
 DEFAULT_GLOBAL_SELECTION_MODEL = os.getenv(
     "OPENAI_SIGNALS_GLOBAL_SELECTION_MODEL",
-    "gpt-5.4",
+    "gpt-5.4-mini",
 ).strip()
 
 NOT_SELECTED_REASON_CODES = {
@@ -583,7 +583,8 @@ def run_global_selection(
         _default_selection_timeout_seconds(len(cards)),
     )
     previous_error: Optional[GlobalSelectionError] = None
-    max_attempts = 3 if retry_enabled else 1
+    # 成本上限：最多 initial + 1 次 corrective retry。
+    max_attempts = 2 if retry_enabled else 1
     for attempt in range(max_attempts):
         call_payload = dict(request_payload)
         if previous_error is not None:

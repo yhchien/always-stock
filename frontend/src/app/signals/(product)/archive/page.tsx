@@ -117,6 +117,8 @@ const COMPLETED_COLLAPSED_KEY = "always-stock:signals-archive:completed-collapse
 // 仍持續寫入這張舊表（`_upsert_completed_archive` 沒有被移除，只是新增了平行寫入
 // 新表），之後若確定不需要保留舊表資料，需要另外決定是否要停止寫入或做其他處理。
 const SHOW_COMPLETED_ARCHIVE_SECTION = false
+// M26 expectation price 暫停：歷史 API/資料保留，但整個 archive UI 先隱藏。
+const SHOW_EXPECTATION_PRICE = false
 
 function formatPct(value: number | null): string {
   if (value == null) return "--"
@@ -690,12 +692,14 @@ function StockDetailDialog({
                     第 {item.tracking_day_index} 天 · {item.hit_count} 次
                   </span>
                 </Metric>
-                <Metric label="預測價（保 / 夢）">
-                  <PredictionCell
-                    conservative={item.conservative_price}
-                    dream={item.dream_price}
-                  />
-                </Metric>
+                {SHOW_EXPECTATION_PRICE && (
+                  <Metric label="預測價（保 / 夢）">
+                    <PredictionCell
+                      conservative={item.conservative_price}
+                      dream={item.dream_price}
+                    />
+                  </Metric>
+                )}
                 <Metric label="最大正報酬">
                   <ExtremeReturnCell
                     value={item.max_positive_return_pct}
@@ -907,12 +911,14 @@ function StoppedObservationDetailDialog({
                     {formatShortDate(item.completed_trade_date)}
                   </span>
                 </Metric>
-                <Metric label="預測價（保 / 夢）">
-                  <PredictionCell
-                    conservative={item.conservative_price}
-                    dream={item.dream_price}
-                  />
-                </Metric>
+                {SHOW_EXPECTATION_PRICE && (
+                  <Metric label="預測價（保 / 夢）">
+                    <PredictionCell
+                      conservative={item.conservative_price}
+                      dream={item.dream_price}
+                    />
+                  </Metric>
+                )}
                 <Metric label="最大正報酬">
                   <ExtremeReturnCell
                     value={item.max_positive_return_pct}
@@ -1487,12 +1493,14 @@ function StoppedObservationsSection({
                         <Metric label="抓到次數">
                           <span className="text-sm text-slate-200">{item.hit_count} 次</span>
                         </Metric>
-                        <Metric label="預測價（保 / 夢）">
-                          <PredictionCell
-                            conservative={item.conservative_price}
-                            dream={item.dream_price}
-                          />
-                        </Metric>
+                        {SHOW_EXPECTATION_PRICE && (
+                          <Metric label="預測價（保 / 夢）">
+                            <PredictionCell
+                              conservative={item.conservative_price}
+                              dream={item.dream_price}
+                            />
+                          </Metric>
+                        )}
                         <Metric label="最大正報酬">
                           <ExtremeReturnCell
                             value={item.max_positive_return_pct}
@@ -2344,12 +2352,14 @@ function SignalArchiveContent() {
                       <Metric label="抓到次數">
                         <span className="text-sm text-slate-200">{item.hit_count} 次</span>
                       </Metric>
-                      <Metric label="預測價（保 / 夢）">
-                        <PredictionCell
-                          conservative={item.conservative_price}
-                          dream={item.dream_price}
-                        />
-                      </Metric>
+                      {SHOW_EXPECTATION_PRICE && (
+                        <Metric label="預測價（保 / 夢）">
+                          <PredictionCell
+                            conservative={item.conservative_price}
+                            dream={item.dream_price}
+                          />
+                        </Metric>
+                      )}
                       <Metric label="最大正報酬">
                         <ExtremeReturnCell
                           value={item.max_positive_return_pct}

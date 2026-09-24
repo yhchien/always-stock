@@ -133,7 +133,9 @@ def _resolve_prompt_version(market_regime: Optional[str]) -> str:
 _MAX_OUTPUT_TOKENS = 8000
 _WEB_SEARCH_TOOL = {"type": "web_search"}
 _OPENAI_TIMEOUT_SECONDS = 120.0
-_OPENAI_MAX_RETRIES = 1
+# SDK 層不再自動重送付費 request；需要修正格式時由各 stage 的 contract retry
+# 明確控制，避免「SDK retry × stage retry」疊加。
+_OPENAI_MAX_RETRIES = 0
 _PROMPT_CACHE_RETENTION = "in_memory"
 _CACHE_KEY_MARKET = "m23:market:v2"
 _CACHE_KEY_RESEARCH = "m23:research:v2"

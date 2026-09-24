@@ -825,7 +825,8 @@ def run_tracking_assessments(
         )
         return call_response, call_diagnostic or {}, call_expected
 
-    max_contract_retries = 2
+    # 成本上限：單檔最多 initial + 1 次 corrective retry。
+    max_contract_retries = 1
 
     def _retry_single_stock(
         sid: str,
@@ -911,7 +912,8 @@ def run_tracking_assessments(
             for item in batch
             if item.get("stock")
         }
-        max_batch_attempts = 3 if retry_enabled else 1
+        # 成本上限：整批最多 initial + 1 次 corrective retry。
+        max_batch_attempts = 2 if retry_enabled else 1
         response: Optional[Dict[str, Any]] = None
         diagnostic: Dict[str, Any] = {}
         batch_error: Optional[str] = None
