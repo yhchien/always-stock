@@ -25,9 +25,9 @@ TRACKING_STATE_MACHINE_VERSION = "p4_state_v2_market_context"
 RESPONSE_CONTRACT_VERSIONS = {
     "research": "v7_research_json_schema_v1",
     "assessment": "v7_assessment_json_schema_v1",
-    # Global Selector 改成 compact card-index contract；market resilience
-    # 欄位仍保留（2026-09-25），bump schema version。
-    "global_selector": "v7_global_selector_json_schema_v3",
+    # Global Selector 輸出 contract 新增 market_resilience/market_context_reason
+    # 兩個必填欄位（2026-09-04），bump schema version。
+    "global_selector": "v7_global_selector_json_schema_v2",
     "reason": "v7_reason_json_schema_v1",
     "tracking": "v7_tracking_json_schema_v1",
 }

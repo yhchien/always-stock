@@ -64,33 +64,6 @@ RECOMMENDATION_BASIS_CODES = {
     "RELATIVE_ADVANTAGE",
 }
 
-# The selector used to emit a long, fully narrated object for every candidate.
-# That made a 40+ card response unnecessarily expensive and increased the
-# chance of sequence-copy errors (for example, repeating one stock).  The v7
-# production contract now emits only compact decision fields; the backend and
-# the later reason stage fill the presentation/audit fields deterministically.
-COMPACT_SELECTION_CONTRACT = "compact_v1"
-COMPACT_SELECTION_REPAIR_CONTRACT = "compact_repair_v1"
-
-_NOT_SELECTED_REASON_TEXT = {
-    "LOWER_RELATIVE_PRIORITY": "有效但今日相對優勢較低。",
-    "POSITIVE_CASE_INCOMPLETE": "正向案例尚未完整。",
-    "CATALYST_UNCONFIRMED": "催化劑尚未充分確認。",
-    "PARTICIPATION_NOT_DISTINCTIVE": "資金參與未呈現明顯差異。",
-    "EVIDENCE_COHERENCE_WEAK": "目前證據連貫性不足。",
-    "THESIS_OVERLAP": "正向論點與其他候選重疊。",
-    "SETUP_NEEDS_CONFIRMATION": "目前型態仍需要更多確認。",
-    "RESEARCH_CONFIDENCE_LOW": "研究信心仍偏低。",
-    "NO_DISTINCT_DAILY_EDGE": "今日沒有足夠明確的相對優勢。",
-}
-
-_BASIS_TEXT = {
-    "MOMENTUM": "動能",
-    "PARTICIPATION": "資金參與",
-    "CATALYST": "催化劑",
-    "RELATIVE_ADVANTAGE": "相對優勢",
-}
-
 _PROMPT_PATH = (
     Path(__file__).resolve().parents[1]
     / "prompts"
@@ -140,20 +113,14 @@ def _default_selection_timeout_seconds(candidate_count: int) -> float:
 def global_selection_output_schema(
     *, expected_version: str, selection_date: str, expected_stocks: Iterable[str]
 ) -> Dict[str, Any]:
-    """Strict compact schema for the atomic v7 global selector.
-
-    The model identifies candidates by deterministic card index rather than
-    repeating stock ids and emits no long prose.  Cross-item alignment is still
-    checked by ``validate_global_selection`` because a JSON schema enum cannot
-    express the one-to-one relationship between an array and the input cards.
-    """
-    card_indices = list(range(1, len(list(expected_stocks)) + 1))
+    """Strict Responses API schema for the atomic global selector."""
+    stock_ids = [str(stock) for stock in expected_stocks]
     nullable_string = {"type": ["string", "null"]}
     item = {
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "card_index": {"type": "integer", "enum": card_indices},
+            "stock": {"type": "string", "enum": stock_ids},
             "decision": {
                 "type": "string",
                 "enum": ["RECOMMEND", "NOT_SELECTED"],
@@ -163,12 +130,18 @@ def global_selection_output_schema(
                 "type": ["string", "null"],
                 "enum": [None, *sorted(NOT_SELECTED_REASON_CODES)],
             },
+            "selection_reason": {"type": "string"},
+            "recommendation_thesis": nullable_string,
             "relative_advantage": nullable_string,
+            "theme_cluster": nullable_string,
+            "distinct_thesis": {"type": "boolean"},
             "overlap_with": {
                 "type": "array",
-                "items": {"type": "integer", "enum": card_indices},
+                "items": {"type": "string", "enum": stock_ids},
             },
             "overlap_reason": nullable_string,
+            "rank_override": {"type": "boolean"},
+            "rank_override_reason": nullable_string,
             "recommendation_basis": {
                 "type": "array",
                 "items": {
@@ -189,13 +162,19 @@ def global_selection_output_schema(
             "market_context_reason": nullable_string,
         },
         "required": [
-            "card_index",
+            "stock",
             "decision",
             "recommendation_rank",
             "selection_reason_code",
+            "selection_reason",
+            "recommendation_thesis",
             "relative_advantage",
+            "theme_cluster",
+            "distinct_thesis",
             "overlap_with",
             "overlap_reason",
+            "rank_override",
+            "rank_override_reason",
             "recommendation_basis",
             "market_resilience",
             "market_context_reason",
@@ -208,10 +187,6 @@ def global_selection_output_schema(
             "selection_version": {
                 "type": "string",
                 "enum": [expected_version],
-            },
-            "selection_contract": {
-                "type": "string",
-                "enum": [COMPACT_SELECTION_CONTRACT],
             },
             "date": {"type": "string", "enum": [selection_date]},
             "selection_complete": {"type": "boolean", "enum": [True]},
@@ -238,40 +213,12 @@ def global_selection_output_schema(
         },
         "required": [
             "selection_version",
-            "selection_contract",
             "date",
             "selection_complete",
             "items",
             "summary",
         ],
     }
-
-
-def global_selection_repair_schema(
-    *, expected_version: str, selection_date: str, repair_indices: Iterable[int]
-) -> Dict[str, Any]:
-    """Schema for a low-token alignment repair.
-
-    The repair call is intentionally limited to missing card indices.  The
-    backend keeps the first occurrence of a duplicate from the original result
-    and asks the model only for replacement rows, instead of regenerating the
-    complete candidate set.
-    """
-    allowed_indices = [int(index) for index in repair_indices]
-    base = global_selection_output_schema(
-        expected_version=expected_version,
-        selection_date=selection_date,
-        expected_stocks=[str(index) for index in allowed_indices],
-    )
-    base["properties"]["selection_contract"] = {
-        "type": "string",
-        "enum": [COMPACT_SELECTION_REPAIR_CONTRACT],
-    }
-    base["properties"]["items"]["items"]["properties"]["card_index"] = {
-        "type": "integer",
-        "enum": allowed_indices,
-    }
-    return base
 
 
 @dataclass(frozen=True)
@@ -442,7 +389,6 @@ def build_compact_selection_cards(
         )
         cards.append(
             {
-                "card_index": index,
                 "as_of_date": date_text,
                 "stock": str(item.get("stock") or item.get("stock_id") or ""),
                 "name": item.get("name") or "",
@@ -551,114 +497,6 @@ def estimate_selection_capacity(cards: List[Dict[str, Any]]) -> SelectionCapacit
     )
 
 
-def _expand_compact_selection_payload(
-    payload: Any,
-    cards: List[Dict[str, Any]],
-) -> Any:
-    """Map compact card indices back to stock ids before normal validation."""
-    if not isinstance(payload, dict) or payload.get("selection_contract") not in {
-        COMPACT_SELECTION_CONTRACT,
-        COMPACT_SELECTION_REPAIR_CONTRACT,
-    }:
-        return payload
-    items = payload.get("items")
-    if not isinstance(items, list):
-        return payload
-    expanded_items = []
-    for raw in items:
-        if not isinstance(raw, dict):
-            expanded_items.append(raw)
-            continue
-        item = dict(raw)
-        card_index = item.get("card_index")
-        if isinstance(card_index, int) and not isinstance(card_index, bool):
-            if 1 <= card_index <= len(cards):
-                card = cards[card_index - 1]
-                item["stock"] = str(card.get("stock") or "")
-                # Compact overlap references are card indices too; the public
-                # audit shape continues to use stock ids.
-                overlap = item.get("overlap_with")
-                if isinstance(overlap, list):
-                    item["overlap_with"] = [
-                        str(cards[index - 1].get("stock") or "")
-                        for index in overlap
-                        if isinstance(index, int)
-                        and not isinstance(index, bool)
-                        and 1 <= index <= len(cards)
-                    ]
-        expanded_items.append(item)
-    return {**payload, "items": expanded_items}
-
-
-def _compact_alignment_targets(
-    payload: Any,
-    cards: List[Dict[str, Any]],
-) -> tuple[List[int], List[int], List[int]]:
-    """Return (missing indices, duplicate indices, valid seen indices)."""
-    expected = set(range(1, len(cards) + 1))
-    seen: set[int] = set()
-    duplicates: List[int] = []
-    items = payload.get("items") if isinstance(payload, dict) else None
-    if not isinstance(items, list):
-        return sorted(expected), [], []
-    compact = isinstance(payload, dict) and payload.get("selection_contract") in {
-        COMPACT_SELECTION_CONTRACT,
-        COMPACT_SELECTION_REPAIR_CONTRACT,
-    }
-    card_by_stock = {
-        str(card.get("stock") or ""): index
-        for index, card in enumerate(cards, start=1)
-    }
-    for raw in items:
-        if not isinstance(raw, dict):
-            continue
-        index = raw.get("card_index") if compact else card_by_stock.get(
-            str(raw.get("stock") or "")
-        )
-        if not isinstance(index, int) or isinstance(index, bool) or index not in expected:
-            continue
-        if index in seen:
-            duplicates.append(index)
-        else:
-            seen.add(index)
-    return sorted(expected - seen), sorted(set(duplicates)), sorted(seen)
-
-
-def _merge_compact_repair(
-    original: Dict[str, Any],
-    repair: Dict[str, Any],
-    cards: List[Dict[str, Any]],
-) -> Dict[str, Any]:
-    """Keep the first original copy and append repaired missing rows."""
-    kept: List[Dict[str, Any]] = []
-    seen: set[int] = set()
-    for raw in original.get("items") or []:
-        if not isinstance(raw, dict):
-            continue
-        index = raw.get("card_index")
-        if not isinstance(index, int) or isinstance(index, bool):
-            continue
-        if index in seen or not 1 <= index <= len(cards):
-            continue
-        seen.add(index)
-        kept.append(raw)
-    for raw in repair.get("items") or []:
-        if not isinstance(raw, dict):
-            continue
-        index = raw.get("card_index")
-        if not isinstance(index, int) or isinstance(index, bool):
-            continue
-        if index in seen or not 1 <= index <= len(cards):
-            continue
-        seen.add(index)
-        kept.append(raw)
-    return {
-        **original,
-        "selection_contract": COMPACT_SELECTION_CONTRACT,
-        "items": kept,
-    }
-
-
 def run_global_selection(
     cards: List[Dict[str, Any]],
     market_context: Dict[str, Any],
@@ -676,9 +514,10 @@ def run_global_selection(
     參數永遠是 None，Global Selector 對 LLM 的輸入完全不受影響（見 §十五／
     §十八：shadow 對 Selection 零影響是本次改動的硬性要求）。
 
-    A single contract-correction retry is allowed.  Alignment errors use a
-    low-token repair that only asks for missing card indices; semantic errors
-    use the compact full-set contract.  No partial selection is ever adopted.
+    A single full-set contract-correction retry is allowed for a semantically
+    invalid model response.  The invalid response is never adopted, and the
+    retry compares the complete card set again, so atomicity and the ban on
+    tournament/partial selection remain intact.
     """
     family = prompt_family.resolve_prompt_family()
     expected_version = prompt_family.stage_version("global_selector", family)
@@ -808,8 +647,6 @@ def run_global_selection(
                 previous_error = llm_failed_error
                 continue
             raise llm_failed_error
-        raw_payload = payload
-        payload = _expand_compact_selection_payload(payload, cards)
         payload, normalized_recommendation_ranks = (
             _normalize_recommendation_ranks(payload, cards)
         )
@@ -830,155 +667,6 @@ def run_global_selection(
             )
         except GlobalSelectionError as exc:
             if attempt < max_attempts - 1 and retry_enabled:
-                if (
-                    family == prompt_family.PROMPT_FAMILY_VERSION
-                    and isinstance(raw_payload, dict)
-                    and raw_payload.get("selection_contract")
-                    == COMPACT_SELECTION_CONTRACT
-                    and exc.code
-                    in {
-                        "GLOBAL_SELECTION_DUPLICATE_STOCK",
-                        "GLOBAL_SELECTION_MISSING_STOCK",
-                        "GLOBAL_SELECTION_ALIGNMENT_INVALID",
-                    }
-                ):
-                    missing_indices, duplicate_indices, _ = (
-                        _compact_alignment_targets(raw_payload, cards)
-                    )
-                    if missing_indices:
-                        repair_request = {
-                            "selection_version": expected_version,
-                            "selection_contract": COMPACT_SELECTION_REPAIR_CONTRACT,
-                            "date": date_text,
-                            "repair_instruction": (
-                                "只補回 missing_card_indices。原始輸出中重複的 card_index "
-                                "保留第一筆；不要重新排序或重做已存在的卡片。"
-                            ),
-                            "missing_card_indices": missing_indices,
-                            "duplicate_card_indices": duplicate_indices,
-                            "previous_selection": raw_payload,
-                            "repair_cards": [
-                                cards[index - 1] for index in missing_indices
-                            ],
-                        }
-                        if market_environment is not None:
-                            repair_request["market_environment"] = market_environment
-                        repair_payload, repair_diagnostic = (
-                            llm_caller._call_llm_json(
-                                system_prompt,
-                                json.dumps(
-                                    repair_request,
-                                    ensure_ascii=False,
-                                    separators=(",", ":"),
-                                    default=str,
-                                ),
-                                model=model,
-                                stage="global_selection_repair",
-                                use_web_search=False,
-                                prompt_cache_key=(
-                                    f"signals:{family}:global-selector-repair"
-                                ),
-                                max_output_tokens=_default_output_token_reserve(
-                                    len(missing_indices)
-                                ),
-                                candidate_count=len(missing_indices),
-                                timeout=max(
-                                    _SELECTION_TIMEOUT_MIN_SECONDS,
-                                    _default_selection_timeout_seconds(
-                                        len(missing_indices)
-                                    ),
-                                ),
-                                max_retries=0,
-                                prompt_metadata={
-                                    **metadata,
-                                    "stage_prompt_version": expected_version,
-                                    "assembled_prompt_sha256": metadata[
-                                        "prompt_sha256"
-                                    ]["global_selector"],
-                                    "contract_retry_attempt": attempt,
-                                    "repair": True,
-                                },
-                                response_schema=global_selection_repair_schema(
-                                    expected_version=expected_version,
-                                    selection_date=date_text,
-                                    repair_indices=missing_indices,
-                                ),
-                                response_format_name=(
-                                    "fishtail_v7_global_selector_repair"
-                                ),
-                            )
-                        )
-                        if repair_payload is not None:
-                            merged_raw = _merge_compact_repair(
-                                raw_payload,
-                                repair_payload,
-                                cards,
-                            )
-                            merged_payload = _expand_compact_selection_payload(
-                                merged_raw,
-                                cards,
-                            )
-                            merged_payload, repair_rank_changes = (
-                                _normalize_recommendation_ranks(
-                                    merged_payload, cards
-                                )
-                            )
-                            merged_payload, repair_rank_overrides = (
-                                _derive_rank_override_annotations(
-                                    merged_payload, cards
-                                )
-                            )
-                            try:
-                                validated = validate_global_selection(
-                                    merged_payload,
-                                    cards,
-                                    selection_date=date_text,
-                                    expected_version=expected_version,
-                                    market_environment_provided=(
-                                        market_environment is not None
-                                    ),
-                                    effective_market_state=(
-                                        (market_environment or {}).get(
-                                            "effective_market_state"
-                                        )
-                                    ),
-                                )
-                            except GlobalSelectionError as repair_exc:
-                                repair_exc.diagnostic = {
-                                    **(repair_diagnostic or {}),
-                                    "original_error_code": exc.code,
-                                    "repair_error_code": repair_exc.code,
-                                    "repair_missing_card_indices": missing_indices,
-                                    "repair_duplicate_card_indices": duplicate_indices,
-                                }
-                                raise repair_exc
-                            validated["capacity"] = capacity.as_dict()
-                            validated["llm_diagnostic"] = {
-                                **(diagnostic or {}),
-                                "repair_diagnostic": repair_diagnostic or {},
-                                "contract_retry_attempt": attempt,
-                                "repair": True,
-                                "original_contract_error": exc.code,
-                                "repair_missing_card_indices": missing_indices,
-                                "repair_duplicate_card_indices": duplicate_indices,
-                                "backend_derived_rank_overrides": (
-                                    repair_rank_overrides
-                                ),
-                                "backend_normalized_recommendation_ranks": (
-                                    [
-                                        *normalized_recommendation_ranks,
-                                        *repair_rank_changes,
-                                    ]
-                                ),
-                            }
-                            return validated
-                        exc.diagnostic = {
-                            **(diagnostic or {}),
-                            "repair_diagnostic": repair_diagnostic or {},
-                            "repair_missing_card_indices": missing_indices,
-                            "repair_duplicate_card_indices": duplicate_indices,
-                        }
-                        raise exc
                 previous_error = exc
                 continue
             if diagnostic and not exc.diagnostic:
@@ -1107,14 +795,6 @@ def _derive_rank_override_annotations(
             and backend_rank > highest_excluded_rank
         ):
             item["rank_override"] = True
-            if not _nonempty(item.get("relative_advantage")):
-                basis = item.get("recommendation_basis")
-                if isinstance(basis, list) and any(_nonempty(value) for value in basis):
-                    basis_text = "、".join(
-                        _BASIS_TEXT.get(str(value).upper(), "相對優勢")
-                        for value in basis
-                    )
-                    item["relative_advantage"] = f"{basis_text}具同日相對優勢。"
             if not _nonempty(item.get("rank_override_reason")):
                 relative_advantage = item.get("relative_advantage")
                 if _nonempty(relative_advantage):
@@ -1165,9 +845,7 @@ def validate_global_selection(
     if not isinstance(items, list):
         _invalid("GLOBAL_SELECTION_SCHEMA_INVALID", "items must be a list")
 
-    compact = payload.get("selection_contract") == COMPACT_SELECTION_CONTRACT
     card_by_id = {str(card.get("stock") or ""): card for card in cards}
-    card_by_index = {index: card for index, card in enumerate(cards, start=1)}
     expected_ids = set(card_by_id)
     seen: set[str] = set()
     normalized: List[Dict[str, Any]] = []
@@ -1176,20 +854,7 @@ def validate_global_selection(
     for raw in items:
         if not isinstance(raw, dict):
             _invalid("GLOBAL_SELECTION_SCHEMA_INVALID", "every item must be an object")
-        if compact:
-            card_index = raw.get("card_index")
-            if (
-                not isinstance(card_index, int)
-                or isinstance(card_index, bool)
-                or card_index not in card_by_index
-            ):
-                _invalid(
-                    "GLOBAL_SELECTION_UNKNOWN_CARD",
-                    f"unknown card_index: {card_index}",
-                )
-            sid = str(card_by_index[card_index].get("stock") or "")
-        else:
-            sid = str(raw.get("stock") or "")
+        sid = str(raw.get("stock") or "")
         if sid not in expected_ids:
             _invalid("GLOBAL_SELECTION_UNKNOWN_STOCK", f"unknown stock: {sid}")
         if sid in seen:
@@ -1201,42 +866,6 @@ def validate_global_selection(
         item = dict(raw)
         item["stock"] = sid
         item["decision"] = decision
-        if compact:
-            source_card = card_by_id[sid]
-            item["recommendation_thesis"] = (
-                source_card.get("recommendation_thesis_candidate")
-                or "通過全體比較，保留為今日推薦。"
-                if decision == "RECOMMEND"
-                else None
-            )
-            item["theme_cluster"] = source_card.get("theme_cluster")
-            item["distinct_thesis"] = decision == "RECOMMEND"
-            # `_derive_rank_override_annotations` runs before validation and
-            # supplies objective evidence when a compact response crosses a
-            # higher-priority NOT_SELECTED candidate.  Preserve that derived
-            # evidence instead of wiping it out while expanding the compact
-            # contract.
-            item["rank_override"] = bool(item.get("rank_override"))
-            if "rank_override_reason" not in item:
-                item["rank_override_reason"] = None
-            overlap_indices = raw.get("overlap_with")
-            if isinstance(overlap_indices, list):
-                item["overlap_with"] = [
-                    str(card_by_index[index].get("stock") or "")
-                    for index in overlap_indices
-                    if isinstance(index, int)
-                    and not isinstance(index, bool)
-                    and index in card_by_index
-                ]
-            reason_code = str(raw.get("selection_reason_code") or "").upper()
-            item["selection_reason"] = (
-                "列入今日正式推薦。"
-                if decision == "RECOMMEND"
-                else _NOT_SELECTED_REASON_TEXT.get(
-                    reason_code,
-                    "候選仍有效，但今日相對優勢尚不鮮明。",
-                )
-            )
         backend_rank = int(card_by_id[sid]["backend_priority_rank"])
         item["backend_priority_rank"] = backend_rank
         item["backend_priority_total"] = card_by_id[sid]["backend_priority_total"]
@@ -1249,39 +878,33 @@ def validate_global_selection(
             recommendation_rank = raw.get("recommendation_rank")
             if not isinstance(recommendation_rank, int) or isinstance(recommendation_rank, bool) or recommendation_rank <= 0:
                 _invalid("GLOBAL_SELECTION_RANK_INVALID", f"invalid rank for {sid}")
+            if not _nonempty(raw.get("recommendation_thesis")) or not _nonempty(raw.get("relative_advantage")):
+                _invalid("GLOBAL_SELECTION_RECOMMEND_REASON_MISSING", f"missing thesis/advantage for {sid}")
+            _require_traditional_text(
+                raw.get("recommendation_thesis"),
+                "GLOBAL_SELECTION_RECOMMEND_REASON_MISSING",
+                f"recommendation thesis must be Traditional Chinese for {sid}",
+            )
+            _require_traditional_text(
+                raw.get("relative_advantage"),
+                "GLOBAL_SELECTION_RECOMMEND_REASON_MISSING",
+                f"relative advantage must be Traditional Chinese for {sid}",
+            )
             basis = raw.get("recommendation_basis")
             if not isinstance(basis, list) or not any(_nonempty(value) for value in basis):
                 _invalid("GLOBAL_SELECTION_RECOMMEND_REASON_MISSING", f"missing basis for {sid}")
             if any(str(value).upper() not in RECOMMENDATION_BASIS_CODES for value in basis):
                 _invalid("GLOBAL_SELECTION_RECOMMEND_REASON_MISSING", f"invalid basis for {sid}")
-            if compact and not _nonempty(item.get("relative_advantage")):
-                basis_text = "、".join(
-                    _BASIS_TEXT.get(str(value).upper(), "相對優勢")
-                    for value in basis
-                )
-                item["relative_advantage"] = f"{basis_text}具同日相對優勢。"
-            if not _nonempty(item.get("recommendation_thesis")) or not _nonempty(item.get("relative_advantage")):
-                _invalid("GLOBAL_SELECTION_RECOMMEND_REASON_MISSING", f"missing thesis/advantage for {sid}")
-            _require_traditional_text(
-                item.get("recommendation_thesis"),
-                "GLOBAL_SELECTION_RECOMMEND_REASON_MISSING",
-                f"recommendation thesis must be Traditional Chinese for {sid}",
-            )
-            _require_traditional_text(
-                item.get("relative_advantage"),
-                "GLOBAL_SELECTION_RECOMMEND_REASON_MISSING",
-                f"relative advantage must be Traditional Chinese for {sid}",
-            )
             if raw.get("selection_reason_code") is not None:
                 _invalid("GLOBAL_SELECTION_SCHEMA_INVALID", f"RECOMMEND has not-selected fields: {sid}")
-            if not _nonempty(item.get("selection_reason")):
+            if not _nonempty(raw.get("selection_reason")):
                 _invalid("GLOBAL_SELECTION_RECOMMEND_REASON_MISSING", f"missing selection reason for {sid}")
             _require_traditional_text(
-                item.get("selection_reason"),
+                raw.get("selection_reason"),
                 "GLOBAL_SELECTION_RECOMMEND_REASON_MISSING",
                 f"selection reason must be Traditional Chinese for {sid}",
             )
-            if item.get("distinct_thesis") is not True:
+            if raw.get("distinct_thesis") is not True:
                 _invalid("GLOBAL_SELECTION_RECOMMEND_REASON_MISSING", f"distinct_thesis must be true for {sid}")
             recommend_ranks.append(recommendation_rank)
         else:
@@ -1290,10 +913,10 @@ def validate_global_selection(
             reason_code = str(raw.get("selection_reason_code") or "").upper()
             if reason_code not in NOT_SELECTED_REASON_CODES:
                 _invalid("GLOBAL_SELECTION_REASON_CODE_INVALID", f"invalid reason code for {sid}")
-            if not _nonempty(item.get("selection_reason")):
+            if not _nonempty(raw.get("selection_reason")):
                 _invalid("GLOBAL_SELECTION_REASON_MISSING", f"missing reason for {sid}")
             _require_traditional_text(
-                item.get("selection_reason"),
+                raw.get("selection_reason"),
                 "GLOBAL_SELECTION_REASON_MISSING",
                 f"selection reason must be Traditional Chinese for {sid}",
             )
@@ -1347,7 +970,7 @@ def validate_global_selection(
                 )
         item["market_resilience"] = resilience
         item["market_context_reason"] = raw.get("market_context_reason")
-        if "theme_cluster" not in item or not isinstance(item.get("distinct_thesis"), bool):
+        if "theme_cluster" not in raw or not isinstance(raw.get("distinct_thesis"), bool):
             _invalid("GLOBAL_SELECTION_SCHEMA_INVALID", f"missing cluster/thesis flag for {sid}")
         normalized.append(item)
 

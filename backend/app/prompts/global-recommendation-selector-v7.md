@@ -4,9 +4,8 @@
 `RECOMMEND` 或 `NOT_SELECTED`，不得 REMOVE。推薦數可以是 0 至全部；禁止固定 Top-K、
 比例、rank cutoff，以及產業、題材、集團、來源或資產類型配額。
 
-Backend Rank 是排序骨幹而非門檻。若較後排名被推薦而較前排名未入選，必須在
-`relative_advantage` 說明相對優勢；backend 會依完整決策集合補上 rank override 標記。
-Candidate Source 只作描述；UNCONFIRMED 可推薦或未入選；
+Backend Rank 是排序骨幹而非門檻。若較後排名被推薦而較前排名未入選，必須填寫
+rank override reason。Candidate Source 只作描述；UNCONFIRMED 可推薦或未入選；
 同族群可以全部推薦；`THESIS_OVERLAP` 只能造成 NOT_SELECTED。
 
 ## Market Environment（M27 Market Regime v2，2026-09-04）
@@ -44,25 +43,26 @@ Market Environment 無法否決這件事）。
 `NOT_SELECTED` 完全合法，是正常的結論），不是硬把 resilience 誇大成
 STRONG/ADEQUATE 來湊 RECOMMEND。
 
-為了降低長 JSON 的 token 成本與複製錯誤，請使用輸入 card 的 `card_index` 輸出，
-不要輸出股票代碼。每個輸入 card 必須剛好對應一筆 item；不可重複或遺漏
-`card_index`。詳細推薦理由會由後續 reason stage 產生，本階段只輸出短決策欄位。
-
 沿用輸入提供的 `selection_version` 與 `date`，輸出：
 
 {
   "selection_version": "v7_global_selector_market_v2",
-  "selection_contract": "compact_v1",
   "date": "YYYY-MM-DD",
   "selection_complete": true,
   "items": [{
-    "card_index": 1,
+    "stock": "...",
     "decision": "RECOMMEND | NOT_SELECTED",
     "recommendation_rank": null,
     "selection_reason_code": null,
-    "relative_advantage": "RECOMMEND 時填一句精簡繁體中文相對優勢；NOT_SELECTED 為 null",
+    "selection_reason": "繁體中文",
+    "recommendation_thesis": "繁體中文",
+    "relative_advantage": "繁體中文",
+    "theme_cluster": "...",
+    "distinct_thesis": true,
     "overlap_with": [],
     "overlap_reason": null,
+    "rank_override": false,
+    "rank_override_reason": null,
     "recommendation_basis": [],
     "market_resilience": "STRONG | ADEQUATE | WEAK | null",
     "market_context_reason": "繁體中文"
@@ -76,10 +76,6 @@ STRONG/ADEQUATE 來湊 RECOMMEND。
 `recommend_count` / `not_selected_count`——這些是 backend 從 `items` 機械計算，
 你回報的任何數字都不會被採用；只是徒增算錯的風險。
 
-若輸入的 `selection_contract` 是 `compact_repair_v1`，只輸出指定的
-`missing_card_indices` replacement items，不要重複輸出已存在的 card，也不要輸出
-股票代碼；每個 replacement 仍需包含完整的 compact 欄位。
-
 NOT_SELECTED reason code 只能是：
 LOWER_RELATIVE_PRIORITY、POSITIVE_CASE_INCOMPLETE、CATALYST_UNCONFIRMED、
 PARTICIPATION_NOT_DISTINCTIVE、EVIDENCE_COHERENCE_WEAK、THESIS_OVERLAP、
@@ -89,4 +85,6 @@ SETUP_NEEDS_CONFIRMATION、RESEARCH_CONFIDENCE_LOW、NO_DISTINCT_DAILY_EDGE。
 `MARKET_BAD`／`VIX_TOO_HIGH`／`FOREIGN_SELLING` 這類理由代碼；若某檔候選是
 因為市場壓力下相對優勢不足才未列入推薦，仍用既有理由代碼（例如
 `LOWER_RELATIVE_PRIORITY`／`PARTICIPATION_NOT_DISTINCTIVE`），並在
-`market_context_reason` 的文字裡具體說明市場背景。
+`selection_reason`／`market_context_reason` 的文字裡具體說明市場背景（例如
+「目前市場壓力偏高，該股雖仍符合候選資格，但相對強度與資金參與沒有明顯優於
+同日其他候選，因此未列入今日正式推薦」）。
