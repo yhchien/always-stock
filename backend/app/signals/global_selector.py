@@ -77,16 +77,24 @@ _CACHE_KEY = "signals:p3:global-selector:v1"
 # Outputs), so per-item token cost does not shrink just because most items
 # end up NOT_SELECTED. All 3 contract retries hit `max_output_tokens`
 # truncation and the day's watchlist came back empty. The reserve now scales
-# with candidate count instead of a flat number; `within_limit` below still
-# guards against genuinely oversized pools by raising a clear
-# GLOBAL_SELECTION_CONTEXT_EXCEEDED instead of silently truncating output.
-_OUTPUT_TOKEN_RESERVE_BASE = 3_000
-_OUTPUT_TOKEN_RESERVE_PER_CANDIDATE = 220
+# with candidate count instead of a flat number. The 2026-09-25 full-evidence
+# run showed that 19,060 tokens was still insufficient for 73 cards, so keep
+# enough room for the complete per-card contract and cap it at the practical
+# 32k output ceiling. `within_limit` below still guards against genuinely
+# oversized pools by raising a clear GLOBAL_SELECTION_CONTEXT_EXCEEDED instead
+# of silently truncating output.
+_OUTPUT_TOKEN_RESERVE_BASE = 5_000
+_OUTPUT_TOKEN_RESERVE_PER_CANDIDATE = 400
+_OUTPUT_TOKEN_RESERVE_MAX = 32_768
 _DEFAULT_CONTEXT_LIMIT_TOKENS = 114_688
 
 
 def _default_output_token_reserve(candidate_count: int) -> int:
-    return _OUTPUT_TOKEN_RESERVE_BASE + candidate_count * _OUTPUT_TOKEN_RESERVE_PER_CANDIDATE
+    return min(
+        _OUTPUT_TOKEN_RESERVE_MAX,
+        _OUTPUT_TOKEN_RESERVE_BASE
+        + candidate_count * _OUTPUT_TOKEN_RESERVE_PER_CANDIDATE,
+    )
 
 
 # 2026-08-11 production incident: the above token-reserve fix let 112 eligible

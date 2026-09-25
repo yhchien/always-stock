@@ -656,6 +656,13 @@ def test_output_token_reserve_grows_linearly_with_candidate_count():
     assert small.output_token_reserve == global_selector._default_output_token_reserve(10)
 
 
+def test_output_token_reserve_covers_full_evidence_73_card_incident():
+    """2026-09-25: a 73-card full-evidence response used all 19,060 tokens."""
+    capacity = global_selector.estimate_selection_capacity(_cards(73))
+    assert capacity.output_token_reserve == 32_768
+    assert capacity.estimated_input_tokens + capacity.output_token_reserve < 114_688
+
+
 def test_output_token_reserve_env_override_still_wins(monkeypatch):
     monkeypatch.setenv("SIGNALS_GLOBAL_SELECTOR_OUTPUT_TOKEN_RESERVE", "9999")
     capacity = global_selector.estimate_selection_capacity(_cards(200))
