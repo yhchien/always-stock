@@ -48,6 +48,19 @@ def _research_item(stock: str = "2330"):
     }
 
 
+def _reason_item(stock: str = "2330"):
+    return {
+        "stock": stock,
+        "theme_reason": ["實際業務符合題材定位且催化劑仍延續。"] * 2,
+        "capital_reason": ["今日相對優勢與後端排序互相呼應。"] * 2,
+        "chip_reason": ["法人買盤與成交量共同顯示資金參與。"] * 2,
+        "margin_reason": ["融資融券資料完整，尚未出現明顯過熱。"],
+        "technical_reason": ["價格結構仍完整，但需留意短線追高風險。"] * 2,
+        "momentum_reason": ["相對大盤與同業動能維持領先。"] * 2,
+        "margin_analysis": {},
+    }
+
+
 def test_default_and_legacy_routing_are_explicit(monkeypatch):
     assert prompt_family.resolve_prompt_family() == "v7"
     versions = prompt_family.prompt_metadata()
@@ -455,6 +468,39 @@ def test_v7_research_uses_strict_structured_output_schema(monkeypatch):
     assert schema["additionalProperties"] is False
     stock_schema = schema["properties"]["items"]["items"]["properties"]["stock"]
     assert stock_schema["enum"] == ["2330"]
+
+
+def test_v7_reason_contract_failure_retries_the_same_batch(monkeypatch):
+    calls = []
+
+    def fake_call(_system, user_msg, **kwargs):
+        payload = json.loads(user_msg)
+        calls.append(payload)
+        if len(calls) == 1:
+            return {
+                "date": STAGE_DATE,
+                "items": [_reason_item("2330")],
+            }, {"status": "ok"}
+        return {
+            "date": STAGE_DATE,
+            "items": [_reason_item("2330"), _reason_item("2454")],
+        }, {"status": "ok"}
+
+    monkeypatch.setattr(llm_caller, "_call_llm_json", fake_call)
+    output = llm_caller.run_watch_reason_batch(
+        [
+            {"stock": "2330", "name": "台積電"},
+            {"stock": "2454", "name": "聯發科"},
+        ],
+        {"target_date": STAGE_DATE},
+    )
+
+    assert len(calls) == 2
+    assert "contract_retry" not in calls[0]
+    assert "contract_retry" in calls[1]
+    assert [item["stock"] for item in output] == ["2330", "2454"]
+    assert all(not item.get("_unavailable") for item in output)
+    assert all(item["llm_diagnostic"]["contract_retry_attempt"] == 1 for item in output)
 
 
 def test_v7_research_contract_failure_binary_retries(monkeypatch):

@@ -1783,10 +1783,20 @@ def _run_v7_reason_chunk(
     market_context: Dict[str, Any],
     *,
     model: str,
+    retry_correction: Optional[str] = None,
+    contract_retry_attempt: int = 0,
 ) -> List[Dict[str, Any]]:
     stage_date = _stage_date(market_context, chunk)
     system_prompt = prompt_family.build_stage_prompt("reason")
     user_payload = prompt_family.reason_input(chunk, reason_date=stage_date)
+    if retry_correction:
+        user_payload["contract_retry"] = {
+            "previous_rejection": retry_correction,
+            "required_correction": (
+                "上一輪回應未與輸入股票一對一對齊。請完整輸出本次輸入的每一檔股票，"
+                "不可省略、重複或使用輸入集合以外的股票代碼；只輸出 JSON。"
+            ),
+        }
     metadata = prompt_family.prompt_metadata()
     payload, diagnostic = _call_llm_json(
         system_prompt,
@@ -1810,6 +1820,19 @@ def _run_v7_reason_chunk(
         response_format_name="fishtail_v7_reason",
     )
     if payload is None:
+        if (
+            contract_retry_attempt == 0
+            and (diagnostic or {}).get("status") in _RESEARCH_CONTRACT_RETRY_STATUSES
+        ):
+            return _run_v7_reason_chunk(
+                chunk,
+                market_context,
+                model=model,
+                retry_correction=str(
+                    (diagnostic or {}).get("message") or "reason contract failed"
+                ),
+                contract_retry_attempt=1,
+            )
         return [_watch_reason_fallback(row, diagnostic=diagnostic) for row in chunk]
     stocks = [str(row.get("stock") or row.get("stock_id") or "") for row in chunk]
     try:
@@ -1822,6 +1845,14 @@ def _run_v7_reason_chunk(
             status=_DIAG_STATUS_INVALID_JSON,
             message=f"v7 reason contract rejected: {exc}",
         )
+        if contract_retry_attempt == 0:
+            return _run_v7_reason_chunk(
+                chunk,
+                market_context,
+                model=model,
+                retry_correction=str(exc),
+                contract_retry_attempt=1,
+            )
         return [_watch_reason_fallback(row, diagnostic=diagnostic) for row in chunk]
 
     by_id = {str(item["stock"]): item for item in validated}
@@ -1855,7 +1886,14 @@ def _run_v7_reason_chunk(
                     else None
                 ),
             ),
-            "llm_diagnostic": diagnostic,
+            "llm_diagnostic": {
+                **diagnostic,
+                **(
+                    {"contract_retry_attempt": contract_retry_attempt}
+                    if contract_retry_attempt
+                    else {}
+                ),
+            },
         })
     return out
 
