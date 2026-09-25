@@ -238,6 +238,57 @@ def test_compact_selector_contract_maps_card_indices_and_fills_audit_fields(
     assert result["items"][1]["selection_reason"] == "有效但今日相對優勢較低。"
 
 
+def test_compact_rank_override_gets_backend_evidence_from_basis(monkeypatch):
+    cards = _cards(2)
+
+    def fake_call(_system, _user_msg, **kwargs):
+        return {
+            "selection_version": global_selector.SELECTION_VERSION,
+            "selection_contract": global_selector.COMPACT_SELECTION_CONTRACT,
+            "date": SELECTION_DATE.isoformat(),
+            "selection_complete": True,
+            "items": [
+                {
+                    "card_index": 1,
+                    "decision": "NOT_SELECTED",
+                    "recommendation_rank": None,
+                    "selection_reason_code": "LOWER_RELATIVE_PRIORITY",
+                    "relative_advantage": None,
+                    "overlap_with": [],
+                    "overlap_reason": None,
+                    "recommendation_basis": [],
+                    "market_resilience": None,
+                    "market_context_reason": None,
+                },
+                {
+                    "card_index": 2,
+                    "decision": "RECOMMEND",
+                    "recommendation_rank": 1,
+                    "selection_reason_code": None,
+                    "relative_advantage": None,
+                    "overlap_with": [],
+                    "overlap_reason": None,
+                    "recommendation_basis": ["MOMENTUM"],
+                    "market_resilience": None,
+                    "market_context_reason": None,
+                },
+            ],
+            "summary": {"selection_rationale": "完成全體比較。"},
+        }, {"status": "ok"}
+
+    monkeypatch.setattr(global_selector.llm_caller, "_call_llm_json", fake_call)
+    result = global_selector.run_global_selection(
+        cards,
+        {},
+        selection_date=SELECTION_DATE,
+    )
+
+    selected = result["items"][1]
+    assert selected["rank_override"] is True
+    assert selected["relative_advantage"] == "動能具同日相對優勢。"
+    assert "跨越較高後端順位" in selected["rank_override_reason"]
+
+
 def test_compact_duplicate_uses_low_token_missing_card_repair(monkeypatch):
     cards = _cards(2)
     requests = []

@@ -1107,6 +1107,14 @@ def _derive_rank_override_annotations(
             and backend_rank > highest_excluded_rank
         ):
             item["rank_override"] = True
+            if not _nonempty(item.get("relative_advantage")):
+                basis = item.get("recommendation_basis")
+                if isinstance(basis, list) and any(_nonempty(value) for value in basis):
+                    basis_text = "、".join(
+                        _BASIS_TEXT.get(str(value).upper(), "相對優勢")
+                        for value in basis
+                    )
+                    item["relative_advantage"] = f"{basis_text}具同日相對優勢。"
             if not _nonempty(item.get("rank_override_reason")):
                 relative_advantage = item.get("relative_advantage")
                 if _nonempty(relative_advantage):
@@ -1203,8 +1211,14 @@ def validate_global_selection(
             )
             item["theme_cluster"] = source_card.get("theme_cluster")
             item["distinct_thesis"] = decision == "RECOMMEND"
-            item["rank_override"] = False
-            item["rank_override_reason"] = None
+            # `_derive_rank_override_annotations` runs before validation and
+            # supplies objective evidence when a compact response crosses a
+            # higher-priority NOT_SELECTED candidate.  Preserve that derived
+            # evidence instead of wiping it out while expanding the compact
+            # contract.
+            item["rank_override"] = bool(item.get("rank_override"))
+            if "rank_override_reason" not in item:
+                item["rank_override_reason"] = None
             overlap_indices = raw.get("overlap_with")
             if isinstance(overlap_indices, list):
                 item["overlap_with"] = [
