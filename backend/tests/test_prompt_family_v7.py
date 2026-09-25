@@ -58,7 +58,7 @@ def test_default_and_legacy_routing_are_explicit(monkeypatch):
     assert versions["response_contract_versions"] == {
         "research": "v7_research_json_schema_v1",
         "assessment": "v7_assessment_json_schema_v1",
-        "global_selector": "v7_global_selector_json_schema_v2",
+        "global_selector": "v7_global_selector_json_schema_v3",
         "reason": "v7_reason_json_schema_v1",
         "tracking": "v7_tracking_json_schema_v1",
     }

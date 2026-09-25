@@ -184,6 +184,138 @@ def test_global_selection_schema_does_not_require_model_reported_counts():
     assert set(summary_schema["properties"]) == {"selection_rationale"}
 
 
+def test_compact_selector_contract_maps_card_indices_and_fills_audit_fields(
+    monkeypatch,
+):
+    cards = _cards(2)
+
+    def fake_call(_system, _user_msg, **kwargs):
+        assert "card_index" in kwargs["response_schema"]["properties"]["items"]["items"]["properties"]
+        assert "stock" not in kwargs["response_schema"]["properties"]["items"]["items"]["properties"]
+        return {
+            "selection_version": global_selector.SELECTION_VERSION,
+            "selection_contract": global_selector.COMPACT_SELECTION_CONTRACT,
+            "date": SELECTION_DATE.isoformat(),
+            "selection_complete": True,
+            "items": [
+                {
+                    "card_index": 1,
+                    "decision": "RECOMMEND",
+                    "recommendation_rank": 1,
+                    "selection_reason_code": None,
+                    "relative_advantage": "動能具同日相對優勢。",
+                    "overlap_with": [],
+                    "overlap_reason": None,
+                    "recommendation_basis": ["MOMENTUM"],
+                    "market_resilience": None,
+                    "market_context_reason": None,
+                },
+                {
+                    "card_index": 2,
+                    "decision": "NOT_SELECTED",
+                    "recommendation_rank": None,
+                    "selection_reason_code": "LOWER_RELATIVE_PRIORITY",
+                    "relative_advantage": None,
+                    "overlap_with": [],
+                    "overlap_reason": None,
+                    "recommendation_basis": [],
+                    "market_resilience": None,
+                    "market_context_reason": None,
+                },
+            ],
+            "summary": {"selection_rationale": "完成全體比較。"},
+        }, {"status": "ok"}
+
+    monkeypatch.setattr(global_selector.llm_caller, "_call_llm_json", fake_call)
+    result = global_selector.run_global_selection(
+        cards,
+        {},
+        selection_date=SELECTION_DATE,
+    )
+
+    assert [item["stock"] for item in result["items"]] == ["1000", "1001"]
+    assert result["items"][0]["recommendation_thesis"]
+    assert result["items"][1]["selection_reason"] == "有效但今日相對優勢較低。"
+
+
+def test_compact_duplicate_uses_low_token_missing_card_repair(monkeypatch):
+    cards = _cards(2)
+    requests = []
+
+    initial = {
+        "selection_version": global_selector.SELECTION_VERSION,
+        "selection_contract": global_selector.COMPACT_SELECTION_CONTRACT,
+        "date": SELECTION_DATE.isoformat(),
+        "selection_complete": True,
+        "items": [
+            {
+                "card_index": 1,
+                "decision": "RECOMMEND",
+                "recommendation_rank": 1,
+                "selection_reason_code": None,
+                "relative_advantage": "動能具同日相對優勢。",
+                "overlap_with": [],
+                "overlap_reason": None,
+                "recommendation_basis": ["MOMENTUM"],
+                "market_resilience": None,
+                "market_context_reason": None,
+            },
+            {
+                "card_index": 1,
+                "decision": "NOT_SELECTED",
+                "recommendation_rank": None,
+                "selection_reason_code": "LOWER_RELATIVE_PRIORITY",
+                "relative_advantage": None,
+                "overlap_with": [],
+                "overlap_reason": None,
+                "recommendation_basis": [],
+                "market_resilience": None,
+                "market_context_reason": None,
+            },
+        ],
+        "summary": {"selection_rationale": "完成全體比較。"},
+    }
+    repair = {
+        "selection_version": global_selector.SELECTION_VERSION,
+        "selection_contract": global_selector.COMPACT_SELECTION_REPAIR_CONTRACT,
+        "date": SELECTION_DATE.isoformat(),
+        "selection_complete": True,
+        "items": [
+            {
+                "card_index": 2,
+                "decision": "NOT_SELECTED",
+                "recommendation_rank": None,
+                "selection_reason_code": "LOWER_RELATIVE_PRIORITY",
+                "relative_advantage": None,
+                "overlap_with": [],
+                "overlap_reason": None,
+                "recommendation_basis": [],
+                "market_resilience": None,
+                "market_context_reason": None,
+            }
+        ],
+        "summary": {"selection_rationale": "補齊遺漏候選。"},
+    }
+
+    def fake_call(_system, user_msg, **kwargs):
+        request = json.loads(user_msg)
+        requests.append(request)
+        return (initial if len(requests) == 1 else repair), {"status": "ok"}
+
+    monkeypatch.setattr(global_selector.llm_caller, "_call_llm_json", fake_call)
+    result = global_selector.run_global_selection(
+        cards,
+        {},
+        selection_date=SELECTION_DATE,
+    )
+
+    assert len(requests) == 2
+    assert requests[1]["selection_contract"] == global_selector.COMPACT_SELECTION_REPAIR_CONTRACT
+    assert requests[1]["missing_card_indices"] == [2]
+    assert [item["stock"] for item in result["items"]] == ["1000", "1001"]
+    assert result["llm_diagnostic"]["repair"] is True
+
+
 def test_mixed_selection_requires_explicit_rank_override():
     cards = _cards(4)
     items = [
