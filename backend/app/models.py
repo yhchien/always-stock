@@ -1306,10 +1306,10 @@ class ShadowPositionLot(Base):
 
 class ShadowStrategyOrder(Base):
     """Pending order queue：策略在 T 日收盤後決定的 BUY/ADD/SELL，狀態機
-    PENDING → EXECUTED（或 CANCELLED/FAILED）。`scheduled_execution_date` 在建立當下只是
-    「跳過週末」的粗略猜測值（純供 UI 顯示「預計執行」用，生產系統沒有精確的交易日曆工具）；
-    真正成交靠 `execute_pending_strategy_orders` 每天檢查該股票當天是否已有 `daily_price`，
-    self-healing——即使猜測的日期遇到補班/連假而不準，隔天仍會自動處理，不需要人工介入。"""
+    PENDING → EXECUTED（或 CANCELLED/FAILED）。`scheduled_execution_date` 優先記錄已知的
+    下一個交易日；若訊號建立時下一個 session 尚未進入 `daily_price`，先保留非空 fallback，
+    並在實際成交時回寫真正的交易日。執行器只信任訊號日之後第一個有行情的交易日，
+    不會因週末、國定假日或連假把成交綁在下一個曆日。"""
     __tablename__ = "shadow_strategy_orders"
 
     id = Column(Integer, primary_key=True, autoincrement=True)

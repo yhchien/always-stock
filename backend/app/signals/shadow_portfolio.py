@@ -1759,14 +1759,34 @@ def resolve_tracking_universe(
 
 
 def next_weekday_guess(d: date) -> date:
-    """`scheduled_execution_date` 的粗略預測值——只跳過週末，純供 UI「預計執行」顯示用。
-    無法精確預測補班/連假（production 沒有交易日曆工具，且訊號當下 T+1 的 daily_price
-    本來就還不存在），真正成交靠 `execute_pending_strategy_orders` 的 self-healing 查詢。
+    """Compatibility fallback for dates not yet present in ``daily_price``.
+
+    A live signal is created before the next market session has been ingested, so
+    the exact next session cannot always be known at order creation time.  The
+    fallback is only a queue/display hint; execution is resolved from actual
+    ``daily_price`` rows by ``next_trading_execution_date`` and the executor.
     """
     candidate = d + timedelta(days=1)
     while candidate.weekday() >= 5:  # 5=Sat, 6=Sun
         candidate += timedelta(days=1)
     return candidate
+
+
+def next_trading_execution_date(db: Session, signal_date: date) -> date:
+    """Return the first known market session after ``signal_date``.
+
+    The future session may not exist yet when a live order is created.  In that
+    case retain a non-null weekday fallback for the legacy database column;
+    ``execute_pending_strategy_orders`` never trusts this guess and waits for
+    the first actual trading-day price instead.
+    """
+    row = (
+        db.query(DailyPrice.trade_date)
+        .filter(DailyPrice.trade_date > signal_date)
+        .order_by(DailyPrice.trade_date.asc())
+        .first()
+    )
+    return row[0] if row is not None else next_weekday_guess(signal_date)
 
 
 # ---------------------------------------------------------------------------
@@ -1949,7 +1969,11 @@ def execute_pending_strategy_orders(
         .filter(
             ShadowStrategyOrder.strategy_version == strategy_version,
             ShadowStrategyOrder.status == ORDER_STATUS_PENDING,
-            ShadowStrategyOrder.scheduled_execution_date <= target_date,
+            # `scheduled_execution_date` is only a non-null queue hint until
+            # the next market session has been ingested.  The signal date is
+            # the authoritative T+1 boundary; actual execution below still
+            # requires this stock to have a price row on `target_date`.
+            ShadowStrategyOrder.signal_date < target_date,
         )
         .all()
     )
@@ -1968,6 +1992,10 @@ def execute_pending_strategy_orders(
             if price_row is None or price_row[0] is None:
                 executed["skipped_no_price"] += 1
                 continue
+            # Resolve the queue hint to the real first execution session.  In
+            # particular, this corrects Friday→Monday and holiday/bridge-day
+            # cases where a calendar-day guess was stored at signal time.
+            order.scheduled_execution_date = target_date
             price = float(price_row[0])
             position = (
                 db.query(ShadowVirtualPosition)
@@ -2015,6 +2043,7 @@ def execute_pending_strategy_orders(
             if price_row is None or price_row[0] is None:
                 executed["skipped_no_price"] += 1
                 continue
+            order.scheduled_execution_date = target_date
             price = float(price_row[0])
             requested_allocation = order.planned_amount or params["unit_capital"]
             force_full_unit = bool(params.get("force_full_unit_with_cash_topup"))
@@ -3216,7 +3245,7 @@ def _run_v1_dual_engine_daily_strategy(
             ShadowStrategyOrder(
                 strategy_version=strategy_version, stock_id=stock_id, stock_name=evidence.stock_name,
                 action=ACTION_SELL, signal_date=target_date,
-                scheduled_execution_date=next_weekday_guess(target_date),
+                scheduled_execution_date=next_trading_execution_date(db, target_date),
                 status=ORDER_STATUS_PENDING, reason=exit_sig.reason, units=held_units,
             )
         )
@@ -3228,7 +3257,7 @@ def _run_v1_dual_engine_daily_strategy(
                 hit_count=evidence.hit_count_so_far, momentum_score=evidence.momentum_score,
                 mark_to_market_return_pct=evidence.mark_to_market_return_pct, p4_decision=evidence.p4_decision,
                 position_units=held_units, actual_position_return=actual_return_by_stock.get(stock_id),
-                scheduled_execution_date=next_weekday_guess(target_date),
+                scheduled_execution_date=next_trading_execution_date(db, target_date),
                 episode_price_return_pct=evidence.episode_price_return_pct,
                 episode_low_return_pct=evidence.episode_low_return_pct,
                 **_continuation_decision_fields(
@@ -3257,7 +3286,7 @@ def _run_v1_dual_engine_daily_strategy(
             ShadowStrategyOrder(
                 strategy_version=strategy_version, stock_id=stock_id, stock_name=evidence.stock_name,
                 action=ACTION_ADD, signal_date=target_date,
-                scheduled_execution_date=next_weekday_guess(target_date),
+                scheduled_execution_date=next_trading_execution_date(db, target_date),
                 status=ORDER_STATUS_PENDING, reason=sig.entry_type, entry_pattern=sig.entry_type, units=1,
                 planned_amount=confirm_capital, signal_snapshot=snapshot,
             )
@@ -3271,7 +3300,7 @@ def _run_v1_dual_engine_daily_strategy(
                 momentum_score=evidence.momentum_score, mark_to_market_return_pct=evidence.mark_to_market_return_pct,
                 p4_decision=evidence.p4_decision, position_units=_position_units(db, positions[stock_id].id),
                 actual_position_return=actual_return_by_stock.get(stock_id),
-                scheduled_execution_date=next_weekday_guess(target_date),
+                scheduled_execution_date=next_trading_execution_date(db, target_date),
                 episode_price_return_pct=evidence.episode_price_return_pct,
                 episode_low_return_pct=evidence.episode_low_return_pct,
                 **_continuation_decision_fields(
@@ -3332,7 +3361,7 @@ def _run_v1_dual_engine_daily_strategy(
             ShadowStrategyOrder(
                 strategy_version=strategy_version, stock_id=stock_id, stock_name=evidence.stock_name,
                 action=ACTION_BUY, signal_date=target_date,
-                scheduled_execution_date=next_weekday_guess(target_date),
+                scheduled_execution_date=next_trading_execution_date(db, target_date),
                 status=ORDER_STATUS_PENDING, reason=sig.entry_type, entry_pattern=sig.entry_type, units=1,
                 planned_amount=planned_amount, signal_snapshot=snapshot,
                 cash_topup_required=cash_topup_required_by_stock.get(stock_id),
@@ -3345,7 +3374,7 @@ def _run_v1_dual_engine_daily_strategy(
                 action_reason=sig.entry_type, entry_pattern=sig.entry_type,
                 p3_selected_today=evidence.p3_selected_today, hit_count=evidence.hit_count_so_far,
                 momentum_score=evidence.momentum_score, mark_to_market_return_pct=evidence.mark_to_market_return_pct,
-                p4_decision=evidence.p4_decision, scheduled_execution_date=next_weekday_guess(target_date),
+                p4_decision=evidence.p4_decision, scheduled_execution_date=next_trading_execution_date(db, target_date),
                 episode_price_return_pct=evidence.episode_price_return_pct,
                 episode_low_return_pct=evidence.episode_low_return_pct,
                 cash_topup_required=cash_topup_required_by_stock.get(stock_id),
@@ -3701,7 +3730,7 @@ def run_daily_trading_strategy(
             ShadowStrategyOrder(
                 strategy_version=strategy_version, stock_id=stock_id, stock_name=evidence.stock_name,
                 action=ACTION_SELL, signal_date=target_date,
-                scheduled_execution_date=next_weekday_guess(target_date),
+                scheduled_execution_date=next_trading_execution_date(db, target_date),
                 status=ORDER_STATUS_PENDING, reason=exit_sig.reason,
                 units=held_units,
             )
@@ -3714,7 +3743,7 @@ def run_daily_trading_strategy(
                 hit_count=evidence.hit_count_so_far, momentum_score=evidence.momentum_score,
                 mark_to_market_return_pct=evidence.mark_to_market_return_pct, p4_decision=evidence.p4_decision,
                 position_units=held_units, actual_position_return=actual_return_by_stock.get(stock_id),
-                scheduled_execution_date=next_weekday_guess(target_date),
+                scheduled_execution_date=next_trading_execution_date(db, target_date),
             )
         )
         counts["sell"] += 1
@@ -3733,7 +3762,7 @@ def run_daily_trading_strategy(
             ShadowStrategyOrder(
                 strategy_version=strategy_version, stock_id=stock_id, stock_name=evidence.stock_name,
                 action=action, signal_date=target_date,
-                scheduled_execution_date=next_weekday_guess(target_date),
+                scheduled_execution_date=next_trading_execution_date(db, target_date),
                 status=ORDER_STATUS_PENDING,
                 reason=(
                     f"HIGH_MOMENTUM_ROTATION from {rotation_source_by_stock[stock_id]}；"
@@ -3760,7 +3789,7 @@ def run_daily_trading_strategy(
                 mark_to_market_return_pct=evidence.mark_to_market_return_pct, p4_decision=evidence.p4_decision,
                 position_units=(_position_units(db, positions[stock_id].id) if already_held else 0),
                 actual_position_return=(actual_return_by_stock.get(stock_id) if already_held else None),
-                entry_score=sig.entry_score, scheduled_execution_date=next_weekday_guess(target_date),
+                entry_score=sig.entry_score, scheduled_execution_date=next_trading_execution_date(db, target_date),
             )
         )
         counts["add" if action == ACTION_ADD else "buy"] += 1

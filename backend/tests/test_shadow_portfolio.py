@@ -585,6 +585,35 @@ def test_execute_pending_orders_self_heals_when_price_missing_then_available(db)
     assert position is not None
 
 
+def test_pending_order_resolves_weekend_to_next_trading_day(db):
+    """A Friday signal must execute on Monday, not on the calendar Saturday."""
+    friday = date(2026, 8, 7)
+    saturday = date(2026, 8, 8)
+    monday = date(2026, 8, 10)
+    db.add(ShadowVirtualPortfolio(strategy_version=sp.STRATEGY_VERSION, cash=600000.0))
+    db.add(
+        DailyPrice(
+            stock_id="1101", trade_date=monday,
+            open_price=100.0, high_price=101.0, low_price=99.0, close_price=100.0,
+        )
+    )
+    order = ShadowStrategyOrder(
+        strategy_version=sp.STRATEGY_VERSION, stock_id="1101", stock_name="台泥",
+        action=sp.ACTION_BUY, signal_date=friday, scheduled_execution_date=saturday,
+        status=sp.ORDER_STATUS_PENDING, units=1, planned_amount=100000.0,
+        signal_snapshot={"first_seen_date": friday.isoformat()},
+    )
+    db.add(order)
+    db.commit()
+
+    assert sp.next_trading_execution_date(db, friday) == monday
+    result = sp.execute_pending_strategy_orders(db, target_date=monday)
+
+    assert result["buy"] == 1
+    assert order.status == sp.ORDER_STATUS_EXECUTED
+    assert order.scheduled_execution_date == monday
+
+
 def test_execute_pending_orders_sells_before_buys_same_day(db):
     """spec §6：SELL 先於 BUY/ADD，讓賣出釋放的現金當天就能用於買進。"""
     db.add(ShadowVirtualPortfolio(strategy_version=sp.STRATEGY_VERSION, cash=50000.0))
