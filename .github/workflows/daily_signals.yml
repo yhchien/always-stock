@@ -105,6 +105,7 @@ jobs:
           OPENAI_SIGNALS_REASON_MODEL: ${{ secrets.OPENAI_SIGNALS_REASON_MODEL || 'gpt-5.4-mini' }}
           SIGNALS_PROMPT_FAMILY: ${{ github.event.inputs.prompt_family || 'v7' }}
           SIGNALS_PIPELINE_MODE: phase2
+          WATCH_QUALITY_MODE: production
           # malformed research response 只重試失敗候選，並以二分拆批降低
           # 失敗範圍；較晚證據仍會在 9/24 cutoff 驗證中被拒絕/降級。
           SIGNALS_V7_RESEARCH_CONTRACT_RETRY: true
