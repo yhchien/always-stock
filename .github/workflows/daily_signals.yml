@@ -116,6 +116,7 @@ jobs:
               print(f"{target_date} is a trading day; continue")
           else:
               print(f"{target_date} is not a trading day; skip signal pipeline")
+          PY
 
       - name: Run signal pipeline
         id: signals
