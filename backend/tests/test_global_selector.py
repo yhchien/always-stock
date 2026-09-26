@@ -182,6 +182,9 @@ def test_global_selection_schema_does_not_require_model_reported_counts():
     summary_schema = schema["properties"]["summary"]
     assert summary_schema["required"] == ["selection_rationale"]
     assert set(summary_schema["properties"]) == {"selection_rationale"}
+    items_schema = schema["properties"]["items"]
+    assert items_schema["minItems"] == 2
+    assert items_schema["maxItems"] == 2
 
 
 def test_mixed_selection_requires_explicit_rank_override():

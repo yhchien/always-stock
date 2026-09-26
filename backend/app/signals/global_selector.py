@@ -198,7 +198,15 @@ def global_selection_output_schema(
             },
             "date": {"type": "string", "enum": [selection_date]},
             "selection_complete": {"type": "boolean", "enum": [True]},
-            "items": {"type": "array", "items": item},
+            "items": {
+                "type": "array",
+                "items": item,
+                # Backend still verifies the exact one-to-one stock set, but
+                # enforcing the item count in Structured Outputs prevents the
+                # model from returning a syntactically valid partial set.
+                "minItems": len(stock_ids),
+                "maxItems": len(stock_ids),
+            },
             # eligible/recommend/not_selected counts are intentionally not
             # part of this contract.  They are 100% derivable from `items`
             # and `cards`, which the backend already recomputes for the
@@ -609,7 +617,9 @@ def run_global_selection(
                         "THESIS_OVERLAP，overlap_with 必須列出完整 cards 中至少一個"
                         "不同股票代號，且 overlap_reason 必須是具體的繁體中文；若無法"
                         "提出這項具體重疊證據，請改用其他合法 reason code，不得留下"
-                        "空的 overlap_with 或 overlap_reason。"
+                        "空的 overlap_with 或 overlap_reason。items 陣列必須恰好包含"
+                        f"全部 {len(cards)} 張 cards，每個 stock 代號必須出現且只能出現一次，"
+                        "不得遺漏或重複任何候選。"
                     ),
                 }
         user_msg = json.dumps(
