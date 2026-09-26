@@ -596,17 +596,22 @@ def run_global_selection(
     for attempt in range(max_attempts):
         call_payload = dict(request_payload)
         if previous_error is not None:
-            call_payload["contract_retry"] = {
-                "previous_error_code": previous_error.code,
-                "previous_rejection": str(previous_error)[:1000],
-                "required_correction": (
-                    "重新比較完整 compact_selection_cards 並輸出完整一對一結果；"
-                    "不可沿用部分結果。若任何較高 backend_priority_rank 候選為 "
-                    "NOT_SELECTED，而較低順位候選為 RECOMMEND，該較低順位候選必須設 "
-                    "rank_override=true，並以繁體中文提供非空 "
-                    "rank_override_reason 與 relative_advantage。"
-                ),
-            }
+                call_payload["contract_retry"] = {
+                    "previous_error_code": previous_error.code,
+                    "previous_rejection": str(previous_error)[:1000],
+                    "required_correction": (
+                        "重新比較完整 compact_selection_cards 並輸出完整一對一結果；"
+                        "不可沿用部分結果。若任何較高 backend_priority_rank 候選為 "
+                        "NOT_SELECTED，而較低順位候選為 RECOMMEND，該較低順位候選必須設 "
+                        "rank_override=true，並以繁體中文提供非空 "
+                        "rank_override_reason 與 relative_advantage。"
+                        "若 NOT_SELECTED 的 selection_reason_code="
+                        "THESIS_OVERLAP，overlap_with 必須列出完整 cards 中至少一個"
+                        "不同股票代號，且 overlap_reason 必須是具體的繁體中文；若無法"
+                        "提出這項具體重疊證據，請改用其他合法 reason code，不得留下"
+                        "空的 overlap_with 或 overlap_reason。"
+                    ),
+                }
         user_msg = json.dumps(
             call_payload,
             ensure_ascii=False,

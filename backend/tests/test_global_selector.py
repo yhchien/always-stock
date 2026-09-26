@@ -587,6 +587,8 @@ def test_global_other_semantic_error_retries_complete_card_set_once(monkeypatch)
     retry = request_payloads[1]["contract_retry"]
     assert retry["previous_error_code"] == "GLOBAL_SELECTION_SUMMARY_INVALID"
     assert len(request_payloads[1]["compact_selection_cards"]) == 2
+    assert "THESIS_OVERLAP" in retry["required_correction"]
+    assert "overlap_with" in retry["required_correction"]
     assert result["summary"]["eligible_count"] == 2
     assert result["llm_diagnostic"]["contract_retry_attempt"] == 1
 
