@@ -91,8 +91,35 @@ jobs:
           echo "target_date=$TARGET_DATE" >> "$GITHUB_OUTPUT"
           echo "Target date (Taipei): $TARGET_DATE"
 
+      - name: Check target trading day
+        id: trading_day
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TARGET_DATE: ${{ steps.resolve.outputs.target_date }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from datetime import date
+
+          from app.database import SessionLocal
+          from app.trading_calendar import is_trading_day
+
+          target_date = date.fromisoformat(os.environ["TARGET_DATE"])
+          with SessionLocal() as db:
+              trading_day = is_trading_day(db, target_date)
+
+          value = "true" if trading_day else "false"
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"is_trading_day={value}\n")
+          if trading_day:
+              print(f"{target_date} is a trading day; continue")
+          else:
+              print(f"{target_date} is not a trading day; skip signal pipeline")
+
       - name: Run signal pipeline
         id: signals
+        if: steps.trading_day.outputs.is_trading_day == 'true'
         working-directory: backend
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -120,6 +147,14 @@ jobs:
       - name: Evaluate final status
         if: always()
         run: |
+          if [ "${{ steps.trading_day.outcome }}" != "success" ]; then
+            echo "Trading-day check failed; refusing to run or pass the signal pipeline."
+            exit 1
+          fi
+          if [ "${{ steps.trading_day.outputs.is_trading_day }}" != "true" ]; then
+            echo "Status: skipped (target date is not a stock trading day)"
+            exit 0
+          fi
           FINAL_EXIT="${{ steps.signals.outputs.pipeline_exit }}"
           echo "Target date: ${{ steps.resolve.outputs.target_date }}"
           echo "Final pipeline exit code: $FINAL_EXIT"
