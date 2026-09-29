@@ -81,7 +81,7 @@ portfolio_replay.py` 已移除「不可對 v1_frozen 執行 --execute」的舊�
   STRATEGY_VERSION_V1_FROZEN` 分流呼叫 `_run_v1_dual_engine_daily_strategy`
 - `execute_pending_strategy_orders`／`create_portfolio_daily_snapshot`／`check_
   and_apply_cycle_reset` 三個 orchestrator **維持通用、不分流**：T signal→T+1 執行、
-  equity 計算、35 交易日循環重置，這些行為在 Dual-Engine 規格裡完全沒有改變，v1_
+  equity 計算、25 交易日循環重置，這些行為在 Dual-Engine 規格裡完全沒有改變，v1_
   frozen 繼續共用同一份程式碼
 """
 from __future__ import annotations
@@ -159,7 +159,7 @@ def ensure_shadow_portfolio_tables(engine: Engine) -> None:
 
 
 def _ensure_shadow_virtual_portfolio_cycle_columns(engine: Engine) -> None:
-    """2026-09-08：35 交易日循環重置——`shadow_virtual_portfolios` 這張表在
+    """2026-09-08：25 交易日循環重置——`shadow_virtual_portfolios` 這張表在
     production 早已有資料（本輪之前的 backfill 驗證），`create_all` 不會替既有表
     補欄位，需要顯式 ALTER TABLE（比照 `signal_watch_schema.py` 既有 dict pattern）。
     """
@@ -303,7 +303,7 @@ V1_STRATEGY_PARAMS: Dict[str, Any] = {
     "real_stop_loss_pct": -8.0,
 }
 
-CYCLE_LENGTH_TRADING_DAYS = 35
+CYCLE_LENGTH_TRADING_DAYS = 25
 
 STRATEGY_VERSION_V1_FROZEN = "v1_frozen"
 STRATEGY_VERSION_REPAIR_6933 = "REPAIR_6933_202609"
@@ -329,7 +329,7 @@ STRATEGY_VERSION_FORWARD_V1 = "FORWARD_V1_202609"
 #       目前 portfolio equity 的 50%（FORWARD_V1 專用）
 #   add_requires_profit: True 時，加碼前必須 actual_position_return > 0，否則
 #       SKIP_ADD_POSITION_NOT_PROFITABLE（絕不攤平，FORWARD_V1 專用）
-#   cycle_reset_trading_days: None = 不做強制循環重置；v1_frozen 沿用既有 35 交易日
+#   cycle_reset_trading_days: None = 不做強制循環重置；v1_frozen 使用 25 交易日
 #   granular_skip_reasons: True 時才會把「容量不足」拆成 SKIP_PORTFOLIO_FULL /
 #       SKIP_INSUFFICIENT_CASH / SKIP_POSITION_EXPOSURE_LIMIT 並寫入
 #       `ShadowMissedCandidate`；v1_frozen/Clean Baselines 維持既有單一
@@ -461,8 +461,7 @@ DUAL_ENGINE_PARAMS: Dict[str, Any] = {
     # PART 45：資料品質防護 —— 相鄰有效交易日收盤變動 >=50% 視為可疑（減資/分割/
     # 資料誤置），常數集中在這裡，判斷邏輯見 `_episode_has_corporate_action_suspect`。
     "corporate_action_suspect_pct": 0.50,
-    # 沿用既有 v1_frozen 生產迴圈的 35 交易日強制循環重置（spec 沒有要求拿掉這個機制；
-    # 本次 8/1~9/7 回測窗口不到 35 個交易日，這個常數在這次跑不會被觸發）
+    # v1_frozen 生產迴圈每 25 個交易日強制循環重置。
     "cycle_reset_trading_days": CYCLE_LENGTH_TRADING_DAYS,
     # 純資訊性欄位，只給 `/api/signals/shadow-portfolio` 這類唯讀 API 顯示用——
     # Continuation 一檔最多 1 次 Confirmation Scale-in（Starter 50k + Confirm 50k =
@@ -568,10 +567,10 @@ EXIT_REASON_TAKE_PROFIT = "TAKE_PROFIT"
 EXIT_REASON_REAL_STOP_LOSS = "REAL_POSITION_STOP_LOSS"
 # FORWARD_V1：只在新候選明顯更強、且舊部位仍虧損時使用；不會替換 winner。
 EXIT_REASON_FORWARD_HIGH_MOMENTUM_ROTATION = "FORWARD_HIGH_MOMENTUM_ROTATION"
-# 35 交易日循環強制重置（見 check_and_apply_cycle_reset）——不是策略訊號觸發的
+# 25 交易日循環強制重置（見 check_and_apply_cycle_reset）——不是策略訊號觸發的
 # 正常出場，是行政性強制平倉，exit_execution_date 就是觸發當天，不等 T+1
 EXIT_REASON_CYCLE_RESET = "CYCLE_RESET"
-# 回測窗口結束的行政性結算；和 35 交易日循環重置分開，避免把兩種原因混在一起。
+# 回測窗口結束的行政性結算；和 25 交易日循環重置分開，避免把兩種原因混在一起。
 EXIT_REASON_PERIOD_END_SETTLEMENT = "PERIOD_END_SETTLEMENT"
 
 ACTION_WATCH = "WATCH"
@@ -4053,7 +4052,7 @@ def create_portfolio_daily_snapshot(
 
 
 # ---------------------------------------------------------------------------
-# Orchestrator 4：35 個交易日一循環，循環結束強制清空重來
+# Orchestrator 4：25 個交易日一循環，循環結束強制清空重來
 # ---------------------------------------------------------------------------
 def _count_cycle_trading_days(
     db: Session, *, strategy_version: str, cycle_start_trade_date: date, target_date: date

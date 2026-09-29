@@ -487,7 +487,7 @@ export default function ShadowPortfolioPage() {
                   <li><span className="text-slate-300">Continuation（強勢延續引擎）：</span>300,000 元，找 HIGH（高題材匹配）與 LEADER（領導股）；首次買進 100,000 元。</li>
                   <li><span className="text-slate-300">Pullback（拉回回穩引擎）：</span>100,000 元，先觀察拉回，等價格與動能回穩後才買。</li>
                   <li><span className="text-slate-300">Opportunity（機會資金桶）：</span>最多 300,000 元，是核心桶滿載後的額外機會池，不是另一套選股邏輯。</li>
-                  <li><span className="text-slate-300">Confirmation（確認）：</span>目前只確認持倉狀態，不另外投入第二筆資金；每 35 個交易日結算並重設 600,000 元本金。</li>
+                  <li><span className="text-slate-300">Confirmation（確認）：</span>目前只確認持倉狀態，不另外投入第二筆資金；每 25 個交易日結算並重設 600,000 元本金。</li>
                 </ul>
 
                 <p className="mt-3 font-medium text-slate-300">Continuation 的七項證據</p>

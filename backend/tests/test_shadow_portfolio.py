@@ -765,9 +765,9 @@ def test_sell_without_same_day_buy_is_not_marked_as_rotation(db):
 
 
 # ---------------------------------------------------------------------------
-# 35 交易日循環強制重置
+# 25 交易日循環強制重置
 # ---------------------------------------------------------------------------
-def test_cycle_reset_not_triggered_before_35_trading_days(db):
+def test_cycle_reset_not_triggered_before_25_trading_days(db):
     _seed_trading_calendar(db, D0, 40)
     trade_dates = sorted({row.trade_date for row in db.query(DailyPrice).all()})
     cycle_start = trade_dates[0]
@@ -778,7 +778,7 @@ def test_cycle_reset_not_triggered_before_35_trading_days(db):
     )
     db.commit()
 
-    for d in trade_dates[:34]:  # 只跑 34 個交易日，還沒滿 35
+    for d in trade_dates[:24]:  # 只跑 24 個交易日，還沒滿 25
         sp.create_portfolio_daily_snapshot(db, target_date=d)
         db.commit()
         assert sp.check_and_apply_cycle_reset(db, target_date=d) is False
@@ -789,11 +789,11 @@ def test_cycle_reset_not_triggered_before_35_trading_days(db):
     assert portfolio.cycle_start_trade_date == cycle_start
 
 
-def test_cycle_reset_triggers_at_35th_trading_day_and_force_liquidates(db):
+def test_cycle_reset_triggers_at_25th_trading_day_and_force_liquidates(db):
     _seed_trading_calendar(db, D0, 40)
     trade_dates = sorted({row.trade_date for row in db.query(DailyPrice).all()})
     cycle_start = trade_dates[0]
-    day35 = trade_dates[34]
+    day25 = trade_dates[24]
 
     db.add(
         ShadowVirtualPortfolio(
@@ -802,15 +802,15 @@ def test_cycle_reset_triggers_at_35th_trading_day_and_force_liquidates(db):
     )
     db.commit()
     _seed_position_with_lot(db, stock_id="1101", stock_name="台泥", entry_price=100.0, shares=1000.0, allocation=100000.0, entry_date=cycle_start)
-    _seed_price(db, "1101", day35, close=120.0)
+    _seed_price(db, "1101", day25, close=120.0)
 
-    for d in trade_dates[:34]:
+    for d in trade_dates[:24]:
         sp.create_portfolio_daily_snapshot(db, target_date=d)
         db.commit()
 
-    sp.create_portfolio_daily_snapshot(db, target_date=day35)
+    sp.create_portfolio_daily_snapshot(db, target_date=day25)
     db.commit()
-    reset_triggered = sp.check_and_apply_cycle_reset(db, target_date=day35)
+    reset_triggered = sp.check_and_apply_cycle_reset(db, target_date=day25)
     db.commit()
 
     assert reset_triggered is True
@@ -827,7 +827,7 @@ def test_cycle_reset_triggers_at_35th_trading_day_and_force_liquidates(db):
     assert trade is not None
     assert trade.exit_reason == sp.EXIT_REASON_CYCLE_RESET
     assert trade.exit_price == 120.0
-    assert trade.exit_execution_date == day35
+    assert trade.exit_execution_date == day25
     assert trade.cycle_number == 1  # 屬於被結束的那個循環，不是新循環
 
 

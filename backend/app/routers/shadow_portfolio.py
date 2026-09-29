@@ -693,7 +693,7 @@ def get_shadow_completed_trades(
     sort_by: TradeSortBy = Query(default="entry_date_desc"),
     db: Session = Depends(get_db),
 ) -> ShadowCompletedTradesResponse:
-    """逐筆已平倉交易——`ShadowCompletedTrade` 是永久保存的紀錄，不受 35 交易日
+    """逐筆已平倉交易——`ShadowCompletedTrade` 是永久保存的紀錄，不受 25 交易日
     循環強制重置影響，`cycle_number` 只是篩選條件，不篩選就回傳這個策略版本
     有史以來全部循環的交易。"""
     query = db.query(ShadowCompletedTrade).filter(ShadowCompletedTrade.strategy_version == strategy_version)
