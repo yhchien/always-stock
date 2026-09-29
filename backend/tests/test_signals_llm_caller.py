@@ -1146,6 +1146,8 @@ def test_reuse_persisted_market_context_refreshes_backend_index_values():
     assert out["otc_change_pct"] == -0.75
     assert out["llm_diagnostic"]["status"] == "ok"
     assert out["llm_diagnostic"]["cache_source"] == "persisted_signal_snapshot"
+    assert out["llm_diagnostic"]["response_id"] is None
+    assert out["llm_diagnostic"]["usage"]["total_tokens"] == 0
 
 
 def test_load_system_prompt_market_stage_drops_other_steps():

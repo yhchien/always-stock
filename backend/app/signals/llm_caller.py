@@ -298,6 +298,11 @@ def reuse_persisted_market_context(
         merged["llm_diagnostic"] = {
             **diagnostic,
             "cache_source": "persisted_signal_snapshot",
+            # This run made no market LLM request. Keep the successful status so
+            # the context remains reusable, but do not carry the original run's
+            # response id or usage into this run's cost accounting.
+            "response_id": None,
+            "usage": {"total_tokens": 0},
         }
     return merged
 
