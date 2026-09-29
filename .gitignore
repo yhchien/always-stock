@@ -24,6 +24,7 @@ backend/db/backfill_checkpoint.txt
 # Logs
 backend/logs/
 backend/backend/logs/
+backend/artifacts/
 
 # Node
 frontend/node_modules/

@@ -144,6 +144,18 @@ jobs:
           echo "Signal pipeline exit code: $PIPELINE_EXIT"
           exit 0
 
+      - name: Export immutable run cost record
+        if: always()
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TARGET_DATE: ${{ steps.resolve.outputs.target_date }}
+          PIPELINE_EXIT: ${{ steps.signals.outputs.pipeline_exit }}
+          SIGNAL_RUN_COST_OUTPUT: artifacts/signal-run-cost.json
+        run: |
+          # Export is best-effort and must never mask the actual pipeline result.
+          python3 -m scripts.export_signal_run_cost || true
+
       - name: Evaluate final status
         if: always()
         run: |
@@ -177,3 +189,12 @@ jobs:
             0|1) exit 0 ;;
             *) exit 1 ;;
           esac
+
+      - name: Upload immutable run cost record
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: signal-run-cost-${{ github.run_id }}-${{ github.run_attempt }}
+          path: backend/artifacts/signal-run-cost.json
+          if-no-files-found: warn
+          retention-days: 90
