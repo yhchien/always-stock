@@ -132,7 +132,7 @@ function ActionCard({ action }: { action: ShadowPendingAction }) {
         </p>
       )}
       <p className="mt-2 text-[11px] text-slate-500">
-        訊號日 {action.signal_date} → 預計執行 {action.scheduled_execution_date}
+        訊號日 {action.signal_date} → 下一個交易日執行
       </p>
     </article>
   )
