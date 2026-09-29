@@ -852,71 +852,6 @@ class SignalWatchStoppedObservation(Base):
     )
 
 
-class SignalExpectationPrice(Base):
-    """M23 後續：個股「一個月內資金行情可期待價格區間」預測。
-
-    每檔股票在一個追蹤 cycle 內只存一筆（unique by `stock_id + first_detected_date`）；
-    cron 重跑或使用者手動觸發都會以 UPSERT 覆蓋同筆。
-
-    `hit_conservative_at` / `hit_dream_at` 由每日 cron 用當日收盤價 vs
-    `conservative_price` / `dream_price` 計算後標注（首次達標日期，後續不再覆蓋）。
-
-    `source` 區分 cron / manual，方便日後分析使用者主動觸發的命中率與 cron 自動產生的差異。
-    """
-
-    __tablename__ = "signal_expectation_prices"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    stock_id = Column(String, nullable=False, index=True)
-    stock_name = Column(String, nullable=False)
-    first_detected_date = Column(Date, nullable=False, index=True)
-    latest_detected_date = Column(Date, nullable=True)
-    detected_type = Column(String(16), nullable=True)  # LEADER | FOLLOWER | LAGGARD
-    industry_name = Column(String, nullable=True)
-    sub_industry = Column(String, nullable=True)
-
-    # 核心結果（prompt §7 expectation_result）
-    conservative_price = Column(Float, nullable=True)
-    dream_price = Column(Float, nullable=True)
-    price_base = Column(String(32), nullable=True)
-    valuation_mode = Column(String(32), nullable=True)
-    valuation_basis = Column(String(32), nullable=True)
-    current_price_position = Column(String(32), nullable=True)
-    chase_risk = Column(String(16), nullable=True)  # low | medium | high
-    confidence = Column(String(16), nullable=True)  # high | medium | low
-
-    # 細節
-    detected_day_high = Column(Float, nullable=True)
-    detected_day_close = Column(Float, nullable=True)
-    current_price = Column(Float, nullable=True)  # 產生快照當下參考收盤
-    scorecard = Column(JSON, nullable=True)
-    classification = Column(JSON, nullable=True)
-    valuation_detail = Column(JSON, nullable=True)
-    reason_50_words = Column(Text, nullable=True)
-    risk_note_30_words = Column(Text, nullable=True)
-    raw_payload = Column(JSON, nullable=True)  # LLM 原始 JSON（debug 用）
-
-    # 達標旗標（首次觸及保守 / 夢想價的日期）
-    hit_conservative_at = Column(Date, nullable=True)
-    hit_dream_at = Column(Date, nullable=True)
-
-    # 來源
-    source = Column(String(16), nullable=False)  # cron | manual
-    status = Column(String(16), nullable=False, default="ok")  # ok | failed
-    error_message = Column(Text, nullable=True)
-    llm_model = Column(String(64), nullable=True)
-    llm_diagnostic = Column(JSON, nullable=True)
-    generated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-
-    __table_args__ = (
-        UniqueConstraint(
-            "stock_id", "first_detected_date",
-            name="uq_signal_expectation_price_stock_cycle",
-        ),
-    )
-
-
 class WatchlistTradeQualitySnapshot(Base):
     """
     自選清單交易質量快照（M25）
@@ -1259,6 +1194,34 @@ class ShadowVirtualPortfolio(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
 
+class ShadowStrategyCycleArchive(Base):
+    """每個策略循環的 immutable 參數快照。
+
+    `ShadowVirtualPortfolio` 只代表目前正在跑的 singleton；這張表把每個
+    cycle 使用過的參數組合獨立保存，讓歷史紀錄不會隨目前程式參數改動而漂移。
+    """
+    __tablename__ = "shadow_strategy_cycle_archives"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    strategy_version = Column(String(32), nullable=False, index=True)
+    cycle_number = Column(Integer, nullable=False, index=True)
+    cycle_start_trade_date = Column(Date, nullable=True)
+    cycle_end_trade_date = Column(Date, nullable=True, index=True)
+    status = Column(String(16), nullable=False, default="ACTIVE")  # ACTIVE | COMPLETED
+    initial_capital = Column(Float, nullable=False)
+    strategy_config = Column(JSON, nullable=True)
+    strategy_config_hash = Column(String(64), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    completed_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "strategy_version", "cycle_number",
+            name="uq_shadow_strategy_cycle_archive_version_number",
+        ),
+    )
+
+
 class ShadowVirtualPosition(Base):
     """目前持倉，一檔股票（同一 strategy_version 下）一列；持有 1~2 個 lot（見
     `ShadowPositionLot`）。部位全部賣出時整列刪除，不保留空部位列。"""
@@ -1404,6 +1367,10 @@ class ShadowPortfolioDailySnapshot(Base):
     # Current outstanding external cash contribution, including forced pending
     # BUY/ADD orders and an already negative virtual cash balance.
     cash_topup_required = Column(Float, nullable=False, default=0.0)
+    # 當日所屬循環的 immutable 策略參數，供歷史區回看；不是讀目前 live config。
+    cycle_number = Column(Integer, nullable=True, index=True)
+    strategy_config = Column(JSON, nullable=True)
+    strategy_config_hash = Column(String(64), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     __table_args__ = (

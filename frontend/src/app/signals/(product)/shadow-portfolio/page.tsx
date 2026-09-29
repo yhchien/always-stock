@@ -110,6 +110,33 @@ function StatBox({ label, value, tone }: { label: string; value: string; tone?: 
   )
 }
 
+function StrategyConfigCard({
+  title,
+  config,
+  hash,
+}: {
+  title: string
+  config: Record<string, unknown> | null
+  hash: string | null
+}) {
+  return (
+    <div className="rounded-lg border border-indigo-900/50 bg-indigo-950/20 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="font-semibold text-indigo-200">{title}</p>
+        {hash && <span className="font-mono text-[10px] text-indigo-300/70">config {hash.slice(0, 12)}</span>}
+      </div>
+      <details className="mt-2">
+        <summary className="cursor-pointer text-xs text-slate-400 hover:text-slate-200">
+          查看完整參數組合
+        </summary>
+        <pre className="mt-2 max-h-96 overflow-auto rounded border border-slate-800 bg-slate-950/70 p-3 text-[10px] leading-4 text-slate-300">
+          {JSON.stringify(config ?? {}, null, 2)}
+        </pre>
+      </details>
+    </div>
+  )
+}
+
 function ActionCard({ action }: { action: ShadowPendingAction }) {
   const meta = ACTION_META[action.action]
   return (
@@ -313,6 +340,11 @@ function HistoryPeriodRow({
             />
             <StatBox label="成交動作" value={`${executedActionCount} 筆`} />
           </div>
+          <StrategyConfigCard
+            title={`第 ${period.cycle_number ?? "—"} 循環使用的參數組合`}
+            config={period.strategy_config}
+            hash={period.strategy_config_hash}
+          />
           <p className="mb-3 text-[11px] text-amber-300/80">
             {strategyDayCount} 個策略交易日後，{period.end_date} 完成期末結算；下一循環本金重設為 {formatMoney(period.settlement_cash)} 元。
             期間報酬依實際結算成交價計算。
@@ -629,6 +661,13 @@ export default function ShadowPortfolioPage() {
               <>・單檔曝險上限 {(portfolio.max_position_exposure_pct * 100).toFixed(0)}%</>
             )}
           </p>
+          <div className="mt-3">
+            <StrategyConfigCard
+              title={`目前第 ${portfolio.cycle_number} 循環的參數組合`}
+              config={portfolio.strategy_config}
+              hash={portfolio.strategy_config_hash}
+            />
+          </div>
 
           <section className="mt-6">
             <h2 className="mb-2 text-sm font-semibold text-slate-200">下一交易日動作</h2>

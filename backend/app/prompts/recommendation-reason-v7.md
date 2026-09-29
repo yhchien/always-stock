@@ -46,6 +46,6 @@
 sector_rotation_status、institution_flow_momentum 這類寫法一律禁止）；輸入資料中若有這類
 內部欄位/狀態值，必須先在腦中把它翻譯成對應的中文語意再寫進句子，不可原樣抄錄或音譯。
 
-每段 2～4 個繁體中文 bullet，每個 18～45 個中文字；margin_reason 可 1～3 個。
+每段 2～4 個繁體中文 bullet，每個 12～32 個中文字；margin_reason 可 1～3 個。
 不得使用表格、跨段重複同一數字或產生空陣列。沒有資料時直接寫「該項資料缺漏」。
 `margin_analysis.stock_table` 必須逐值沿用輸入的 margin_data，不得猜測；缺值保留 null。

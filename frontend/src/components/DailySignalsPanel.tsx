@@ -1,14 +1,12 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
+import type { ReactNode } from "react"
 import Link from "next/link"
 
 import {
-  fetchExpectationPrices,
   fetchSignalRegenerateQuota,
   fetchLatestSignalSnapshot,
-  regenerateExpectationPrice,
-  type ExpectationPriceItem,
   type RealtimeQuote,
   type SignalJobResponse,
   regenerateSignals,
@@ -32,8 +30,6 @@ import { CanonicalSectorTag } from "@/components/CanonicalSectorTag"
 import SignalAssetBadge from "@/components/SignalAssetBadge"
 import SignalEmotionCard, { type EmotionTone } from "@/components/SignalEmotionCard"
 
-// M26 expectation price 暫停：保留型別/API 供歷史資料相容，但不載入、不渲染、不提供手動重跑入口。
-const SHOW_EXPECTATION_PRICE = false
 import {
   isSignalProcessingIncomplete,
   SignalIncompleteWarning,
@@ -62,7 +58,6 @@ const SHOW_MARGIN_ANALYSIS: boolean = false
 
 // 2026-08-28：首頁隱藏「重新產生」整包每日訊號的按鈕（保留 handleRegenerate／
 // regenerateSignals 呼叫與 quota 顯示邏輯，改回顯示時把這個常數改成 true 即可）。
-// 注意這跟 ExpectationPricePanel 裡「重新預測」單檔股票的按鈕是不同功能，不受影響。
 const SHOW_REGENERATE_BUTTON: boolean = false
 
 function formatTpeDateTime(iso: string | null | undefined): string {
@@ -402,305 +397,12 @@ const REASON_PANELS: ReasonSection[] = [
   { key: "technical_reason", number: 5, title: "技術", accent: "slate" },
 ]
 
-// ============================================================================
-// Expectation Price 顯示元件
-// ============================================================================
-
-function ExpectationPriceChips({
-  expectation,
-  currentPrice,
-}: {
-  expectation: ExpectationPriceItem | null | undefined
-  currentPrice: number | null | undefined
-}) {
-  if (!expectation) {
-    return (
-      <span className="shrink-0 whitespace-nowrap rounded border border-slate-700/60 bg-slate-800/40 px-2 py-0.5 text-[11px] text-slate-500">
-        尚無預測
-      </span>
-    )
-  }
-  const { conservative_price, dream_price, hit_conservative_at, hit_dream_at } =
-    expectation
-  // 用 prediction 本身的 current_price，若沒有再用 realtime price，最後 fallback null
-  const nowPrice =
-    currentPrice ?? expectation.current_price ?? null
-  const hitConservative =
-    !!hit_conservative_at ||
-    (conservative_price != null && nowPrice != null && nowPrice >= conservative_price)
-  const hitDream =
-    !!hit_dream_at ||
-    (dream_price != null && nowPrice != null && nowPrice >= dream_price)
-  return (
-    <span className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap">
-      <span
-        className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] font-mono ${
-          hitConservative
-            ? "border-emerald-500/70 bg-emerald-500/20 text-emerald-200"
-            : "border-slate-600/50 bg-slate-800/40 text-slate-300"
-        }`}
-        title={
-          hitConservative
-            ? `已觸及保守價（${hit_conservative_at ?? "今日"}）`
-            : "保守價"
-        }
-      >
-        <span className="text-[9px] text-slate-400">保</span>
-        {conservative_price != null ? conservative_price.toFixed(2) : "—"}
-        {hitConservative ? <span aria-hidden>✓</span> : null}
-      </span>
-      <span
-        className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] font-mono ${
-          hitDream
-            ? "border-amber-500/70 bg-amber-500/20 text-amber-200"
-            : "border-slate-600/50 bg-slate-800/40 text-slate-300"
-        }`}
-        title={hitDream ? `已觸及夢想價（${hit_dream_at ?? "今日"}）` : "夢想價"}
-      >
-        <span className="text-[9px] text-slate-400">夢</span>
-        {dream_price != null ? dream_price.toFixed(2) : "—"}
-        {hitDream ? <span aria-hidden>🎯</span> : null}
-      </span>
-    </span>
-  )
-}
-
-const VALUATION_MODE_LABEL: Record<string, string> = {
-  PE_VALUATION: "PE 估值",
-  THEME_RE_RATING: "題材重評",
-  MOMENTUM_MARKUP: "動能加價",
-  EXTREME_MOMENTUM_MARKUP: "極端動能",
-  FAILED_FOLLOW_THROUGH: "Follow-through 失敗",
-}
-
-const PRICE_POSITION_LABEL: Record<string, string> = {
-  undervalued_to_theme: "尚低估",
-  fair: "合理",
-  optimistic: "樂觀",
-  overextended: "過熱",
-  failed_follow_through: "Follow-through 失敗",
-}
-
-const CHASE_RISK_LABEL: Record<string, string> = {
-  low: "低",
-  medium: "中",
-  high: "高",
-}
-
-function ExpectationPricePanel({
-  expectation,
-  stockId,
-  isAuthed,
-  quotaReached,
-  onRegenerate,
-  regenerating,
-  regenerateError,
-}: {
-  expectation: ExpectationPriceItem | null | undefined
-  stockId: string
-  isAuthed: boolean
-  quotaReached: boolean
-  onRegenerate: () => void
-  regenerating: boolean
-  regenerateError: string | null
-}) {
-  let label = "重新預測"
-  let disabled = false
-  if (!isAuthed) {
-    label = "重新預測（需登入）"
-    disabled = true
-  } else if (regenerating) {
-    label = "預測中…"
-    disabled = true
-  } else if (quotaReached) {
-    label = "今日預測額度已用完"
-    disabled = true
-  }
-
-  if (!expectation) {
-    return (
-      <section className="rounded-xl border border-amber-500/30 bg-amber-500/[0.04] p-4 shadow-inner">
-        <header className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
-          <h3 className="text-sm font-semibold text-amber-200">
-            一個月內資金行情可期待價格區間
-          </h3>
-          <button
-            type="button"
-            onClick={onRegenerate}
-            disabled={disabled}
-            className="inline-flex items-center rounded border border-amber-500/50 bg-amber-500/10 px-3 py-1 text-xs font-medium text-amber-200 hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {label}
-          </button>
-        </header>
-        <p className="text-xs text-slate-400">
-          目前尚無此檔股票的預測結果。{isAuthed ? "點上方按鈕可手動產生一份。" : "請登入後手動產生。"}
-        </p>
-        {regenerateError ? (
-          <p className="mt-2 text-xs text-rose-300">{regenerateError}</p>
-        ) : null}
-      </section>
-    )
-  }
-
-  const valuationLabel = expectation.valuation_mode
-    ? VALUATION_MODE_LABEL[expectation.valuation_mode] ?? expectation.valuation_mode
-    : "—"
-  const positionLabel = expectation.current_price_position
-    ? PRICE_POSITION_LABEL[expectation.current_price_position] ?? expectation.current_price_position
-    : "—"
-  const chaseRiskLabel = expectation.chase_risk
-    ? CHASE_RISK_LABEL[expectation.chase_risk] ?? expectation.chase_risk
-    : "—"
-  const confidenceLabel =
-    expectation.confidence ? CHASE_RISK_LABEL[expectation.confidence] ?? expectation.confidence : "—"
-
-  const hitConservative = !!expectation.hit_conservative_at
-  const hitDream = !!expectation.hit_dream_at
-
-  return (
-    <section className="rounded-xl border border-amber-500/30 bg-amber-500/[0.04] p-4 shadow-inner">
-      <header className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
-        <h3 className="text-sm font-semibold text-amber-200">
-          一個月內資金行情可期待價格區間
-          <span className="ml-2 text-[11px] font-normal text-amber-300/70">
-            {stockId} · {expectation.first_detected_date} 抓到 · 來源：
-            {expectation.source === "cron" ? "排程" : "手動"}
-          </span>
-        </h3>
-        <button
-          type="button"
-          onClick={onRegenerate}
-          disabled={disabled}
-          className="inline-flex items-center rounded border border-amber-500/50 bg-amber-500/10 px-3 py-1 text-xs font-medium text-amber-200 hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {label}
-        </button>
-      </header>
-
-      {/* 兩個價格區塊 */}
-      <div className="grid grid-cols-2 gap-3 text-sm">
-        <div
-          className={`rounded-lg border p-3 ${
-            hitConservative
-              ? "border-emerald-500/60 bg-emerald-500/10"
-              : "border-zinc-700 bg-zinc-900/40"
-          }`}
-        >
-          <div className="text-xs text-slate-400">保守價</div>
-          <div className="mt-1 flex items-baseline gap-2">
-            <span className="font-mono text-2xl font-bold text-slate-100">
-              {expectation.conservative_price != null
-                ? expectation.conservative_price.toFixed(2)
-                : "—"}
-            </span>
-            {hitConservative ? (
-              <span className="inline-flex items-center rounded-full border border-emerald-500/70 bg-emerald-500/20 px-2 py-0.5 text-[10px] text-emerald-200">
-                ✓ {expectation.hit_conservative_at} 已達標
-              </span>
-            ) : null}
-          </div>
-        </div>
-        <div
-          className={`rounded-lg border p-3 ${
-            hitDream
-              ? "border-amber-500/60 bg-amber-500/10"
-              : "border-zinc-700 bg-zinc-900/40"
-          }`}
-        >
-          <div className="text-xs text-slate-400">資金夢想價</div>
-          <div className="mt-1 flex items-baseline gap-2">
-            <span className="font-mono text-2xl font-bold text-slate-100">
-              {expectation.dream_price != null
-                ? expectation.dream_price.toFixed(2)
-                : "—"}
-            </span>
-            {hitDream ? (
-              <span className="inline-flex items-center rounded-full border border-amber-500/70 bg-amber-500/20 px-2 py-0.5 text-[10px] text-amber-200">
-                🎯 {expectation.hit_dream_at} 已達標
-              </span>
-            ) : null}
-          </div>
-        </div>
-      </div>
-
-      {/* 標籤列 */}
-      <div className="mt-3 flex flex-wrap gap-2 text-xs">
-        <span className="rounded border border-zinc-700 bg-zinc-900/40 px-2 py-0.5 text-slate-200">
-          估值模式：{valuationLabel}
-        </span>
-        <span className="rounded border border-zinc-700 bg-zinc-900/40 px-2 py-0.5 text-slate-200">
-          目前位置：{positionLabel}
-        </span>
-        <span className="rounded border border-zinc-700 bg-zinc-900/40 px-2 py-0.5 text-slate-200">
-          追高風險：{chaseRiskLabel}
-        </span>
-        <span className="rounded border border-zinc-700 bg-zinc-900/40 px-2 py-0.5 text-slate-200">
-          信心：{confidenceLabel}
-        </span>
-        {expectation.scorecard?.total_score != null ? (
-          <span className="rounded border border-zinc-700 bg-zinc-900/40 px-2 py-0.5 text-slate-200">
-            總分：{expectation.scorecard.total_score}/100
-          </span>
-        ) : null}
-      </div>
-
-      {/* reason / risk_note */}
-      {expectation.reason_50_words ? (
-        <p className="mt-3 text-sm leading-relaxed text-slate-200">
-          {expectation.reason_50_words}
-        </p>
-      ) : null}
-      {expectation.risk_note_30_words ? (
-        <p className="mt-2 rounded-lg border border-rose-500/30 bg-rose-500/[0.04] px-3 py-2 text-xs text-rose-200">
-          <span className="font-semibold">風險提示：</span>
-          {expectation.risk_note_30_words}
-        </p>
-      ) : null}
-
-      {/* 評分明細 */}
-      {expectation.scorecard ? (
-        <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-slate-400 sm:grid-cols-3">
-          {expectation.scorecard.theme_score_calc != null ? (
-            <span>題材 {expectation.scorecard.theme_score_calc}/20</span>
-          ) : null}
-          {expectation.scorecard.fundamental_score != null ? (
-            <span>基本面 {expectation.scorecard.fundamental_score}/20</span>
-          ) : null}
-          {expectation.scorecard.institution_score != null ? (
-            <span>法人 {expectation.scorecard.institution_score}/25</span>
-          ) : null}
-          {expectation.scorecard.margin_short_score != null ? (
-            <span>融資融券 {expectation.scorecard.margin_short_score}/10</span>
-          ) : null}
-          {expectation.scorecard.technical_score != null ? (
-            <span>技術 {expectation.scorecard.technical_score}/15</span>
-          ) : null}
-          {expectation.scorecard.sentiment_score != null ? (
-            <span>情緒 {expectation.scorecard.sentiment_score}/10</span>
-          ) : null}
-        </div>
-      ) : null}
-
-      {regenerateError ? (
-        <p className="mt-2 text-xs text-rose-300">{regenerateError}</p>
-      ) : null}
-      <p className="mt-3 text-[10px] text-slate-500">
-        本資訊由 AI 模型根據籌碼、基本面、融資融券、技術位置與題材主流程度推估，
-        不是券商目標價、不是買賣建議；股價永遠可能領先消息與基本面。
-      </p>
-    </section>
-  )
-}
-
 function SignalCard({
   item,
   quote,
-  expectation,
 }: {
   item: SignalWatchlistItem
   quote: RealtimeQuote | undefined
-  expectation: ExpectationPriceItem | undefined
 }) {
   const [detailOpen, setDetailOpen] = useState(false)
   const themeFit = item.theme_fit
@@ -756,21 +458,12 @@ function SignalCard({
             ) : null}
           </div>
 
-          {SHOW_EXPECTATION_PRICE ? (
-            <div className="flex items-center justify-end">
-              <ExpectationPriceChips
-                expectation={expectation}
-                currentPrice={quote?.price ?? null}
-              />
-            </div>
-          ) : null}
         </div>
       </SignalEmotionCard>
 
       <SignalDetailDialog
         item={item}
         quote={quote}
-        expectation={expectation}
         open={detailOpen}
         onOpenChange={setDetailOpen}
       />
@@ -781,77 +474,14 @@ function SignalCard({
 function SignalDetailDialog({
   item,
   quote,
-  expectation: initialExpectation,
   open,
   onOpenChange,
 }: {
   item: SignalWatchlistItem
   quote: RealtimeQuote | undefined
-  expectation: ExpectationPriceItem | undefined
   open: boolean
   onOpenChange: (next: boolean) => void
 }) {
-  const { status: authStatus } = useAuth()
-  const isAuthed = authStatus === "authenticated"
-  const [expectation, setExpectation] = useState<ExpectationPriceItem | undefined | null>(
-    initialExpectation,
-  )
-  const [regenerating, setRegenerating] = useState(false)
-  const [regenError, setRegenError] = useState<string | null>(null)
-  const [quotaReached, setQuotaReached] = useState(false)
-  const [pollKey, setPollKey] = useState(0)
-
-  // 開啟 dialog 時若 initialExpectation 為 undefined，refresh 拉一次（可能還沒進首屏 cache）
-  useEffect(() => {
-    if (!open) return
-    setExpectation(initialExpectation)
-    setRegenError(null)
-  }, [open, initialExpectation, item.stock])
-
-  // 觸發重新預測後輪詢拉新結果（簡化版：3 秒一次、最多 8 次 = 24s）
-  useEffect(() => {
-    if (!SHOW_EXPECTATION_PRICE || pollKey === 0) return
-    let cancelled = false
-    let attempts = 0
-    const tick = async () => {
-      attempts += 1
-      try {
-        const { fetchExpectationPrice } = await import("@/lib/api")
-        const next = await fetchExpectationPrice(item.stock)
-        if (cancelled) return
-        if (next && next.updated_at !== expectation?.updated_at) {
-          setExpectation(next)
-          return
-        }
-      } catch {
-        // ignore polling error
-      }
-      if (!cancelled && attempts < 8) {
-        setTimeout(tick, 3000)
-      }
-    }
-    const t = setTimeout(tick, 3000)
-    return () => {
-      cancelled = true
-      clearTimeout(t)
-    }
-  }, [pollKey, item.stock, expectation?.updated_at])
-
-  const handleRegenerate = useCallback(async () => {
-    setRegenerating(true)
-    setRegenError(null)
-    try {
-      await regenerateExpectationPrice(item.stock)
-      setPollKey((k) => k + 1)
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "重新預測失敗"
-      setRegenError(msg)
-      if (/上限/.test(msg)) setQuotaReached(true)
-    } finally {
-      setRegenerating(false)
-    }
-  }, [item.stock])
-
   const stockHref = `/stocks/${encodeURIComponent(item.stock)}`
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -928,19 +558,6 @@ function SignalDetailDialog({
             <MomentumPanel item={item} />
           </div>
 
-          {SHOW_EXPECTATION_PRICE ? (
-            <div className="mt-4">
-              <ExpectationPricePanel
-                expectation={expectation}
-                stockId={item.stock}
-                isAuthed={isAuthed}
-                quotaReached={quotaReached}
-                onRegenerate={handleRegenerate}
-                regenerating={regenerating}
-                regenerateError={regenError}
-              />
-            </div>
-          ) : null}
 
           {/* 2026-05-25：融資融券專屬結構化分析卡（比重 大盤 30% / 個股 70%） */}
           {/* 2026-05-27：暫時隱藏紅色框框（改回顯示請把 SHOW_MARGIN_ANALYSIS 改 true） */}
@@ -1133,12 +750,10 @@ function chgTone(v: number | null | undefined): "green" | "red" | "neutral" {
 function SignalCardGrid({
   items,
   realtimeQuotes,
-  expectationByStock,
   emptyText,
 }: {
   items: SignalWatchlistItem[]
   realtimeQuotes: Map<string, RealtimeQuote>
-  expectationByStock: Map<string, ExpectationPriceItem>
   emptyText: string
 }) {
   if (items.length === 0) {
@@ -1151,9 +766,25 @@ function SignalCardGrid({
           key={item.stock}
           item={item}
           quote={realtimeQuotes.get(item.stock)}
-          expectation={expectationByStock.get(item.stock)}
         />
       ))}
+    </div>
+  )
+}
+
+function HelpDefinition({
+  title,
+  tone = "text-slate-200",
+  children,
+}: {
+  title: string
+  tone?: string
+  children: ReactNode
+}) {
+  return (
+    <div className="rounded-lg border border-slate-700/60 bg-slate-950/30 px-3 py-2">
+      <div className={`font-medium ${tone}`}>{title}</div>
+      <div className="mt-0.5 text-slate-400">{children}</div>
     </div>
   )
 }
@@ -1179,7 +810,7 @@ export default function DailySignalsPanel({
   const [regenerating, setRegenerating] = useState(false)
   const [regenerateError, setRegenerateError] = useState<string | null>(null)
   const [regenerateQuota, setRegenerateQuota] = useState<SignalRegenerateQuotaResponse | null>(null)
-  const [expectations, setExpectations] = useState<ExpectationPriceItem[]>([])
+  const [labelHelpOpen, setLabelHelpOpen] = useState(false)
 
   const { job } = useSignalJobPolling(bumpKey, initialJob ?? null, initialJobLoaded)
   const jobStatus = job?.status
@@ -1245,44 +876,6 @@ export default function DailySignalsPanel({
       void loadSnapshot()
     }
   }, [jobStatus, loadSnapshot])
-
-  // 載入當日 snapshot 對應的 expectation prices
-  const loadExpectations = useCallback(
-    async (snapshotDate: string | undefined) => {
-      if (!SHOW_EXPECTATION_PRICE) {
-        setExpectations([])
-        return
-      }
-      if (!snapshotDate) {
-        setExpectations([])
-        return
-      }
-      try {
-        const data = await fetchExpectationPrices(snapshotDate)
-        setExpectations(data.items)
-      } catch {
-        // 失敗不擋畫面，sig card 會顯示「尚無預測」
-        setExpectations([])
-      }
-    },
-    [],
-  )
-
-  useEffect(() => {
-    void loadExpectations(snapshot?.snapshot_date)
-  }, [loadExpectations, snapshot?.snapshot_date])
-
-  const expectationByStock = useMemo(() => {
-    const map = new Map<string, ExpectationPriceItem>()
-    for (const row of expectations) {
-      const prev = map.get(row.stock_id)
-      // 同股取最新 (updated_at 最大)
-      if (!prev || row.updated_at > prev.updated_at) {
-        map.set(row.stock_id, row)
-      }
-    }
-    return map
-  }, [expectations])
 
   // 比對 last_seen → pulse badge
   useEffect(() => {
@@ -1413,6 +1006,14 @@ export default function DailySignalsPanel({
             </span>
             <span>今日捕獲的大魚尾</span>
           </button>
+          <button
+            type="button"
+            onClick={() => setLabelHelpOpen(true)}
+            aria-label="查看魚尾標籤說明"
+            className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-slate-600 text-[11px] font-semibold text-slate-400 hover:border-sky-400 hover:text-sky-300"
+          >
+            ?
+          </button>
           {hasNewSignals && (
             <span className="ml-1 inline-flex items-center gap-1">
               <span className="relative flex h-2 w-2">
@@ -1461,6 +1062,103 @@ export default function DailySignalsPanel({
           )}
         </div>
       </header>
+
+      <Dialog.Root open={labelHelpOpen} onOpenChange={setLabelHelpOpen}>
+        <Dialog.Portal>
+          <Dialog.Backdrop className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm" />
+          <Dialog.Popup className="fixed left-1/2 top-1/2 z-50 max-h-[88vh] w-[min(94vw,52rem)] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl sm:p-6">
+            <div className="mb-4 flex items-center justify-between gap-3 border-b border-slate-800 pb-3">
+              <div>
+                <Dialog.Title className="text-lg font-semibold text-slate-100">
+                  魚尾標籤說明
+                </Dialog.Title>
+                <Dialog.Description className="mt-1 text-xs leading-5 text-slate-400">
+                  標籤混合了後端計算分類、動能分數與 AI 證據解讀；不是每個 label 都是買進訊號。
+                </Dialog.Description>
+              </div>
+              <Dialog.Close className="shrink-0 rounded border border-slate-600 bg-slate-800/50 px-2 py-1 text-xs text-slate-300 hover:bg-slate-700">
+                關閉 ✕
+              </Dialog.Close>
+            </div>
+
+            <div className="space-y-4 text-xs leading-6 text-slate-300 sm:text-sm">
+              <section>
+                <h3 className="mb-2 font-semibold text-slate-100">股票角色</h3>
+                <div className="grid gap-2 sm:grid-cols-3">
+                  <HelpDefinition title="領漲 LEADER" tone="text-rose-200">
+                    產業或個股最強，通常有高動能、相對強度、法人或量能確認。
+                  </HelpDefinition>
+                  <HelpDefinition title="跟漲 FOLLOWER" tone="text-sky-200">
+                    不是最強龍頭，但產業正在動，個股動能維持或改善。
+                  </HelpDefinition>
+                  <HelpDefinition title="補漲 LAGGARD" tone="text-amber-200">
+                    產業很強但個股相對落後，最近開始出現補漲條件。
+                  </HelpDefinition>
+                </div>
+              </section>
+
+              <section className="rounded-lg border border-violet-500/25 bg-violet-500/5 p-3">
+                <h3 className="mb-1 font-semibold text-violet-200">動能分數與階段</h3>
+                <p>
+                  動能分數是 0～100 的後端計算排名，不是報酬率預測，也不是勝率。它綜合價格動能 30、RS 25、法人資金 20、量價品質 15、基本面 10 分，並扣除過熱或轉弱風險。
+                </p>
+                <p className="mt-1 text-slate-200">
+                  A ≥ 75　·　B = 60～74.9　·　C = 45～59.9　·　D &lt; 45
+                </p>
+                <p className="mt-1 text-slate-400">
+                  階段：啟動、加速、趨勢延續、過熱、轉弱。轉弱與過熱會優先標示，所以分數高不代表一定適合追價。
+                </p>
+              </section>
+
+              <section>
+                <h3 className="mb-2 font-semibold text-slate-100">積極／正常／保留</h3>
+                <div className="grid gap-2 sm:grid-cols-3">
+                  <HelpDefinition title="積極" tone="text-emerald-200">
+                    目前環境與個股證據較支持積極關注。
+                  </HelpDefinition>
+                  <HelpDefinition title="正常" tone="text-slate-200">
+                    條件尚可，維持正常觀察。
+                  </HelpDefinition>
+                  <HelpDefinition title="保留" tone="text-amber-200">
+                    不是剔除，而是提醒要更謹慎、嚴守紀律，不宜只靠這檔積極操作。
+                  </HelpDefinition>
+                </div>
+              </section>
+
+              <section>
+                <h3 className="mb-2 font-semibold text-slate-100">觀察維度</h3>
+                <div className="grid gap-x-4 gap-y-2 sm:grid-cols-2">
+                  <HelpDefinition title="題材 強／中／弱">
+                    AI 查證公司業務是否符合市場題材，以及題材延續性。
+                  </HelpDefinition>
+                  <HelpDefinition title="資金 強／中／弱">
+                    法人與市場資金是否提供支持，依證據綜合判斷。
+                  </HelpDefinition>
+                  <HelpDefinition title="籌碼">
+                    集中＝法人連買且量價配合；轉弱／散戶過熱＝籌碼出現風險；軋空潛力＝融資下降、融券增加且股價未跌。
+                  </HelpDefinition>
+                  <HelpDefinition title="融券 正向／中性／負向">
+                    融資融券結構對股價延續的整體解讀；正向不是保證上漲。
+                  </HelpDefinition>
+                  <HelpDefinition title="技術">
+                    突破、上升、轉強代表價格結構較健康；盤整、偏弱、出貨代表確認度或風險較高。
+                  </HelpDefinition>
+                </div>
+              </section>
+
+              <section className="rounded-lg border border-slate-700/70 bg-slate-950/40 p-3">
+                <h3 className="mb-1 font-semibold text-slate-100">為什麼有些卡片是 3 個、有些是 5 個？</h3>
+                <p>
+                  首頁卡片固定顯示動能、觀察積極度、題材；資金／籌碼／融券／技術只顯示判定為正向的綠色 label，其他狀態會隱藏。因此顯示 3 個通常代表沒有額外正向維度，顯示 5 個代表還有兩個維度被判定為正向。
+                </p>
+                <p className="mt-1 text-slate-400">
+                  點開詳情後則是五個分析面向：題材、資金、籌碼、融券、技術。若某段沒有有效內容，該段會暫不顯示；每段通常有 3～5 個分析 bullet，融券段可能較少。
+                </p>
+              </section>
+            </div>
+          </Dialog.Popup>
+        </Dialog.Portal>
+      </Dialog.Root>
 
       {(isJobActive || isIncomplete || regenerateError) && (
         <div className="border-t border-zinc-700 px-4 py-2">
@@ -1522,7 +1220,6 @@ export default function DailySignalsPanel({
               <SignalCardGrid
                 items={allSignals}
                 realtimeQuotes={realtimeQuotes}
-                expectationByStock={expectationByStock}
                 emptyText="本日無訊號。"
               />
             </div>

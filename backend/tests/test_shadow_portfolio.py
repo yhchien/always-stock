@@ -16,6 +16,7 @@ from app.models import (
     ShadowMissedCandidate,
     ShadowPositionLot,
     ShadowStrategyDailyDecision,
+    ShadowStrategyCycleArchive,
     ShadowStrategyOrder,
     ShadowVirtualPortfolio,
     ShadowVirtualPosition,
@@ -829,6 +830,18 @@ def test_cycle_reset_triggers_at_25th_trading_day_and_force_liquidates(db):
     assert trade.exit_price == 120.0
     assert trade.exit_execution_date == day25
     assert trade.cycle_number == 1  # 屬於被結束的那個循環，不是新循環
+
+    cycle_archive = (
+        db.query(ShadowStrategyCycleArchive)
+        .filter(
+            ShadowStrategyCycleArchive.strategy_version == sp.STRATEGY_VERSION,
+            ShadowStrategyCycleArchive.cycle_number == 1,
+        )
+        .one()
+    )
+    assert cycle_archive.status == "COMPLETED"
+    assert cycle_archive.strategy_config == sp.strategy_config_snapshot(sp.STRATEGY_VERSION)
+    assert cycle_archive.strategy_config_hash == sp.strategy_config_hash(sp.STRATEGY_VERSION)
 
 
 def test_cycle_reset_cancels_pending_orders(db):

@@ -117,9 +117,6 @@ const COMPLETED_COLLAPSED_KEY = "always-stock:signals-archive:completed-collapse
 // 仍持續寫入這張舊表（`_upsert_completed_archive` 沒有被移除，只是新增了平行寫入
 // 新表），之後若確定不需要保留舊表資料，需要另外決定是否要停止寫入或做其他處理。
 const SHOW_COMPLETED_ARCHIVE_SECTION = false
-// M26 expectation price 暫停：歷史 API/資料保留，但整個 archive UI 先隱藏。
-const SHOW_EXPECTATION_PRICE = false
-
 function formatPct(value: number | null): string {
   if (value == null) return "--"
   return `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`
@@ -423,31 +420,6 @@ function ExtremeReturnCell({
   )
 }
 
-// M26：合併單欄顯示「保 / 夢」預測價；舊資料兩值皆 null → 整格顯示 —
-function PredictionCell({
-  conservative,
-  dream,
-}: {
-  conservative?: number | null
-  dream?: number | null
-}) {
-  if (conservative == null && dream == null) {
-    return <span className="font-mono text-sm text-slate-500">--</span>
-  }
-  return (
-    <div className="flex flex-col leading-tight">
-      <span className="font-mono text-xs text-emerald-200">
-        <span className="mr-1 text-slate-400">保</span>
-        {conservative == null ? "--" : conservative.toFixed(2)}
-      </span>
-      <span className="font-mono text-xs text-amber-200">
-        <span className="mr-1 text-slate-400">夢</span>
-        {dream == null ? "--" : dream.toFixed(2)}
-      </span>
-    </div>
-  )
-}
-
 // popup 內的「標籤 + 值」小區塊
 function Metric({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -692,14 +664,6 @@ function StockDetailDialog({
                     第 {item.tracking_day_index} 天 · {item.hit_count} 次
                   </span>
                 </Metric>
-                {SHOW_EXPECTATION_PRICE && (
-                  <Metric label="預測價（保 / 夢）">
-                    <PredictionCell
-                      conservative={item.conservative_price}
-                      dream={item.dream_price}
-                    />
-                  </Metric>
-                )}
                 <Metric label="最大正報酬">
                   <ExtremeReturnCell
                     value={item.max_positive_return_pct}
@@ -911,14 +875,6 @@ function StoppedObservationDetailDialog({
                     {formatShortDate(item.completed_trade_date)}
                   </span>
                 </Metric>
-                {SHOW_EXPECTATION_PRICE && (
-                  <Metric label="預測價（保 / 夢）">
-                    <PredictionCell
-                      conservative={item.conservative_price}
-                      dream={item.dream_price}
-                    />
-                  </Metric>
-                )}
                 <Metric label="最大正報酬">
                   <ExtremeReturnCell
                     value={item.max_positive_return_pct}
@@ -1034,7 +990,7 @@ const STOPPED_COLLAPSED_KEY = "always-stock:signals-archive:stopped-collapsed"
 /**
  * 2026-08-13：「停止觀察的股票」——與「追蹤期滿移出紀錄」格式完全相同（同一批共用
  * 元件：ClosureReasonChip / SignalTypeChip / Metric / ExtremeReturnCell /
- * PredictionCell / formatPeriodLabel），資料來源是獨立的新表
+ * formatPeriodLabel），資料來源是獨立的新表
  * `fetchStoppedObservations`（2026-08-13 起才開始累積，不含策略大改版前的舊資料）。
  *
  * 刻意用自己的 local state（collapsed／selectedPeriodStart／search）而非沿用主頁面
@@ -1493,14 +1449,6 @@ function StoppedObservationsSection({
                         <Metric label="抓到次數">
                           <span className="text-sm text-slate-200">{item.hit_count} 次</span>
                         </Metric>
-                        {SHOW_EXPECTATION_PRICE && (
-                          <Metric label="預測價（保 / 夢）">
-                            <PredictionCell
-                              conservative={item.conservative_price}
-                              dream={item.dream_price}
-                            />
-                          </Metric>
-                        )}
                         <Metric label="最大正報酬">
                           <ExtremeReturnCell
                             value={item.max_positive_return_pct}
@@ -2352,14 +2300,6 @@ function SignalArchiveContent() {
                       <Metric label="抓到次數">
                         <span className="text-sm text-slate-200">{item.hit_count} 次</span>
                       </Metric>
-                      {SHOW_EXPECTATION_PRICE && (
-                        <Metric label="預測價（保 / 夢）">
-                          <PredictionCell
-                            conservative={item.conservative_price}
-                            dream={item.dream_price}
-                          />
-                        </Metric>
-                      )}
                       <Metric label="最大正報酬">
                         <ExtremeReturnCell
                           value={item.max_positive_return_pct}

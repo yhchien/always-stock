@@ -1339,9 +1339,36 @@ def _build_pipeline_market_context(
     target_date: date,
     regime_info: Dict[str, Any],
 ) -> Dict[str, Any]:
-    market_context = llm_caller.assemble_market_context(
-        market_snapshot.build_db_market_snapshot(db, target_date)
+    db_market_snapshot = market_snapshot.build_db_market_snapshot(db, target_date)
+    market_context = None
+
+    # Safe cross-process reuse: only a prior successful external-risk lookup for
+    # this exact date is eligible. The DB-derived index values are refreshed by
+    # reuse_persisted_market_context, and deterministic regime fields are still
+    # overwritten from the current run. Fallback or malformed snapshots get a
+    # fresh LLM attempt.
+    persisted_context = (
+        db.query(SignalSnapshot.market_context)
+        .filter(SignalSnapshot.snapshot_date == target_date)
+        .scalar()
     )
+    if (
+        isinstance(persisted_context, dict)
+        and isinstance(persisted_context.get("external_risk_context"), dict)
+        and isinstance(persisted_context.get("llm_diagnostic"), dict)
+        and persisted_context["llm_diagnostic"].get("status") == "ok"
+    ):
+        market_context = llm_caller.reuse_persisted_market_context(
+            persisted_context,
+            db_market_snapshot,
+        )
+        logger.info(
+            "Reusing persisted market context for %s; skipping external-risk LLM call",
+            target_date,
+        )
+
+    if market_context is None:
+        market_context = llm_caller.assemble_market_context(db_market_snapshot)
     market_context["target_date"] = target_date.isoformat()
     market_context["market_regime"] = regime_info["regime"]
     market_context["market_regime_label"] = regime_info["regime_label"]

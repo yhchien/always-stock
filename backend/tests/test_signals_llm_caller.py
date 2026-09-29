@@ -1125,6 +1125,29 @@ def test_assemble_market_context_use_cache_false_bypasses_cache(monkeypatch):
     assert len(fake_client._responses_api.calls) == 2
 
 
+def test_reuse_persisted_market_context_refreshes_backend_index_values():
+    """Persisted external-risk context may be reused, but index values stay fresh."""
+    cached = {
+        "market_state": "BACKEND_REGIME_AUTHORITATIVE",
+        "taiex_change_pct": 99.0,
+        "otc_change_pct": 99.0,
+        "external_risk_context": {"vix_status": "neutral", "risk_summary": "saved"},
+        "llm_diagnostic": {"status": "ok", "total_tokens": 123},
+    }
+    out = llm_caller.reuse_persisted_market_context(
+        cached,
+        {
+            "taiex": {"change_pct_1d": 1.25},
+            "otc": {"change_pct_1d": -0.75},
+        },
+    )
+    assert out["external_risk_context"]["risk_summary"] == "saved"
+    assert out["taiex_change_pct"] == 1.25
+    assert out["otc_change_pct"] == -0.75
+    assert out["llm_diagnostic"]["status"] == "ok"
+    assert out["llm_diagnostic"]["cache_source"] == "persisted_signal_snapshot"
+
+
 def test_load_system_prompt_market_stage_drops_other_steps():
     """A4：market stage fragment 只含 STEP 0 + preamble + 重要限制。"""
     llm_caller._PROMPT_FRAGMENT_CACHE.clear()

@@ -1155,7 +1155,7 @@ def test_v7_tracking_duplicate_stock_ignores_extra_copy_when_first_succeeded(
     review_technical_failure 非 None 就無條件回 DECISION_FAILED，等於把明明
     驗證成功的第一筆結果整個蓋掉，讓單一股票的雜訊重複觸發當天整包 pipeline
     partial_failure（`Daily Signals Generation` workflow FAIL，連帶
-    `Signal Archive Returns Update`／`Signal Expectation Prices` 兩個下游
+    `Signal Archive Returns Update` 下游
     workflow_run 被 skip）。修法：第一次已成功時，後面重複出現的雜訊直接忽略，
     不需要也不應該觸發任何重試或判定失敗。"""
     calls = []

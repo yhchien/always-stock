@@ -26,10 +26,11 @@ REASON_VERSION = "v7_reason"
 # 段為了省成本降級到 gpt-5.4-mini，但 global selection 是把「全部候選互相比較、
 # 一次決定最終推薦名單」的最高風險判斷（本季稍早兩次 production 事故——token 截斷
 # 與 timeout——都發生在這一段），先不跟著降級；獨立設定避免未來調整
-# DEFAULT_DECISION_MODEL 時意外連帶影響這裡。
+# DEFAULT_DECISION_MODEL 時意外連帶影響這裡；global selection 維持使用 gpt-5.4，
+# 除非透過專用環境變數明確覆寫。
 DEFAULT_GLOBAL_SELECTION_MODEL = os.getenv(
     "OPENAI_SIGNALS_GLOBAL_SELECTION_MODEL",
-    "gpt-5.4-mini",
+    "gpt-5.4",
 ).strip()
 
 NOT_SELECTED_REASON_CODES = {

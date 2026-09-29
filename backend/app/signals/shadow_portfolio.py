@@ -88,6 +88,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+import hashlib
+import json
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import func, inspect, text
@@ -102,6 +104,7 @@ from app.models import (
     ShadowMissedCandidate,
     ShadowPositionLot,
     ShadowPortfolioDailySnapshot,
+    ShadowStrategyCycleArchive,
     ShadowStrategyDailyDecision,
     ShadowStrategyOrder,
     ShadowVirtualPortfolio,
@@ -137,6 +140,7 @@ def ensure_shadow_portfolio_tables(engine: Engine) -> None:
         bind=engine,
         tables=[
             ShadowVirtualPortfolio.__table__,
+            ShadowStrategyCycleArchive.__table__,
             ShadowVirtualPosition.__table__,
             ShadowPositionLot.__table__,
             ShadowStrategyOrder.__table__,
@@ -156,6 +160,8 @@ def ensure_shadow_portfolio_tables(engine: Engine) -> None:
     _ensure_shadow_strategy_daily_decision_episode_columns(engine)
     _ensure_shadow_funding_bucket_columns(engine)
     _ensure_shadow_cash_topup_columns(engine)
+    _ensure_shadow_strategy_cycle_columns(engine)
+    _backfill_shadow_cycle_archives(engine)
 
 
 def _ensure_shadow_virtual_portfolio_cycle_columns(engine: Engine) -> None:
@@ -273,6 +279,138 @@ def _ensure_shadow_cash_topup_columns(engine: Engine) -> None:
         for table, columns in missing_by_table.items():
             for name in columns:
                 conn.execute(text(wanted[table][name]))
+
+
+def _ensure_shadow_strategy_cycle_columns(engine: Engine) -> None:
+    """Add per-snapshot cycle/config columns to an existing production table."""
+    inspector = inspect(engine)
+    table = "shadow_portfolio_daily_snapshots"
+    if table not in inspector.get_table_names():
+        return
+    wanted = {
+        "cycle_number": (
+            "ALTER TABLE shadow_portfolio_daily_snapshots "
+            "ADD COLUMN cycle_number INTEGER"
+        ),
+        "strategy_config": (
+            "ALTER TABLE shadow_portfolio_daily_snapshots "
+            "ADD COLUMN strategy_config JSON"
+        ),
+        "strategy_config_hash": (
+            "ALTER TABLE shadow_portfolio_daily_snapshots "
+            "ADD COLUMN strategy_config_hash VARCHAR(64)"
+        ),
+    }
+    existing = {column["name"] for column in inspector.get_columns(table)}
+    missing = [name for name in wanted if name not in existing]
+    if not missing:
+        return
+    with engine.begin() as conn:
+        for name in missing:
+            conn.execute(text(wanted[name]))
+
+
+def _backfill_shadow_cycle_archives(engine: Engine) -> None:
+    """補齊既有循環的參數快照。
+
+    目前 production 已有的歷史循環沒有獨立 config row；依目前需求，
+    這些既有循環全部補登當前 strategy version 的參數組合，而不是標示未知。
+    未來新循環則由 `_ensure_active_cycle_archive` 在循環開始時固定保存。
+    """
+    db = Session(bind=engine)
+    changed = False
+    try:
+        pairs = set(
+            db.query(
+                ShadowCompletedTrade.strategy_version,
+                ShadowCompletedTrade.cycle_number,
+            ).distinct().all()
+        )
+        pairs.update(
+            db.query(
+                ShadowPortfolioDailySnapshot.strategy_version,
+                ShadowPortfolioDailySnapshot.cycle_number,
+            )
+            .filter(ShadowPortfolioDailySnapshot.cycle_number.isnot(None))
+            .distinct()
+            .all()
+        )
+        for portfolio in db.query(ShadowVirtualPortfolio).all():
+            pairs.add((portfolio.strategy_version, portfolio.cycle_number))
+
+        current_cycle_by_version = {
+            portfolio.strategy_version: portfolio.cycle_number
+            for portfolio in db.query(ShadowVirtualPortfolio).all()
+        }
+        for strategy_version, cycle_number in sorted(pairs, key=lambda item: (item[0], item[1])):
+            if strategy_version not in STRATEGY_PARAMS_BY_VERSION or cycle_number is None:
+                continue
+            existing = (
+                db.query(ShadowStrategyCycleArchive)
+                .filter(
+                    ShadowStrategyCycleArchive.strategy_version == strategy_version,
+                    ShadowStrategyCycleArchive.cycle_number == cycle_number,
+                )
+                .first()
+            )
+            if existing is not None:
+                continue
+
+            config = strategy_config_snapshot(strategy_version)
+            start_date = (
+                db.query(func.min(ShadowPortfolioDailySnapshot.trade_date))
+                .filter(
+                    ShadowPortfolioDailySnapshot.strategy_version == strategy_version,
+                    ShadowPortfolioDailySnapshot.cycle_number == cycle_number,
+                )
+                .scalar()
+            )
+            settlement_date = (
+                db.query(func.max(ShadowCompletedTrade.exit_execution_date))
+                .filter(
+                    ShadowCompletedTrade.strategy_version == strategy_version,
+                    ShadowCompletedTrade.cycle_number == cycle_number,
+                    ShadowCompletedTrade.exit_reason == EXIT_REASON_PERIOD_END_SETTLEMENT,
+                )
+                .scalar()
+            )
+            status = (
+                "COMPLETED"
+                if settlement_date is not None
+                or cycle_number < current_cycle_by_version.get(strategy_version, cycle_number)
+                else "ACTIVE"
+            )
+            end_date = settlement_date or (
+                db.query(func.max(ShadowPortfolioDailySnapshot.trade_date))
+                .filter(
+                    ShadowPortfolioDailySnapshot.strategy_version == strategy_version,
+                    ShadowPortfolioDailySnapshot.cycle_number == cycle_number,
+                )
+                .scalar()
+                if status == "COMPLETED"
+                else None
+            )
+            db.add(
+                ShadowStrategyCycleArchive(
+                    strategy_version=strategy_version,
+                    cycle_number=cycle_number,
+                    cycle_start_trade_date=start_date,
+                    cycle_end_trade_date=end_date,
+                    status=status,
+                    initial_capital=float(config["initial_capital"]),
+                    strategy_config=config,
+                    strategy_config_hash=strategy_config_hash(strategy_version, config),
+                    completed_at=datetime.utcnow() if status == "COMPLETED" else None,
+                )
+            )
+            changed = True
+        if changed:
+            db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
 
 # ---------------------------------------------------------------------------
 # 凍結參數 —— 逐字對應 fishtail_backtest/backtest/run_all.py 的 BASELINE_PARAMS。
@@ -1791,6 +1929,79 @@ def next_trading_execution_date(db: Session, signal_date: date) -> date:
 # ---------------------------------------------------------------------------
 # Portfolio / position helpers
 # ---------------------------------------------------------------------------
+def _json_safe_strategy_value(value: Any) -> Any:
+    """Convert strategy constants (including tuples) into stable JSON values."""
+    if isinstance(value, dict):
+        return {str(key): _json_safe_strategy_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_strategy_value(item) for item in value]
+    return value
+
+
+def strategy_config_snapshot(strategy_version: str) -> dict:
+    """Return a detached, JSON-safe copy of the config used by a strategy version."""
+    params = STRATEGY_PARAMS_BY_VERSION[strategy_version]
+    return _json_safe_strategy_value(params)
+
+
+def strategy_config_hash(strategy_version: str, config: Optional[dict] = None) -> str:
+    snapshot = config if config is not None else strategy_config_snapshot(strategy_version)
+    payload = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _ensure_active_cycle_archive(
+    db: Session,
+    *,
+    strategy_version: str,
+    cycle_number: int,
+    cycle_start_trade_date: Optional[date],
+) -> ShadowStrategyCycleArchive:
+    """Create the current cycle's immutable config row once, then only update its start date."""
+    row = (
+        db.query(ShadowStrategyCycleArchive)
+        .filter(
+            ShadowStrategyCycleArchive.strategy_version == strategy_version,
+            ShadowStrategyCycleArchive.cycle_number == cycle_number,
+        )
+        .first()
+    )
+    if row is None:
+        config = strategy_config_snapshot(strategy_version)
+        row = ShadowStrategyCycleArchive(
+            strategy_version=strategy_version,
+            cycle_number=cycle_number,
+            cycle_start_trade_date=cycle_start_trade_date,
+            status="ACTIVE",
+            initial_capital=float(config["initial_capital"]),
+            strategy_config=config,
+            strategy_config_hash=strategy_config_hash(strategy_version, config),
+        )
+        db.add(row)
+        db.flush()
+    elif row.status == "ACTIVE" and row.cycle_start_trade_date is None and cycle_start_trade_date:
+        row.cycle_start_trade_date = cycle_start_trade_date
+    return row
+
+
+def _complete_cycle_archive(
+    db: Session,
+    *,
+    strategy_version: str,
+    cycle_number: int,
+    cycle_end_trade_date: date,
+) -> None:
+    row = _ensure_active_cycle_archive(
+        db,
+        strategy_version=strategy_version,
+        cycle_number=cycle_number,
+        cycle_start_trade_date=None,
+    )
+    row.cycle_end_trade_date = cycle_end_trade_date
+    row.status = "COMPLETED"
+    row.completed_at = datetime.utcnow()
+
+
 def _parse_snapshot_date(snapshot: Optional[dict], key: str, fallback: date) -> date:
     raw = (snapshot or {}).get(key)
     if not raw:
@@ -1815,6 +2026,12 @@ def _get_or_create_portfolio(db: Session, strategy_version: str) -> ShadowVirtua
         )
         db.add(portfolio)
         db.flush()
+    _ensure_active_cycle_archive(
+        db,
+        strategy_version=strategy_version,
+        cycle_number=portfolio.cycle_number,
+        cycle_start_trade_date=portfolio.cycle_start_trade_date,
+    )
     return portfolio
 
 
@@ -3980,6 +4197,12 @@ def create_portfolio_daily_snapshot(
     db: Session, *, target_date: date, strategy_version: str = STRATEGY_VERSION
 ) -> ShadowPortfolioDailySnapshot:
     portfolio = _get_or_create_portfolio(db, strategy_version)
+    cycle_archive = _ensure_active_cycle_archive(
+        db,
+        strategy_version=strategy_version,
+        cycle_number=portfolio.cycle_number,
+        cycle_start_trade_date=portfolio.cycle_start_trade_date,
+    )
     positions = _load_positions(db, strategy_version)
 
     invested_cost = 0.0
@@ -3994,7 +4217,8 @@ def create_portfolio_daily_snapshot(
             market_value += lot.shares * close if close is not None else lot.allocation
 
     total_equity = portfolio.cash + market_value
-    initial_capital = STRATEGY_PARAMS_BY_VERSION[strategy_version]["initial_capital"]
+    strategy_config = cycle_archive.strategy_config or strategy_config_snapshot(strategy_version)
+    initial_capital = float(strategy_config["initial_capital"])
     total_return_pct = (total_equity - initial_capital) / initial_capital * 100.0
 
     pending_buy_count = (
@@ -4047,6 +4271,9 @@ def create_portfolio_daily_snapshot(
     snapshot.cash_topup_required = max(
         0.0, -float(portfolio.cash)
     ) + pending_cash_topup_required
+    snapshot.cycle_number = portfolio.cycle_number
+    snapshot.strategy_config = strategy_config
+    snapshot.strategy_config_hash = cycle_archive.strategy_config_hash
 
     return snapshot
 
@@ -4094,10 +4321,17 @@ def check_and_apply_cycle_reset(
         return False
 
     portfolio = _get_or_create_portfolio(db, strategy_version)
+    cycle_archive = _ensure_active_cycle_archive(
+        db,
+        strategy_version=strategy_version,
+        cycle_number=portfolio.cycle_number,
+        cycle_start_trade_date=portfolio.cycle_start_trade_date,
+    )
 
     if portfolio.cycle_start_trade_date is None:
         # 這個 strategy_version 第一次真正運作（第一天不可能滿一個完整循環）
         portfolio.cycle_start_trade_date = target_date
+        cycle_archive.cycle_start_trade_date = target_date
         return False
 
     days_in_cycle = _count_cycle_trading_days(
@@ -4138,6 +4372,13 @@ def check_and_apply_cycle_reset(
         ShadowStrategyOrder.status == ORDER_STATUS_PENDING,
     ).update({"status": "CANCELLED"}, synchronize_session=False)
 
+    _complete_cycle_archive(
+        db,
+        strategy_version=strategy_version,
+        cycle_number=portfolio.cycle_number,
+        cycle_end_trade_date=target_date,
+    )
+
     # ---- 重設 portfolio 現金/循環狀態 ----
     portfolio.cash = params["initial_capital"]
     portfolio.realized_pnl_cumulative = 0.0
@@ -4163,6 +4404,12 @@ def settle_shadow_portfolio_at_period_end(
     """
     params = STRATEGY_PARAMS_BY_VERSION[strategy_version]
     portfolio = _get_or_create_portfolio(db, strategy_version)
+    _ensure_active_cycle_archive(
+        db,
+        strategy_version=strategy_version,
+        cycle_number=portfolio.cycle_number,
+        cycle_start_trade_date=portfolio.cycle_start_trade_date,
+    )
     positions = _load_positions(db, strategy_version)
     settled = 0
 
@@ -4220,6 +4467,13 @@ def settle_shadow_portfolio_at_period_end(
         ShadowStrategyOrder.strategy_version == strategy_version,
         ShadowStrategyOrder.status == ORDER_STATUS_PENDING,
     ).update({"status": "CANCELLED"}, synchronize_session=False)
+
+    _complete_cycle_archive(
+        db,
+        strategy_version=strategy_version,
+        cycle_number=portfolio.cycle_number,
+        cycle_end_trade_date=target_date,
+    )
 
     portfolio.cash = params["initial_capital"]
     portfolio.realized_pnl_cumulative = 0.0

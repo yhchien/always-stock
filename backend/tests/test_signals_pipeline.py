@@ -66,6 +66,56 @@ def _seed_pending_job(
         db.commit()
 
 
+def test_build_pipeline_market_context_reuses_successful_persisted_context(
+    monkeypatch, session_factory
+):
+    """A rerun may skip only the prior successful market-risk lookup."""
+    target_date = date(2026, 4, 25)
+    with session_factory() as db:
+        db.add(
+            SignalSnapshot(
+                snapshot_date=target_date,
+                market_context={
+                    "market_state": "BACKEND_REGIME_AUTHORITATIVE",
+                    "external_risk_context": {"risk_summary": "saved"},
+                    "llm_diagnostic": {"status": "ok"},
+                },
+                watchlist=[],
+                removed=[],
+                summary={},
+            )
+        )
+        db.commit()
+
+        db_snapshot = {
+            "taiex": {"change_pct_1d": 1.0},
+            "otc": {"change_pct_1d": -0.5},
+        }
+        monkeypatch.setattr(
+            market_snapshot, "build_db_market_snapshot", lambda _db, _date: db_snapshot
+        )
+        monkeypatch.setattr(
+            llm_caller,
+            "assemble_market_context",
+            lambda _snapshot: pytest.fail("persisted successful context should be reused"),
+        )
+
+        out = pipeline_mod._build_pipeline_market_context(
+            db,
+            target_date=target_date,
+            regime_info={
+                "regime": "RANGE",
+                "regime_label": "區間",
+                "reason": "test",
+            },
+        )
+
+    assert out["external_risk_context"]["risk_summary"] == "saved"
+    assert out["taiex_change_pct"] == 1.0
+    assert out["otc_change_pct"] == -0.5
+    assert out["market_regime"] == "RANGE"
+
+
 def _stub_all_stages_noop(monkeypatch):
     """全部 stage 替換為 noop（happy path）。
 

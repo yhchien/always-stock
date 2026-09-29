@@ -17,7 +17,6 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     DailyPrice,
-    SignalExpectationPrice,
     SignalObservation,
     SignalObservationReview,
     SignalSnapshot,
@@ -87,9 +86,6 @@ class ArchiveSummaryItem:
     max_negative_return_trade_date: Optional[date]
     # 產生這筆追蹤的 prompt 版本（取最新一次命中）；舊資料 → v1
     prompt_version: str = "v1"
-    # M26：對應 (stock_id, first_seen_date) 的 SignalExpectationPrice 預測；舊資料無 → None
-    conservative_price: Optional[float] = None
-    dream_price: Optional[float] = None
     # 2026-07-13：卡片極簡化 UI 需要的「as_of 交易日收盤價」與「當日漲跌幅」。
     # 與 latest_eval_price 不同：latest_eval_price 在 baseline 未建立（第一天抓到）時為 None，
     # 這兩欄直接查 daily_price，任何追蹤日都有值（除非個股當日停牌無資料）。
@@ -124,9 +120,6 @@ class CompletedArchiveItem:
     closure_reason: str = CLOSURE_REASON_COMPLETED_30_DAYS
     # 產生此 cycle 的 prompt 版本（取最新一次命中）；舊資料 → v1
     prompt_version: str = "v1"
-    # M26：對應 (stock_id, first_seen_date) 的 SignalExpectationPrice 預測；舊資料無 → None
-    conservative_price: Optional[float] = None
-    dream_price: Optional[float] = None
     # 2026-08-28：同一檔股票可能有多筆歷史停止紀錄，標示「這是第幾次」；只有
     # list_stopped_observations_summary／list_stopped_observations_for_date 會填。
     occurrence_number: Optional[int] = None
@@ -237,42 +230,6 @@ def clear_signal_watch_hits_for_date(db: Session, target_date: date) -> int:
     return int(deleted or 0)
 
 
-def _load_expectation_prices_map(
-    db: Session,
-    keys: Iterable[tuple[str, date]],
-) -> dict[tuple[str, date], tuple[Optional[float], Optional[float]]]:
-    """批次撈 (stock_id, first_detected_date) → (conservative_price, dream_price)。
-
-    舊 archive row（M26 上線前）不會有對應 expectation 資料 → 該 key 不在回傳 dict 中。
-    只取 status='ok' 的 row，failed/null 視同沒有預測（前端顯示「—」）。
-    """
-    key_list = list(keys)
-    if not key_list:
-        return {}
-    stock_ids = list({sid for sid, _ in key_list})
-    first_dates = list({d for _, d in key_list})
-    rows = (
-        db.query(
-            SignalExpectationPrice.stock_id,
-            SignalExpectationPrice.first_detected_date,
-            SignalExpectationPrice.conservative_price,
-            SignalExpectationPrice.dream_price,
-        )
-        .filter(
-            SignalExpectationPrice.stock_id.in_(stock_ids),
-            SignalExpectationPrice.first_detected_date.in_(first_dates),
-            SignalExpectationPrice.status == "ok",
-        )
-        .all()
-    )
-    wanted = set(key_list)
-    return {
-        (sid, fdate): (cp, dp)
-        for sid, fdate, cp, dp in rows
-        if (sid, fdate) in wanted
-    }
-
-
 def _prune_signal_watch_hits(db: Session) -> None:
     keep_dates = [
         row[0]
@@ -326,10 +283,6 @@ def list_archive_summary(
     if limit > 0:
         ordered = ordered[:limit]
 
-    # M26：批次補上 expectation_price 預測
-    expectation_map = _load_expectation_prices_map(
-        db, [(item.stock_id, item.first_seen_date) for item in ordered]
-    )
     # 卡片極簡化 UI：批次補上 as_of 收盤價 + 當日漲跌幅
     close_map = _load_latest_close_and_change(
         db,
@@ -337,9 +290,6 @@ def list_archive_summary(
         as_of_trade_date=as_of_trade_date,
     )
     for item in ordered:
-        prediction = expectation_map.get((item.stock_id, item.first_seen_date))
-        if prediction is not None:
-            item.conservative_price, item.dream_price = prediction
         item.latest_close_price, item.daily_change_pct = close_map.get(
             item.stock_id, (None, None)
         )
@@ -607,13 +557,6 @@ def get_archive_detail(
         as_of_trade_date=as_of_trade_date,
         tracking_day_cache={},
     )
-    # M26：補上 expectation_price 預測
-    expectation_map = _load_expectation_prices_map(
-        db, [(summary.stock_id, summary.first_seen_date)]
-    )
-    prediction = expectation_map.get((summary.stock_id, summary.first_seen_date))
-    if prediction is not None:
-        summary.conservative_price, summary.dream_price = prediction
     close_map = _load_latest_close_and_change(
         db, stock_ids=[summary.stock_id], as_of_trade_date=as_of_trade_date
     )
@@ -757,13 +700,6 @@ def get_stopped_observation_detail(
         if effective_start_date <= event["date"] <= record.completed_trade_date
     ]
 
-    expectation_map = _load_expectation_prices_map(
-        db, [(stock_id, record.first_seen_date)]
-    )
-    conservative_price, dream_price = expectation_map.get(
-        (stock_id, record.first_seen_date), (None, None)
-    )
-
     # reports 依 snapshot_date 降序排列（見 _load_snapshot_reports_for_stock），
     # 第一筆即最新一筆——比照 get_archive_detail 用「最新一筆命中」帶出一句話總結／
     # 相對優勢／融資融券分析
@@ -796,8 +732,6 @@ def get_stopped_observation_detail(
         "completed_trade_date": record.completed_trade_date,
         "closure_reason": record.closure_reason,
         "prompt_version": record.prompt_version or "v1",
-        "conservative_price": conservative_price,
-        "dream_price": dream_price,
         "recommendation_thesis": latest_report.get("recommendation_thesis"),
         "relative_advantage": latest_report.get("relative_advantage"),
         "margin_analysis": latest_report.get("margin_analysis"),
@@ -896,11 +830,6 @@ def _list_archive_style_table_summary(
         query = query.limit(limit)
     rows = query.all()
 
-    # M26：批次補上 expectation_price 預測
-    expectation_map = _load_expectation_prices_map(
-        db, [(row.stock_id, row.first_seen_date) for row in rows]
-    )
-
     items: list[CompletedArchiveItem] = []
     for row in rows:
         item = CompletedArchiveItem(
@@ -927,9 +856,6 @@ def _list_archive_style_table_summary(
             ),
             prompt_version=row.prompt_version or "v1",
         )
-        prediction = expectation_map.get((row.stock_id, row.first_seen_date))
-        if prediction is not None:
-            item.conservative_price, item.dream_price = prediction
         items.append(item)
 
     return {
@@ -1062,9 +988,6 @@ def list_stopped_observations_for_date(
         .filter(SignalWatchStoppedObservation.completed_trade_date == completed_trade_date)
         .all()
     )
-    expectation_map = _load_expectation_prices_map(
-        db, [(row.stock_id, row.first_seen_date) for row in rows]
-    )
     items: list[CompletedArchiveItem] = []
     for row in rows:
         item = CompletedArchiveItem(
@@ -1089,9 +1012,6 @@ def list_stopped_observations_for_date(
             closure_reason=(row.closure_reason or CLOSURE_REASON_COMPLETED_30_DAYS),
             prompt_version=row.prompt_version or "v1",
         )
-        prediction = expectation_map.get((row.stock_id, row.first_seen_date))
-        if prediction is not None:
-            item.conservative_price, item.dream_price = prediction
         items.append(item)
 
     items.sort(
@@ -2156,8 +2076,6 @@ def _serialize_summary_item(item: ArchiveSummaryItem) -> dict[str, Any]:
         "max_negative_return_pct": item.max_negative_return_pct,
         "max_negative_return_trade_date": item.max_negative_return_trade_date,
         "prompt_version": item.prompt_version or "v1",
-        "conservative_price": item.conservative_price,
-        "dream_price": item.dream_price,
         "latest_close_price": item.latest_close_price,
         "daily_change_pct": item.daily_change_pct,
         "market_resilience": item.market_resilience,
@@ -2187,8 +2105,6 @@ def _serialize_completed_archive_item(item: CompletedArchiveItem) -> dict[str, A
         "completed_trade_date": item.completed_trade_date,
         "closure_reason": item.closure_reason,
         "prompt_version": item.prompt_version or "v1",
-        "conservative_price": item.conservative_price,
-        "dream_price": item.dream_price,
         "occurrence_number": item.occurrence_number,
         "occurrence_total": item.occurrence_total,
     }

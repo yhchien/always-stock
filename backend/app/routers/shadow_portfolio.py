@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
@@ -29,10 +29,16 @@ from app.models import (
     ShadowPortfolioDailySnapshot,
     ShadowPositionLot,
     ShadowStrategyOrder,
+    ShadowStrategyCycleArchive,
     ShadowVirtualPortfolio,
     ShadowVirtualPosition,
 )
-from app.signals.shadow_portfolio import STRATEGY_PARAMS_BY_VERSION, STRATEGY_VERSION
+from app.signals.shadow_portfolio import (
+    STRATEGY_PARAMS_BY_VERSION,
+    STRATEGY_VERSION,
+    strategy_config_hash,
+    strategy_config_snapshot,
+)
 
 router = APIRouter(prefix="/signals/shadow-portfolio", tags=["signals"])
 
@@ -87,6 +93,8 @@ class ShadowPortfolioResponse(BaseModel):
     # None = 這個策略版本沒有強制循環重置概念（Clean Baselines / FORWARD_V1_202609）
     cycle_length_trading_days: Optional[int] = None
     cycle_trading_days_elapsed: Optional[int] = None
+    strategy_config: Optional[Dict[str, Any]] = None
+    strategy_config_hash: Optional[str] = None
 
 
 class ShadowPendingActionResponse(BaseModel):
@@ -141,6 +149,7 @@ def get_shadow_portfolio(
     db: Session = Depends(get_db),
 ) -> ShadowPortfolioResponse:
     params = _resolve_params(strategy_version)
+    config_version = strategy_version if strategy_version in STRATEGY_PARAMS_BY_VERSION else STRATEGY_VERSION
     portfolio = (
         db.query(ShadowVirtualPortfolio)
         .filter(ShadowVirtualPortfolio.strategy_version == strategy_version)
@@ -213,6 +222,26 @@ def get_shadow_portfolio(
 
     cycle_number = portfolio.cycle_number if portfolio else 1
     cycle_start_trade_date = portfolio.cycle_start_trade_date if portfolio else None
+    active_cycle_archive = (
+        db.query(ShadowStrategyCycleArchive)
+        .filter(
+            ShadowStrategyCycleArchive.strategy_version == strategy_version,
+            ShadowStrategyCycleArchive.cycle_number == cycle_number,
+        )
+        .first()
+        if strategy_version in STRATEGY_PARAMS_BY_VERSION
+        else None
+    )
+    current_strategy_config = (
+        active_cycle_archive.strategy_config
+        if active_cycle_archive is not None and isinstance(active_cycle_archive.strategy_config, dict)
+        else strategy_config_snapshot(config_version)
+    )
+    current_strategy_config_hash = (
+        active_cycle_archive.strategy_config_hash
+        if active_cycle_archive is not None and active_cycle_archive.strategy_config_hash
+        else strategy_config_hash(config_version, current_strategy_config)
+    )
     cycle_trading_days_elapsed: Optional[int] = None
     if cycle_start_trade_date is not None and latest_snapshot is not None:
         cycle_trading_days_elapsed = (
@@ -249,6 +278,8 @@ def get_shadow_portfolio(
         cycle_start_trade_date=cycle_start_trade_date,
         cycle_length_trading_days=params.get("cycle_reset_trading_days"),
         cycle_trading_days_elapsed=cycle_trading_days_elapsed,
+        strategy_config=current_strategy_config,
+        strategy_config_hash=current_strategy_config_hash,
     )
 
 
@@ -352,6 +383,9 @@ class ShadowHistoryResponse(BaseModel):
     win_rate_pct: Optional[float] = None
     settlement_cash: Optional[float] = None
     max_cash_topup_required: float = 0.0
+    cycle_number: Optional[int] = None
+    strategy_config: Optional[Dict[str, Any]] = None
+    strategy_config_hash: Optional[str] = None
     trading_days: List[ShadowHistoryDayResponse]
 
 
@@ -388,6 +422,63 @@ def _completed_trade_response(trade: ShadowCompletedTrade) -> ShadowCompletedTra
         holding_days=trade.holding_days,
         followed_by_rotation=trade.followed_by_rotation,
     )
+
+
+def _history_cycle_metadata(
+    db: Session,
+    *,
+    strategy_version: str,
+    snapshots: List[ShadowPortfolioDailySnapshot],
+    completed_trades: List[ShadowCompletedTrade],
+    start_date: Optional[date],
+    end_date: Optional[date],
+) -> tuple[Optional[int], dict, str]:
+    """Resolve history config from its cycle archive, never from a live-only label."""
+    cycle_numbers = {
+        int(snapshot.cycle_number)
+        for snapshot in snapshots
+        if snapshot.cycle_number is not None
+    }
+    cycle_numbers.update(int(trade.cycle_number) for trade in completed_trades)
+    cycle_number = next(iter(cycle_numbers)) if len(cycle_numbers) == 1 else None
+    archive = None
+    if cycle_number is not None:
+        archive = (
+            db.query(ShadowStrategyCycleArchive)
+            .filter(
+                ShadowStrategyCycleArchive.strategy_version == strategy_version,
+                ShadowStrategyCycleArchive.cycle_number == cycle_number,
+            )
+            .first()
+        )
+    if archive is None and start_date is not None and end_date is not None:
+        archive = (
+            db.query(ShadowStrategyCycleArchive)
+            .filter(
+                ShadowStrategyCycleArchive.strategy_version == strategy_version,
+                ShadowStrategyCycleArchive.cycle_start_trade_date <= end_date,
+                (ShadowStrategyCycleArchive.cycle_end_trade_date.is_(None))
+                | (ShadowStrategyCycleArchive.cycle_end_trade_date >= start_date),
+            )
+            .order_by(ShadowStrategyCycleArchive.cycle_number.desc())
+            .first()
+        )
+        if archive is not None:
+            cycle_number = archive.cycle_number
+
+    # Existing cycles are backfilled at startup.  This fallback keeps the API
+    # useful during a rolling deploy before that idempotent backfill runs.
+    config = (
+        archive.strategy_config
+        if archive is not None and isinstance(archive.strategy_config, dict)
+        else strategy_config_snapshot(strategy_version)
+    )
+    config_hash = (
+        archive.strategy_config_hash
+        if archive is not None and archive.strategy_config_hash
+        else strategy_config_hash(strategy_version, config)
+    )
+    return cycle_number, config, config_hash
 
 
 @router.get("/history", response_model=ShadowHistoryResponse)
@@ -535,6 +626,16 @@ def get_shadow_history(
     for trade in completed_trades:
         trades_by_date.setdefault(trade.exit_execution_date, []).append(_completed_trade_response(trade))
 
+    cycle_number, strategy_config, config_hash = _history_cycle_metadata(
+        db,
+        strategy_version=strategy_version,
+        snapshots=snapshots,
+        completed_trades=completed_trades,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    history_initial_capital = float(strategy_config["initial_capital"])
+
     completed_trade_count = len(completed_trades)
     winning_trade_count = sum(1 for trade in completed_trades if float(trade.realized_return_pct) > 0)
     win_rate_pct = (
@@ -545,8 +646,7 @@ def get_shadow_history(
         for trade in completed_trades
         if trade.exit_reason == "PERIOD_END_SETTLEMENT"
     }
-    params = _resolve_params(strategy_version)
-    settlement_cash = float(params["initial_capital"]) if settlement_dates else None
+    settlement_cash = history_initial_capital if settlement_dates else None
     settlement_equity_by_date: dict[date, float] = {}
     settlement_realized_pnl_by_date: dict[date, float] = {}
     if settlement_dates:
@@ -569,7 +669,7 @@ def get_shadow_history(
             settlement_realized_pnl_by_date[settlement_date] = (
                 float(snapshot.realized_pnl) + settlement_pnl
             )
-    previous_equity = float(params["initial_capital"])
+    previous_equity = history_initial_capital
     days: List[ShadowHistoryDayResponse] = []
     for snapshot in snapshots:
         is_settlement_day = snapshot.trade_date in settlement_equity_by_date
@@ -583,7 +683,7 @@ def get_shadow_history(
                 invested_cost=0.0 if is_settlement_day else snapshot.invested_cost,
                 market_value=0.0 if is_settlement_day else snapshot.market_value,
                 total_equity=equity,
-                total_return_pct=(equity / float(params["initial_capital"]) - 1.0) * 100.0
+                total_return_pct=(equity / history_initial_capital - 1.0) * 100.0
                 if is_settlement_day
                 else snapshot.total_return_pct,
                 daily_return_pct=daily_return_pct,
@@ -603,8 +703,8 @@ def get_shadow_history(
     start_equity = days[0].total_equity if days else None
     end_equity = days[-1].total_equity if days else None
     period_return_pct = (
-        (end_equity / float(params["initial_capital"]) - 1.0) * 100.0
-        if end_equity is not None and params["initial_capital"]
+        (end_equity / history_initial_capital - 1.0) * 100.0
+        if end_equity is not None and history_initial_capital
         else None
     )
     max_cash_topup_required = max(
@@ -624,6 +724,9 @@ def get_shadow_history(
         win_rate_pct=win_rate_pct,
         settlement_cash=settlement_cash,
         max_cash_topup_required=max_cash_topup_required,
+        cycle_number=cycle_number,
+        strategy_config=strategy_config,
+        strategy_config_hash=config_hash,
         trading_days=days,
     )
 

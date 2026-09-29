@@ -1721,9 +1721,6 @@ export interface SignalArchiveSummaryItem {
   max_negative_return_trade_date: string | null
   /** 2026-06-26：產生這檔的 prompt 版本（取最新一次命中）；舊資料 = v1。 */
   prompt_version?: string | null
-  // M26：對應 (stock_id, first_seen_date) 的 expectation price 預測；舊資料 = null
-  conservative_price?: number | null
-  dream_price?: number | null
   /** 2026-07-13：卡片極簡化 UI 用的 as_of 收盤價 + 當日漲跌幅（個股當日停牌 = null）。 */
   latest_close_price?: number | null
   daily_change_pct?: number | null
@@ -1762,9 +1759,6 @@ export interface SignalArchiveCompletedItem {
   closure_reason: SignalClosureReason
   /** 2026-06-26：產生此 cycle 的 prompt 版本（取最新一次命中）；舊資料 = v1。 */
   prompt_version?: string | null
-  // M26：對應 (stock_id, first_seen_date) 的 expectation price 預測；舊資料 = null
-  conservative_price?: number | null
-  dream_price?: number | null
   // 2026-08-28：同一檔股票可能有多筆歷史停止紀錄，標示「這是第幾次」；只有
   // /archive/stopped 系列會填，/archive/completed（舊策略時代）維持 null。
   occurrence_number?: number | null
@@ -2117,159 +2111,6 @@ export interface SignalOutcomeFilters {
   reason_prompt_version?: string
   tracking_prompt_version?: string
   tracking_state_machine_version?: string
-}
-
-// ============================================================================
-// Expectation Price（一個月內資金行情可期待價格區間）
-// ============================================================================
-
-export type ExpectationValuationMode =
-  | "PE_VALUATION"
-  | "THEME_RE_RATING"
-  | "MOMENTUM_MARKUP"
-  | "EXTREME_MOMENTUM_MARKUP"
-  | "FAILED_FOLLOW_THROUGH"
-
-export type ExpectationPricePosition =
-  | "undervalued_to_theme"
-  | "fair"
-  | "optimistic"
-  | "overextended"
-  | "failed_follow_through"
-
-export type ExpectationChaseRisk = "low" | "medium" | "high"
-export type ExpectationConfidence = "high" | "medium" | "low"
-
-export interface ExpectationScorecard {
-  theme_score_calc?: number
-  fundamental_score?: number
-  institution_score?: number
-  margin_short_score?: number
-  technical_score?: number
-  sentiment_score?: number
-  total_score?: number
-}
-
-export interface ExpectationValuationDetail {
-  eps_used?: number | null
-  eps_type?: string
-  conservative_pe?: number | null
-  dream_pe?: number | null
-  detected_day_high_multiplier_conservative?: number | null
-  detected_day_high_multiplier_dream?: number | null
-  pe_reason?: string
-}
-
-export interface ExpectationClassification {
-  stage?: string
-  role?: string
-  follower_subtype?: string | null
-  mainstream_theme?: boolean
-  institution_status?: string
-  technical_state?: string
-  margin_status?: string
-  follow_through_status?: string
-}
-
-export interface ExpectationPriceItem {
-  stock_id: string
-  stock_name: string
-  first_detected_date: string
-  latest_detected_date: string | null
-  detected_type: string | null
-  industry_name: string | null
-  sub_industry: string | null
-  conservative_price: number | null
-  dream_price: number | null
-  valuation_mode: ExpectationValuationMode | null
-  valuation_basis: string | null
-  current_price_position: ExpectationPricePosition | null
-  chase_risk: ExpectationChaseRisk | null
-  confidence: ExpectationConfidence | null
-  detected_day_high: number | null
-  detected_day_close: number | null
-  current_price: number | null
-  hit_conservative_at: string | null
-  hit_dream_at: string | null
-  scorecard: ExpectationScorecard | null
-  classification: ExpectationClassification | null
-  valuation_detail: ExpectationValuationDetail | null
-  reason_50_words: string | null
-  risk_note_30_words: string | null
-  source: "cron" | "manual"
-  status: "ok" | "failed"
-  error_message: string | null
-  generated_at: string
-  updated_at: string
-}
-
-export interface ExpectationPriceListResponse {
-  snapshot_date: string | null
-  items: ExpectationPriceItem[]
-}
-
-export interface ExpectationQuotaResponse {
-  daily_limit: number
-  used_count: number
-  remaining_count: number
-  disabled: boolean
-}
-
-export interface ExpectationRegenerateAcceptedResponse {
-  stock_id: string
-  status: string
-}
-
-export async function fetchExpectationPrices(
-  snapshotDate?: string | null,
-  options?: FetchOptions,
-): Promise<ExpectationPriceListResponse> {
-  const qs = new URLSearchParams()
-  if (snapshotDate) qs.set("snapshot_date", snapshotDate)
-  const url = `${API_BASE}/api/signals/expectation-prices${
-    qs.toString() ? `?${qs.toString()}` : ""
-  }`
-  const res = await apiFetch(url, { signal: options?.signal })
-  if (!res.ok)
-    throw new Error(await buildErrorMessage(res, "預測價載入失敗"))
-  return res.json()
-}
-
-export async function fetchExpectationPrice(
-  stockId: string,
-  options?: FetchOptions,
-): Promise<ExpectationPriceItem | null> {
-  const res = await apiFetch(
-    `${API_BASE}/api/signals/expectation-prices/${encodeURIComponent(stockId)}`,
-    { signal: options?.signal },
-  )
-  if (res.status === 404) return null
-  if (!res.ok)
-    throw new Error(await buildErrorMessage(res, "個股預測價載入失敗"))
-  return res.json()
-}
-
-export async function fetchExpectationQuota(
-  options?: FetchOptions,
-): Promise<ExpectationQuotaResponse> {
-  const res = await apiFetch(`${API_BASE}/api/signals/expectation-prices/quota`, {
-    signal: options?.signal,
-  })
-  if (!res.ok)
-    throw new Error(await buildErrorMessage(res, "預測額度載入失敗"))
-  return res.json()
-}
-
-export async function regenerateExpectationPrice(
-  stockId: string,
-): Promise<ExpectationRegenerateAcceptedResponse> {
-  const res = await apiFetch(`${API_BASE}/api/signals/expectation-prices/regenerate`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ stock_id: stockId }),
-  })
-  if (!res.ok) throw new Error(await buildErrorMessage(res, "重新預測失敗"))
-  return res.json()
 }
 
 export async function fetchLatestSignalSnapshot(
@@ -2742,6 +2583,8 @@ export interface ShadowPortfolio {
   cycle_start_trade_date: string | null
   cycle_length_trading_days: number | null
   cycle_trading_days_elapsed: number | null
+  strategy_config: Record<string, unknown> | null
+  strategy_config_hash: string | null
 }
 
 export const SHADOW_STRATEGY_VERSIONS = ["v1_frozen", "FORWARD_V1_202609"] as const
@@ -2869,6 +2712,9 @@ export interface ShadowHistoryResponse {
   win_rate_pct: number | null
   settlement_cash: number | null
   max_cash_topup_required: number
+  cycle_number: number | null
+  strategy_config: Record<string, unknown> | null
+  strategy_config_hash: string | null
   trading_days: ShadowHistoryDay[]
 }
 

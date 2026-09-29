@@ -279,6 +279,29 @@ def assemble_market_context(
     return result
 
 
+def reuse_persisted_market_context(
+    cached_context: Dict[str, Any],
+    db_market_snapshot: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Reuse a previously successful market lookup stored in a signal snapshot.
+
+    This is deliberately narrower than the in-process 4-hour cache: callers must
+    first verify that the persisted context came from a successful LLM response.
+    Only the external-risk interpretation is reused; the authoritative TAIEX/OTC
+    values are refreshed from the current DB snapshot on every pipeline run.
+    """
+    merged = dict(cached_context)
+    merged["taiex_change_pct"] = _get_index_change_pct(db_market_snapshot, "taiex")
+    merged["otc_change_pct"] = _get_index_change_pct(db_market_snapshot, "otc")
+    diagnostic = cached_context.get("llm_diagnostic")
+    if isinstance(diagnostic, dict):
+        merged["llm_diagnostic"] = {
+            **diagnostic,
+            "cache_source": "persisted_signal_snapshot",
+        }
+    return merged
+
+
 def run_research_batch(
     stocks_batch: List[Dict[str, Any]],
     market_context: Optional[Dict[str, Any]] = None,
