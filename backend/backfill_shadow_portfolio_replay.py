@@ -251,9 +251,11 @@ def _replace_shadow_portfolio_range(
     """
     from app.models import (
         ShadowCompletedTrade, ShadowMissedCandidate, ShadowPortfolioDailySnapshot, ShadowPositionLot,
-        ShadowStrategyDailyDecision, ShadowStrategyOrder, ShadowVirtualPortfolio, ShadowVirtualPosition,
+        ShadowStrategyCycleArchive, ShadowStrategyDailyDecision, ShadowStrategyOrder,
+        ShadowVirtualPortfolio, ShadowVirtualPosition,
         ShadowWinnerTracking,
     )
+    from app.signals.shadow_portfolio import strategy_config_hash, strategy_config_snapshot
 
     with session_factory() as db:
         position_ids = [
@@ -306,8 +308,53 @@ def _replace_shadow_portfolio_range(
             ShadowWinnerTracking.trade_date >= start_date,
             ShadowWinnerTracking.trade_date <= end_date,
         ).delete(synchronize_session=False)
+        # Keep the current cycle number stable, but refresh its immutable config
+        # snapshot because this command explicitly replaces that cycle after a
+        # strategy-rule change.
+        existing_portfolio = (
+            db.query(ShadowVirtualPortfolio)
+            .filter(ShadowVirtualPortfolio.strategy_version == strategy_version)
+            .first()
+        )
+        cycle_number = existing_portfolio.cycle_number if existing_portfolio is not None else None
+        active_archive = None
+        if cycle_number is not None:
+            active_archive = (
+                db.query(ShadowStrategyCycleArchive)
+                .filter(
+                    ShadowStrategyCycleArchive.strategy_version == strategy_version,
+                    ShadowStrategyCycleArchive.cycle_number == cycle_number,
+                )
+                .first()
+            )
+        if active_archive is None:
+            active_archive = (
+                db.query(ShadowStrategyCycleArchive)
+                .filter(ShadowStrategyCycleArchive.strategy_version == strategy_version)
+                .order_by(ShadowStrategyCycleArchive.cycle_number.desc())
+                .first()
+            )
+        if cycle_number is None:
+            cycle_number = active_archive.cycle_number if active_archive is not None else 1
+        config = strategy_config_snapshot(strategy_version)
+        if active_archive is not None:
+            active_archive.cycle_start_trade_date = None
+            active_archive.cycle_end_trade_date = None
+            active_archive.status = "ACTIVE"
+            active_archive.completed_at = None
+            active_archive.initial_capital = float(config["initial_capital"])
+            active_archive.strategy_config = config
+            active_archive.strategy_config_hash = strategy_config_hash(strategy_version, config)
         db.query(ShadowVirtualPortfolio).filter(ShadowVirtualPortfolio.strategy_version == strategy_version).delete(
             synchronize_session=False
+        )
+        db.add(
+            ShadowVirtualPortfolio(
+                strategy_version=strategy_version,
+                cash=float(config["initial_capital"]),
+                realized_pnl_cumulative=0.0,
+                cycle_number=cycle_number,
+            )
         )
         db.commit()
     logger.info(
@@ -520,7 +567,7 @@ def main(argv: list) -> int:
 
         print(f"\n--- {d} ---")
         if reset_triggered:
-            print("  *** 35 個交易日循環結束，portfolio 已強制重置 ***")
+            print("  *** 25 個交易日循環結束，portfolio 已強制重置 ***")
         if filled_today:
             print("  [今日成交]")
             for action, stock_id, stock_name, execution_price, reason in filled_today:

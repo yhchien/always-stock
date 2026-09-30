@@ -26,8 +26,8 @@ const STRATEGY_META: Record<
     label: "v1（Dual-Engine／雙引擎）",
     badge: "ACTIVE（啟用中）",
     description:
-      "2026-09-07 起的新週期：把資金分成 Continuation、Pullback、Opportunity 三個桶，" +
-      "用報告證據找強勢延續股（含早期高動能），也保留拉回回穩與換股機會。",
+      "2026-09-07 起的新週期：用 Continuation、Pullback 等標籤分類股票，" +
+      "最多同時持有 6 檔，每檔固定以 100,000 元獨立計算損益。",
   },
   FORWARD_V1_202609: {
     label: "FORWARD_V1_202609（前向測試）",
@@ -153,11 +153,6 @@ function ActionCard({ action }: { action: ShadowPendingAction }) {
         <p className="mt-1 text-xs text-slate-400">進場型態：{formatEntryPattern(action.entry_pattern)}</p>
       )}
       {action.reason && <p className="mt-1 text-xs leading-5 text-slate-400">原因：{formatActionReason(action.reason)}</p>}
-      {action.cash_topup_required !== null && action.cash_topup_required > 0 && (
-        <p className="mt-2 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-xs text-amber-200">
-          預估需額外補款 {formatMoney(action.cash_topup_required)} 元，仍維持完整 100,000 元買進
-        </p>
-      )}
       <p className="mt-2 text-[11px] text-slate-500">
         訊號日 {action.signal_date} → 下一個交易日執行
       </p>
@@ -235,11 +230,6 @@ function HistoryDayRow({
               期末結算：已按期末可用最低價全部賣出；結算後下一循環本金重設為 {formatMoney(day.settlement_cash)} 元。
             </p>
           )}
-          {day.cash_topup_required > 0 && (
-            <p className="sm:col-span-2 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-              當日需額外補款 {formatMoney(day.cash_topup_required)} 元；買進仍以完整 100,000 元單位執行。
-            </p>
-          )}
           <div>
             <p className="mb-2 text-[11px] font-semibold text-slate-300">當日成交動作</p>
             {day.executed_orders.length === 0 ? (
@@ -261,11 +251,6 @@ function HistoryDayRow({
                       <p className="mt-1 text-[11px] text-slate-500">
                         {formatActionReason(order.reason ?? order.entry_pattern)}・{order.units} 單位
                       </p>
-                      {order.cash_topup_required !== null && order.cash_topup_required > 0 && (
-                        <p className="mt-1 text-[11px] text-amber-300">
-                          實際需補款 {formatMoney(order.cash_topup_required)} 元
-                        </p>
-                      )}
                     </div>
                   )
                 })}
@@ -332,7 +317,7 @@ function HistoryPeriodRow({
             <StatBox label="期間起始權益" value={formatMoney(period.start_equity)} />
             <StatBox label="期間結束權益" value={formatMoney(period.end_equity)} />
             <StatBox label="期間報酬" value={formatPct(period.period_return_pct)} tone={returnTone(period.period_return_pct)} />
-            <StatBox label="最高需補款" value={formatMoney(period.max_cash_topup_required)} />
+            <StatBox label="週期累計損益" value={formatMoney(period.cycle_realized_pnl)} tone={returnTone(period.cycle_realized_pnl)} />
             <StatBox
               label="勝率（已平倉）"
               value={period.win_rate_pct === null ? "—" : `${period.win_rate_pct.toFixed(2)}%`}
@@ -513,13 +498,12 @@ export default function ShadowPortfolioPage() {
             <div className="grid gap-3 border-t border-slate-800 p-3 text-xs leading-5 text-slate-400 lg:grid-cols-2">
               <div className="rounded-lg border border-sky-900/50 bg-sky-950/20 p-3 lg:col-span-2">
                 <p className="font-semibold text-sky-200">v1（Dual-Engine，2026-09-07 起）</p>
-                <p className="mt-2 font-medium text-slate-300">核心概念與資金桶</p>
-                <p className="mt-1">它不是看到動能分數高就直接買，而是先判斷「哪一種證據組合成立」，再把交易放進對應資金桶。</p>
+                <p className="mt-2 font-medium text-slate-300">核心概念與股票分類</p>
+                <p className="mt-1">Continuation、Pullback 與各種 profile 是股票類型標籤，不是不同的資金桶。符合進場條件就建立一筆固定 100,000 元的獨立交易。</p>
                 <ul className="mt-1 list-disc space-y-1 pl-4">
-                  <li><span className="text-slate-300">Continuation（強勢延續引擎）：</span>300,000 元，找 HIGH（高題材匹配）與 LEADER（領導股）；首次買進 100,000 元。</li>
-                  <li><span className="text-slate-300">Pullback（拉回回穩引擎）：</span>100,000 元，先觀察拉回，等價格與動能回穩後才買。</li>
-                  <li><span className="text-slate-300">Opportunity（機會資金桶）：</span>最多 300,000 元，是核心桶滿載後的額外機會池，不是另一套選股邏輯。</li>
-                  <li><span className="text-slate-300">Confirmation（確認）：</span>目前只確認持倉狀態，不另外投入第二筆資金；每 25 個交易日結算並重設 600,000 元本金。</li>
+                  <li><span className="text-slate-300">同時持股上限：</span>6 檔；只有 6 檔都占用時，才可能啟動符合條件的輪動換股。</li>
+                  <li><span className="text-slate-300">固定單位：</span>每檔一次買進 100,000 元，不因中間現金餘額不足而跳過。</li>
+                  <li><span className="text-slate-300">週期結算：</span>每 25 個交易日把所有已完成交易的實際損益加總；例如 20 筆各賠 100,000 元，週期就是 -2,000,000 元。</li>
                 </ul>
 
                 <p className="mt-3 font-medium text-slate-300">Continuation 的七項證據</p>
@@ -554,7 +538,7 @@ export default function ShadowPortfolioPage() {
                 <p className="mt-1">先只記錄 WATCH（觀察）：魚尾 Day 2–7、episode 報酬（本輪價格路徑報酬）-15% 至 -4%、動能 ≥55 且 P4 未停止。只有在相對低點回升 ≥3 個百分點、今日收盤高於前日、動能 ≥60 且沒有惡化超過 2 分，並且最近 4 個交易日內有有效觀察，才用 Pullback（拉回桶）買進。</p>
 
                 <p className="mt-3 font-medium text-slate-300">不買的原因</p>
-                <p className="mt-1">證據不足、沒有任何 profile（進場型態）、尚未完成 Pullback（拉回）回穩、不是新的魚尾 Day 1、P4_STOP（P4 停止觀察）或硬排除、ETF（指數型基金）／不在魚尾 universe（候選範圍）、已有持股、資料品質可疑，都會記錄為不買或只觀察。Opportunity（機會桶）滿載時還要通過前 10 名、至少 6 項證據、動能 70–84、RS（相對強度）≥90 等即時輪動條件。符合條件但現金不足時，Dual-Engine（雙引擎）仍建立完整 100,000 元買單，並在動作、快照與歷史顯示需額外補款金額。</p>
+                <p className="mt-1">證據不足、沒有任何 profile（進場型態）、尚未完成 Pullback（拉回）回穩、不是新的魚尾 Day 1、P4_STOP（P4 停止觀察）或硬排除、ETF（指數型基金）／不在魚尾 universe（候選範圍）、已有持股、資料品質可疑，都會記錄為不買或只觀察。符合條件但目前已持有 6 檔時，才會依即時輪動條件評估是否以新候選取代較弱持股；現金餘額本身不會阻止固定 100,000 元交易。</p>
 
                 <p className="mt-3 font-medium text-slate-300">賣出條件與優先序（Exit conditions）</p>
                 <ul className="mt-1 list-disc space-y-1 pl-4">
@@ -564,7 +548,7 @@ export default function ShadowPortfolioPage() {
                   <li>Pullback（拉回部位）：實際持倉 ≤ -8%、P4_STOP（停止觀察）、OFFICIAL_EXIT（魚尾週期結束），或回穩後 4 個交易日內跌破觀察低點。</li>
                   <li>公司行動或價格資料可疑時，當天暫停判斷，避免誤買誤賣。</li>
                 </ul>
-                <p className="mt-2 text-slate-500">所有訊號都在收盤後產生；BUY/ADD 使用下一交易日最高價模擬成交，SELL 使用下一交易日最低價模擬成交。線上「下一交易日動作」是待執行訊號，不是已成交。若買單造成現金不足，現金會先顯示為負數，需額外補款會獨立記錄，不會被當成策略獲利。</p>
+                <p className="mt-2 text-slate-500">所有訊號都在收盤後產生；BUY 使用下一交易日最高價模擬成交，SELL 使用下一交易日最低價模擬成交。線上「下一交易日動作」是待執行訊號，不是已成交。現金欄位只保留會計紀錄，不是進場門檻；週期損益以每筆交易的固定 100,000 元成本計算。</p>
               </div>
               <div className="rounded-lg border border-amber-900/50 bg-amber-950/20 p-3">
                 <p className="font-semibold text-amber-200">FORWARD_V1_202609（Forward Test／前向測試）</p>
@@ -610,7 +594,7 @@ export default function ShadowPortfolioPage() {
 
       {portfolio && (
         <>
-          <section className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-8">
+          <section className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-7">
             <StatBox label="總權益" value={formatMoney(portfolio.total_equity)} />
             <StatBox
               label="目前循環報酬"
@@ -623,11 +607,6 @@ export default function ShadowPortfolioPage() {
               tone={returnTone(latestHistoricalPeriod?.period_return_pct)}
             />
             <StatBox label="現金" value={formatMoney(portfolio.cash)} />
-            <StatBox
-              label="需額外補款"
-              value={formatMoney(portfolio.cash_topup_required)}
-              tone={portfolio.cash_topup_required > 0 ? "text-amber-300" : "text-slate-100"}
-            />
             <StatBox label="持股數" value={`${portfolio.position_count} / ${portfolio.max_stocks}`} />
             <StatBox
               label="單位數"

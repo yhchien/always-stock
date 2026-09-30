@@ -56,12 +56,14 @@ def _use_legacy_dual_engine_fixture_params():
     original = {
         "continuation_starter_capital": params["continuation_starter_capital"],
         "continuation_confirm_scale_in_capital": params["continuation_confirm_scale_in_capital"],
+        "confirmation_scale_in_enabled": params["confirmation_scale_in_enabled"],
         "pullback_bucket_cap": params["pullback_bucket_cap"],
         "continuation_rotation": deepcopy(params["continuation_rotation"]),
         "continuation_starter": deepcopy(params["continuation_starter"]),
     }
     params["continuation_starter_capital"] = 50000.0
     params["continuation_confirm_scale_in_capital"] = 50000.0
+    params["confirmation_scale_in_enabled"] = True
     params["pullback_bucket_cap"] = 300000.0
     params["continuation_rotation"]["enabled"] = False
     params["continuation_starter"].update({
@@ -72,6 +74,7 @@ def _use_legacy_dual_engine_fixture_params():
     yield
     params["continuation_starter_capital"] = original["continuation_starter_capital"]
     params["continuation_confirm_scale_in_capital"] = original["continuation_confirm_scale_in_capital"]
+    params["confirmation_scale_in_enabled"] = original["confirmation_scale_in_enabled"]
     params["pullback_bucket_cap"] = original["pullback_bucket_cap"]
     params["continuation_rotation"] = original["continuation_rotation"]
     params["continuation_starter"] = original["continuation_starter"]
@@ -826,8 +829,8 @@ def test_pending_starter_executes_planned_amount_not_strategy_unit_capital(db):
     assert portfolio.cash == pytest.approx(550000.0)
 
 
-def test_forced_full_unit_records_cash_topup_instead_of_failing(db):
-    """A qualified full-size entry is kept at 100k and exposes the funding gap."""
+def test_fixed_unit_buy_ignores_cash_shortfall(db):
+    """The v1 ledger records a full 100k trade even when cash is short."""
     db.add(ShadowVirtualPortfolio(strategy_version=V, cash=90000.0))
     db.add(
         DailyPrice(
@@ -858,7 +861,7 @@ def test_forced_full_unit_records_cash_topup_instead_of_failing(db):
     assert lot.shares == pytest.approx(1000.0)
     assert portfolio.cash == pytest.approx(-10000.0)
     assert order.status == sp.ORDER_STATUS_EXECUTED
-    assert order.cash_topup_required == pytest.approx(10000.0)
+    assert order.cash_topup_required is None
 
 
 def test_end_to_end_pullback_recovery_creates_buy_order(db):

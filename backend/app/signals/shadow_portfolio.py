@@ -486,29 +486,23 @@ STRATEGY_VERSION_FORWARD_V1 = "FORWARD_V1_202609"
 DUAL_ENGINE_PARAMS: Dict[str, Any] = {
     "initial_capital": 600000.0,
     "unit_capital": 100000.0,
-    # PART 14：拿掉全域 5 檔上限，改由兩個資金桶各自的容量限制風險。以目前
-    # 凍結配置，Continuation 核心是 3 檔、Pullback 是 1 檔，Opportunity
-    # 最多再開 3 檔，所以 API 的資訊性上限是 7 檔；Dual-Engine orchestrator
-    # 仍不拿它做全域 `len(...) >= max_stocks` 的硬性檢查。
-    "max_stocks": 7,
-    "continuation_bucket_cap": 300000.0,
-    # Validated 2026-09-10 report-profile allocation: half the account is the
-    # aggressive continuation sleeve, one additional 100k slot remains for a
-    # pullback recovery, and the rest stays in cash when no qualified setup is
-    # present.
-    "pullback_bucket_cap": 100000.0,
-    # 額外機會池最多 3 個 unit；實際能用幾個仍受決策當下現金限制，
-    # 因此初始 600k 帳戶在兩個核心桶滿載後通常可開 2 檔，第三檔要有
-    # 額外獲利或其他已釋放資金才會通過。
-    "opportunity_bucket_cap": 300000.0,
+    # 2026-09-30：改為「標籤 + 總名額」模型。每檔股票都是獨立的 100,000
+    # 元交易單位；Continuation / Pullback / profile 只描述股票類型，不再
+    # 對應資金桶，也不以資金桶滿載觸發輪動。
+    "max_stocks": 6,
+    "max_units_per_stock": 1,
+    "max_total_units": 6,
+    # Kept as compatibility metadata for old rows/helpers; the v1 decision path
+    # gates only on max_stocks, never on these legacy bucket values.
+    "continuation_bucket_cap": 600000.0,
+    "pullback_bucket_cap": 600000.0,
+    "opportunity_bucket_cap": 600000.0,
     "continuation_starter_capital": 100000.0,
     "continuation_confirm_scale_in_capital": 0.0,
-    # A qualified entry keeps its full 100k allocation even when the cash
-    # ledger is short; the shortfall is surfaced as an external cash request.
-    "force_full_unit_with_cash_topup": True,
-    # Report-profile rotation is point-in-time only: a stronger early
-    # re-acceleration may replace a weaker breakout profile when capacity is
-    # full. It never uses future returns.
+    "confirmation_scale_in_enabled": False,
+    "ignore_cash_constraints": True,
+    # Rotation is point-in-time only: it is considered only when all six
+    # simultaneous position slots are occupied, never when a legacy bucket is full.
     "continuation_rotation": {
         "enabled": True,
         "candidate_max_rank": 10,
@@ -601,12 +595,7 @@ DUAL_ENGINE_PARAMS: Dict[str, Any] = {
     "corporate_action_suspect_pct": 0.50,
     # v1_frozen 生產迴圈每 25 個交易日強制循環重置。
     "cycle_reset_trading_days": CYCLE_LENGTH_TRADING_DAYS,
-    # 純資訊性欄位，只給 `/api/signals/shadow-portfolio` 這類唯讀 API 顯示用——
-    # Continuation 一檔最多 1 次 Confirmation Scale-in（Starter 50k + Confirm 50k =
-    # 100k，2 lot），Pullback 沒有 ADD（PART 22：GENERIC_ADD=OFF），所以 Pullback
-    # 一檔最多 1 lot。
-    "max_units_per_stock": 2,
-    "max_total_units": None,  # 不再有固定的全域 unit 上限，改由兩個桶各自的容量限制
+    # API 顯示用的全域名額；每檔只建立一個 100,000 元 lot。
     # 以下三個 flag 只有 `run_daily_trading_strategy` 的「通用」分支（非 v1_frozen 的
     # 其他策略版本）與 `run_shadow_portfolio.py`／`update_winner_tracking` 會讀取；
     # v1_frozen 走專屬的 Dual-Engine 分支，這幾個 key 純粹是防禦性保留，維持跟其他
@@ -2262,9 +2251,18 @@ def execute_pending_strategy_orders(
             order.scheduled_execution_date = target_date
             price = float(price_row[0])
             requested_allocation = order.planned_amount or params["unit_capital"]
-            force_full_unit = bool(params.get("force_full_unit_with_cash_topup"))
-            execution_topup = max(0.0, requested_allocation - float(portfolio.cash))
-            if force_full_unit:
+            ignore_cash_constraints = bool(params.get("ignore_cash_constraints"))
+            execution_topup = (
+                0.0
+                if ignore_cash_constraints
+                else max(0.0, requested_allocation - float(portfolio.cash))
+            )
+            if ignore_cash_constraints:
+                # v1_frozen is a fixed-unit trade ledger. Cash remains as a
+                # backward-compatible accounting field, but never gates a BUY.
+                allocation = requested_allocation
+                order.cash_topup_required = None
+            elif params.get("force_full_unit_with_cash_topup"):
                 # BUY/ADD is always a full unit.  If the virtual cash ledger is
                 # short, keep the order alive and record the external cash that
                 # must be supplied instead of silently failing the trade.
@@ -2700,22 +2698,6 @@ def _dual_engine_pending_cash_reservation(db: Session, *, strategy_version: str)
     return sum(order.planned_amount or 0.0 for order in rows)
 
 
-def _dual_engine_pending_cash_topup_required(
-    db: Session, *, strategy_version: str
-) -> float:
-    """Return estimated external cash needed by already queued forced entries."""
-    rows = (
-        db.query(ShadowStrategyOrder)
-        .filter(
-            ShadowStrategyOrder.strategy_version == strategy_version,
-            ShadowStrategyOrder.status == ORDER_STATUS_PENDING,
-            ShadowStrategyOrder.action.in_([ACTION_BUY, ACTION_ADD]),
-        )
-        .all()
-    )
-    return sum(max(float(order.cash_topup_required or 0.0), 0.0) for order in rows)
-
-
 def _weighted_avg_cost_asof(lots: List[ShadowPositionLot], asof: date) -> Optional[float]:
     """「以 `asof` 這天為準」的加權平均成本——只計入 `entry_execution_date <= asof`
     的 lot（Confirmation Scale-in 發生之前的日子，只看 Starter 的成本；發生之後，
@@ -2925,7 +2907,11 @@ def _run_v1_dual_engine_daily_strategy(
                 first_lot.entry_type in _REPORT_PROFILE_ENTRY_TYPES.values()
                 and bool(starter_cfg.get("report_profile_direct_entry"))
             )
-            is_starter_state = len(lots) == 1 and not is_profile_direct
+            is_starter_state = (
+                len(lots) == 1
+                and not is_profile_direct
+                and bool(params.get("confirmation_scale_in_enabled", True))
+            )
 
             if is_starter_state:
                 continuation_phase_by_stock[stock_id] = "PROBATION"
@@ -3178,11 +3164,15 @@ def _run_v1_dual_engine_daily_strategy(
     confirm_capital = params["continuation_confirm_scale_in_capital"]
     pullback_capital = params["unit_capital"]
     opportunity_bucket_cap = params.get("opportunity_bucket_cap", 0.0)
-    opportunity_cash_available = max(
-        0.0,
-        float(portfolio.cash) - _dual_engine_pending_cash_reservation(
-            db, strategy_version=strategy_version
-        ),
+    opportunity_cash_available = (
+        float("inf")
+        if params.get("ignore_cash_constraints")
+        else max(
+            0.0,
+            float(portfolio.cash) - _dual_engine_pending_cash_reservation(
+                db, strategy_version=strategy_version
+            ),
+        )
     )
     # The pool's capital ceiling and the account's immediately spendable cash
     # are separate constraints.  Do not shrink the whole pool to current cash:
@@ -3195,7 +3185,12 @@ def _run_v1_dual_engine_daily_strategy(
 
     accepted_confirmations: Dict[str, EntrySignal] = {}
     skipped_confirmations: Dict[str, EntrySignal] = {}
-    for stock_id, sig in confirmations.items():
+    confirmations_to_process = (
+        confirmations
+        if params.get("confirmation_scale_in_enabled", True)
+        else {}
+    )
+    for stock_id, sig in confirmations_to_process.items():
         position_bucket = _position_funding_bucket(lots_by_stock.get(stock_id, []))
         if position_bucket == FUNDING_BUCKET_OPPORTUNITY:
             bucket_full = (
@@ -3219,7 +3214,7 @@ def _run_v1_dual_engine_daily_strategy(
         continuation_skip_reason_by_stock[stock_id] = "SELECTED"
 
     accepted_new: Dict[str, EntrySignal] = {}
-    new_funding_bucket_by_stock: Dict[str, str] = {}
+    new_funding_bucket_by_stock: Dict[str, Optional[str]] = {}
     skipped_capacity: Dict[str, EntrySignal] = {}
 
     def _rotation_candidate_allowed(sig: EntrySignal) -> bool:
@@ -3280,12 +3275,8 @@ def _run_v1_dual_engine_daily_strategy(
                 if victim_profile is None or victim_priority < candidate_priority:
                     continue
                 if victim_priority == candidate_priority:
-                    # Core Continuation positions do not churn merely because
-                    # another candidate has the same profile.  Opportunity
-                    # positions may be replaced when the new candidate is
-                    # objectively stronger on the decision date.
-                    if _position_funding_bucket(lots) != FUNDING_BUCKET_OPPORTUNITY:
-                        continue
+                    # Equal-profile positions only rotate when the new
+                    # candidate is objectively stronger on this date.
                     victim_momentum = first_lot.entry_momentum if first_lot is not None else None
                     candidate_momentum = candidate.row.momentum_score
                     if (
@@ -3332,26 +3323,7 @@ def _run_v1_dual_engine_daily_strategy(
     for sig in continuation_candidates:
         stock_id = sig.row.stock_id
         funding_bucket: Optional[str] = None
-        # Sustained high-momentum entries are isolated from the 300k
-        # Continuation core.  They can use only the separate Opportunity pool
-        # and never trigger a core-position rotation.
-        if sig.entry_type == ENTRY_TYPE_CONTINUATION_SUSTAINED_BREAKOUT:
-            if (
-                opportunity_bucket_used + starter_capital <= opportunity_capacity + _EPS
-                and starter_capital <= opportunity_cash_remaining + _EPS
-            ):
-                funding_bucket = FUNDING_BUCKET_OPPORTUNITY
-                opportunity_bucket_used += starter_capital
-                opportunity_cash_remaining -= starter_capital
-                accepted_new[stock_id] = sig
-                new_funding_bucket_by_stock[stock_id] = funding_bucket
-                continuation_skip_reason_by_stock[stock_id] = "SELECTED"
-                projected_stocks.add(stock_id)
-            else:
-                skipped_capacity[stock_id] = sig
-                continuation_skip_reason_by_stock[stock_id] = "CAPACITY"
-            continue
-        if continuation_bucket_used + starter_capital > params["continuation_bucket_cap"] + _EPS:
+        if len(projected_stocks) >= params["max_stocks"]:
             if _rotation_candidate_allowed(sig):
                 victim_stock_id = _rotation_victim(sig)
                 if victim_stock_id is not None:
@@ -3361,92 +3333,27 @@ def _run_v1_dual_engine_daily_strategy(
                         row=victim_evidence,
                     )
                     continuation_skip_reason_by_stock[victim_stock_id] = "ROTATION"
-                    victim_cost = sum(lot.allocation for lot in lots_by_stock.get(victim_stock_id, []))
-                    if _position_funding_bucket(lots_by_stock.get(victim_stock_id, [])) == FUNDING_BUCKET_OPPORTUNITY:
-                        opportunity_bucket_used -= victim_cost
-                    else:
-                        continuation_bucket_used -= victim_cost
-                    # The sell and replacement BUY are both scheduled for the
-                    # next execution day; the order executor processes SELLs
-                    # first, so the released cash is available to the replacement.
-                    opportunity_cash_remaining += victim_cost
                     projected_stocks.discard(victim_stock_id)
-            if continuation_bucket_used + starter_capital > params["continuation_bucket_cap"] + _EPS:
-                # Core Continuation 滿載後，只有通過與 rotation 相同的 point-in-time
-                # 強勢候選門檻，才可使用獨立 Opportunity 資金池；不會把 Pullback
-                # 預算挪過來，也不會靠股票代號/日期例外。
-                if (
-                    _rotation_candidate_allowed(sig)
-                    and opportunity_bucket_used + starter_capital <= opportunity_capacity + _EPS
-                    and starter_capital <= opportunity_cash_remaining + _EPS
-                ):
-                    funding_bucket = FUNDING_BUCKET_OPPORTUNITY
-                    opportunity_bucket_used += starter_capital
-                    opportunity_cash_remaining -= starter_capital
-                else:
-                    skipped_capacity[stock_id] = sig
-                    continuation_skip_reason_by_stock[stock_id] = "CAPACITY"
-                    continue
-            else:
-                funding_bucket = FUNDING_BUCKET_CONTINUATION
-        else:
-            funding_bucket = FUNDING_BUCKET_CONTINUATION
+            if len(projected_stocks) >= params["max_stocks"]:
+                skipped_capacity[stock_id] = sig
+                continuation_skip_reason_by_stock[stock_id] = "PORTFOLIO_FULL"
+                continue
         accepted_new[stock_id] = sig
         new_funding_bucket_by_stock[stock_id] = funding_bucket
         continuation_skip_reason_by_stock[stock_id] = "SELECTED"
         projected_stocks.add(stock_id)
-        if funding_bucket == FUNDING_BUCKET_CONTINUATION:
-            continuation_bucket_used += starter_capital
 
-    # Pullback has its own bucket cap, but it still consumes the same real
-    # portfolio cash.  Account for pending reservations, today's planned
-    # sells, and the continuation orders accepted above to estimate the
-    # external cash request.  A qualified Pullback candidate is still accepted
-    # at a full unit when this ledger is short; the shortage is persisted and
-    # shown to the user instead of turning into a failed order.
-    pullback_cash_remaining = (
-        float(portfolio.cash)
-        - _dual_engine_pending_cash_reservation(
-            db, strategy_version=strategy_version
-        )
-        + sum(
-            # Do not assume a losing sell releases its original allocation.
-            # The next-day execution price is unknown, so use today's known
-            # mark-to-market value for loss-making exits and the original cost
-            # for profitable/unknown exits.  This prevents a second BUY from
-            # being queued when the first sell will release slightly less cash.
-            sum(lot.allocation for lot in lots_by_stock.get(stock_id, []))
-            * max(
-                0.0,
-                1.0
-                + min(actual_return_by_stock.get(stock_id) or 0.0, 0.0) / 100.0,
-            )
-            for stock_id in decided_exits
-            )
-            - len(accepted_confirmations) * confirm_capital
-            - len(accepted_new) * starter_capital
-        )
-    cash_topup_required_by_stock: Dict[str, float] = {}
-
+    # Pullback candidates use the same global slots and 100,000-unit ledger;
+    # there is intentionally no cash-availability calculation here.
     for sig, _prev_row in pullback_candidates:
         stock_id = sig.row.stock_id
-        if pullback_bucket_used + pullback_capital > params["pullback_bucket_cap"] + _EPS:
+        if len(projected_stocks) >= params["max_stocks"]:
             skipped_capacity[stock_id] = sig
+            continuation_skip_reason_by_stock[stock_id] = "PORTFOLIO_FULL"
             continue
         accepted_new[stock_id] = sig
         projected_stocks.add(stock_id)
-        pullback_bucket_used += pullback_capital
-        if params.get("force_full_unit_with_cash_topup"):
-            cash_topup_required_by_stock[stock_id] = max(
-                0.0, pullback_capital - pullback_cash_remaining
-            )
-        elif pullback_capital > pullback_cash_remaining + _EPS:
-            skipped_capacity[stock_id] = sig
-            accepted_new.pop(stock_id, None)
-            projected_stocks.discard(stock_id)
-            pullback_bucket_used -= pullback_capital
-            continue
-        pullback_cash_remaining -= pullback_capital
+        new_funding_bucket_by_stock[stock_id] = None
 
     counts = {
         "buy": 0, "confirm": 0, "sell": 0, "hold": 0, "watch": 0, "pullback_watch": 0,
@@ -3535,7 +3442,7 @@ def _run_v1_dual_engine_daily_strategy(
             ShadowStrategyDailyDecision(
                 strategy_version=strategy_version, trade_date=target_date,
                 stock_id=stock_id, stock_name=evidence.stock_name, action=ACTION_SKIPPED_CAPACITY,
-                action_reason=f"符合 {sig.entry_type} 但 Continuation 資金桶容量不足，維持 Starter 狀態",
+                action_reason=f"符合 {sig.entry_type} 但同時持股名額已滿，維持現有持股",
                 entry_pattern=sig.entry_type, p3_selected_today=evidence.p3_selected_today,
                 hit_count=evidence.hit_count_so_far, momentum_score=evidence.momentum_score,
                 mark_to_market_return_pct=evidence.mark_to_market_return_pct, p4_decision=evidence.p4_decision,
@@ -3580,7 +3487,6 @@ def _run_v1_dual_engine_daily_strategy(
                 scheduled_execution_date=next_trading_execution_date(db, target_date),
                 status=ORDER_STATUS_PENDING, reason=sig.entry_type, entry_pattern=sig.entry_type, units=1,
                 planned_amount=planned_amount, signal_snapshot=snapshot,
-                cash_topup_required=cash_topup_required_by_stock.get(stock_id),
             )
         )
         db.add(
@@ -3593,7 +3499,6 @@ def _run_v1_dual_engine_daily_strategy(
                 p4_decision=evidence.p4_decision, scheduled_execution_date=next_trading_execution_date(db, target_date),
                 episode_price_return_pct=evidence.episode_price_return_pct,
                 episode_low_return_pct=evidence.episode_low_return_pct,
-                cash_topup_required=cash_topup_required_by_stock.get(stock_id),
                 **_continuation_decision_fields(
                     evidence,
                     phase=(continuation_phase_by_stock.get(stock_id, "D1_STARTER")
@@ -3614,7 +3519,7 @@ def _run_v1_dual_engine_daily_strategy(
             ShadowStrategyDailyDecision(
                 strategy_version=strategy_version, trade_date=target_date,
                 stock_id=stock_id, stock_name=evidence.stock_name, action=ACTION_SKIPPED_CAPACITY,
-                action_reason=f"符合 {sig.entry_type} 但資金桶容量不足",
+                action_reason=f"符合 {sig.entry_type} 但同時持股名額已滿",
                 entry_pattern=sig.entry_type, p3_selected_today=evidence.p3_selected_today,
                 hit_count=evidence.hit_count_so_far, momentum_score=evidence.momentum_score,
                 mark_to_market_return_pct=evidence.mark_to_market_return_pct, p4_decision=evidence.p4_decision,
@@ -4241,9 +4146,6 @@ def create_portfolio_daily_snapshot(
         .scalar()
         or 0
     )
-    pending_cash_topup_required = _dual_engine_pending_cash_topup_required(
-        db, strategy_version=strategy_version
-    )
 
     snapshot = (
         db.query(ShadowPortfolioDailySnapshot)
@@ -4268,9 +4170,9 @@ def create_portfolio_daily_snapshot(
     snapshot.total_units = total_units
     snapshot.pending_buy_count = pending_buy_count
     snapshot.pending_sell_count = pending_sell_count
-    snapshot.cash_topup_required = max(
-        0.0, -float(portfolio.cash)
-    ) + pending_cash_topup_required
+    # Cash is an accounting balance only; v1 never models or exposes a funding
+    # shortfall. Legacy DB columns remain for compatibility with old rows.
+    snapshot.cash_topup_required = 0.0
     snapshot.cycle_number = portfolio.cycle_number
     snapshot.strategy_config = strategy_config
     snapshot.strategy_config_hash = cycle_archive.strategy_config_hash

@@ -55,13 +55,12 @@ def test_shadow_portfolio_endpoint_returns_v1_caps_for_v1_frozen(api):
     res = client.get("/api/signals/shadow-portfolio", params={"strategy_version": "v1_frozen"})
     assert res.status_code == 200
     body = res.json()
-    # Dual-Engine：3 檔 Continuation + 1 檔 Pullback + 最多 3 檔 Opportunity；
-    # max_total_units 仍不再是固定值（由三本資金帳各自限制）。
-    assert body["max_stocks"] == 7
-    assert body["max_units_per_stock"] == 2
-    assert body["max_total_units"] is None
+    # Dual-Engine：分類只作為標籤，所有股票共用 6 個同時持股名額，且每檔 1 unit。
+    assert body["max_stocks"] == 6
+    assert body["max_units_per_stock"] == 1
+    assert body["max_total_units"] == 6
     assert body["max_position_exposure_pct"] is None
-    assert body["cycle_length_trading_days"] == 35
+    assert body["cycle_length_trading_days"] == 25
 
 
 def test_shadow_portfolio_position_exposes_first_actual_execution_date(api):
@@ -129,8 +128,8 @@ def test_shadow_portfolio_endpoint_unknown_strategy_version_falls_back_to_v1(api
     body = res.json()
     # strategy_version 欄位本身照原樣回傳（不偷改使用者傳入的值），但參數 fallback 回 v1
     assert body["strategy_version"] == "TYPO_VERSION"
-    assert body["max_stocks"] == 7
-    assert body["max_units_per_stock"] == 2
+    assert body["max_stocks"] == 6
+    assert body["max_units_per_stock"] == 1
 
 
 def test_shadow_history_endpoint_groups_daily_performance_and_transactions(api):
@@ -208,6 +207,7 @@ def test_shadow_history_endpoint_groups_daily_performance_and_transactions(api):
     assert body["trading_day_count"] == 2
     assert body["period_return_pct"] == pytest.approx(0.3333333)
     assert body["completed_trade_count"] == 1
+    assert body["cycle_realized_pnl"] == pytest.approx(2000.0)
     assert body["winning_trade_count"] == 1
     assert body["win_rate_pct"] == pytest.approx(100.0)
     assert body["trading_days"][1]["trade_date"] == "2026-08-04"
