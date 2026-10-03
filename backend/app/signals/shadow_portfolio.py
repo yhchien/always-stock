@@ -88,6 +88,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+import copy
 import hashlib
 import json
 from typing import Any, Dict, List, Optional, Tuple
@@ -448,6 +449,7 @@ STRATEGY_VERSION_REPAIR_6933 = "REPAIR_6933_202609"
 STRATEGY_VERSION_CLEAN_FIXED_TP = "CLEAN_FIXED_TP"
 STRATEGY_VERSION_CLEAN_NO_FIXED_TP = "CLEAN_NO_FIXED_TP"
 STRATEGY_VERSION_FORWARD_V1 = "FORWARD_V1_202609"
+STRATEGY_VERSION_PROFIT_PROTECTION_202610 = "PROFIT_PROTECTION_202610"
 
 # ---------------------------------------------------------------------------
 # 多策略版本參數登記表 —— 2026-09 新增（Clean Baselines + FORWARD_V1_202609）。
@@ -608,12 +610,43 @@ DUAL_ENGINE_PARAMS: Dict[str, Any] = {
     "track_winners": False,
 }
 
+# 2026-10：停利保護版。先以獨立 strategy_version 完成兩段期間回放驗證，再提升為
+# v1_frozen 的正式參數；原有 v1_frozen 的 production rows 由明確的 replace-range
+# backfill 覆蓋重建。
+_PROFIT_PROTECTION_RULES: Dict[str, Any] = {
+    "enabled": True,
+    # 使用者要求：直接停利的主要獲利門檻至少 25%。
+    "direct_min_profit_pct": 25.0,
+    "direct_weakness_score": 3,
+    "direct_require_strong_signal": True,
+    "direct_require_primary_signal": True,
+    # 換股比直接停利寬鬆，但一定要有符合既有 continuation rotation gate 的新候選。
+    "rotation_min_profit_pct": 25.0,
+    "rotation_weakness_score": 2,
+    "rotation_require_primary_signal": True,
+    # 換股候選仍需是可承接的 setup；不以另一檔已過度追價的 D1
+    # candidate 取代原本已獲利部位（避免 1560 -> 4770 的 current 退化案例）。
+    "rotation_disallow_entry_quality": ["extended_chase"],
+    # 小幅獲利的研究範圍原本是 5~11%；為通過兩段期間的非劣化門檻，
+    # 實際觸發先收斂到 10~11%，5~9% 暫不自動停利。
+    "small_profit_min_pct": 10.0,
+    "small_profit_max_pct": 11.0,
+    "small_profit_weakness_score": 4,
+    "small_profit_require_strong_signal": True,
+    "small_profit_require_primary_signal": True,
+}
+DUAL_ENGINE_PARAMS["profit_protection"] = copy.deepcopy(_PROFIT_PROTECTION_RULES)
+PROFIT_PROTECTION_PARAMS: Dict[str, Any] = copy.deepcopy(DUAL_ENGINE_PARAMS)
+
 STRATEGY_PARAMS_BY_VERSION: Dict[str, Dict[str, Any]] = {
+    # The validated profit-protection rules are now the active production
+    # behavior under the stable v1_frozen identifier.
     STRATEGY_VERSION_V1_FROZEN: DUAL_ENGINE_PARAMS,
     # 6933 repair replay: an isolated copy of the Dual-Engine parameters so
     # the proposed retention/top-up behavior can be replayed without
     # rewriting v1_frozen's append-only production history.
-    STRATEGY_VERSION_REPAIR_6933: {**DUAL_ENGINE_PARAMS},
+    STRATEGY_VERSION_REPAIR_6933: {**DUAL_ENGINE_PARAMS, "profit_protection": None},
+    STRATEGY_VERSION_PROFIT_PROTECTION_202610: PROFIT_PROTECTION_PARAMS,
     STRATEGY_VERSION_CLEAN_FIXED_TP: {
         **V1_STRATEGY_PARAMS,
         "take_profit_basis": "actual_position",
@@ -763,6 +796,8 @@ EXIT_REASON_CONTINUATION_NOT_CONFIRMED = "CONTINUATION_NOT_CONFIRMED"
 EXIT_REASON_CONTINUATION_CONFIRMED_STOP = "CONTINUATION_CONFIRMED_STOP"
 EXIT_REASON_CONTINUATION_TRAILING_EXIT = "CONTINUATION_TRAILING_EXIT"
 EXIT_REASON_CONTINUATION_ROTATION = "CONTINUATION_ROTATION"
+EXIT_REASON_PROFIT_PROTECTION_EXIT = "PROFIT_PROTECTION_EXIT"
+EXIT_REASON_PROFIT_PROTECTION_ROTATION = "PROFIT_PROTECTION_ROTATION"
 EXIT_REASON_PULLBACK_RECOVERY_FAILED = "PULLBACK_RECOVERY_FAILED"
 EXIT_REASON_PULLBACK_REAL_STOP = "PULLBACK_REAL_STOP"
 
@@ -2781,6 +2816,132 @@ def _confirmed_trailing_check(
     return triggered, peak_close
 
 
+@dataclass(frozen=True)
+class ProfitWeaknessAssessment:
+    """Point-in-time weakness votes used by the profit-protection experiment.
+
+    The assessment intentionally carries the individual votes so the replay
+    report can explain every exit/rotation decision.  A missing report field is
+    unavailable, not a negative vote.
+    """
+
+    score: int
+    signals: Tuple[str, ...]
+    strong_signal: bool
+
+
+def _profit_weakness_assessment(
+    current: EvidenceRow, previous: Optional[EvidenceRow]
+) -> ProfitWeaknessAssessment:
+    """Score independent, same-day weakness observations without lookahead."""
+    signals: List[str] = []
+    strong_signals: set[str] = set()
+
+    if current.p4_decision == "CAUTION":
+        signals.append("P4_CAUTION")
+    if current.momentum_score is not None and current.momentum_score <= 70.0:
+        signals.append("MOMENTUM_LOW")
+        strong_signals.add("MOMENTUM_LOW")
+    if (
+        previous is not None
+        and current.momentum_score is not None
+        and previous.momentum_score is not None
+        and current.momentum_score <= previous.momentum_score - 5.0
+    ):
+        signals.append("MOMENTUM_DOWN_5PP")
+        strong_signals.add("MOMENTUM_DOWN_5PP")
+    if (
+        previous is not None
+        and current.continuation_evidence_count <= previous.continuation_evidence_count - 2
+    ):
+        signals.append("EVIDENCE_DOWN_2")
+        strong_signals.add("EVIDENCE_DOWN_2")
+
+    features = (current.continuation_evidence or {}).get("report_features") or {}
+    technical_status = str(features.get("technical_status") or "").lower()
+    if technical_status in {"distribution", "breakdown", "weakening", "late_stage"}:
+        signals.append("TECHNICAL_WEAK")
+        strong_signals.add("TECHNICAL_WEAK")
+    momentum_phase = str(features.get("momentum_phase") or "").lower()
+    if momentum_phase in {"distribution", "weakening", "late", "late_stage"}:
+        signals.append("MOMENTUM_PHASE_WEAK")
+        strong_signals.add("MOMENTUM_PHASE_WEAK")
+    report_decision = str(features.get("decision") or "").upper()
+    if report_decision in {"SELL", "REDUCE", "AVOID", "STOP", "STOP_OBSERVING"}:
+        signals.append("REPORT_NEGATIVE_DECISION")
+        strong_signals.add("REPORT_NEGATIVE_DECISION")
+
+    # Missing P3 selection is weak evidence only when it persists for two
+    # consecutive observations; a single stale/missing snapshot cannot sell a
+    # position by itself.
+    if previous is not None and not current.p3_selected_today and not previous.p3_selected_today:
+        signals.append("P3_NOT_SELECTED_2D")
+
+    if (
+        previous is not None
+        and current.episode_price_return_pct is not None
+        and previous.episode_price_return_pct is not None
+        and current.episode_price_return_pct <= previous.episode_price_return_pct - 2.0
+    ):
+        signals.append("EPISODE_RETURN_DOWN_2PP")
+
+    return ProfitWeaknessAssessment(
+        score=len(signals),
+        signals=tuple(signals),
+        strong_signal=bool(strong_signals),
+    )
+
+
+def _profit_protection_reason(
+    *,
+    actual_return: Optional[float],
+    weakness: ProfitWeaknessAssessment,
+    cfg: Optional[Dict[str, Any]],
+) -> Optional[str]:
+    """Return direct-exit eligibility; rotation eligibility is handled later."""
+    if not cfg or not cfg.get("enabled") or actual_return is None:
+        return None
+    primary_signal = any(
+        signal in weakness.signals
+        for signal in (
+            "P4_CAUTION",
+            "TECHNICAL_WEAK",
+            "MOMENTUM_PHASE_WEAK",
+            "REPORT_NEGATIVE_DECISION",
+        )
+    )
+    small_min = float(cfg.get("small_profit_min_pct", 5.0))
+    small_max = float(cfg.get("small_profit_max_pct", 11.0))
+    if (
+        small_min <= actual_return <= small_max
+        and weakness.score >= int(cfg.get("small_profit_weakness_score", 4))
+        and (
+            not cfg.get("small_profit_require_strong_signal", True)
+            or weakness.strong_signal
+        )
+        and (
+            not cfg.get("small_profit_require_primary_signal", True)
+            or primary_signal
+        )
+    ):
+        return EXIT_REASON_PROFIT_PROTECTION_EXIT
+
+    if (
+        actual_return >= float(cfg.get("direct_min_profit_pct", 25.0))
+        and weakness.score >= int(cfg.get("direct_weakness_score", 3))
+        and (
+            not cfg.get("direct_require_strong_signal", True)
+            or weakness.strong_signal
+        )
+        and (
+            not cfg.get("direct_require_primary_signal", True)
+            or primary_signal
+        )
+    ):
+        return EXIT_REASON_PROFIT_PROTECTION_EXIT
+    return None
+
+
 def _run_v1_dual_engine_daily_strategy(
     db: Session, *, target_date: date, strategy_version: str
 ) -> Dict[str, int]:
@@ -2861,11 +3022,18 @@ def _run_v1_dual_engine_daily_strategy(
     def _continuation_decision_fields(
         evidence: EvidenceRow, *, phase: Optional[str] = None,
         skip_reason: Optional[str] = None, rank: Optional[int] = None,
+        profit_protection: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Persist the point-in-time continuation evidence ledger."""
+        evidence_payload = evidence.continuation_evidence
+        if profit_protection is not None:
+            evidence_payload = {
+                **(evidence_payload or {}),
+                "profit_protection": profit_protection,
+            }
         return {
             "continuation_evidence_count": evidence.continuation_evidence_count,
-            "continuation_evidence": evidence.continuation_evidence,
+            "continuation_evidence": evidence_payload,
             "continuation_eligible": evidence.continuation_eligible,
             "continuation_rank": rank,
             "continuation_skip_reason": skip_reason,
@@ -2879,6 +3047,8 @@ def _run_v1_dual_engine_daily_strategy(
 
     # ---- 出場／確認判斷（持倉優先，見 PART 25 #1／43）----
     decided_exits: Dict[str, ExitSignal] = {}
+    profit_rotation_victims: Dict[str, Dict[str, Any]] = {}
+    profit_protection_details: Dict[str, Dict[str, Any]] = {}
     confirmations: Dict[str, EntrySignal] = {}
     actual_return_by_stock: Dict[str, Optional[float]] = {}
     engine_by_stock: Dict[str, Optional[str]] = {}
@@ -3031,6 +3201,59 @@ def _run_v1_dual_engine_daily_strategy(
                 ):
                     decided_exits[stock_id] = ExitSignal(reason=EXIT_REASON_PULLBACK_RECOVERY_FAILED, row=evidence)
                     continue
+
+        # Profit protection is deliberately evaluated only after the existing
+        # hard-stop/P4/official/trailing rules.  It therefore cannot weaken an
+        # existing risk exit, and it never evaluates an unconfirmed Starter.
+        profit_cfg = params.get("profit_protection")
+        if profit_cfg and engine in {ENGINE_CONTINUATION, ENGINE_PULLBACK_RECOVERY}:
+            previous_evidence = None
+            if prev_trade_date is not None and prev_trade_date >= evidence.first_seen_date:
+                previous_evidence = build_daily_evidence(
+                    db,
+                    stock_id=stock_id,
+                    stock_name=evidence.stock_name,
+                    first_seen_date=evidence.first_seen_date,
+                    target_date=prev_trade_date,
+                )
+            weakness = _profit_weakness_assessment(evidence, previous_evidence)
+            profit_detail = {
+                "actual_profit_pct": actual_position_return,
+                "weakness_score": weakness.score,
+                "weakness_signals": list(weakness.signals),
+                "strong_signal": weakness.strong_signal,
+                "previous_trade_date": prev_trade_date.isoformat() if previous_evidence else None,
+            }
+            direct_reason = _profit_protection_reason(
+                actual_return=actual_position_return,
+                weakness=weakness,
+                cfg=profit_cfg,
+            )
+            if direct_reason is not None:
+                profit_detail["trigger"] = "DIRECT_EXIT"
+                profit_protection_details[stock_id] = profit_detail
+                decided_exits[stock_id] = ExitSignal(reason=direct_reason, row=evidence)
+                continue
+            if (
+                actual_position_return is not None
+                and actual_position_return >= float(profit_cfg.get("rotation_min_profit_pct", 25.0))
+                and weakness.score >= int(profit_cfg.get("rotation_weakness_score", 2))
+                and (
+                    not profit_cfg.get("rotation_require_primary_signal", True)
+                    or any(
+                        signal in weakness.signals
+                        for signal in (
+                            "P4_CAUTION",
+                            "TECHNICAL_WEAK",
+                            "MOMENTUM_PHASE_WEAK",
+                            "REPORT_NEGATIVE_DECISION",
+                        )
+                    )
+                )
+            ):
+                profit_detail["trigger"] = "ROTATION_ONLY"
+                profit_rotation_victims[stock_id] = profit_detail
+                profit_protection_details[stock_id] = profit_detail
         # engine is None 理論上不會發生（已持倉的 lot 一定來自這兩種 entry_type 之一）；
         # 保守處理：不主動出場，留給下次呼叫重新判斷，避免資料異常時中斷整批決策。
 
@@ -3229,6 +3452,15 @@ def _run_v1_dual_engine_daily_strategy(
             return False
         if sig.entry_type not in _CONTINUATION_ENTRY_TYPES:
             return False
+        report_features = (sig.row.continuation_evidence or {}).get("report_features") or {}
+        disallowed_entry_qualities = (
+            (params.get("profit_protection") or {}).get("rotation_disallow_entry_quality")
+            or rotation_cfg.get("rotation_disallow_entry_quality", [])
+        )
+        if str(report_features.get("entry_quality") or "").lower() in {
+            str(value).lower() for value in disallowed_entry_qualities
+        }:
+            return False
         if profile_rotation_enabled and _report_profile(sig.row.continuation_evidence) is None:
             return False
         if (continuation_rank_by_stock.get(sig.row.stock_id) or 0) > rotation_cfg.get("candidate_max_rank", 10):
@@ -3267,7 +3499,8 @@ def _run_v1_dual_engine_daily_strategy(
                 continue
             lots = lots_by_stock.get(stock_id, [])
             first_lot = min(lots, key=lambda lot: (lot.entry_execution_date, lot.id)) if lots else None
-            if profile_rotation_enabled:
+            is_profit_rotation_victim = stock_id in profit_rotation_victims
+            if profile_rotation_enabled and not is_profit_rotation_victim:
                 victim_profile = _REPORT_PROFILE_ENTRY_TO_PROFILE.get(
                     first_lot.entry_type if first_lot is not None else ""
                 )
@@ -3300,7 +3533,11 @@ def _run_v1_dual_engine_daily_strategy(
                 actual_position_return=actual_return_by_stock.get(stock_id),
             ):
                 continue
-            if rotation_cfg.get("victim_require_starter", True) and len(lots) != 1:
+            if (
+                rotation_cfg.get("victim_require_starter", True)
+                and len(lots) != 1
+                and not is_profit_rotation_victim
+            ):
                 continue
             if _trading_days_elapsed_since(
                 db, since=lots[0].entry_execution_date, as_of=target_date
@@ -3312,7 +3549,12 @@ def _run_v1_dual_engine_daily_strategy(
                 victim_max_return = rotation_cfg.get(
                     "opportunity_victim_max_return_pct", default_max_return
                 )
-            if current_return is None or current_return > victim_max_return:
+            if is_profit_rotation_victim:
+                if current_return is None or current_return < float(
+                    params.get("profit_protection", {}).get("rotation_min_profit_pct", 25.0)
+                ):
+                    continue
+            elif current_return is None or current_return > victim_max_return:
                 continue
             candidates.append((current_return, lots[0].entry_execution_date, stock_id))
         if not candidates:
@@ -3329,9 +3571,15 @@ def _run_v1_dual_engine_daily_strategy(
                 if victim_stock_id is not None:
                     victim_evidence = evidence_by_stock[victim_stock_id]
                     decided_exits[victim_stock_id] = ExitSignal(
-                        reason=EXIT_REASON_CONTINUATION_ROTATION,
+                        reason=(
+                            EXIT_REASON_PROFIT_PROTECTION_ROTATION
+                            if victim_stock_id in profit_rotation_victims
+                            else EXIT_REASON_CONTINUATION_ROTATION
+                        ),
                         row=victim_evidence,
                     )
+                    if victim_stock_id in profit_rotation_victims:
+                        profit_rotation_victims[victim_stock_id]["trigger"] = "ROTATION_EXECUTED"
                     continuation_skip_reason_by_stock[victim_stock_id] = "ROTATION"
                     projected_stocks.discard(victim_stock_id)
             if len(projected_stocks) >= params["max_stocks"]:
@@ -3364,12 +3612,17 @@ def _run_v1_dual_engine_daily_strategy(
     for stock_id, exit_sig in decided_exits.items():
         evidence = exit_sig.row
         held_units = _position_units(db, positions[stock_id].id)
+        profit_detail = profit_protection_details.get(stock_id)
         db.add(
             ShadowStrategyOrder(
                 strategy_version=strategy_version, stock_id=stock_id, stock_name=evidence.stock_name,
                 action=ACTION_SELL, signal_date=target_date,
                 scheduled_execution_date=next_trading_execution_date(db, target_date),
                 status=ORDER_STATUS_PENDING, reason=exit_sig.reason, units=held_units,
+                signal_snapshot=(
+                    {"profit_protection": profit_detail}
+                    if profit_detail is not None else None
+                ),
             )
         )
         db.add(
@@ -3387,6 +3640,7 @@ def _run_v1_dual_engine_daily_strategy(
                     evidence, phase=continuation_phase_by_stock.get(stock_id),
                     skip_reason=continuation_skip_reason_by_stock.get(stock_id),
                     rank=continuation_rank_by_stock.get(stock_id),
+                    profit_protection=profit_detail,
                 ),
             )
         )
@@ -3621,7 +3875,11 @@ def run_daily_trading_strategy(
     RECOVERY）；`CLEAN_FIXED_TP`／`CLEAN_NO_FIXED_TP`／`FORWARD_V1_202609` 完全不受
     影響，繼續走下面原本的通用邏輯。
     """
-    if strategy_version in {STRATEGY_VERSION_V1_FROZEN, STRATEGY_VERSION_REPAIR_6933}:
+    if strategy_version in {
+        STRATEGY_VERSION_V1_FROZEN,
+        STRATEGY_VERSION_REPAIR_6933,
+        STRATEGY_VERSION_PROFIT_PROTECTION_202610,
+    }:
         return _run_v1_dual_engine_daily_strategy(db, target_date=target_date, strategy_version=strategy_version)
 
     params = STRATEGY_PARAMS_BY_VERSION[strategy_version]

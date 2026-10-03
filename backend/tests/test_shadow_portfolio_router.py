@@ -305,6 +305,85 @@ def test_shadow_history_default_prefers_latest_completed_settlement_interval(api
     assert body["trading_day_count"] == 3
 
 
+def test_shadow_history_settlement_day_uses_previous_cycle_before_next_cycle_snapshot(api):
+    """A settlement date is also the next cycle's first live snapshot date."""
+    client, db = api
+    db.add_all(
+        [
+            ShadowPortfolioDailySnapshot(
+                strategy_version="v1_frozen",
+                cycle_number=1,
+                trade_date=date(2026, 9, 4),
+                cash=500000.0,
+                invested_cost=100000.0,
+                market_value=120000.0,
+                total_equity=620000.0,
+                total_return_pct=3.3333333,
+                realized_pnl=0.0,
+                unrealized_pnl=20000.0,
+                position_count=1,
+                total_units=1,
+            ),
+            # The unique date row now belongs to the next cycle after reset.
+            ShadowPortfolioDailySnapshot(
+                strategy_version="v1_frozen",
+                cycle_number=2,
+                trade_date=date(2026, 9, 7),
+                cash=600000.0,
+                invested_cost=0.0,
+                market_value=0.0,
+                total_equity=600000.0,
+                total_return_pct=0.0,
+                realized_pnl=0.0,
+                unrealized_pnl=0.0,
+                position_count=0,
+                total_units=0,
+            ),
+        ]
+    )
+    db.add(
+        ShadowCompletedTrade(
+            strategy_version="v1_frozen",
+            cycle_number=1,
+            stock_id="2330",
+            stock_name="台積電",
+            entry_type="CONTINUATION_STARTER",
+            entry_signal_date=date(2026, 8, 20),
+            entry_execution_date=date(2026, 8, 21),
+            entry_price=1000.0,
+            exit_reason="PERIOD_END_SETTLEMENT",
+            exit_signal_date=date(2026, 9, 7),
+            exit_execution_date=date(2026, 9, 7),
+            exit_price=1100.0,
+            shares=100.0,
+            allocation=100000.0,
+            realized_pnl=10000.0,
+            realized_return_pct=10.0,
+            holding_days=11,
+            followed_by_rotation=False,
+        )
+    )
+    db.commit()
+
+    res = client.get(
+        "/api/signals/shadow-portfolio/history",
+        params={
+            "strategy_version": "v1_frozen",
+            "start_date": "2026-09-04",
+            "end_date": "2026-09-07",
+        },
+    )
+    assert res.status_code == 200
+    body = res.json()
+    settlement_day = body["trading_days"][-1]
+    # 9/7 must be previous-cycle 620,000 minus its unrealized 20,000 plus
+    # the actual settlement P&L 10,000, not the next-cycle reset 600,000.
+    assert settlement_day["total_equity"] == pytest.approx(610000.0)
+    assert settlement_day["total_return_pct"] == pytest.approx(1.6666667)
+    assert settlement_day["settlement_reset"] is True
+    assert body["cycle_number"] == 1
+
+
 def test_shadow_history_periods_returns_only_completed_intervals(api):
     client, db = api
     snapshot_dates = [

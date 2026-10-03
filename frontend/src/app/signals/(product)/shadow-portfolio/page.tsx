@@ -27,7 +27,7 @@ const STRATEGY_META: Record<
     badge: "ACTIVE（啟用中）",
     description:
       "2026-09-07 起的新週期：用 Continuation、Pullback 等標籤分類股票，" +
-      "最多同時持有 6 檔，每檔固定以 100,000 元獨立計算損益。",
+      "最多同時持有 6 檔，每檔固定以 100,000 元獨立計算損益；新增獲利保護停利與轉弱換股。",
   },
   FORWARD_V1_202609: {
     label: "FORWARD_V1_202609（前向測試）",
@@ -75,6 +75,8 @@ const EXIT_REASON_LABELS: Record<string, string> = {
   CONTINUATION_CONFIRMED_STOP: "CONTINUATION_CONFIRMED_STOP（確認後停損 -8%）",
   CONTINUATION_TRAILING_EXIT: "CONTINUATION_TRAILING_EXIT（從高點回吐出場）",
   CONTINUATION_ROTATION: "CONTINUATION_ROTATION（延續引擎輪動換股）",
+  PROFIT_PROTECTION_EXIT: "PROFIT_PROTECTION_EXIT（獲利保護停利）",
+  PROFIT_PROTECTION_ROTATION: "PROFIT_PROTECTION_ROTATION（獲利轉弱換股）",
   PULLBACK_REAL_STOP: "PULLBACK_REAL_STOP（拉回部位實際停損 -8%）",
   PULLBACK_RECOVERY_FAILED: "PULLBACK_RECOVERY_FAILED（拉回回穩失敗）",
   PERIOD_END_SETTLEMENT: "PERIOD_END_SETTLEMENT（回測期末結算）",
@@ -542,10 +544,13 @@ export default function ShadowPortfolioPage() {
 
                 <p className="mt-3 font-medium text-slate-300">賣出條件與優先序（Exit conditions）</p>
                 <ul className="mt-1 list-disc space-y-1 pl-4">
-                  <li>一般 Starter（首次進場）：第一個完整確認日未通過延續確認就出場；實際持倉 ≤ -5% 快速停損。</li>
-                  <li>Profile（進場型態）直接進場：實際持倉 ≤ -12% 停損；獲利達 +10% 後，從最高收盤回吐 ≥6% 出場。</li>
-                  <li>一般確認後 Continuation（強勢延續）：實際持倉 ≤ -8% 停損，接著才看其他失效／追蹤條件。</li>
-                  <li>Pullback（拉回部位）：實際持倉 ≤ -8%、P4_STOP（停止觀察）、OFFICIAL_EXIT（魚尾週期結束），或回穩後 4 個交易日內跌破觀察低點。</li>
+                  <li><span className="text-slate-300">停損／風險：</span>Starter 實際持倉 ≤ -5% 快速停損；未通過延續確認就出場；一般確認後 Continuation ≤ -8%；Profile 直接進場 ≤ -12%；Pullback ≤ -8%。</li>
+                  <li><span className="text-slate-300">失效出場：</span>P4_STOP（停止觀察）、OFFICIAL_EXIT（魚尾週期結束），或 Pullback 回穩後 4 個交易日內跌破觀察低點。</li>
+                  <li><span className="text-slate-300">移動停利：</span>部位獲利曾達 +10% 後，若收盤價從最高收盤回落 ≥6%（Profile 直接進場為 ≥12%）就出場。</li>
+                  <li><span className="text-slate-300">直接停利：</span>實際獲利 ≥25%，且至少 3 個弱化訊號，其中必須包含 P4 CAUTION、技術狀態弱化、動能階段弱化或報告負面決策之一。</li>
+                  <li><span className="text-slate-300">獲利轉弱換股：</span>實際獲利 ≥25%、至少 2 個弱化訊號，且有合格、非 extended chase（過度追價）的新候選股，才賣出並換股。</li>
+                  <li><span className="text-slate-300">小利潤保護：</span>實際獲利 10–11%，至少 4 個弱化訊號且包含主要弱化訊號才停利；5–9% 目前不自動停利。</li>
+                  <li><span className="text-slate-300">容量輪動：</span>持股滿 6 檔時，符合候選與弱勢部位條件才會進行一般 Continuation 輪動。</li>
                   <li>公司行動或價格資料可疑時，當天暫停判斷，避免誤買誤賣。</li>
                 </ul>
                 <p className="mt-2 text-slate-500">所有訊號都在收盤後產生；BUY 使用下一交易日最高價模擬成交，SELL 使用下一交易日最低價模擬成交。線上「下一交易日動作」是待執行訊號，不是已成交。現金欄位只保留會計紀錄，不是進場門檻；週期損益以每筆交易的固定 100,000 元成本計算。</p>

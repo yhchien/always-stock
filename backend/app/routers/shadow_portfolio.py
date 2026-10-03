@@ -417,13 +417,26 @@ def _history_cycle_metadata(
     end_date: Optional[date],
 ) -> tuple[Optional[int], dict, str]:
     """Resolve history config from its cycle archive, never from a live-only label."""
+    settlement_cycle_numbers = {
+        int(trade.cycle_number)
+        for trade in completed_trades
+        if trade.exit_reason == "PERIOD_END_SETTLEMENT" and trade.cycle_number is not None
+    }
+    # The settlement date can also be the first snapshot of the next live
+    # cycle. Prefer the cycle that owns the settlement trades over that live
+    # snapshot, otherwise the UI may display the next cycle's config.
+    if len(settlement_cycle_numbers) == 1:
+        cycle_number = next(iter(settlement_cycle_numbers))
+    else:
+        cycle_number = None
     cycle_numbers = {
         int(snapshot.cycle_number)
         for snapshot in snapshots
         if snapshot.cycle_number is not None
     }
     cycle_numbers.update(int(trade.cycle_number) for trade in completed_trades)
-    cycle_number = next(iter(cycle_numbers)) if len(cycle_numbers) == 1 else None
+    if cycle_number is None:
+        cycle_number = next(iter(cycle_numbers)) if len(cycle_numbers) == 1 else None
     archive = None
     if cycle_number is not None:
         archive = (
@@ -635,7 +648,39 @@ def get_shadow_history(
     if settlement_dates:
         snapshots_by_date = {snapshot.trade_date: snapshot for snapshot in snapshots}
         for settlement_date in settlement_dates:
+            settlement_cycle_numbers = {
+                int(trade.cycle_number)
+                for trade in completed_trades
+                if trade.exit_execution_date == settlement_date
+                and trade.exit_reason == "PERIOD_END_SETTLEMENT"
+                and trade.cycle_number is not None
+            }
             snapshot = snapshots_by_date.get(settlement_date)
+            # The next live cycle may overwrite the unique
+            # (strategy_version, trade_date) row on the settlement date. In
+            # that case use the latest pre-settlement snapshot belonging to
+            # the cycle whose lots were actually settled.
+            if (
+                snapshot is None
+                or (
+                    settlement_cycle_numbers
+                    and snapshot.cycle_number not in settlement_cycle_numbers
+                )
+            ):
+                historical_snapshots = [
+                    candidate
+                    for candidate in snapshots
+                    if candidate.trade_date < settlement_date
+                    and (
+                        not settlement_cycle_numbers
+                        or candidate.cycle_number in settlement_cycle_numbers
+                    )
+                ]
+                snapshot = max(
+                    historical_snapshots,
+                    key=lambda candidate: candidate.trade_date,
+                    default=None,
+                )
             if snapshot is None:
                 continue
             settlement_pnl = sum(

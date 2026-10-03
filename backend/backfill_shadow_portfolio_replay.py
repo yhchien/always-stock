@@ -420,6 +420,7 @@ def main(argv: list) -> int:
     replay_end = _parse_date_override(argv, "--end=", REPLAY_END)
     settle_at_end = _settle_at_end_requested(argv)
     settlement_date_override = _parse_optional_date_override(argv, "--settlement-date=")
+    defer_cycle_reset_requested = "--defer-cycle-reset" in argv
 
     # 2026-09-09 起 v1_frozen 已改版為 Dual-Engine（見本檔案頂部說明），使用者明確
     # 授權對它執行 --execute（DELETE/RESET 舊紀錄後以新 Rule 重新產生）——這裡**不再**
@@ -502,6 +503,16 @@ def main(argv: list) -> int:
 
     print(f"\n{'='*78}\nSTRATEGY_VERSION={strategy_version}  REPLAY {trade_dates[0]} ~ {trade_dates[-1]}\n{'='*78}")
 
+    # A historical window ending before an explicit administrative settlement
+    # must preserve the open positions until that settlement date.  Otherwise
+    # a 25-session production cycle can reset on the last signal day and leave
+    # the explicit settlement with nothing to settle, understating the period
+    # return and making it incomparable with the production period record.
+    defer_cycle_reset_until_settlement = (
+        defer_cycle_reset_requested
+        or (settle_at_end and settlement_date > trade_dates[-1])
+    )
+
     for d in trade_dates:
         # 每個 with 區塊內就把要印的欄位讀成 plain tuple——session 一離開 with
         # 就 close，ORM 物件在區塊外變成 detached/expired，屬性存取會觸發對已
@@ -549,6 +560,8 @@ def main(argv: list) -> int:
 
         def _step_cycle_reset():
             with SessionLocal() as db:
+                if defer_cycle_reset_until_settlement:
+                    return False
                 reset_triggered = sp.check_and_apply_cycle_reset(db, target_date=d, strategy_version=strategy_version)
                 db.commit()
                 return reset_triggered
