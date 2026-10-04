@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>魚尾策略滿倉換股流程</title>
+  <style>
+    :root {
+      --bg: #f4f7fb;
+      --card: #ffffff;
+      --ink: #172033;
+      --muted: #5d6b82;
+      --line: #d9e1ee;
+      --blue: #2563eb;
+      --blue-soft: #eaf1ff;
+      --green: #087f5b;
+      --green-soft: #e8f8f1;
+      --red: #b42318;
+      --red-soft: #fff0ee;
+      --amber: #9a6700;
+      --amber-soft: #fff8df;
+      --purple: #6941c6;
+      --purple-soft: #f3efff;
+      --shadow: 0 12px 32px rgba(35, 55, 90, .08);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", "PingFang TC", sans-serif;
+      line-height: 1.7;
+    }
+    .page { max-width: 1120px; margin: 0 auto; padding: 42px 22px 72px; }
+    .hero {
+      background: linear-gradient(135deg, #172554, #1d4ed8);
+      color: white;
+      border-radius: 24px;
+      padding: 38px 40px;
+      box-shadow: var(--shadow);
+      margin-bottom: 26px;
+    }
+    .eyebrow { margin: 0 0 8px; font-size: 13px; letter-spacing: .12em; opacity: .8; }
+    h1 { margin: 0 0 12px; font-size: clamp(28px, 4vw, 44px); line-height: 1.2; }
+    .hero p { margin: 0; max-width: 800px; color: #dbeafe; font-size: 17px; }
+    h2 { margin: 0 0 16px; font-size: 25px; line-height: 1.3; }
+    h3 { margin: 24px 0 10px; font-size: 19px; }
+    p { margin: 8px 0 14px; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 28px;
+      margin: 22px 0;
+      box-shadow: 0 5px 18px rgba(35, 55, 90, .04);
+    }
+    .lead { font-size: 18px; color: #263653; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+    .mini {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 18px;
+      background: #fbfcff;
+    }
+    .mini h3 { margin-top: 0; }
+    .flow { display: grid; justify-items: center; gap: 8px; margin: 20px auto 4px; }
+    .node {
+      width: min(700px, 100%);
+      border: 1px solid #b8c7df;
+      border-radius: 14px;
+      padding: 16px 20px;
+      text-align: center;
+      background: #f8fbff;
+    }
+    .node strong { display: block; font-size: 18px; }
+    .node small { display: block; margin-top: 4px; color: var(--muted); }
+    .node.start { background: var(--blue-soft); border-color: #9bb8ff; }
+    .node.good { background: var(--green-soft); border-color: #92d8bd; }
+    .node.bad { background: var(--red-soft); border-color: #f0aaa2; }
+    .node.warn { background: var(--amber-soft); border-color: #e8cb75; }
+    .arrow { color: var(--blue); font-size: 26px; line-height: 1; }
+    .branch { width: min(700px, 100%); display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .branch .node { width: auto; }
+    .label { font-size: 13px; font-weight: 700; color: var(--muted); margin-bottom: 5px; }
+    table { width: 100%; border-collapse: collapse; margin: 12px 0 4px; font-size: 15px; }
+    th, td { border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; padding: 11px 10px; }
+    th { background: #f5f8fd; color: #33425b; font-weight: 700; }
+    tr:last-child td { border-bottom: 0; }
+    code { background: #eef2f8; border-radius: 5px; padding: 1px 5px; color: #243b64; font-size: .92em; }
+    .tag { display: inline-block; border-radius: 999px; padding: 2px 9px; font-size: 13px; font-weight: 700; margin: 2px 4px 2px 0; }
+    .tag.green { background: var(--green-soft); color: var(--green); }
+    .tag.red { background: var(--red-soft); color: var(--red); }
+    .tag.amber { background: var(--amber-soft); color: var(--amber); }
+    .tag.blue { background: var(--blue-soft); color: #1749a5; }
+    .callout { border-left: 5px solid var(--blue); background: var(--blue-soft); padding: 15px 18px; border-radius: 9px; margin: 16px 0; }
+    .callout.warn { border-left-color: var(--amber); background: var(--amber-soft); }
+    .callout.good { border-left-color: var(--green); background: var(--green-soft); }
+    ul { margin: 8px 0 14px; padding-left: 23px; }
+    li { margin: 4px 0; }
+    .formula { background: #172033; color: #edf4ff; border-radius: 10px; padding: 13px 16px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow-x: auto; }
+    .footer { color: var(--muted); font-size: 13px; text-align: center; margin-top: 30px; }
+    @media (max-width: 720px) {
+      .page { padding: 22px 13px 44px; }
+      .hero, .card { padding: 22px 18px; border-radius: 16px; }
+      .grid, .branch { grid-template-columns: 1fr; }
+      table { font-size: 14px; }
+      th, td { padding: 9px 7px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <p class="eyebrow">PRODUCTION · V1_FROZEN</p>
+      <h1>魚尾策略：滿 6 檔時的換股流程</h1>
+      <p>本頁說明當持股已滿 6 檔，且目前持股落在約 -12%～15% 的觀察區間時，什麼樣的舊持股可能被替換，以及什麼樣的新候選可以被買進。</p>
+    </header>
+
+    <section class="card">
+      <h2>先看結論</h2>
+      <p class="lead">換股不是「看到一檔好股票就買」。必須同時找到一檔符合強勢條件的新股票，以及一檔符合弱勢條件、且沒有被保護的舊持股。</p>
+      <div class="grid">
+        <div class="mini">
+          <h3>新股票要夠強</h3>
+          <p>續強型、當日候選排名前 10、至少 7 個證據面向中有 6 個正向、動能 70～84、市場相對強度至少 90，且不是過度追價。</p>
+        </div>
+        <div class="mini">
+          <h3>舊股票要夠弱</h3>
+          <p>續強型持股、目前報酬不超過 15%、型態優先級不比新候選強、持有至少一天、只有一個交易單位，且沒有反彈保護。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>滿 6 檔時的決策流程圖</h2>
+      <div class="flow">
+        <div class="node start"><strong>持股已滿 6 檔</strong><small>同時持有名額全部使用</small></div>
+        <div class="arrow">↓</div>
+        <div class="node"><strong>先檢查現有持股的正常出場條件</strong><small>例如停損、P4 停止觀察、追蹤停利、魚尾週期結束</small></div>
+        <div class="branch">
+          <div class="node bad"><div class="label">有出場條件</div><strong>直接出場</strong><small>這是停損、停利或失效出場，不算一般換股</small></div>
+          <div class="node good"><div class="label">沒有出場條件</div><strong>繼續找新候選</strong><small>進入滿倉換股判斷</small></div>
+        </div>
+        <div class="arrow">↓</div>
+        <div class="node"><strong>建立當日「續強型」候選清單</strong><small>拉回復甦型不能直接透過這條滿倉換股路徑買進</small></div>
+        <div class="arrow">↓</div>
+        <div class="node"><strong>新候選通過全部強勢條件？</strong><small>排名、證據數、動能、相對強度、型態與追價限制</small></div>
+        <div class="branch">
+          <div class="node warn"><div class="label">不符合</div><strong>不買進</strong><small>記錄為持股名額已滿</small></div>
+          <div class="node good"><div class="label">符合</div><strong>尋找可替換舊持股</strong><small>進入舊持股弱勢判斷</small></div>
+        </div>
+        <div class="arrow">↓</div>
+        <div class="node"><strong>找到符合弱勢條件的舊持股？</strong><small>依目前報酬最低、進場時間較早、股票代號排序</small></div>
+        <div class="branch">
+          <div class="node warn"><div class="label">找不到</div><strong>不換股</strong><small>新候選跳過，不建立買賣單</small></div>
+          <div class="node good"><div class="label">找到</div><strong>賣舊股、買新股</strong><small>下一個交易日先賣出，再買進</small></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>一、新候選的「強」是什麼？</h2>
+      <p>新候選必須同時通過以下條件：</p>
+      <table>
+        <thead><tr><th>條件</th><th>中文解釋</th><th>目前門檻</th></tr></thead>
+        <tbody>
+          <tr><td>續強型候選</td><td>魚尾動能正在延續的股票，不是單純等待拉回復甦的股票。</td><td>必須是 Continuation</td></tr>
+          <tr><td>當日排名</td><td>在今天所有續強型候選中的策略排序。</td><td>第 1～10 名</td></tr>
+          <tr><td>正向證據數</td><td>7 個證據面向中，判定為正向的面向數量。</td><td>至少 6 個</td></tr>
+          <tr><td>動能分數</td><td>綜合價格、相對強度、法人、成交量與基本面的 0～100 分數。</td><td>70～84</td></tr>
+          <tr><td>市場相對強度</td><td>股票最近 20 日報酬在可比較市場中的百分位。</td><td>至少 90</td></tr>
+          <tr><td>有效型態</td><td>股票能被歸類成可執行的續強型態。</td><td>不能是空白</td></tr>
+          <tr><td>過度追價</td><td>股價已經急漲，可能接近行情末端，不拿來做一般換股。</td><td>不能是 <code>extended_chase</code></td></tr>
+        </tbody>
+      </table>
+
+      <h3>7 個正向證據面向</h3>
+      <table>
+        <thead><tr><th>面向</th><th>中文意思</th><th>什麼情況算正向</th></tr></thead>
+        <tbody>
+          <tr><td>角色</td><td>股票在市場或題材中的領導地位。</td><td>領導股，且不是落後股</td></tr>
+          <tr><td>新鮮度</td><td>魚尾訊號是否仍新、仍有延續性。</td><td>新鮮強勢、穩定新鮮或穩定</td></tr>
+          <tr><td>觀察品質</td><td>魚尾追蹤資料是否足以進一步評估。</td><td><code>READY</code>（準備完成）</td></tr>
+          <tr><td>相對強度證據</td><td>是否有相對強度資料支持。</td><td>具備正向相對強度證據</td></tr>
+          <tr><td>法人流向</td><td>法人買盤是否支持。</td><td>具備法人確認證據</td></tr>
+          <tr><td>價格結構</td><td>股價結構是否健康。</td><td>有價格結構證據，且不是結構破壞</td></tr>
+          <tr><td>動能</td><td>整體價格與資金動能。</td><td>動能分數至少 60</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>二、舊持股的「弱」是什麼？</h2>
+      <p>舊股不是只要賠錢就會被換，也不是只要報酬低於 15% 就一定會被換。</p>
+      <table>
+        <thead><tr><th>條件</th><th>判斷方式</th></tr></thead>
+        <tbody>
+          <tr><td>不是正常出場</td><td>沒有先觸發停損、P4 停止觀察、追蹤停利或魚尾週期結束。</td></tr>
+          <tr><td>持股類型</td><td>必須是續強型持股；拉回復甦型通常不走一般滿倉換股。</td></tr>
+          <tr><td>持股報酬</td><td>一般 profile 換股要求實際持股報酬不超過 15%。</td></tr>
+          <tr><td>持有時間</td><td>至少持有 1 個交易日。</td></tr>
+          <tr><td>持股單位</td><td>一般換股要求只有 1 個交易單位，避免替換複合部位。</td></tr>
+          <tr><td>型態優先級</td><td>舊股型態不能比新候選更強；同級時新候選動能至少高 5 分。</td></tr>
+          <tr><td>反彈保護</td><td>如果舊股仍具高動能、高相對強度與反彈條件，會被保護，不因滿倉換掉。</td></tr>
+        </tbody>
+      </table>
+
+      <h3>型態優先級</h3>
+      <table>
+        <thead><tr><th>優先級</th><th>英文名稱</th><th>中文解釋</th></tr></thead>
+        <tbody>
+          <tr><td>0（最強）</td><td>Early Reaccel</td><td>早期重新加速</td></tr>
+          <tr><td>0（最強）</td><td>Early High Momentum</td><td>早期高動能</td></tr>
+          <tr><td>1</td><td>Breakout Confirmed</td><td>確認突破</td></tr>
+          <tr><td>1</td><td>Breakout Surge</td><td>突破加速</td></tr>
+          <tr><td>1</td><td>Sustained Breakout</td><td>持續突破</td></tr>
+          <tr><td>2（較弱）</td><td>Pullback Ride</td><td>拉回後仍有續強機會</td></tr>
+        </tbody>
+      </table>
+      <div class="callout warn">
+        <strong>重要：</strong>型態優先級的數字越小越強。新候選可以替換比自己弱的型態；如果新舊型態同級，還要比較動能，新候選必須至少高 5 分。
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>三、-12%～15% 觀察區間怎麼處理？</h2>
+      <table>
+        <thead><tr><th>持股狀態</th><th>主要處理方式</th></tr></thead>
+        <tbody>
+          <tr><td>跌到該型態的停損線</td><td>走正常停損出場，不算一般換股。</td></tr>
+          <tr><td>-12%～-8% 左右</td><td>依持股狀態判斷；有些型態已先觸發 -8% 停損，有些直接型態使用 -12% 停損。</td></tr>
+          <tr><td>-8%～0%</td><td>如果仍未觸發正常出場，可能成為一般換股的弱勢舊股。</td></tr>
+          <tr><td>0%～15%</td><td>仍可能被換，前提是型態比新候選弱且沒有反彈保護。</td></tr>
+          <tr><td>超過 15%</td><td>一般滿倉換股不會替換；若超過 25% 且轉弱，另走停利換股邏輯。</td></tr>
+        </tbody>
+      </table>
+      <div class="callout">
+        <strong>實際報酬率計算：</strong>
+        <div class="formula">當日收盤價 ÷ 持股平均成本 − 1</div>
+        這裡看的是持股本身的實際報酬，不是魚尾追蹤週期報酬，也不是單日漲跌幅。
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>四、排名、證據數、動能、相對強度</h2>
+
+      <h3>排名</h3>
+      <p>排名是「當天所有符合續強型候選資格的股票」之間的排序，不是全市場排名，也不是只看動能。</p>
+      <ol>
+        <li>正向證據數較多</li>
+        <li>角色品質較高</li>
+        <li>觀察品質較好</li>
+        <li>訊號新鮮度較好</li>
+        <li>相對強度證據較正向</li>
+        <li>法人流向證據較正向</li>
+        <li>動能分數較高</li>
+      </ol>
+
+      <h3>動能分數</h3>
+      <p>動能分數是 0～100 的 deterministic（固定公式計算）分數，不是目前持股報酬率。</p>
+      <table>
+        <thead><tr><th>組成</th><th>權重</th><th>中文意思</th></tr></thead>
+        <tbody>
+          <tr><td>價格動能</td><td>30 分</td><td>5 日、20 日、60 日價格表現的市場百分位。</td></tr>
+          <tr><td>相對強度</td><td>25 分</td><td>市場相對強度與產業相對強度。</td></tr>
+          <tr><td>法人動能</td><td>20 分</td><td>法人買進比例與連續買超天數。</td></tr>
+          <tr><td>成交量品質</td><td>15 分</td><td>近期成交量相對於過去成交量的強弱。</td></tr>
+          <tr><td>基本面動能</td><td>10 分</td><td>營收年增、營收加速與月增表現。</td></tr>
+        </tbody>
+      </table>
+      <p>計算後還可能因爆量長上影、相對強度排名急跌或 3 日漲幅過熱而扣分。</p>
+
+      <h3>市場相對強度</h3>
+      <p><code>rs_market_percentile_20d</code> 是股票最近 20 日報酬，在當天可比較股票市場中的百分位。</p>
+      <table>
+        <thead><tr><th>數值</th><th>中文解釋</th></tr></thead>
+        <tbody>
+          <tr><td>90</td><td>20 日報酬大約贏過 90% 的股票，約市場前 10%。</td></tr>
+          <tr><td>75</td><td>大約贏過 75% 的股票。</td></tr>
+          <tr><td>50</td><td>接近市場中位數。</td></tr>
+          <tr><td>30</td><td>弱於大多數股票。</td></tr>
+        </tbody>
+      </table>
+      <div class="callout good">
+        <strong>換股門檻：</strong>市場相對強度至少 90，代表新候選的 20 日報酬大約位於市場前 10%。它不是上漲 90%，也不是拿來和目前 6 檔持股比較。
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>五、最終判斷範例</h2>
+      <div class="grid">
+        <div class="mini">
+          <h3><span class="tag green">可能換股</span></h3>
+          <p>舊股目前報酬 +6%，屬於較弱的確認突破型；新股是早期重新加速型，排名第 3、證據 7/7、動能 78、相對強度 96，且沒有反彈保護。</p>
+        </div>
+        <div class="mini">
+          <h3><span class="tag red">不換股</span></h3>
+          <p>舊股目前報酬 +4%，但它是高品質早期重新加速型；新候選只是確認突破型，因此新股型態較弱。</p>
+        </div>
+        <div class="mini">
+          <h3><span class="tag amber">不買進</span></h3>
+          <p>新股動能 88、相對強度 97，但已屬過度追價，超過一般換股允許的動能上限。</p>
+        </div>
+        <div class="mini">
+          <h3><span class="tag blue">走停損</span></h3>
+          <p>舊股跌到自己的停損線，即使同日有新候選，也會先依停損規則出場，不把它標記成一般換股。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>名詞對照</h2>
+      <table>
+        <thead><tr><th>名詞</th><th>中文解釋</th></tr></thead>
+        <tbody>
+          <tr><td>Continuation</td><td>續強型：魚尾動能正在延續的候選或持股。</td></tr>
+          <tr><td>Pullback</td><td>拉回型：先回落、等待恢復的候選或持股。</td></tr>
+          <tr><td>Profile</td><td>股票型態分類，用來比較新候選與舊持股的強弱層級。</td></tr>
+          <tr><td>Momentum score</td><td>動能分數，綜合價格、資金、成交量與基本面後的 0～100 分數。</td></tr>
+          <tr><td>Relative strength</td><td>相對強度，股票表現相對於市場或產業的強弱。</td></tr>
+          <tr><td>Evidence</td><td>證據面向，包含角色、新鮮度、觀察品質、相對強度、法人、價格結構與動能。</td></tr>
+          <tr><td>Extended chase</td><td>過度追價：短時間漲幅過快，可能接近行情末段。</td></tr>
+          <tr><td>Rebound protection</td><td>反彈保護：舊股雖未大幅獲利，但仍具高動能與反彈條件，因此不因滿倉被換掉。</td></tr>
+          <tr><td>P4 STOP</td><td>P4 停止觀察：風險複核判定魚尾觀察失效。</td></tr>
+          <tr><td>Starter</td><td>試探倉：剛進場、尚未完成續強確認的持股。</td></tr>
+          <tr><td>Opportunity</td><td>機會倉：特殊高品質續強部位；一般換股的可替換報酬上限可放寬到 25%。</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <p class="footer">本文件整理目前 production v1_frozen 的滿倉換股邏輯。策略規則若日後修改，需同步更新本頁。</p>
+  </main>
+</body>
+</html>

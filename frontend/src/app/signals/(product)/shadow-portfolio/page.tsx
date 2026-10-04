@@ -454,6 +454,14 @@ export default function ShadowPortfolioPage() {
           用固定虛擬資金（Paper Trading）模擬策略：不是真的下單，純粹追蹤「如果照這套規則交易，
           現在會是什麼結果」。
         </p>
+        <a
+          href="/shadow_rotation_flowchart.html"
+          target="_blank"
+          rel="noreferrer"
+          className="mt-3 inline-flex items-center rounded-lg border border-sky-800 bg-sky-950/30 px-3 py-2 text-xs font-medium text-sky-200 transition hover:border-sky-600 hover:bg-sky-900/40"
+        >
+          查看滿 6 檔換股流程圖 ↗
+        </a>
 
         <div className="mt-4 flex flex-wrap gap-2">
           {SHADOW_STRATEGY_VERSIONS.map((v) => (
