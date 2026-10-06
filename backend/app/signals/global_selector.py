@@ -87,7 +87,11 @@ _CACHE_KEY = "signals:p3:global-selector:v1"
 _OUTPUT_TOKEN_RESERVE_BASE = 5_000
 _OUTPUT_TOKEN_RESERVE_PER_CANDIDATE = 400
 _OUTPUT_TOKEN_RESERVE_MAX = 32_768
-_DEFAULT_CONTEXT_LIMIT_TOKENS = 114_688
+# The canonical technical assessment is now included in every compact card.
+# A 164-card 2026-10-05 replay used 138,849 tokens end-to-end successfully;
+# keep enough headroom for the structured output contract instead of rejecting
+# the request at the old 114,688-token preflight threshold.
+_DEFAULT_CONTEXT_LIMIT_TOKENS = 180_000
 
 
 def _default_output_token_reserve(candidate_count: int) -> int:
@@ -384,6 +388,30 @@ def build_compact_selection_cards(
             if isinstance(item.get("deterministic_signals"), dict)
             else {}
         )
+        technical_assessment = (
+            item.get("technical_assessment")
+            or deterministic.get("technical_assessment")
+        )
+        if not isinstance(technical_assessment, dict):
+            technical_assessment = {}
+        # Keep the selector card compact, but do not fall back to the legacy
+        # technical_status enum.  The selector must see the same canonical
+        # family-level conclusion that research/reason stages received.
+        technical_view = {
+            "state": technical_assessment.get("state"),
+            "actionability": technical_assessment.get("actionability"),
+            "strength_score": technical_assessment.get("strength_score"),
+            "weakness_score": technical_assessment.get("weakness_score"),
+            "confidence": technical_assessment.get("confidence"),
+            "families": {
+                name: {
+                    "state": family.get("state"),
+                    "signals": list(family.get("signals") or []),
+                }
+                for name, family in (technical_assessment.get("families") or {}).items()
+                if isinstance(family, dict)
+            },
+        }
         quality_evidence = (
             item.get("quality_evidence")
             if isinstance(item.get("quality_evidence"), dict)
@@ -431,7 +459,11 @@ def build_compact_selection_cards(
                     "freshness": item.get("momentum_freshness"),
                     "price_structure": signals.get("technical_status")
                     or deterministic.get("technical_status"),
+                    "technical_state": technical_view.get("state"),
+                    "technical_strength_score": technical_view.get("strength_score"),
+                    "technical_weakness_score": technical_view.get("weakness_score"),
                 },
+                "technical_assessment": technical_view,
                 "participation_summary": {
                     "institution_flow_momentum": signals.get(
                         "institution_flow_momentum"
@@ -697,6 +729,10 @@ def run_global_selection(
                 exc.diagnostic = diagnostic
             raise
         validated["capacity"] = capacity.as_dict()
+        technical_coherence_adjustments = _cohere_selection_technical_text(
+            validated,
+            cards,
+        )
         validated["llm_diagnostic"] = {
             **(diagnostic or {}),
             "contract_retry_attempt": attempt,
@@ -707,9 +743,73 @@ def run_global_selection(
             "backend_normalized_recommendation_ranks": (
                 normalized_recommendation_ranks
             ),
+            "technical_coherence_adjustments": technical_coherence_adjustments,
         }
         return validated
     raise AssertionError("unreachable global-selection retry state")
+
+
+_TECHNICAL_SELECTION_CLAIMS = (
+    "強勢技術面",
+    "技術面偏強",
+    "結構偏強",
+    "結構仍強",
+    "突破後續強",
+    "後續強格局",
+    "技術走勢強",
+    "全面轉強",
+)
+
+
+def _technical_selection_note(state: str) -> str:
+    if state == "IMPROVING":
+        return "技術面目前在改善中，仍需後續確認，不視為全面轉強"
+    if state == "NEUTRAL":
+        return "技術面目前中性，訊號尚未全面一致，仍需後續確認"
+    if state == "CONFLICTED":
+        return "技術面訊號分歧，仍需等待結構與動能確認"
+    if state == "WEAKENING":
+        return "技術面已有轉弱訊號，推薦不代表可以忽略風險"
+    if state == "BROKEN":
+        return "技術結構已有破壞，應以風險控管優先"
+    if state == "INSUFFICIENT_DATA":
+        return "技術資料不足，不能解讀成全面轉強"
+    return ""
+
+
+def _cohere_selection_technical_text(
+    payload: Dict[str, Any], cards: List[Dict[str, Any]]
+) -> List[str]:
+    """Keep selector prose aligned with the canonical technical state.
+
+    Selection membership remains entirely LLM-owned. This only protects the
+    explanatory fields when a non-STRONG card is recommended for a valid
+    non-technical reason but its prose calls the technical setup fully strong.
+    """
+    card_by_id = {str(card.get("stock") or ""): card for card in cards}
+    adjusted: List[str] = []
+    for item in payload.get("items") or []:
+        if not isinstance(item, dict) or str(item.get("decision") or "").upper() != "RECOMMEND":
+            continue
+        sid = str(item.get("stock") or "")
+        card = card_by_id.get(sid) or {}
+        assessment = card.get("technical_assessment") or {}
+        state = str(assessment.get("state") or "").upper()
+        note = _technical_selection_note(state)
+        if not note or state == "STRONG":
+            continue
+        text = " ".join(
+            str(item.get(key) or "")
+            for key in ("recommendation_thesis", "relative_advantage", "selection_reason")
+        )
+        if not any(claim in text for claim in _TECHNICAL_SELECTION_CLAIMS) and note in text:
+            continue
+        safe_base = "題材、量價、研究證據或相對優勢仍具辨識度"
+        item["recommendation_thesis"] = f"{safe_base}；{note}。"
+        item["relative_advantage"] = f"相對優勢主要來自非技術面的證據；{note}。"
+        item["selection_reason"] = f"保留原因以非技術面的正向證據為主；{note}。"
+        adjusted.append(sid)
+    return adjusted
 
 
 def _normalize_recommendation_ranks(

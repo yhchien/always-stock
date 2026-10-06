@@ -1,4 +1,4 @@
-"""一次性建立 Dual-Engine v1_frozen 回測（2026-08-01~2026-09-07）的本機唯讀資料快取。
+"""一次性建立 Dual-Engine v1_frozen 回測（2026-08-01~2026-10-05）的本機唯讀資料快取。
 
 **動機**：這段窗口已經重跑過好幾次（每次都要抓 bug → 修 → 重跑），每次對 production
 Postgres（Render，新加坡）做 26 個交易日 × 4~5 個 orchestrator 呼叫的完整回測，光是
@@ -55,7 +55,7 @@ CACHE_DB_PATH = BACKEND_DIR / "db" / "dual_engine_backtest_cache.db"
 
 # 這次回測實際涵蓋的窗口——如果之後要驗證別的日期區間，改這兩個常數重新跑一次即可。
 REPLAY_WINDOW_START = date(2026, 8, 1)
-REPLAY_WINDOW_END = date(2026, 9, 8)  # 含 T+1 結算需要的最後一天
+REPLAY_WINDOW_END = date(2026, 10, 5)  # 兩個循環回測及 T+1/期末結算所需的最後一天
 # daily_price 複製範圍：往前留到比 `_min_first_seen_date_in_window()` 查出來的
 # 2026-07-20 更早 5 天，純粹是保守緩衝，不影響正確性（多複製幾天資料不會有壞處）。
 DAILY_PRICE_BUFFER_DAYS = 5

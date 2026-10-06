@@ -1,0 +1,62 @@
+{
+  "history_2026-08-01_2026-09-07": {
+    "control": {
+      "period": "history_2026-08-01_2026-09-07",
+      "strategy": "control",
+      "strategy_version": "v1_frozen",
+      "gross_return_pct": 25.29455892998527,
+      "final_equity": 751767.3535799116,
+      "trade_count": 7,
+      "win_rate_pct": 85.71428571428571,
+      "profit_factor": 22.210413073485196,
+      "max_drawdown_pct": -3.9251723608147575,
+      "avg_trade_pct": 21.68105051141594,
+      "largest_winner_pct": 39.4396551724138,
+      "largest_loser_pct": -7.155322862129145
+    },
+    "profit_protection": {
+      "period": "history_2026-08-01_2026-09-07",
+      "strategy": "profit_protection",
+      "strategy_version": "PROFIT_PROTECTION_202610",
+      "gross_return_pct": 33.06315720576867,
+      "final_equity": 798378.943234612,
+      "trade_count": 10,
+      "win_rate_pct": 80.0,
+      "profit_factor": 19.112181572007213,
+      "max_drawdown_pct": -6.463796035153307,
+      "avg_trade_pct": 19.837894323461196,
+      "largest_winner_pct": 40.20270270270271,
+      "largest_loser_pct": -7.155322862129145
+    }
+  },
+  "forward_2026-09-07_2026-10-01": {
+    "control": {
+      "period": "forward_2026-09-07_2026-10-01",
+      "strategy": "control",
+      "strategy_version": "v1_frozen",
+      "gross_return_pct": 4.604341921118108,
+      "final_equity": 627626.0515267086,
+      "trade_count": 3,
+      "win_rate_pct": 0.0,
+      "profit_factor": 0.0,
+      "max_drawdown_pct": -3.4463861316304336,
+      "avg_trade_pct": -6.115110976283469,
+      "largest_winner_pct": -1.41414141414142,
+      "largest_loser_pct": -9.154929577464783
+    },
+    "profit_protection": {
+      "period": "forward_2026-09-07_2026-10-01",
+      "strategy": "profit_protection",
+      "strategy_version": "PROFIT_PROTECTION_202610",
+      "gross_return_pct": 4.604341921118108,
+      "final_equity": 627626.0515267086,
+      "trade_count": 3,
+      "win_rate_pct": 0.0,
+      "profit_factor": 0.0,
+      "max_drawdown_pct": -3.4463861316304336,
+      "avg_trade_pct": -6.115110976283469,
+      "largest_winner_pct": -1.41414141414142,
+      "largest_loser_pct": -9.154929577464783
+    }
+  }
+}

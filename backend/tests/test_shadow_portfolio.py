@@ -928,6 +928,81 @@ def _make_evidence_row(**overrides) -> sp.EvidenceRow:
     return sp.EvidenceRow(**base)
 
 
+def test_profit_return_decline_for_two_days_adds_one_weakness_vote():
+    assessment = sp._profit_weakness_assessment(
+        _make_evidence_row(p4_decision=None, p3_selected_today=True),
+        _make_evidence_row(trade_date=D1, p4_decision=None, p3_selected_today=True),
+        _make_evidence_row(trade_date=D0, p4_decision=None, p3_selected_today=True),
+        actual_position_returns=(16.0, 17.0, 18.0),
+        cfg=sp.PROFIT_PROTECTION_PARAMS["profit_protection"],
+    )
+    assert "PROFIT_RETURN_DOWN_2D" in assessment.signals
+    assert assessment.score == 1
+    assert assessment.strong_signal is False
+
+
+def test_profit_return_decline_over_one_third_is_strong_without_double_counting():
+    assessment = sp._profit_weakness_assessment(
+        _make_evidence_row(p4_decision=None, p3_selected_today=True),
+        _make_evidence_row(trade_date=D1, p4_decision=None, p3_selected_today=True),
+        _make_evidence_row(trade_date=D0, p4_decision=None, p3_selected_today=True),
+        actual_position_returns=(19.0, 25.0, 30.0),
+        cfg=sp.PROFIT_PROTECTION_PARAMS["profit_protection"],
+    )
+    assert assessment.signals == ("PROFIT_RETURN_DOWN_2D",)
+    assert assessment.score == 1
+    assert assessment.strong_signal is True
+    assert assessment.strong_signals == ("PROFIT_RETURN_DOWN_2D",)
+
+
+def test_profit_return_decline_does_not_trigger_below_fifteen_percent():
+    assessment = sp._profit_weakness_assessment(
+        _make_evidence_row(p4_decision=None, p3_selected_today=True),
+        _make_evidence_row(trade_date=D1, p4_decision=None, p3_selected_today=True),
+        _make_evidence_row(trade_date=D0, p4_decision=None, p3_selected_today=True),
+        actual_position_returns=(14.0, 17.0, 20.0),
+        cfg=sp.PROFIT_PROTECTION_PARAMS["profit_protection"],
+    )
+    assert "PROFIT_RETURN_DOWN_2D" not in assessment.signals
+
+
+def test_technical_assessment_weakening_is_a_non_strong_vote():
+    assessment = sp._profit_weakness_assessment(
+        _make_evidence_row(
+            p4_decision=None,
+            p3_selected_today=True,
+            continuation_evidence={
+                "report_features": {
+                    "technical_assessment": {"state": "WEAKENING"},
+                }
+            },
+        ),
+        None,
+        None,
+    )
+    assert assessment.signals == ("TECHNICAL_ASSESSMENT_WEAKENING",)
+    assert assessment.strong_signal is False
+
+
+def test_technical_assessment_broken_is_a_strong_primary_vote():
+    assessment = sp._profit_weakness_assessment(
+        _make_evidence_row(
+            p4_decision=None,
+            p3_selected_today=True,
+            continuation_evidence={
+                "report_features": {
+                    "technical_assessment": {"state": "BROKEN"},
+                }
+            },
+        ),
+        None,
+        None,
+    )
+    assert assessment.signals == ("TECHNICAL_ASSESSMENT_BROKEN",)
+    assert assessment.strong_signal is True
+    assert assessment.strong_signals == ("TECHNICAL_ASSESSMENT_BROKEN",)
+
+
 def _seed_position_with_lots(db, *, strategy_version, stock_id, stock_name, first_seen_date, lots):
     """`lots`：list[dict]，每個至少含 entry_price/shares/allocation。跟既有
     `_seed_position_with_lot`（單數、硬編碼 v1_frozen）平行，差別是可指定

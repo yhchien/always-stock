@@ -366,6 +366,8 @@ def run_research_batch(
             "   具有相同選股地位，不得以商品類型或 instrument validation 本身 REMOVE。\n"
             "6. 每檔 stock 都有 `evidence` 段落，是後端 deterministic 從 DB 算出的數字；"
             "   你的 research 結果應與 evidence 一致。\n"
+            "7. `technical_assessment` 是後端按訊號家族整理好的唯一技術解讀；"
+            "   直接引用其 state / confidence / family signals，不要自行把均線、SNR、KDJ、RSI、MACD 重算或互相重複加權。\n"
             "7. `business_validation` / `theme_validation` / `supply_chain_validation` 三個驗證欄位"
             "   只能是 VERIFIED（有可信證據支持）/ UNCONFIRMED（資料不足，但沒有反證）/ "
             "   MISMATCH（有可信證據明確證明系統認定的關係不成立）。**沒找到最新新聞或題材文章"
@@ -408,6 +410,8 @@ def run_research_batch(
             "2. 每檔 stock 都有 `evidence` 段落，是後端 deterministic 從 DB 算出的數字；\n"
             "   你的 research 結果應與 evidence 一致（例如 evidence 顯示外資 3 日連買、\n"
             "   就不可在 theme_reason 寫「外資未進駐」）。\n\n"
+            "3. 若有 `technical_assessment`，它是後端統一的技術解讀；請引用其 state 與 family signals，"
+            "不要自行把單一指標或多條均線重算成另一個結論。\n\n"
             f"[market_context]\n"
             f"{json.dumps(market_context, ensure_ascii=False, indent=2)}\n\n"
             f"[stocks_batch]\n"
@@ -1227,7 +1231,10 @@ def _call_llm_json(
         user_payload=user_msg,
         candidate_count=candidate_count,
         estimated_output_reserve=max_output_tokens,
-        model_context_limit=114_688,
+        # Keep diagnostics aligned with the global-selector preflight budget.
+        # The model accepted a 138k-token full-set selection replay after the
+        # canonical technical assessment was added to each compact card.
+        model_context_limit=180_000,
     )
     if prompt_metadata:
         diagnostic["prompt_metadata"] = prompt_metadata
@@ -1434,6 +1441,10 @@ def _run_decision_chunk(
             "**不要重新產生**，程式會直接採用 evidence 裡的值。你只需要判斷 `capital_flow` "
             "（strong | moderate | weak）與 `margin_short_signal`（positive | neutral | negative）"
             "這兩項——這是需要你綜合法人與融資融券證據給出的判斷，backend 沒有直接算好。\n\n"
+            "`technical_assessment` 是 backend 的唯一技術解讀標準：直接採用 `state`、"
+            "`strength_score`、`weakness_score`、`confidence`、各 evidence family 的 state 與 signals。"
+            "不要把 MA5/MA10/MA20、KDJ/RSI/MACD 各自重新加總；它們已在 backend 按訊號家族去重與加權。"
+            "若 `state=CONFLICTED` 或 `INSUFFICIENT_DATA`，必須如實表達衝突或資料不足，不可自行補推。\n\n"
             "輸出格式（JSON only，不要 markdown code fence）：\n"
             "{\n"
             '  "items": [\n'
@@ -1464,6 +1475,8 @@ def _run_decision_chunk(
             "3. 若 momentum_signals 有值，short_reason 必須優先引用 momentum_score / rs_market_percentile_20d / rs_industry_percentile_20d / momentum_phase。\n"
             "4. short_reason 必須引用 evidence 或 momentum_signals 內的至少 1 個具體數字（相對強度 / 漲幅 / 法人金額 / 連買日數 / 量能比），\n"
             "   只寫「籌碼好」「題材熱」等空話會被視為品質不足。\n\n"
+            "5. 若有 `technical_assessment`，優先引用其 state / score / family signals；不要自行把多條均線、"
+            "KDJ、RSI、MACD 重算成另一個技術結論。`WEAKENING` 是風險提示，只有 `BROKEN` 才代表結構已破壞。\n\n"
             f"[market_context]\n"
             f"{json.dumps(market_context, ensure_ascii=False, indent=2)}\n\n"
             f"[research_results]\n"
@@ -1895,6 +1908,11 @@ def _run_v7_reason_chunk(
                 "margin_reason", "technical_reason",
             )
         }
+        technical_reason, coherence_fallback = _cohere_technical_reason(
+            source,
+            sections["technical_reason"],
+        )
+        sections["technical_reason"] = technical_reason
         momentum_source = source.get("momentum_signals")
         if not isinstance(momentum_source, dict):
             momentum_source = _momentum_signals_view(source)
@@ -1917,6 +1935,11 @@ def _run_v7_reason_chunk(
             "llm_diagnostic": {
                 **diagnostic,
                 **(
+                    {"technical_coherence_fallback": True}
+                    if coherence_fallback
+                    else {}
+                ),
+                **(
                     {"contract_retry_attempt": contract_retry_attempt}
                     if contract_retry_attempt
                     else {}
@@ -1924,6 +1947,136 @@ def _run_v7_reason_chunk(
             },
         })
     return out
+
+
+_TECHNICAL_BREAKOUT_CLAIMS = (
+    "突破確認",
+    "完成突破",
+    "突破後延續",
+    "突破並",
+    "結構偏強",
+    "結構仍強",
+    "趨勢明確",
+    "維持強勢",
+)
+_TECHNICAL_CAUTION_TERMS = (
+    "中性",
+    "訊號分歧",
+    "尚未確認",
+    "仍需確認",
+    "保守觀察",
+    "觀察",
+    "風險",
+    "震盪",
+    "回測",
+    "轉弱",
+    "跌破",
+    "不宜追價",
+)
+
+
+def _technical_assessment_from_source(source: Dict[str, Any]) -> Dict[str, Any]:
+    assessment = source.get("technical_assessment")
+    if isinstance(assessment, dict):
+        return assessment
+    deterministic = source.get("deterministic_signals")
+    if isinstance(deterministic, dict) and isinstance(
+        deterministic.get("technical_assessment"), dict
+    ):
+        return deterministic["technical_assessment"]
+    return {}
+
+
+def _technical_reason_fallback(source: Dict[str, Any]) -> List[str]:
+    """Build a conservative, Chinese-only reason when LLM prose conflicts.
+
+    This is intentionally a last-mile safety net.  Research, capital and
+    chip prose still comes from the LLM; only the technical section is replaced
+    when it contradicts the backend's canonical state.
+    """
+    assessment = _technical_assessment_from_source(source)
+    state = str(assessment.get("state") or "").upper()
+    strength = assessment.get("strength_score")
+    weakness = assessment.get("weakness_score")
+    families = assessment.get("families") or {}
+    price = families.get("price_structure") or {}
+    trend = families.get("trend_ma") or {}
+    momentum = families.get("momentum") or {}
+    price_state = str(price.get("state") or "").upper()
+    trend_state = str(trend.get("state") or "").upper()
+    momentum_signals = "、".join(momentum.get("signals") or [])
+
+    try:
+        score_text = f"強勢 {float(strength):.1f}、弱勢 {float(weakness):.1f}"
+    except (TypeError, ValueError):
+        score_text = "技術分數資料有限"
+
+    if state == "BROKEN":
+        return [
+            "價格結構或均線已出現破壞，技術面應以風險控管優先。",
+            f"目前技術訊號偏向跌破與轉弱，綜合分數為{score_text}。",
+            "若無法快速收復關鍵位置，不宜把反彈解讀成新的突破。",
+        ]
+    if state == "WEAKENING":
+        return [
+            "技術面出現轉弱訊號，價格結構仍需要觀察支撐是否守住。",
+            f"均線／價格／動能家族未能維持原有強度，綜合分數為{score_text}。",
+            "目前較適合等待重新轉強或回測確認，不宜追價。",
+        ]
+    if state in {"NEUTRAL", "CONFLICTED", "INSUFFICIENT_DATA"}:
+        if price_state == "WEAKENING":
+            first = "價格結構出現壓力回測或承接不足，尚未視為確認突破。"
+        elif price_state == "STRONG":
+            first = "價格結構偏強，但其他技術家族尚未完全同步。"
+        else:
+            first = "價格結構尚未形成明確的突破或跌破確認。"
+        second = (
+            "均線仍偏多，但整體訊號分歧，需等待量價與動能進一步確認。"
+            if trend_state == "STRONG"
+            else "均線與其他技術家族未完全一致，先以中性觀察。"
+        )
+        third = (
+            f"動能訊號包含{momentum_signals}，目前綜合分數為{score_text}。"
+            if momentum_signals
+            else f"目前綜合分數為{score_text}，資料不足以支持全面轉強。"
+        )
+        return [first, second, third]
+
+    # STRONG / IMPROVING: still mention risk so a strong state is not read as
+    # a promise of immediate upside.
+    return [
+        "價格結構與趨勢家族偏向正向，技術面維持多方或改善中的格局。",
+        f"目前綜合技術分數為{score_text}，可作為趨勢延續的證據。",
+        "若股價已遠離均線，仍需留意追價與高檔震盪風險。",
+    ]
+
+
+def _cohere_technical_reason(
+    source: Dict[str, Any], bullets: List[str]
+) -> tuple[List[str], bool]:
+    """Reject technical prose that contradicts canonical backend assessment."""
+    assessment = _technical_assessment_from_source(source)
+    state = str(assessment.get("state") or "").upper()
+    if not state or not bullets:
+        return bullets, False
+    text = " ".join(str(bullet) for bullet in bullets)
+    families = assessment.get("families") or {}
+    price_state = str(
+        (families.get("price_structure") or {}).get("state") or ""
+    ).upper()
+    if price_state != "STRONG" and any(
+        claim in text for claim in _TECHNICAL_BREAKOUT_CLAIMS
+    ):
+        return _technical_reason_fallback(source), True
+    if state in {"NEUTRAL", "CONFLICTED", "INSUFFICIENT_DATA"} and not any(
+        term in text for term in _TECHNICAL_CAUTION_TERMS
+    ):
+        return _technical_reason_fallback(source), True
+    if state in {"WEAKENING", "BROKEN"} and not any(
+        term in text for term in _TECHNICAL_CAUTION_TERMS
+    ):
+        return _technical_reason_fallback(source), True
+    return bullets, False
 
 
 def _coerce_margin_analysis(
@@ -2229,6 +2382,13 @@ def _to_evidence_view(stocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "tracking_status": _tracking_status_view(s),
             "soft_hints": s.get("soft_hints", []),
             "deterministic_signals": s.get("deterministic_signals", {}),
+            # Canonical technical interpretation.  Keep this as a top-level
+            # view so the LLM does not need to reconstruct meaning from raw
+            # KDJ/MA/MACD fields or from the legacy enum.
+            "technical_assessment": (
+                s.get("technical_assessment")
+                or (s.get("deterministic_signals") or {}).get("technical_assessment")
+            ),
             "momentum_signals": _momentum_signals_view(s),
             # M27：該檔 deterministic 信心度（大盤 regime 在 market_context，全市場一致，不重複帶）
             "regime_conviction": s.get("regime_conviction"),

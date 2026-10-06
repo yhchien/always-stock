@@ -149,6 +149,17 @@ Backend: watch_quality_state=SETUP（已判定值得研究）→ LLM: 自己覺�
         "max_decision": "WATCH | REMOVE",
         "risk_flags": ["distribution", "institution_flow_reversal"]
       },
+      "technical_assessment": {
+        "version": "technical_v1",
+        "state": "STRONG | IMPROVING | NEUTRAL | WEAKENING | BROKEN | CONFLICTED | INSUFFICIENT_DATA",
+        "actionability": "POSITIVE | WATCH_FOR_ENTRY | NEUTRAL | CAUTION | EXIT_CANDIDATE | INSUFFICIENT_DATA",
+        "strength_score": 0,
+        "weakness_score": 0,
+        "confidence": "HIGH | MEDIUM | LOW",
+        "coverage_pct": 0,
+        "families": "price_structure / trend_ma / relative_strength / volume_price / momentum，每個含 state、signals、detail",
+        "conflicts": []
+      },
       "momentum_signals": { "...": "momentum_score / momentum_grade / momentum_phase / RS percentile / trend_efficiency_20d / atr_pct_14d 等，全部 backend 算好" }
     }
   ]
@@ -205,7 +216,9 @@ STEP 1：理解 Phase 2 候選脈絡
 2. `phase2_role` 或 `phase2_tracking_state`（真正的角色/追蹤語意）
 3. `phase2_entry_state`（目前價格位置，NEAR_HIGH ~ STRUCTURE_DAMAGED 皆為描述性，不代表資格）
 4. `backend_max_decision`（你的天花板）
-5. `deterministic_signals` / `regime_conviction`（既定判讀，只能引用不能重算）
+5. `deterministic_signals` / `technical_assessment` / `regime_conviction`（既定判讀，只能引用不能重算）
+   - `technical_assessment` 是技術面唯一標準答案；不要把多條均線或 KDJ/RSI/MACD 各自重新加權。
+   - `WEAKENING` 是風險提示；只有 `BROKEN` 才代表結構性破壞。`CONFLICTED` 必須照實說明衝突。
 
 這一步不輸出任何內容，是後面 STEP 2-8 的理解基礎。
 
@@ -378,7 +391,8 @@ STEP 3 的 `theme_validation` 結論（若 UNCONFIRMED，明講「題材尚待�
 
 **margin_reason**（2~4 bullet）：融資增減方向、融券變化、若資料不足可註明「融資融券無明顯訊號」。
 
-**technical_reason**（3~5 bullet）：`deterministic_signals.technical_status` / `entry_quality`
+**technical_reason**（3~5 bullet）：`technical_assessment.state` / `strength_score` /
+`weakness_score` / family signals，再補充 `deterministic_signals.technical_status` / `entry_quality`
 的具體型態（只能解釋，不可自行改判）；為什麼不是單純短線追高；若 regime=VOLATILE_RANGE，
 明確說明 entry_quality 屬於哪一種。
 

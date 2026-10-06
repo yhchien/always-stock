@@ -124,6 +124,7 @@ from app.models import (
     SignalWatchStoppedObservation,
 )
 from app.signals import archive
+from app.signals import momentum as momentum_features
 
 # 魚尾封存表：一個追蹤週期會落在哪張表，取決於它結束時是自然/提前/P4 停止（進
 # signal_watch_completed_archives）還是人工重置（signal_watch_stopped_observations 也會有，
@@ -615,6 +616,12 @@ DUAL_ENGINE_PARAMS: Dict[str, Any] = {
 # backfill 覆蓋重建。
 _PROFIT_PROTECTION_RULES: Dict[str, Any] = {
     "enabled": True,
+    # A profitable position that has already exceeded +15% gets one weakness
+    # vote after two consecutive daily declines.  If the two-day giveback is
+    # more than one third of the return two trading days earlier, the same
+    # vote is also treated as a strong weakness signal.
+    "return_decline_min_profit_pct": 15.0,
+    "return_decline_strong_fraction": 1.0 / 3.0,
     # 使用者要求：直接停利的主要獲利門檻至少 25%。
     "direct_min_profit_pct": 25.0,
     "direct_weakness_score": 3,
@@ -1044,6 +1051,7 @@ def _count_hits_so_far(db: Session, *, stock_id: str, first_seen_date: date, tar
 # `backfill_shadow_portfolio_replay.py` 都是每次執行都是全新 process，重啟自然清空。
 _SNAPSHOT_WATCHLIST_CACHE: Dict[date, Dict[str, Optional[float]]] = {}
 _SNAPSHOT_WATCHLIST_PAYLOAD_CACHE: Dict[date, Dict[str, dict]] = {}
+_TECHNICAL_ASSESSMENT_CACHE: Dict[Tuple[str, date], Dict[str, Any]] = {}
 
 _REPORT_PROFILE_PRIORITY = {
     "REPORT_EARLY_HIGH_MOMENTUM": 0,
@@ -1102,6 +1110,76 @@ def _snapshot_watchlist_payload(db: Session, snapshot_date_: date, stock_id: str
         }
         _SNAPSHOT_WATCHLIST_PAYLOAD_CACHE[snapshot_date_] = cached
     return cached.get(stock_id) or {}
+
+
+def _point_in_time_technical_assessment(
+    db: Session,
+    *,
+    stock_id: str,
+    target_date: date,
+    existing_metrics: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Backfill the canonical technical assessment for legacy snapshots.
+
+    New snapshots already persist ``signal_metrics.technical_assessment``.
+    Historical replay snapshots do not, so this fallback derives indicators
+    from DailyPrice rows no later than ``target_date``.  It is cached per
+    stock/date and shares the exact feature implementation used by the live
+    momentum frame.
+    """
+    cache_key = (str(stock_id), target_date)
+    cached = _TECHNICAL_ASSESSMENT_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    rows = (
+        db.query(
+            DailyPrice.trade_date,
+            DailyPrice.close_price,
+            DailyPrice.high_price,
+            DailyPrice.low_price,
+            DailyPrice.volume,
+            DailyPrice.turnover,
+        )
+        .filter(
+            DailyPrice.stock_id == stock_id,
+            DailyPrice.trade_date <= target_date,
+        )
+        .order_by(DailyPrice.trade_date.desc())
+        .limit(momentum_features.TECHNICAL_LOOKBACK_DAYS)
+        .all()
+    )
+    series = [
+        (trade_date, close, high, low, volume, turnover)
+        for trade_date, close, high, low, volume, turnover in reversed(rows)
+    ]
+    if not series:
+        assessment = {
+            "version": "technical_v1",
+            "state": "INSUFFICIENT_DATA",
+            "actionability": "INSUFFICIENT_DATA",
+            "strength_score": 0.0,
+            "weakness_score": 0.0,
+            "confidence": "LOW",
+            "coverage_pct": 0.0,
+            "families": {},
+            "risk": {"state": "INSUFFICIENT_DATA", "available": False},
+            "conflicts": [],
+        }
+        _TECHNICAL_ASSESSMENT_CACHE[cache_key] = assessment
+        return assessment
+
+    metrics = dict(existing_metrics or {})
+    closes = [float(row[1]) for row in series if row[1] is not None]
+    volumes = [float(row[4]) for row in series if row[4] is not None and row[4] > 0]
+    metrics.update(momentum_features._price_features(closes, volumes))
+    metrics.update(momentum_features._volatility_features(series))
+    metrics.update(momentum_features.build_point_in_time_technical_features(series))
+    from app.signals.technical_assessment import build_technical_assessment
+
+    assessment = build_technical_assessment(metrics)
+    _TECHNICAL_ASSESSMENT_CACHE[cache_key] = assessment
+    return assessment
 
 
 def _continuation_evidence_from_payload(
@@ -1172,6 +1250,9 @@ def _continuation_evidence_from_payload(
         "decision": item.get("decision"),
         "conviction": item.get("conviction"),
         "technical_status": signals_payload.get("technical_status"),
+        "technical_assessment": metrics.get("technical_assessment")
+        or item.get("technical_assessment")
+        or (item.get("deterministic_signals") or {}).get("technical_assessment"),
         "entry_quality": signals_payload.get("entry_quality"),
         "sector_rotation_status": signals_payload.get("sector_rotation_status"),
         "institution_flow_momentum": signals_payload.get("institution_flow_momentum"),
@@ -1308,6 +1389,8 @@ def _report_profile(evidence: Optional[Dict[str, Any]]) -> Optional[str]:
     report_type = str(f.get("report_type") or "").upper()
     theme = str(f.get("theme_fit") or "").upper()
     technical = str(f.get("technical_status") or "").lower()
+    technical_assessment = f.get("technical_assessment") or {}
+    technical_state = str(technical_assessment.get("state") or "").upper()
     quality = str(f.get("entry_quality") or "").lower()
     sector = str(f.get("sector_rotation_status") or "").lower()
     institution = str(f.get("institution_flow_momentum") or "").lower()
@@ -1320,6 +1403,11 @@ def _report_profile(evidence: Optional[Dict[str, Any]]) -> Optional[str]:
     ).upper()
 
     if theme != "HIGH" or not is_leader or decision not in {"RECOMMEND", "BUY"}:
+        return None
+    # A canonical structural break blocks a new aggressive profile.  A mere
+    # WEAKENING state remains a caution signal and is handled by the
+    # profit-protection scorer instead of forcing a premature entry veto.
+    if technical_state == "BROKEN":
         return None
 
     # Fresh re-acceleration: this is the high-confidence pullback/recovery
@@ -1775,6 +1863,22 @@ def build_daily_evidence(
         db, stock_id=stock_id, first_seen_date=first_seen_date, target_date=target_date
     )
 
+    # Legacy snapshots predate the canonical technical assessment.  Enrich
+    # them point-in-time from DailyPrice so replay and live snapshots share the
+    # same downstream semantics.
+    existing_technical_assessment = (continuation_signal_metrics or {}).get("technical_assessment")
+    if not isinstance(existing_technical_assessment, dict) or not existing_technical_assessment.get("state"):
+        technical_assessment = _point_in_time_technical_assessment(
+            db,
+            stock_id=stock_id,
+            target_date=target_date,
+            existing_metrics=continuation_signal_metrics,
+        )
+        continuation_signal_metrics = {
+            **(continuation_signal_metrics or {}),
+            "technical_assessment": technical_assessment,
+        }
+
     (
         continuation_evidence,
         continuation_evidence_count,
@@ -2186,6 +2290,25 @@ def _latest_close(db: Session, *, stock_id: str, as_of: date) -> Optional[float]
         .first()
     )
     return float(row[0]) if row is not None and row[0] is not None else None
+
+
+def _actual_position_return_as_of(
+    db: Session, *, stock_id: str, lots: List[ShadowPositionLot], as_of: date
+) -> Optional[float]:
+    """Return the point-in-time unrealized return for the lots held on `as_of`.
+
+    This deliberately uses only lots that had already executed by `as_of`, so
+    a later ADD cannot rewrite the earlier day's average entry price during a
+    replay.
+    """
+    active_lots = [lot for lot in lots if lot.entry_execution_date <= as_of]
+    total_shares = sum(lot.shares for lot in active_lots)
+    total_cost = sum(lot.allocation for lot in active_lots)
+    close = _latest_close(db, stock_id=stock_id, as_of=as_of)
+    if total_shares <= 0 or total_cost <= 0 or close is None:
+        return None
+    average_entry = total_cost / total_shares
+    return (close / average_entry - 1.0) * 100.0
 
 
 # ---------------------------------------------------------------------------
@@ -2828,10 +2951,16 @@ class ProfitWeaknessAssessment:
     score: int
     signals: Tuple[str, ...]
     strong_signal: bool
+    strong_signals: Tuple[str, ...] = ()
 
 
 def _profit_weakness_assessment(
-    current: EvidenceRow, previous: Optional[EvidenceRow]
+    current: EvidenceRow,
+    previous: Optional[EvidenceRow],
+    previous_previous: Optional[EvidenceRow] = None,
+    *,
+    actual_position_returns: Optional[Tuple[Optional[float], Optional[float], Optional[float]]] = None,
+    cfg: Optional[Dict[str, Any]] = None,
 ) -> ProfitWeaknessAssessment:
     """Score independent, same-day weakness observations without lookahead."""
     signals: List[str] = []
@@ -2862,6 +2991,13 @@ def _profit_weakness_assessment(
     if technical_status in {"distribution", "breakdown", "weakening", "late_stage"}:
         signals.append("TECHNICAL_WEAK")
         strong_signals.add("TECHNICAL_WEAK")
+    technical_assessment = features.get("technical_assessment") or {}
+    technical_state = str(technical_assessment.get("state") or "").upper()
+    if technical_state == "BROKEN":
+        signals.append("TECHNICAL_ASSESSMENT_BROKEN")
+        strong_signals.add("TECHNICAL_ASSESSMENT_BROKEN")
+    elif technical_state == "WEAKENING":
+        signals.append("TECHNICAL_ASSESSMENT_WEAKENING")
     momentum_phase = str(features.get("momentum_phase") or "").lower()
     if momentum_phase in {"distribution", "weakening", "late", "late_stage"}:
         signals.append("MOMENTUM_PHASE_WEAK")
@@ -2885,10 +3021,36 @@ def _profit_weakness_assessment(
     ):
         signals.append("EPISODE_RETURN_DOWN_2PP")
 
+    # A winner that is still above +15% but has declined for two consecutive
+    # trading days contributes one weakness vote.  The severe version is not a
+    # second vote; it upgrades this vote to a strong signal so the existing
+    # direct-exit / rotation gates can use it without double-counting.
+    if actual_position_returns is not None:
+        current_return, previous_return, two_days_ago_return = actual_position_returns
+        min_profit = float((cfg or {}).get("return_decline_min_profit_pct", 15.0))
+        strong_fraction = float((cfg or {}).get("return_decline_strong_fraction", 1.0 / 3.0))
+        if (
+            (cfg or {}).get("return_decline_enabled", True)
+            and
+            current_return is not None
+            and previous_return is not None
+            and two_days_ago_return is not None
+            and current_return > min_profit
+            and current_return < previous_return < two_days_ago_return
+        ):
+            signal = "PROFIT_RETURN_DOWN_2D"
+            signals.append(signal)
+            if (
+                two_days_ago_return > 0
+                and (two_days_ago_return - current_return) / two_days_ago_return > strong_fraction
+            ):
+                strong_signals.add(signal)
+
     return ProfitWeaknessAssessment(
         score=len(signals),
         signals=tuple(signals),
         strong_signal=bool(strong_signals),
+        strong_signals=tuple(sorted(strong_signals)),
     )
 
 
@@ -2906,6 +3068,7 @@ def _profit_protection_reason(
         for signal in (
             "P4_CAUTION",
             "TECHNICAL_WEAK",
+            "TECHNICAL_ASSESSMENT_BROKEN",
             "MOMENTUM_PHASE_WEAK",
             "REPORT_NEGATIVE_DECISION",
         )
@@ -3002,6 +3165,11 @@ def _run_v1_dual_engine_daily_strategy(
         )
 
     prev_trade_date = _previous_market_trade_date(db, before=target_date)
+    prev_prev_trade_date = (
+        _previous_market_trade_date(db, before=prev_trade_date)
+        if prev_trade_date is not None
+        else None
+    )
 
     lots_by_stock: Dict[str, List[ShadowPositionLot]] = {
         stock_id: db.query(ShadowPositionLot).filter(ShadowPositionLot.position_id == pos.id).all()
@@ -3216,13 +3384,51 @@ def _run_v1_dual_engine_daily_strategy(
                     first_seen_date=evidence.first_seen_date,
                     target_date=prev_trade_date,
                 )
-            weakness = _profit_weakness_assessment(evidence, previous_evidence)
+            previous_previous_evidence = None
+            if prev_prev_trade_date is not None and prev_prev_trade_date >= evidence.first_seen_date:
+                previous_previous_evidence = build_daily_evidence(
+                    db,
+                    stock_id=stock_id,
+                    stock_name=evidence.stock_name,
+                    first_seen_date=evidence.first_seen_date,
+                    target_date=prev_prev_trade_date,
+                )
+            actual_return_history = (
+                actual_position_return,
+                (
+                    _actual_position_return_as_of(
+                        db, stock_id=stock_id, lots=lots, as_of=prev_trade_date
+                    )
+                    if prev_trade_date is not None
+                    else None
+                ),
+                (
+                    _actual_position_return_as_of(
+                        db, stock_id=stock_id, lots=lots, as_of=prev_prev_trade_date
+                    )
+                    if prev_prev_trade_date is not None
+                    else None
+                ),
+            )
+            weakness = _profit_weakness_assessment(
+                evidence,
+                previous_evidence,
+                previous_previous_evidence,
+                actual_position_returns=actual_return_history,
+                cfg=profit_cfg,
+            )
             profit_detail = {
                 "actual_profit_pct": actual_position_return,
+                "actual_profit_previous_pct": actual_return_history[1],
+                "actual_profit_two_days_ago_pct": actual_return_history[2],
                 "weakness_score": weakness.score,
                 "weakness_signals": list(weakness.signals),
                 "strong_signal": weakness.strong_signal,
+                "strong_weakness_signals": list(weakness.strong_signals),
                 "previous_trade_date": prev_trade_date.isoformat() if previous_evidence else None,
+                "previous_previous_trade_date": (
+                    prev_prev_trade_date.isoformat() if previous_previous_evidence else None
+                ),
             }
             direct_reason = _profit_protection_reason(
                 actual_return=actual_position_return,
@@ -3245,6 +3451,7 @@ def _run_v1_dual_engine_daily_strategy(
                         for signal in (
                             "P4_CAUTION",
                             "TECHNICAL_WEAK",
+                            "TECHNICAL_ASSESSMENT_BROKEN",
                             "MOMENTUM_PHASE_WEAK",
                             "REPORT_NEGATIVE_DECISION",
                         )
@@ -3453,6 +3660,9 @@ def _run_v1_dual_engine_daily_strategy(
         if sig.entry_type not in _CONTINUATION_ENTRY_TYPES:
             return False
         report_features = (sig.row.continuation_evidence or {}).get("report_features") or {}
+        technical_assessment = report_features.get("technical_assessment") or {}
+        if str(technical_assessment.get("state") or "").upper() == "BROKEN":
+            return False
         disallowed_entry_qualities = (
             (params.get("profit_protection") or {}).get("rotation_disallow_entry_quality")
             or rotation_cfg.get("rotation_disallow_entry_quality", [])

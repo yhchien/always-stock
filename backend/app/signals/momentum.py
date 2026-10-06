@@ -37,6 +37,7 @@ from app.models import (
     StockSharesOutstanding,
 )
 from app.signals.exclusions import is_blacklisted
+from app.signals.technical_assessment import build_technical_assessment
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,10 @@ _INST_TYPES = ("foreign", "trust", "dealer")
 
 # 66 = return_60d 需 61 根 + rs_rank_improvement_5d 需回看 5 日的 20d return（26 根），取上限再留 buffer
 MOMENTUM_LOOKBACK_DAYS = 66
+# Technical structure needs the long moving-average context.  Keeping this
+# separate from the momentum contract lets us add MA120/MA240 without changing
+# the meaning of the existing 5/20/60-day momentum percentiles.
+TECHNICAL_LOOKBACK_DAYS = 260
 
 # percentile 有效性 guard：樣本太小 percentile 沒有意義（測試 / 資料缺漏日防護）
 MIN_SAMPLES_FOR_PERCENTILE = 20
@@ -187,6 +192,41 @@ def empty_momentum_features() -> Dict[str, Any]:
         "distance_to_ma20": None,
         "trend_efficiency_20d": None,
         "atr_pct_14d": None,
+        # Canonical technical-assessment inputs.  Missing values stay None so
+        # the assessment can distinguish unavailable evidence from neutral.
+        "sma_5": None,
+        "sma_10": None,
+        "sma_20": None,
+        "sma_30": None,
+        "sma_40": None,
+        "sma_60": None,
+        "sma_120": None,
+        "sma_240": None,
+        "ema_10": None,
+        "ema_20": None,
+        "ema_60": None,
+        "distance_to_sma60_pct": None,
+        "sma20_slope_5d_pct": None,
+        "ma_alignment": None,
+        "resistance_20d": None,
+        "support_20d": None,
+        "distance_to_resistance_20d": None,
+        "distance_to_support_20d": None,
+        "breakout_20d": None,
+        "breakout_20d_confirmed": None,
+        "breakdown_20d_confirmed": None,
+        "support_20d_hold": None,
+        "resistance_retest_hold": None,
+        "kdj_k": None,
+        "kdj_d": None,
+        "kdj_j": None,
+        "kdj_signal": None,
+        "macd_dif": None,
+        "macd_dea": None,
+        "macd_histogram": None,
+        "macd_signal": None,
+        "rsi_14": None,
+        "rsi_signal": None,
         "up_down_volume_ratio_20d": None,
         "volume_1d_to_20d_avg": None,
         "volume_ratio_percentile_5d_60d": None,
@@ -262,7 +302,7 @@ def compute_market_momentum_frame(
     if not universe_ids:
         return {}
 
-    trade_dates = get_recent_trade_dates(db, target_date, MOMENTUM_LOOKBACK_DAYS)
+    trade_dates = get_recent_trade_dates(db, target_date, TECHNICAL_LOOKBACK_DAYS)
     if not trade_dates:
         return {}
 
@@ -304,6 +344,7 @@ def compute_market_momentum_frame(
         feats = empty_momentum_features()
         feats.update(_price_features(closes, volumes))
         feats.update(_volatility_features(series))
+        feats.update(_technical_features(series))
         frame[sid] = feats
 
     if not frame:
@@ -396,6 +437,223 @@ def _price_features(closes: List[float], volumes: List[float]) -> Dict[str, Any]
         out["_ret_1d"] = (close / closes[-2] - 1.0) * 100.0
 
     return out
+
+
+def _sma(values: List[float], window: int) -> Optional[float]:
+    if len(values) < window:
+        return None
+    return sum(values[-window:]) / window
+
+
+def _ema_series(values: List[float], window: int) -> List[float]:
+    if len(values) < window:
+        return []
+    seed = sum(values[:window]) / window
+    alpha = 2.0 / (window + 1.0)
+    result = [seed]
+    previous = seed
+    for value in values[window:]:
+        previous = (value - previous) * alpha + previous
+        result.append(previous)
+    return result
+
+
+def _ema(values: List[float], window: int) -> Optional[float]:
+    series = _ema_series(values, window)
+    return series[-1] if series else None
+
+
+def _technical_features(series: List[Any]) -> Dict[str, Any]:
+    """Compute point-in-time price structure and common technical indicators.
+
+    This is deliberately a feature layer only.  Interpretation and weighting
+    live in ``technical_assessment.py`` so the LLM and trading strategy share
+    exactly the same semantic output.
+    """
+    clean = [
+        (float(c), float(h), float(low))
+        for (_, c, h, low, _, _)
+        in series
+        if c is not None and h is not None and low is not None
+    ]
+    closes = [row[0] for row in clean]
+    if not closes:
+        return {}
+    close = closes[-1]
+    out: Dict[str, Any] = {}
+
+    for window in (5, 10, 20, 30, 40, 60, 120, 240):
+        value = _sma(closes, window)
+        if value is not None:
+            out[f"sma_{window}"] = value
+    for window in (10, 20, 60):
+        value = _ema(closes, window)
+        if value is not None:
+            out[f"ema_{window}"] = value
+
+    sma20 = _sma(closes, 20)
+    sma60 = _sma(closes, 60)
+    if sma20:
+        out["sma20_slope_5d_pct"] = None
+        if len(closes) >= 25:
+            previous_sma20 = sum(closes[-25:-5]) / 20.0
+            if previous_sma20:
+                out["sma20_slope_5d_pct"] = (sma20 / previous_sma20 - 1.0) * 100.0
+    if sma60:
+        out["distance_to_sma60_pct"] = (close / sma60 - 1.0) * 100.0
+
+    sma5 = _sma(closes, 5)
+    sma10 = _sma(closes, 10)
+    if sma5 is not None and sma10 is not None and sma20 is not None:
+        if sma5 > sma10 > sma20 and (sma60 is None or sma20 > sma60):
+            out["ma_alignment"] = "BULLISH"
+        elif sma5 < sma10 < sma20 and (sma60 is None or sma20 < sma60):
+            out["ma_alignment"] = "BEARISH"
+        else:
+            out["ma_alignment"] = "MIXED"
+
+    # Support/resistance uses prior closes, excluding today's close.  This
+    # prevents a new high from becoming its own resistance level.
+    for window in (20, 60):
+        if len(closes) < window + 1:
+            continue
+        prior = closes[-(window + 1):-1]
+        resistance = max(prior)
+        support = min(prior)
+        if resistance:
+            out[f"resistance_{window}d"] = resistance
+            out[f"distance_to_resistance_{window}d"] = (close / resistance - 1.0) * 100.0
+        if support:
+            out[f"support_{window}d"] = support
+            out[f"distance_to_support_{window}d"] = (close / support - 1.0) * 100.0
+    resistance20 = out.get("resistance_20d")
+    support20 = out.get("support_20d")
+    if resistance20 is not None:
+        out["breakout_20d"] = close > resistance20
+        out["breakout_20d_confirmed"] = close > resistance20 and len(closes) >= 22 and closes[-2] >= resistance20
+    if support20 is not None:
+        out["breakdown_20d_confirmed"] = close < support20
+    if len(closes) >= 25 and support20 is not None:
+        # A hold requires a recent touch of the level's vicinity.  Merely
+        # being above support is not evidence that support was tested.
+        recent_low = min(closes[-5:])
+        touched = recent_low <= support20 * 1.02
+        out["support_20d_hold"] = touched and close >= support20
+    if len(closes) >= 22 and resistance20 is not None:
+        # A first-day breakout is not yet a failed retest.  It remains
+        # unconfirmed until the previous close also held above resistance.
+        if close > resistance20:
+            out["resistance_retest_hold"] = closes[-2] >= resistance20
+        elif closes[-2] >= resistance20 * 0.98:
+            out["resistance_retest_hold"] = False
+
+    # KDJ (9,3,3), with the standard recursive K/D smoothing.
+    if len(clean) >= 10:
+        rsv: List[float] = []
+        for idx in range(8, len(clean)):
+            window = clean[idx - 8:idx + 1]
+            high = max(row[1] for row in window)
+            low = min(row[2] for row in window)
+            rsv.append(50.0 if high == low else (clean[idx][0] - low) / (high - low) * 100.0)
+        k = 50.0
+        d = 50.0
+        ks: List[float] = []
+        ds: List[float] = []
+        for value in rsv:
+            k = (2.0 * k + value) / 3.0
+            d = (2.0 * d + k) / 3.0
+            ks.append(k)
+            ds.append(d)
+        j = 3.0 * k - 2.0 * d
+        out.update({"kdj_k": k, "kdj_d": d, "kdj_j": j})
+        if len(ks) >= 2:
+            previous_k, previous_d = ks[-2], ds[-2]
+            if previous_k <= previous_d and k > d:
+                out["kdj_signal"] = "golden_cross"
+            elif previous_k >= previous_d and k < d:
+                out["kdj_signal"] = "death_cross"
+            elif k > d and k < 30.0:
+                out["kdj_signal"] = "oversold_rebound"
+            elif k < d and k > 70.0:
+                out["kdj_signal"] = "overbought_turn_down"
+            else:
+                out["kdj_signal"] = "neutral"
+
+    # MACD (12,26,9).
+    ema12 = _ema_series(closes, 12)
+    ema26 = _ema_series(closes, 26)
+    if ema12 and ema26:
+        # Align both EMA series to the same ending dates.
+        offset = len(ema12) - len(ema26)
+        diffs = [ema12[idx + offset] - ema26[idx] for idx in range(len(ema26))]
+        dea = _ema_series(diffs, 9)
+        if dea:
+            dif = diffs[-1]
+            signal = dea[-1]
+            histogram = dif - signal
+            out.update({"macd_dif": dif, "macd_dea": signal, "macd_histogram": histogram})
+            if len(diffs) >= 2 and len(dea) >= 2:
+                previous_dif = diffs[-2]
+                previous_signal = dea[-2]
+                previous_histogram = previous_dif - previous_signal
+                if previous_dif <= previous_signal and dif > signal:
+                    out["macd_signal"] = "bullish_cross"
+                elif previous_dif >= previous_signal and dif < signal:
+                    out["macd_signal"] = "bearish_cross"
+                elif histogram > previous_histogram:
+                    out["macd_signal"] = "histogram_rising"
+                elif histogram < previous_histogram:
+                    out["macd_signal"] = "histogram_falling"
+                else:
+                    out["macd_signal"] = "neutral"
+
+    # RSI(14), Wilder-style recursive average.
+    if len(closes) >= 16:
+        gains: List[float] = []
+        losses: List[float] = []
+        for current, previous in zip(closes[1:], closes[:-1]):
+            change = current - previous
+            gains.append(max(change, 0.0))
+            losses.append(max(-change, 0.0))
+        avg_gain = sum(gains[:14]) / 14.0
+        avg_loss = sum(losses[:14]) / 14.0
+        rsis: List[float] = []
+
+        def _rsi(gain: float, loss: float) -> float:
+            if loss == 0:
+                return 100.0 if gain > 0 else 50.0
+            return 100.0 - 100.0 / (1.0 + gain / loss)
+
+        rsis.append(_rsi(avg_gain, avg_loss))
+        for gain, loss in zip(gains[14:], losses[14:]):
+            avg_gain = (avg_gain * 13.0 + gain) / 14.0
+            avg_loss = (avg_loss * 13.0 + loss) / 14.0
+            rsis.append(_rsi(avg_gain, avg_loss))
+        out["rsi_14"] = rsis[-1]
+        if len(rsis) >= 2:
+            previous_rsi, current_rsi = rsis[-2], rsis[-1]
+            if previous_rsi <= 50.0 < current_rsi:
+                out["rsi_signal"] = "cross_above_50"
+            elif previous_rsi >= 50.0 > current_rsi:
+                out["rsi_signal"] = "cross_below_50"
+            elif previous_rsi < 30.0 <= current_rsi:
+                out["rsi_signal"] = "oversold_recovery"
+            elif previous_rsi > 70.0 >= current_rsi:
+                out["rsi_signal"] = "overbought_turn_down"
+            else:
+                out["rsi_signal"] = "neutral"
+
+    return out
+
+
+def build_point_in_time_technical_features(series: List[Any]) -> Dict[str, Any]:
+    """Public wrapper for replay/legacy-snapshot enrichment.
+
+    ``series`` must contain only rows on or before the assessment date.  The
+    implementation stays shared with the market frame so production snapshots
+    and historical replay cannot silently use different indicator formulas.
+    """
+    return _technical_features(series)
 
 
 def _volatility_features(series: List[Any]) -> Dict[str, Any]:
@@ -1165,6 +1423,25 @@ def build_momentum_signals(candidate: Dict[str, Any]) -> Dict[str, Any]:
         "atr_pct_14d": candidate.get("atr_pct_14d"),
         "up_down_volume_ratio_20d": candidate.get("up_down_volume_ratio_20d"),
         "volume_ratio_5d_60d": candidate.get("volume_5d_to_60d_ratio"),
+        # Technical assessment inputs are nested so the LLM sees stable,
+        # named evidence instead of having to infer indicators from raw data.
+        "ma_alignment": candidate.get("ma_alignment"),
+        "distance_to_sma60_pct": candidate.get("distance_to_sma60_pct"),
+        "sma20_slope_5d_pct": candidate.get("sma20_slope_5d_pct"),
+        "distance_to_resistance_20d": candidate.get("distance_to_resistance_20d"),
+        "distance_to_support_20d": candidate.get("distance_to_support_20d"),
+        "breakout_20d_confirmed": candidate.get("breakout_20d_confirmed"),
+        "breakdown_20d_confirmed": candidate.get("breakdown_20d_confirmed"),
+        "kdj_k": candidate.get("kdj_k"),
+        "kdj_d": candidate.get("kdj_d"),
+        "kdj_j": candidate.get("kdj_j"),
+        "kdj_signal": candidate.get("kdj_signal"),
+        "macd_dif": candidate.get("macd_dif"),
+        "macd_dea": candidate.get("macd_dea"),
+        "macd_histogram": candidate.get("macd_histogram"),
+        "macd_signal": candidate.get("macd_signal"),
+        "rsi_14": candidate.get("rsi_14"),
+        "rsi_signal": candidate.get("rsi_signal"),
         "momentum_score": score,
         "momentum_grade": momentum_grade(score),
         "momentum_phase": classify_momentum_phase(candidate),
@@ -1193,6 +1470,10 @@ def build_signal_metrics(
             "reason": regime_info.get("reason"),
             "breadth_score": regime_info.get("breadth_score"),
         }
+    technical_assessment = (
+        (candidate.get("deterministic_signals") or {}).get("technical_assessment")
+        or build_technical_assessment(candidate)
+    )
     return _scrub_non_finite({
         "return_5d": candidate.get("return_5d"),
         "return_20d": candidate.get("return_20d"),
@@ -1204,6 +1485,23 @@ def build_signal_metrics(
         "trend_efficiency_20d": candidate.get("trend_efficiency_20d"),
         "distance_to_high_20d": candidate.get("distance_to_20d_high"),
         "distance_to_ma20": candidate.get("distance_to_ma20"),
+        "distance_to_sma60_pct": candidate.get("distance_to_sma60_pct"),
+        "sma20_slope_5d_pct": candidate.get("sma20_slope_5d_pct"),
+        "ma_alignment": candidate.get("ma_alignment"),
+        "distance_to_resistance_20d": candidate.get("distance_to_resistance_20d"),
+        "distance_to_support_20d": candidate.get("distance_to_support_20d"),
+        "breakout_20d_confirmed": candidate.get("breakout_20d_confirmed"),
+        "breakdown_20d_confirmed": candidate.get("breakdown_20d_confirmed"),
+        "kdj_k": candidate.get("kdj_k"),
+        "kdj_d": candidate.get("kdj_d"),
+        "kdj_j": candidate.get("kdj_j"),
+        "kdj_signal": candidate.get("kdj_signal"),
+        "macd_dif": candidate.get("macd_dif"),
+        "macd_dea": candidate.get("macd_dea"),
+        "macd_histogram": candidate.get("macd_histogram"),
+        "macd_signal": candidate.get("macd_signal"),
+        "rsi_14": candidate.get("rsi_14"),
+        "rsi_signal": candidate.get("rsi_signal"),
         "momentum_score": candidate.get("momentum_score"),
         "momentum_score_detail": candidate.get("momentum_score_detail"),
         "momentum_score_version": candidate.get("momentum_score_version"),
@@ -1217,6 +1515,7 @@ def build_signal_metrics(
         "fundamental_applicability": candidate.get("fundamental_applicability"),
         "momentum_grade": candidate.get("momentum_grade"),   # v2.2（v5 A/B/C/D）
         "momentum_phase": candidate.get("momentum_phase"),   # v2.2（v5 五階段）
+        "technical_assessment": technical_assessment,
         "market_regime_detail": regime_detail,
         "breadth_score": (regime_info or {}).get("breadth_score"),  # v2.2 市場廣度
         # v2.2 episode 統計（spec §7.4）

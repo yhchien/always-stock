@@ -646,6 +646,30 @@ def test_coerce_reason_sections_promotes_string_to_single_bullet():
     assert out["theme_reason"] == ["一整段文字而非 array"]
 
 
+def test_technical_reason_coherence_fallback_overrides_neutral_breakout_claim():
+    source = {
+        "technical_assessment": {
+            "state": "NEUTRAL",
+            "strength_score": 44.4,
+            "weakness_score": 30.6,
+            "families": {
+                "price_structure": {
+                    "state": "WEAKENING",
+                    "signals": ["RESISTANCE_RETEST_FAILED"],
+                },
+                "trend_ma": {"state": "STRONG", "signals": ["ABOVE_MA20"]},
+                "momentum": {"state": "CONFLICTED", "signals": []},
+            },
+        }
+    }
+    bullets, replaced = llm_caller._cohere_technical_reason(
+        source, ["突破確認成立", "均線多頭排列，結構仍強"]
+    )
+    assert replaced is True
+    assert any("尚未視為確認突破" in bullet for bullet in bullets)
+    assert all("突破確認成立" not in bullet for bullet in bullets)
+
+
 def test_coerce_reason_sections_filters_empty_bullets_and_truncates_long():
     """M2：空白 bullet 過濾掉，超過 80 字 truncate（防 LLM 失控）。"""
     long_bullet = "字" * 100

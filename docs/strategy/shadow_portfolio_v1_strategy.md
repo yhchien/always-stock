@@ -133,6 +133,39 @@ Pullback 不會因為「跌很多」就直接買。先進入觀察狀態：
 - 魚尾官方追蹤週期結束（`OFFICIAL_EXIT（官方結束）`），出場。
 - Recovery 後在前 4 個交易日跌破觀察期間低點，視為假回穩，出場。
 
+### 回落獲利出場（Profit Protection）
+
+這一層是「獲利保護」，不是用來取代既有停損。每天先檢查既有硬性出場與移動回吐；都沒有觸發時，才檢查回落獲利規則。判斷使用**實際持倉報酬**：
+
+```text
+actual_profit_pct = 當日收盤價 ÷ 持股平均成本 − 1
+```
+
+#### 回落訊號與弱化分數
+
+- 若目前實際報酬 **> +15%**，且報酬連續兩個交易日下降：`T-2 > T-1 > T`，記 1 個弱化訊號 `PROFIT_RETURN_DOWN_2D`。
+- 若兩日回吐幅度大於 `T-2` 報酬的三分之一，這個訊號不會重複計分，而是升級成**強化弱化訊號**：
+
+```text
+(報酬[T-2] − 報酬[T]) ÷ 報酬[T-2] > 1/3
+```
+
+- 弱化分數是當日不同觀察項目的數量，不是百分比加總。現行可計入的項目包括 `P4_CAUTION`（P4 警戒）、`MOMENTUM_LOW`（動能偏低）、`MOMENTUM_DOWN_5PP`（動能下降至少 5 分）、`EVIDENCE_DOWN_2`（正向證據減少至少 2 項）、`TECHNICAL_WEAK`（舊技術狀態偏弱）、`TECHNICAL_ASSESSMENT_WEAKENING/BROKEN`（技術面轉弱／結構破壞）、`MOMENTUM_PHASE_WEAK`（動能階段轉弱）、`REPORT_NEGATIVE_DECISION`（研究決策偏負面）、`P3_NOT_SELECTED_2D`（連續兩日未被 P3 選中）、`EPISODE_RETURN_DOWN_2PP`（本輪價格路徑下降至少 2 個百分點）及上面的 `PROFIT_RETURN_DOWN_2D`。
+- 同一個回落條件只算 1 分；「超過三分之一」只把它標成強訊號，不會多算 1 分，避免同一件事灌水。
+
+#### 兩種獲利保護動作
+
+| 動作 | 現行門檻 | 觸發後處理 |
+|---|---|---|
+| **停利出場** `PROFIT_PROTECTION_EXIT` | 小幅獲利區間 **+10%～+11%**：弱化分數至少 4，且需有強化弱化訊號與主要弱化訊號；或獲利至少 **+25%**：弱化分數至少 3，且同樣需有強化與主要弱化訊號 | 直接建立賣出訊號，不等待新候選 |
+| **停利換股** `PROFIT_PROTECTION_ROTATION` | 實際獲利至少 **+25%**、弱化分數至少 2、具主要弱化訊號；並且當日必須有通過既有 Continuation rotation gate 的新候選 | 只有找到合格新股才賣舊股並買新股，沒有新股就保留原持股 |
+
+「主要弱化訊號」目前指 `P4_CAUTION`、`TECHNICAL_WEAK`、`TECHNICAL_ASSESSMENT_BROKEN`、`MOMENTUM_PHASE_WEAK` 或 `REPORT_NEGATIVE_DECISION` 其中至少一項。技術面 `WEAKENING` 是風險證據，但不會在這個 primary signal 清單中單獨取代 `BROKEN`；這能避免只因單一指標轉弱就過早賣出。
+
+**例子：**某股三天實際報酬為 `+30% → +24% → +18%`。目前仍高於 +15%，且連跌兩天，因此有 1 分 `PROFIT_RETURN_DOWN_2D`；回吐 `(30−18)/30 = 40%`，超過三分之一，所以升級為強化訊號。若同時有 `TECHNICAL_ASSESSMENT_BROKEN` 與 `P4_CAUTION`，弱化分數達 3，會符合 +25% 以上的停利出場；若只有分數 2，則只能在有合格新候選時走停利換股。
+
+這個順序保留了「先砍明確風險、再保護已實現的獲利、最後才做容量換股」的優先級；輪動不會把仍然符合反彈保護條件的健康持股強行換掉。
+
 ### 資料與週期事件
 
 - 公司行動或價格資料可疑時，當天不新增判斷，避免誤賣；資料恢復後再評估。
@@ -153,3 +186,5 @@ Pullback 不會因為「跌很多」就直接買。先進入觀察狀態：
 - 線上頁面：[`frontend/src/app/signals/(product)/shadow-portfolio/page.tsx`](<../../frontend/src/app/signals/(product)/shadow-portfolio/page.tsx>)
 - 每日排程：[`.github/workflows/shadow_portfolio.yml`](../../.github/workflows/shadow_portfolio.yml)
 - 歷史重播：[`backend/backfill_shadow_portfolio_replay.py`](../../backend/backfill_shadow_portfolio_replay.py)
+- 技術面條件說明：[`technical_assessment.html`](../technical_assessment.html)
+- 魚尾選股與換股流程：[`fishtail_selection_and_rotation.html`](../fishtail_selection_and_rotation.html)

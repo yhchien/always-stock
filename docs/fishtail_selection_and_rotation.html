@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>魚尾選股、進出場與換股流程</title>
+  <style>
+    :root{--bg:#f4f7fb;--card:#fff;--ink:#172033;--muted:#5d6b82;--line:#d9e1ee;--blue:#2563eb;--blue-soft:#eaf1ff;--green:#087f5b;--green-soft:#e8f8f1;--red:#b42318;--red-soft:#fff0ee;--amber:#9a6700;--amber-soft:#fff8df;--purple:#6941c6;--purple-soft:#f3efff;--shadow:0 12px 32px rgba(35,55,90,.08)}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC","PingFang TC",sans-serif;line-height:1.7}.page{max-width:1180px;margin:0 auto;padding:42px 22px 72px}.hero{background:linear-gradient(135deg,#172554,#1d4ed8);color:white;border-radius:24px;padding:38px 40px;box-shadow:var(--shadow);margin-bottom:26px}.eyebrow{margin:0 0 8px;font-size:13px;letter-spacing:.12em;opacity:.8}h1{margin:0 0 12px;font-size:clamp(28px,4vw,44px);line-height:1.2}.hero p{margin:0;max-width:930px;color:#dbeafe;font-size:17px}h2{margin:0 0 16px;font-size:25px;line-height:1.3}h3{margin:24px 0 10px;font-size:19px}p{margin:8px 0 14px}.card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:28px;margin:22px 0;box-shadow:0 5px 18px rgba(35,55,90,.04)}.lead{font-size:18px;color:#263653}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.mini{border:1px solid var(--line);border-radius:14px;padding:18px;background:#fbfcff}.mini h3{margin-top:0}.flow{display:grid;justify-items:center;gap:8px;margin:20px auto 4px}.node{width:min(780px,100%);border:1px solid #b8c7df;border-radius:14px;padding:15px 20px;text-align:center;background:#f8fbff}.node strong{display:block;font-size:18px}.node small{display:block;margin-top:4px;color:var(--muted)}.node.start{background:var(--blue-soft);border-color:#9bb8ff}.node.good{background:var(--green-soft);border-color:#92d8bd}.node.bad{background:var(--red-soft);border-color:#f0aaa2}.node.warn{background:var(--amber-soft);border-color:#e8cb75}.arrow{color:var(--blue);font-size:26px;line-height:1}.branch{width:min(780px,100%);display:grid;grid-template-columns:1fr 1fr;gap:14px}.branch .node{width:auto}.label{font-size:13px;font-weight:700;color:var(--muted);margin-bottom:5px}table{width:100%;border-collapse:collapse;margin:12px 0 4px;font-size:15px}th,td{border-bottom:1px solid var(--line);text-align:left;vertical-align:top;padding:10px}th{background:#f5f8fd;color:#33425b;font-weight:700}tr:last-child td{border-bottom:0}code{background:#eef2f8;border-radius:5px;padding:1px 5px;color:#243b64;font-size:.92em}.tag{display:inline-block;border-radius:999px;padding:2px 9px;font-size:13px;font-weight:700;margin:2px 4px 2px 0}.tag.green{background:var(--green-soft);color:var(--green)}.tag.red{background:var(--red-soft);color:var(--red)}.tag.amber{background:var(--amber-soft);color:var(--amber)}.tag.blue{background:var(--blue-soft);color:#1749a5}.tag.purple{background:var(--purple-soft);color:var(--purple)}.callout{border-left:5px solid var(--blue);background:var(--blue-soft);padding:15px 18px;border-radius:9px;margin:16px 0}.callout.warn{border-left-color:var(--amber);background:var(--amber-soft)}.callout.good{border-left-color:var(--green);background:var(--green-soft)}ul{margin:8px 0 14px;padding-left:23px}li{margin:4px 0}.formula{background:#172033;color:#edf4ff;border-radius:10px;padding:13px 16px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;overflow-x:auto}.footer{color:var(--muted);font-size:13px;text-align:center;margin-top:30px}.muted{color:var(--muted)}
+    @media(max-width:720px){.page{padding:22px 13px 44px}.hero,.card{padding:22px 18px;border-radius:16px}.grid,.branch{grid-template-columns:1fr}table{font-size:14px}th,td{padding:9px 7px}}
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <p class="eyebrow">FISHTAIL · PHASE 2 · V1_FROZEN DUAL ENGINE</p>
+      <h1>魚尾怎樣抓股票：選股、進出場與換股流程</h1>
+      <p>本頁把目前系統拆成三個問題：股票怎麼進候選池、什麼條件才進場、持股何時出場或換股。流程中的英文 label 都附上中文意思，方便人、LLM 與程式使用同一套語言。</p>
+    </header>
+
+    <section class="card">
+      <h2>完整流程圖</h2>
+      <div class="flow">
+        <div class="node start"><strong>Target date / 目標交易日</strong><small>只讀取當日及以前的 DB 資料，不使用未來報酬</small></div>
+        <div class="arrow">↓</div>
+        <div class="node"><strong>Ingest data（讀取資料）</strong><small>最近 60 個交易日、Stock Master、價格、法人、魚尾追蹤資料</small></div>
+        <div class="arrow">↓</div>
+        <div class="node"><strong>Rankings（排行）</strong><small>2 日法人／熱門產業排行、個股熱錢前 30、當日賣超產業煞車</small></div>
+        <div class="arrow">↓</div>
+        <div class="node"><strong>Candidate pool（候選池）</strong><small>A/B/C/D 多通道聯集；來源是 admission reason，不是直接淘汰理由</small></div>
+        <div class="arrow">↓</div>
+        <div class="branch">
+          <div class="node"><strong>Momentum frame</strong><small>價格動能、RS、排名加速、營收動能</small></div>
+          <div class="node"><strong>Technical assessment</strong><small>均線、SNR、量價、KDJ、MACD、RSI 收斂成 canonical output</small></div>
+        </div>
+        <div class="arrow">↓</div>
+        <div class="node bad"><strong>Hard exclusion / true failure</strong><small>人工黑名單、結構破壞、流動性失敗、當前 episode 失敗等才剔除</small></div>
+        <div class="arrow">↓</div>
+        <div class="node"><strong>Phase 2 role + regime gate</strong><small>角色、追蹤狀態、產業群聚、大盤 regime、廣度與風險警示</small></div>
+        <div class="arrow">↓</div>
+        <div class="node"><strong>LLM Research</strong><small>外部事實與公司業務驗證，不重新計算 deterministic 技術結論</small></div>
+        <div class="arrow">↓</div>
+        <div class="node"><strong>Global selector</strong><small>RECOMMEND（推薦）／NOT_SELECTED（未入選），全體候選比較</small></div>
+        <div class="arrow">↓</div>
+        <div class="node good"><strong>Watchlist + Shadow Portfolio</strong><small>進入魚尾追蹤、Continuation／Pullback 雙引擎，最後依持倉規則執行</small></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>一、候選池怎麼抓：A／B／C／D 四個來源</h2>
+      <p class="lead">四個來源先取聯集，讓系統同時看到資金、價格、加速與基本面動能。來源 label 只回答「為什麼被抓進來」，不能單獨回答「應不應該買」。</p>
+      <table>
+        <thead><tr><th>英文 label</th><th>中文意思</th><th>目前來源</th><th>例子</th></tr></thead>
+        <tbody>
+          <tr><td><code>source_A</code> / Institutional flow</td><td>A：法人資金來源</td><td>2 日法人熱門個股前 30、熱門產業前 10 的成分股、前 6 個股的同集團擴散。</td><td>某股不是個股前 30，但屬於近期法人集中買超產業，也可由 A 進池。</td></tr>
+          <tr><td><code>source_B</code> / Price momentum</td><td>B：價格動能來源</td><td>市場 RS 百分位、產業內 RS、20 日創高帶量、60 日報酬前段。</td><td>法人尚未排前段，但價格相對強度已進市場前段。</td></tr>
+          <tr><td><code>source_C</code> / Acceleration</td><td>C：動能加速來源</td><td>5 日 RS 排名改善至少 200，且市場 RS 至少 70。</td><td>股價尚未最強，但排名快速上升，保留早期重新加速機會。</td></tr>
+          <tr><td><code>source_D</code> / Fundamental momentum</td><td>D：基本面動能來源</td><td>月營收 YoY（年增率）加速、由負轉正，或產業內營收表現前 20%；依資料可用日 gate。</td><td>營收趨勢改善，但價格尚未進入熱門排行，也能保留給後續研究。</td></tr>
+        </tbody>
+      </table>
+      <div class="callout"><strong>聯集的意義：</strong>一檔股票可以同時有 <code>A+B+C</code> 或只有 <code>D</code>。之後仍會經過 hard exclusion、Phase 2、regime gate、LLM research 與 global selector；不是來源越多就保證進場。</div>
+    </section>
+
+    <section class="card">
+      <h2>二、候選池建立後的判斷層</h2>
+      <table>
+        <thead><tr><th>英文 label</th><th>中文意思</th><th>現在做什麼</th></tr></thead>
+        <tbody>
+          <tr><td><code>soft_hints</code></td><td>軟性提示</td><td>例如 <code>distribution</code>（分配）、<code>extended_chase</code>（延伸追價）、<code>range_bound</code>（區間盤）；通常降級信心或提高風險，不直接等於失敗。</td></tr>
+          <tr><td><code>deterministic_signals</code></td><td>確定性訊號</td><td>後端計算 <code>technical_assessment</code>、<code>chip_trend</code>（籌碼趨勢）、<code>entry_quality</code>（進場品質）、<code>sector_rotation_status</code>（族群輪動狀態）與風險欄位。</td></tr>
+          <tr><td><code>hard_exclusion</code></td><td>硬排除</td><td>只有真正定義性失效才剔除，不把「漲太多」或「單日法人賣超」直接當失敗。</td></tr>
+          <tr><td><code>risk_warning</code></td><td>風險警示</td><td>例如 <code>EXTENDED_3D</code>（3 日漲幅過大）、<code>LOW_RAW_VOLUME</code>（原始量不足）；股票仍可繼續被研究，但需降低追價信心。</td></tr>
+          <tr><td><code>Phase 2</code></td><td>第二階段候選判斷</td><td>從 raw candidate pool 重新判斷角色、追蹤狀態、產業脈絡與真正 hard exclusion，避免 legacy 三分類先誤刪。</td></tr>
+          <tr><td><code>regime_conviction</code></td><td>大盤環境下的信心度</td><td>依 <code>BULL_TREND</code>（大多頭）、<code>VOLATILE_RANGE</code>（震盪盤）、<code>RISK_OFF</code>（風險退潮）及市場廣度給 high／medium／low。</td></tr>
+          <tr><td><code>LLM research</code></td><td>語言模型研究</td><td>驗證公司業務、題材、產業與外部事實；技術面以 backend canonical assessment 為準。</td></tr>
+          <tr><td><code>global selector</code></td><td>全體候選選擇器</td><td>把所有完成 research 且未被 veto 的候選放在同一個比較集合，不用來源配額或單一股票 Top-K 直接截斷。</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>三、進場股票條件</h2>
+      <p class="lead">目前 Dual Engine 不是看到魚尾就直接買，而是分成 Continuation（延續強勢）與 Pullback Recovery（拉回回穩）兩條路。</p>
+      <h3>A. Continuation Starter（延續型首次進場）</h3>
+      <table>
+        <thead><tr><th>必備條件</th><th>判斷方式</th></tr></thead>
+        <tbody>
+          <tr><td><code>Day 1</code> 與當日 P3 選中</td><td>只接受新的魚尾第一天，且今天確實被 P3／global selection 判為可用，不追已經走了一段的舊訊號。</td></tr>
+          <tr><td>題材與角色</td><td><code>theme_fit=HIGH</code>（題材高度匹配）；report type 為 <code>LEADER</code>（領導股）且不是 <code>LAGGARD</code>（落後股）。</td></tr>
+          <tr><td>研究決策</td><td><code>RECOMMEND</code>（推薦）或 <code>BUY</code>（買進）。</td></tr>
+          <tr><td>七項 evidence</td><td>角色、新鮮度、魚尾品質、相對強度、法人流向、價格結構、動能通過共同 evidence gate。</td></tr>
+          <tr><td>資料品質</td><td>沒有 company action suspect（公司行動疑慮）或價格資料異常。</td></tr>
+          <tr><td>Profile</td><td>必須落入至少一個可執行進場型態，例如 <code>breakout_confirmed</code>（突破確認）、<code>early_turn</code>（早期轉折）或 <code>pullback_setup</code>（拉回設定）。</td></tr>
+        </tbody>
+      </table>
+      <p>符合 profile 的 Continuation 會建立 100,000 元 Starter（試探／初始交易單位）；目前每檔最多一個單位，不做中間加碼。</p>
+
+      <h3>B. Pullback Recovery Entry（拉回回穩進場）</h3>
+      <table>
+        <thead><tr><th>階段</th><th>條件</th><th>動作</th></tr></thead>
+        <tbody>
+          <tr><td><code>PULLBACK_WATCH</code></td><td>魚尾 Day 2～7、episode return 約 -15%～-4%、momentum ≥55，且 P4 沒有 STOP_OBSERVING。</td><td>只記錄 WATCH（觀察），不買。</td></tr>
+          <tr><td><code>PULLBACK_RECOVERY</code></td><td>相對觀察期低點回升至少 3 個百分點、今日收盤高於前一日、momentum ≥60 且沒有比前日惡化超過 2 分，最近 4 日內確實有 watch。</td><td>建立 100,000 元 Pullback Recovery 部位。</td></tr>
+          <tr><td>未回穩</td><td>仍在下跌或未完成反彈確認。</td><td>維持觀察，不把「尚未回穩」誤判成永久拒絕。</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>四、出場股票條件與優先序</h2>
+      <p class="lead">同一天先處理持倉，再處理新進場；同一檔股票符合前面的出場條件，就不再往後判斷。</p>
+      <table>
+        <thead><tr><th>順序</th><th>英文 label</th><th>中文意思與條件</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td><code>CONTINUATION_STARTER_FAST_FAIL</code></td><td>Continuation Starter 實際持倉報酬 ≤ -5%，快速失敗停損。</td></tr>
+          <tr><td>2</td><td><code>CONTINUATION_NOT_CONFIRMED</code></td><td>第一個完整確認日沒有通過價格與動能延續確認。</td></tr>
+          <tr><td>3</td><td><code>CONTINUATION_CONFIRMED_STOP</code></td><td>一般確認後部位實際持倉報酬 ≤ -8%。</td></tr>
+          <tr><td>4</td><td><code>PULLBACK_REAL_STOP</code></td><td>Pullback Recovery 實際持倉報酬 ≤ -8%。</td></tr>
+          <tr><td>5</td><td><code>P4_STOP</code> / <code>OFFICIAL_EXIT</code></td><td>P4 停止觀察，或魚尾官方追蹤週期結束。</td></tr>
+          <tr><td>6</td><td><code>CONTINUATION_TRAILING_EXIT</code></td><td>獲利達 +10% 後，從持有期間最高收盤價回吐至少 6%。Profile 直接進場部位使用其 profile 的 trailing 門檻。</td></tr>
+          <tr><td>7</td><td><code>PULLBACK_RECOVERY_FAILED</code></td><td>Recovery 後前 4 個交易日跌破觀察期間低點，視為假回穩。</td></tr>
+          <tr><td>8</td><td><code>PROFIT_PROTECTION_EXIT</code></td><td>回落獲利保護：獲利門檻、弱化分數、強化弱化訊號與主要弱化訊號都符合，直接停利出場。</td></tr>
+          <tr><td>9</td><td><code>PROFIT_PROTECTION_ROTATION</code></td><td>獲利持股轉弱且有合格新候選，賣舊股買新股；沒有新候選就不賣。</td></tr>
+          <tr><td>10</td><td><code>CYCLE_RESET</code> / <code>PERIOD_END_SETTLEMENT</code></td><td>25 個交易日循環重設，或回測期末結算；這是行政／期末事件，不是技術訊號。</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>五、滿 6 檔時的換股條件</h2>
+      <div class="flow">
+        <div class="node start"><strong>Portfolio full（持股已滿 6 檔）</strong><small>未滿 6 檔時，合格新候選直接使用空位，不走一般容量換股。</small></div>
+        <div class="arrow">↓</div>
+        <div class="node"><strong>建立 Continuation rotation candidates</strong><small>只找延續型候選，不把尚未回穩的 Pullback Watch 當成替代新股。</small></div>
+        <div class="arrow">↓</div>
+        <div class="branch">
+          <div class="node good"><strong>New candidate strong enough</strong><small>排名前 10、evidence 至少 6、momentum 70～84、market RS ≥90、profile 有效、不是 extended_chase。</small></div>
+          <div class="node warn"><strong>No qualified candidate</strong><small>不建立換股單，保留舊持股。</small></div>
+        </div>
+        <div class="arrow">↓</div>
+        <div class="branch">
+          <div class="node"><strong>Find victim（尋找被替換持股）</strong><small>續強型、至少持有 1 個交易日、實際報酬不超過限制、型態不比新股強、沒有 rebound protection。</small></div>
+          <div class="node warn"><strong>No victim</strong><small>沒有符合弱化與保護條件的舊股，就不換。</small></div>
+        </div>
+        <div class="arrow">↓</div>
+        <div class="node good"><strong>Sell old / Buy new</strong><small>下一交易日先賣舊股，再買進新候選；記錄為 rotation。</small></div>
+      </div>
+      <table>
+        <thead><tr><th>換股 label</th><th>中文意思</th><th>目前門檻</th></tr></thead>
+        <tbody>
+          <tr><td><code>candidate_max_rank</code></td><td>候選最高排名</td><td>前 10 名。</td></tr>
+          <tr><td><code>candidate_min_evidence</code></td><td>最少正向證據</td><td>至少 6 個。</td></tr>
+          <tr><td><code>candidate_momentum_min/max</code></td><td>候選動能下／上限</td><td>70～84，避免太弱或已過度追價。</td></tr>
+          <tr><td><code>candidate_relative_strength_min</code></td><td>候選市場相對強度下限</td><td>至少 90。</td></tr>
+          <tr><td><code>victim_max_return_pct</code></td><td>舊股最高可替換報酬</td><td>一般容量換股不替換超過 0% 的健康舊股；停利換股另用 +25% 與回落規則。</td></tr>
+          <tr><td><code>rebound_protection</code></td><td>反彈保護</td><td>高動能、高 RS、足夠 evidence 的 Pullback Ride 不因名額滿就被換掉。</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>六、回落獲利出場與停利換股例子</h2>
+      <div class="grid">
+        <div class="mini"><h3>例 1：兩天連跌形成弱化訊號</h3><p>實際報酬：<code>+30% → +24% → +18%</code>。因為目前仍 &gt; +15% 且連續兩天下降，得到 <code>PROFIT_RETURN_DOWN_2D</code> 1 分；回吐 `(30−18)/30=40%`，超過三分之一，所以這 1 分升級為 strong weakness。</p></div>
+        <div class="mini"><h3>例 2：直接停利</h3><p>目前獲利 +27%，weakness score = 3，且有 <code>TECHNICAL_ASSESSMENT_BROKEN</code> 與 <code>P4_CAUTION</code>。符合 +25% 以上的 <code>PROFIT_PROTECTION_EXIT</code>，直接出場，不等待新股。</p></div>
+        <div class="mini"><h3>例 3：停利換股</h3><p>目前獲利 +28%，weakness score = 2，有主要弱化訊號，但未達直接停利的 3 分；若同日有合格 Continuation candidate，走 <code>PROFIT_PROTECTION_ROTATION</code>，否則繼續持有。</p></div>
+        <div class="mini"><h3>例 4：不能過早賣</h3><p>目前獲利 +18%，只有 KDJ <code>death_cross</code>，沒有兩天連跌，也沒有主要弱化訊號。不能因單一指標直接停利，最多交給技術 assessment 做風險備註。</p></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>七、英文 label 對照表</h2>
+      <table>
+        <thead><tr><th>英文 label</th><th>中文意思</th><th>在流程中的位置</th></tr></thead>
+        <tbody>
+          <tr><td><code>target_date</code> / <code>trade_dates_60d</code></td><td>目標日／最近 60 個交易日</td><td>所有 point-in-time（時間點）計算的資料範圍。</td></tr>
+          <tr><td><code>ingest_data</code></td><td>讀取原始資料</td><td>流程第一站，建立日期窗與 active stock master。</td></tr>
+          <tr><td><code>compute_rankings</code></td><td>計算排行</td><td>產業、個股法人與熱錢排行。</td></tr>
+          <tr><td><code>build_candidate_pool</code></td><td>建立候選池</td><td>把 A／B／C／D 多來源合併並附上特徵。</td></tr>
+          <tr><td><code>momentum_frame</code></td><td>全市場動能資料框</td><td>供價格動能、加速、基本面通道與市場廣度共用。</td></tr>
+          <tr><td><code>prelim_type</code></td><td>LLM 相容的初步分類</td><td>將 Phase 2 角色映射成 LEADER／FOLLOWER／LAGGARD，維持舊介面相容。</td></tr>
+          <tr><td><code>LEADER</code> / <code>FOLLOWER</code> / <code>LAGGARD</code></td><td>領導股／跟隨股／落後股</td><td>候選角色與研究輸入相容欄位。</td></tr>
+          <tr><td><code>ACTIVE_TREND</code> / <code>REACCELERATING</code> / <code>HEALTHY_PULLBACK</code></td><td>趨勢活躍／重新加速／健康拉回</td><td>已追蹤股票的 tracking state（追蹤狀態）。</td></tr>
+          <tr><td><code>DETERIORATING</code> / <code>INVALIDATED</code></td><td>惡化／失效</td><td>追蹤中的負向狀態，通常提高排除或停止觀察機率。</td></tr>
+          <tr><td><code>CONTINUATION</code></td><td>延續強勢引擎</td><td>抓 Day 1 仍在延續或重新加速的股票。</td></tr>
+          <tr><td><code>PULLBACK_RECOVERY</code></td><td>拉回回穩引擎</td><td>先 WATCH，再等待回升確認才進場。</td></tr>
+          <tr><td><code>STARTER</code></td><td>初始／試探部位</td><td>Continuation 第一次建立的交易單位。</td></tr>
+          <tr><td><code>RECOMMEND</code> / <code>BUY</code></td><td>推薦／買進</td><td>研究與選擇層的正向決策。</td></tr>
+          <tr><td><code>NOT_SELECTED</code></td><td>未入選</td><td>完成比較但沒有進入推薦名單。</td></tr>
+          <tr><td><code>WATCH</code> / <code>REMOVE</code></td><td>觀察／移除</td><td>魚尾追蹤與候選生命週期狀態。</td></tr>
+          <tr><td><code>VERIFIED</code> / <code>UNCONFIRMED</code> / <code>MISMATCH</code> / <code>NOT_APPLICABLE</code></td><td>已驗證／未確認／不一致／不適用</td><td>LLM research 對外部事實與題材證據的驗證狀態。</td></tr>
+          <tr><td><code>READY</code> / <code>SETUP</code> / <code>RESERVE</code></td><td>可處理／已形成設定／保留觀察</td><td>Phase 2 Watch Quality（觀察品質）狀態。</td></tr>
+          <tr><td><code>BULL_TREND</code> / <code>VOLATILE_RANGE</code> / <code>RISK_OFF</code></td><td>大多頭／震盪盤／風險退潮</td><td>大盤 regime（市場環境）。</td></tr>
+          <tr><td><code>BROAD_BULL</code> / <code>NARROW_BULL</code></td><td>廣泛多頭／狹窄多頭</td><td>大多頭下再疊市場 breadth（廣度）的細分。</td></tr>
+          <tr><td><code>EXTENDED_3D</code> / <code>EXTENDED_CHASE</code></td><td>3 日過熱／延伸追價</td><td>Risk warning 或 entry quality，通常降低追價意願，不等於硬排除。</td></tr>
+          <tr><td><code>STRUCTURE_DAMAGED</code></td><td>價格結構損壞</td><td>Phase 2 true hard exclusion。</td></tr>
+          <tr><td><code>MANUAL_BLACKLIST</code> / <code>FAILED_FOLLOW_THROUGH_CURRENT_EPISODE</code></td><td>人工黑名單／本輪延續驗證失敗</td><td>真正的硬排除原因，前者是人工設定，後者只限制當前魚尾 episode。</td></tr>
+          <tr><td><code>COMPOSITE_RISK_EXCLUDE</code> / <code>REVERSAL_FAILURE</code></td><td>複合風險排除／反轉失敗</td><td>需要跨兩個以上獨立 evidence family 的負向確認。</td></tr>
+          <tr><td><code>LIQUIDITY_FAILURE</code></td><td>流動性不合格</td><td>5 日平均成交金額低於目前硬門檻。</td></tr>
+          <tr><td><code>selection_status</code> / <code>selection_reason_code</code></td><td>選擇狀態／未入選原因代碼</td><td>Global selector 的機器可讀稽核欄位。</td></tr>
+          <tr><td><code>selection_version</code> / <code>selection_complete</code></td><td>選擇器版本／選擇是否完成</td><td>確認全體比較使用哪個契約，且每檔都有結果。</td></tr>
+          <tr><td><code>ROTATION</code></td><td>輪動／換股</td><td>賣出舊股並將名額轉給更合格的新候選。</td></tr>
+          <tr><td><code>EXIT_CANDIDATE</code></td><td>出場候選</td><td>技術 assessment 的 BROKEN 對應 actionability，不代表忽略既有出場優先序。</td></tr>
+        </tbody>
+      </table>
+      <div class="callout warn"><strong>最重要的閱讀原則：</strong>Candidate source、technical label、LLM decision、portfolio action 是四個不同層次。<code>source_B</code> 不等於 BUY；<code>technical_status=breakout</code> 不等於一定進場；<code>RECOMMEND</code> 也仍需通過持倉名額、Starter／Recovery 日數與換股保護條件。</div>
+    </section>
+
+    <p class="footer">資料來源：<code>backend/app/signals/pipeline.py</code>、<code>candidate_pool.py</code>、<code>phase2/pipeline_v2.py</code>、<code>shadow_portfolio.py</code>。本頁描述目前 production 流程。</p>
+  </main>
+</body>
+</html>

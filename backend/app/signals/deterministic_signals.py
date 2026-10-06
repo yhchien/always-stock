@@ -21,6 +21,7 @@ from app.signals.filters import (
     HINT_RETAIL_OVERHEATED,
     HINT_WEAKENING,
 )
+from app.signals.technical_assessment import build_technical_assessment
 
 # chip_trend：accumulating 門檻
 _CHIP_ACCUM_BUY_DAYS_MIN = 2
@@ -58,6 +59,7 @@ def build_deterministic_signals(candidate: Dict[str, Any]) -> Dict[str, Any]:
     sector = _sector_rotation_status(candidate)
     flow_momentum = _institution_flow_momentum(candidate)
     technical = _technical_status(candidate)
+    technical_assessment = build_technical_assessment(candidate)
     entry = _entry_quality(candidate, technical)
     chip = _chip_trend(candidate)
     flags = _risk_flags(candidate, sector, flow_momentum, entry)
@@ -65,6 +67,14 @@ def build_deterministic_signals(candidate: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "chip_trend": chip,
         "technical_status": technical,
+        # ``technical_status`` remains the legacy enum consumed by existing
+        # prompts.  ``technical_assessment`` is the canonical multi-family
+        # interpretation for new consumers and never asks the LLM to infer
+        # raw indicators itself.
+        "technical_assessment": technical_assessment,
+        "technical_state": technical_assessment["state"],
+        "technical_strength_score": technical_assessment["strength_score"],
+        "technical_weakness_score": technical_assessment["weakness_score"],
         "entry_quality": entry,
         "sector_rotation_status": sector,
         "institution_flow_momentum": flow_momentum,

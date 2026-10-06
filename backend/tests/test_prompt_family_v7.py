@@ -225,6 +225,13 @@ def test_assessment_and_reason_inputs_use_stage_allowlists():
         "relative_advantage": "同日相對優勢",
         "margin_analysis": {"balance": 1},
         "full_snapshot": {"secret": "not sent"},
+        "deterministic_signals": {
+            "technical_assessment": {
+                "state": "NEUTRAL",
+                "strength_score": 44.4,
+                "weakness_score": 30.6,
+            }
+        },
     }
     assessment = json.dumps(
         prompt_family.assessment_input([row], assessment_date=STAGE_DATE)
@@ -234,6 +241,8 @@ def test_assessment_and_reason_inputs_use_stage_allowlists():
     assert "relative_advantage" not in assessment
     assert "full_snapshot" not in reason
     assert "relative_advantage" in reason
+    reason_payload = prompt_family.reason_input([row], reason_date=STAGE_DATE)
+    assert reason_payload["items"][0]["technical_assessment"]["state"] == "NEUTRAL"
 
 
 def test_research_validator_enforces_alignment_enum_url_and_date():

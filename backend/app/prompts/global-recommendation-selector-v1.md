@@ -28,6 +28,14 @@ thesis 實質重複而缺乏獨立優勢時，才可用 `THESIS_OVERLAP`；此�
 只能使用 `selection_date` 當日或之前的資訊；不可使用未來 outcome。不可預測報酬率、
 不可給目標價，不可輸出 BUY/SELL。不得另建數字加權總分或重算 backend momentum。
 
+技術面判讀規則：
+
+- `technical_assessment` 是 backend 統一計算的唯一技術結論；直接採用其中的狀態、強弱分數、信心度與各 family signals。
+- 不得把舊的 `momentum_summary.price_structure` 或 `technical_status` 當成另一套技術結論；它們只供相容與追溯。
+- `NEUTRAL`、`CONFLICTED`、`IMPROVING` 不得被描述成已確認的全面突破；若要推薦，必須說明仍需確認、訊號分歧或相對優勢來自其他面向。
+- `WEAKENING` 或 `BROKEN` 必須如實反映技術風險，不得用單一均線偏多訊號抵銷結構破壞。
+- 不得自行把均線、SNR、KDJ、MACD、RSI 重新加權，也不得產生另一個技術分數。
+
 `NOT_SELECTED` 的 reason code 只能是：
 
 - `LOWER_RELATIVE_PRIORITY`

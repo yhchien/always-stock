@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>技術面條件與判斷方式</title>
+  <style>
+    :root{--bg:#f4f7fb;--card:#fff;--ink:#172033;--muted:#5d6b82;--line:#d9e1ee;--blue:#2563eb;--blue-soft:#eaf1ff;--green:#087f5b;--green-soft:#e8f8f1;--red:#b42318;--red-soft:#fff0ee;--amber:#9a6700;--amber-soft:#fff8df;--purple:#6941c6;--purple-soft:#f3efff;--shadow:0 12px 32px rgba(35,55,90,.08)}
+    *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC","PingFang TC",sans-serif;line-height:1.7}.page{max-width:1180px;margin:0 auto;padding:42px 22px 72px}.hero{background:linear-gradient(135deg,#172554,#1d4ed8);color:white;border-radius:24px;padding:38px 40px;box-shadow:var(--shadow);margin-bottom:26px}.eyebrow{margin:0 0 8px;font-size:13px;letter-spacing:.12em;opacity:.8}h1{margin:0 0 12px;font-size:clamp(28px,4vw,44px);line-height:1.2}.hero p{margin:0;max-width:900px;color:#dbeafe;font-size:17px}h2{margin:0 0 16px;font-size:25px;line-height:1.3}h3{margin:24px 0 10px;font-size:19px}p{margin:8px 0 14px}.card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:28px;margin:22px 0;box-shadow:0 5px 18px rgba(35,55,90,.04)}.lead{font-size:18px;color:#263653}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.grid.five{grid-template-columns:repeat(5,minmax(0,1fr))}.mini{border:1px solid var(--line);border-radius:14px;padding:18px;background:#fbfcff}.mini h3{margin-top:0}.flow{display:grid;justify-items:center;gap:8px;margin:20px auto 4px}.node{width:min(760px,100%);border:1px solid #b8c7df;border-radius:14px;padding:15px 20px;text-align:center;background:#f8fbff}.node strong{display:block;font-size:18px}.node small{display:block;margin-top:4px;color:var(--muted)}.node.start{background:var(--blue-soft);border-color:#9bb8ff}.node.good{background:var(--green-soft);border-color:#92d8bd}.node.bad{background:var(--red-soft);border-color:#f0aaa2}.node.warn{background:var(--amber-soft);border-color:#e8cb75}.arrow{color:var(--blue);font-size:26px;line-height:1}.branch{width:min(760px,100%);display:grid;grid-template-columns:1fr 1fr;gap:14px}.branch .node{width:auto}.label{font-size:13px;font-weight:700;color:var(--muted);margin-bottom:5px}table{width:100%;border-collapse:collapse;margin:12px 0 4px;font-size:15px}th,td{border-bottom:1px solid var(--line);text-align:left;vertical-align:top;padding:10px}th{background:#f5f8fd;color:#33425b;font-weight:700}tr:last-child td{border-bottom:0}code{background:#eef2f8;border-radius:5px;padding:1px 5px;color:#243b64;font-size:.92em}.tag{display:inline-block;border-radius:999px;padding:2px 9px;font-size:13px;font-weight:700;margin:2px 4px 2px 0}.tag.green{background:var(--green-soft);color:var(--green)}.tag.red{background:var(--red-soft);color:var(--red)}.tag.amber{background:var(--amber-soft);color:var(--amber)}.tag.blue{background:var(--blue-soft);color:#1749a5}.tag.purple{background:var(--purple-soft);color:var(--purple)}.callout{border-left:5px solid var(--blue);background:var(--blue-soft);padding:15px 18px;border-radius:9px;margin:16px 0}.callout.warn{border-left-color:var(--amber);background:var(--amber-soft)}.callout.good{border-left-color:var(--green);background:var(--green-soft)}ul{margin:8px 0 14px;padding-left:23px}li{margin:4px 0}.formula{background:#172033;color:#edf4ff;border-radius:10px;padding:13px 16px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;overflow-x:auto}.footer{color:var(--muted);font-size:13px;text-align:center;margin-top:30px}.muted{color:var(--muted)}
+    @media(max-width:800px){.grid.five{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:720px){.page{padding:22px 13px 44px}.hero,.card{padding:22px 18px;border-radius:16px}.grid,.branch{grid-template-columns:1fr}table{font-size:14px}th,td{padding:9px 7px}}
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <p class="eyebrow">TECHNICAL_V1 · DETERMINISTIC · LLM SAFE</p>
+      <h1>技術面條件與判斷方式</h1>
+      <p>這頁是目前後端 <code>technical_assessment</code> 的使用說明。原始均線、SNR、KDJ、MACD、RSI、量價與相對強度先各自判斷，再收斂成五個獨立 evidence family（證據家族）；LLM 與交易策略讀同一份結論。</p>
+    </header>
+
+    <section class="card">
+      <h2>先看結論：技術面不是把所有指標票數相加</h2>
+      <div class="callout good"><strong>唯一標準答案：</strong>LLM 優先讀 <code>technical_assessment.state</code>、<code>actionability</code>、<code>strength_score</code>、<code>weakness_score</code>、<code>confidence</code> 與各 family 的 <code>signals</code>。舊欄位 <code>technical_status</code> 只保留相容與追溯用途。</div>
+      <div class="flow">
+        <div class="node start"><strong>Point-in-time raw features</strong><small>只使用目標日以前的價格、成交量、均線、相對強度與動能欄位</small></div>
+        <div class="arrow">↓</div>
+        <div class="branch">
+          <div class="node"><strong>Price structure / SNR</strong><small>價格結構、支撐、壓力、突破、跌破</small></div>
+          <div class="node"><strong>Trend MA</strong><small>MA5/MA10/MA20/MA60、位置、斜率、排列</small></div>
+          <div class="node"><strong>Relative strength</strong><small>市場 RS、產業 RS、排名改善</small></div>
+          <div class="node"><strong>Volume-price</strong><small>上漲量／下跌量、當日量、分配</small></div>
+          <div class="node"><strong>Momentum</strong><small>KDJ、MACD、RSI 的方向訊號</small></div>
+        </div>
+        <div class="arrow">↓</div>
+        <div class="node"><strong>Family-level weighted scores</strong><small>同一個底層價格變化不因 MA5、MA20、MACD 同時出現而重複灌票</small></div>
+        <div class="arrow">↓</div>
+        <div class="branch">
+          <div class="node good"><strong>state</strong><small>STRONG / IMPROVING / NEUTRAL / WEAKENING / BROKEN / CONFLICTED</small></div>
+          <div class="node"><strong>actionability</strong><small>POSITIVE / WATCH_FOR_ENTRY / NEUTRAL / CAUTION / EXIT_CANDIDATE</small></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>一、五個技術證據家族與權重</h2>
+      <p class="lead">方向性權重合計 90 分；ATR 不投多空票，只做風險提示，所以高波動不會單獨把股票判成弱勢。</p>
+      <table>
+        <thead><tr><th>英文 label</th><th>中文意思</th><th>權重</th><th>目前判斷</th></tr></thead>
+        <tbody>
+          <tr><td><code>price_structure</code></td><td>價格結構</td><td>30</td><td><code>BREAKOUT_CONFIRMED</code>（確認突破）最強；<code>SUPPORT_BREAKDOWN</code>（支撐跌破）直接標示結構風險。</td></tr>
+          <tr><td><code>trend_ma</code></td><td>均線趨勢</td><td>20</td><td>收盤站上 MA20 且 MA20 上斜為強；同時低於 MA20 與 MA60 為結構破壞。</td></tr>
+          <tr><td><code>relative_strength</code></td><td>相對強度</td><td>15</td><td>市場百分位、產業百分位、5 日排名改善一起判斷。</td></tr>
+          <tr><td><code>volume_price</code></td><td>量價關係</td><td>15</td><td>上漲量主導支持突破；<code>DISTRIBUTION</code>（高檔分配）或下跌量主導轉弱。</td></tr>
+          <tr><td><code>momentum</code></td><td>動能指標</td><td>10</td><td>KDJ、MACD、RSI 先各判方向，再在同一 momentum family 內去重。</td></tr>
+          <tr><td><code>risk</code></td><td>波動風險</td><td>不投票</td><td><code>ATR</code> 只輸出 LOW／MEDIUM／HIGH 風險，提醒追價與停損距離。</td></tr>
+        </tbody>
+      </table>
+      <div class="formula">strength_score = Σ(可用 family 權重 × family strength) ÷ Σ(可用 family 權重) × 100</div>
+      <p class="muted">資料缺少時，分母只用可用 family；但 coverage（覆蓋率）低於 40% 會回傳 <code>INSUFFICIENT_DATA</code>，不會因單一指標看起來漂亮就給強勢結論。</p>
+    </section>
+
+    <section class="card">
+      <h2>二、各指標怎麼判斷</h2>
+      <h3>價格結構與 SNR</h3>
+      <table>
+        <thead><tr><th>英文 label / field</th><th>中文意思</th><th>判斷方式</th></tr></thead>
+        <tbody>
+          <tr><td><code>SNR</code> / Support and Resistance</td><td>支撐與壓力</td><td>目前後端以 20 日支撐／壓力距離與 hold／retest 欄位落地。</td></tr>
+          <tr><td><code>breakout_20d_confirmed</code></td><td>20 日突破已確認</td><td>為 true 且壓力回測沒有失敗 → <code>BREAKOUT_CONFIRMED</code>。</td></tr>
+          <tr><td><code>support_20d_hold</code></td><td>20 日支撐守住</td><td>為 true → <code>SUPPORT_HOLD</code>，價格結構改善中。</td></tr>
+          <tr><td><code>resistance_retest_hold</code></td><td>壓力回測守住</td><td>突破後仍守住 → 保留強勢；為 false → <code>RESISTANCE_RETEST_FAILED</code>。</td></tr>
+          <tr><td><code>breakdown_20d_confirmed</code></td><td>20 日結構跌破確認</td><td>為 true → <code>SUPPORT_BREAKDOWN</code>，price_structure state = <code>BROKEN</code>。</td></tr>
+        </tbody>
+      </table>
+
+      <h3>所有均線一起看，但歸在同一個 MA family</h3>
+      <table>
+        <thead><tr><th>英文 label</th><th>中文意思</th><th>目前用途</th></tr></thead>
+        <tbody>
+          <tr><td><code>SMA</code> / Simple Moving Average</td><td>簡單移動平均線</td><td>例如 <code>SMA60</code>（60 日均線）與 <code>sma20_slope_5d_pct</code>。</td></tr>
+          <tr><td><code>EMA</code> / Exponential Moving Average</td><td>指數移動平均線</td><td>作為可讀的技術指標 label；若資料提供 EMA，仍與均線趨勢同家族，不另加一票。</td></tr>
+          <tr><td><code>MA5</code> / <code>MA10</code> / <code>MA20</code> / <code>MA60</code></td><td>5／10／20／60 日均線</td><td>看收盤位置、短中期斜率與多空排列。</td></tr>
+          <tr><td><code>ABOVE_MA20</code></td><td>站上 20 日均線</td><td>偏改善；若同時 <code>MA20_SLOPE_UP</code> 才升為較強。</td></tr>
+          <tr><td><code>BELOW_MA20</code></td><td>跌破 20 日均線</td><td>若 MA20 同時下斜，判定均線轉弱。</td></tr>
+          <tr><td><code>BELOW_MA20_AND_MA60</code></td><td>同時低於 20 日與 60 日均線</td><td>trend_ma state = <code>BROKEN</code>。</td></tr>
+          <tr><td><code>MA20_SLOPE_UP</code> / <code>MA20_SLOPE_DOWN</code></td><td>20 日線上斜／下斜</td><td>不是只看站上或跌破，也看中期趨勢方向。</td></tr>
+          <tr><td><code>BULLISH_MA_ALIGNMENT</code></td><td>均線多頭排列</td><td>作為均線家族內的加強訊號，不會脫離均線 family 重複計分。</td></tr>
+        </tbody>
+      </table>
+
+      <h3>動能：KDJ、MACD、RSI 的平等處理</h3>
+      <table>
+        <thead><tr><th>指標 label</th><th>中文意思</th><th>正向 signal</th><th>負向 signal</th></tr></thead>
+        <tbody>
+          <tr><td><code>KDJ</code></td><td>隨機指標，觀察短線超買超賣與交叉</td><td><code>KDJ_SIGNAL_POSITIVE</code>：<code>golden_cross</code> 黃金交叉、<code>oversold_rebound</code> 超賣反彈</td><td><code>KDJ_SIGNAL_NEGATIVE</code>：<code>death_cross</code> 死亡交叉、<code>overbought_turn_down</code> 超買轉下</td></tr>
+          <tr><td><code>MACD</code></td><td>指數平滑異同移動平均線</td><td><code>bullish_cross</code> 多頭交叉、<code>histogram_rising</code> 柱體上升</td><td><code>bearish_cross</code> 空頭交叉、<code>histogram_falling</code> 柱體下降</td></tr>
+          <tr><td><code>RSI</code> / Relative Strength Index</td><td>相對強弱指標</td><td><code>cross_above_50</code> 上穿 50、<code>oversold_recovery</code> 超賣回復</td><td><code>cross_below_50</code> 下穿 50、<code>overbought_turn_down</code> 超買轉下</td></tr>
+        </tbody>
+      </table>
+      <p>三者都屬於 <code>momentum</code> family：至少兩個正向且沒有負向才是強；至少兩個負向且沒有正向才是轉弱；一正一負則是 <code>CONFLICTED</code>，不是硬判多或空。</p>
+
+      <h3>相對強度、量價與風險 label</h3>
+      <table>
+        <thead><tr><th>英文 label</th><th>中文意思</th><th>判斷方式</th></tr></thead>
+        <tbody>
+          <tr><td><code>RS_MARKET_STRONG</code></td><td>相對大盤強</td><td>市場 20 日百分位至少 80 且整體沒有明顯負向。</td></tr>
+          <tr><td><code>RS_IMPROVING</code> / <code>RS_DETERIORATING</code></td><td>相對強度改善／惡化</td><td>看市場、產業百分位與排名改善三項的合成方向。</td></tr>
+          <tr><td><code>UP_VOLUME_DOMINANT</code></td><td>上漲量主導</td><td>20 日上／下跌量比至少 1.2 且當日量不低於 20 日均量。</td></tr>
+          <tr><td><code>DOWN_VOLUME_DOMINANT</code></td><td>下跌量主導</td><td>上／下跌量比低於 0.8。</td></tr>
+          <tr><td><code>DISTRIBUTION</code></td><td>高檔分配／出貨</td><td>來自量價 soft hint，視為量價轉弱。</td></tr>
+          <tr><td><code>ATR</code> / Average True Range</td><td>平均真實波幅</td><td><code>HIGH_ATR</code> 只標高風險；不直接增加 weakness_score。</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>三、state、分數與行動的對照</h2>
+      <table>
+        <thead><tr><th>英文 label</th><th>中文意思</th><th>規則／給下游的語意</th></tr></thead>
+        <tbody>
+          <tr><td><code>STRONG</code></td><td>強勢</td><td><code>strength_score ≥ 65</code> 且 <code>weakness_score &lt; 45</code>；actionability = <code>POSITIVE</code>。</td></tr>
+          <tr><td><code>IMPROVING</code></td><td>改善中／轉強中</td><td>strength ≥ 55 且比 weakness 高超過 10；actionability = <code>WATCH_FOR_ENTRY</code>。</td></tr>
+          <tr><td><code>NEUTRAL</code></td><td>中性</td><td>沒有足夠一致方向；不能寫成強勢突破。</td></tr>
+          <tr><td><code>WEAKENING</code></td><td>轉弱</td><td>weakness ≥ 55 且 strength &lt; 60；actionability = <code>CAUTION</code>。</td></tr>
+          <tr><td><code>BROKEN</code></td><td>結構破壞</td><td>weakness ≥ 70 且價格結構或均線 family 為 BROKEN；actionability = <code>EXIT_CANDIDATE</code>。</td></tr>
+          <tr><td><code>CONFLICTED</code></td><td>訊號分歧</td><td>多空分數都高，或 family 互相矛盾；actionability = <code>CAUTION</code>。</td></tr>
+          <tr><td><code>INSUFFICIENT_DATA</code></td><td>資料不足</td><td>coverage &lt; 40%；actionability = <code>INSUFFICIENT_DATA</code>。</td></tr>
+          <tr><td><code>confidence</code></td><td>信心度</td><td><code>HIGH</code>：coverage ≥75%、至少 4 個 family 有資料且至少 3 個非中性；<code>MEDIUM</code>：coverage ≥50% 且至少 3 個可用；否則 <code>LOW</code>。</td></tr>
+          <tr><td><code>coverage_pct</code></td><td>資料覆蓋率</td><td>五個方向性 family 中，實際有資料的權重比例。</td></tr>
+          <tr><td><code>conflicts</code></td><td>衝突清單</td><td>例如 <code>STRENGTH_AND_WEAKNESS_BOTH_PRESENT</code>（強弱同時存在）、<code>BREAKOUT_WITH_WEAK_VOLUME</code>（突破但量價偏弱）。</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>四、technical_assessment 輸出欄位字典</h2>
+      <p>下面是 LLM、global selector 與交易層實際會看到的 canonical JSON 欄位；欄位名稱保留英文以便程式串接，中文意思固定如下。</p>
+      <table>
+        <thead><tr><th>英文 label</th><th>中文意思</th><th>內容</th></tr></thead>
+        <tbody>
+          <tr><td><code>version</code></td><td>版本</td><td>目前為 <code>technical_v1</code>（技術面第一版規則）。</td></tr>
+          <tr><td><code>state</code></td><td>整體技術狀態</td><td>五個 family 的方向收斂後的總結。</td></tr>
+          <tr><td><code>actionability</code></td><td>可執行性建議</td><td>把 state 翻成下游可讀的正向、觀察、警戒或出場候選。</td></tr>
+          <tr><td><code>strength_score</code></td><td>技術強勢分數</td><td>0～100，依可用 family 權重正向 strength 計算。</td></tr>
+          <tr><td><code>weakness_score</code></td><td>技術弱化分數</td><td>0～100，依可用 family 權重負向 weakness 計算。</td></tr>
+          <tr><td><code>confidence</code></td><td>技術結論信心度</td><td>HIGH（高）、MEDIUM（中）、LOW（低）。</td></tr>
+          <tr><td><code>coverage_pct</code></td><td>資料覆蓋率</td><td>有資料的方向性 family 權重比例。</td></tr>
+          <tr><td><code>families</code></td><td>證據家族集合</td><td>包含五個方向性 family：<code>price_structure</code>、<code>trend_ma</code>、<code>relative_strength</code>、<code>volume_price</code>、<code>momentum</code>。</td></tr>
+          <tr><td><code>risk</code></td><td>風險資訊</td><td>包含 ATR 波動與風險等級，不加入多空分數。</td></tr>
+          <tr><td><code>conflicts</code></td><td>衝突訊號清單</td><td>記錄強弱同時存在或突破與量價背離。</td></tr>
+          <tr><td><code>thresholds</code></td><td>判斷門檻</td><td>包含 <code>strong_score</code>（強勢門檻 65）、<code>weakening_score</code>（轉弱門檻 55）、<code>broken_score</code>（破壞門檻 70）與 <code>minimum_exit_confirmation_days</code>（最少出場確認日數 2）。</td></tr>
+          <tr><td><code>available</code></td><td>資料是否可用</td><td>family 或 risk 是否有足夠輸入欄位。</td></tr>
+          <tr><td><code>detail</code></td><td>細節數值</td><td>例如支撐距離、MA20 距離、RS 百分位、ATR 百分比。</td></tr>
+          <tr><td><code>risk_level</code></td><td>波動風險等級</td><td>LOW（低）、MEDIUM（中）、HIGH（高）、UNKNOWN（未知）。</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>五、例子：LLM 應該怎麼讀</h2>
+      <div class="grid">
+        <div class="mini"><h3>例 1：強勢突破</h3><p><code>price_structure=STRONG</code>、<code>trend_ma=STRONG</code>、<code>relative_strength=STRONG</code>、<code>volume_price=STRONG</code>，動能也偏正向，結果可能是：</p><p><span class="tag green">STRONG</span><span class="tag green">POSITIVE</span> strength 約 80～90、confidence = HIGH。</p><p>LLM 可以說「價格結構、均線、相對強度與量價同步偏多」，不能只說「KDJ 黃金交叉所以買進」。</p></div>
+        <div class="mini"><h3>例 2：只有 KDJ 死叉</h3><p>若價格仍站上 MA20、突破未失敗、RS 與量價正常，但只有 KDJ 出現 <code>death_cross</code>：</p><p><span class="tag amber">NEUTRAL</span>或 <span class="tag amber">IMPROVING</span>，視其他 family 分數而定。</p><p>KDJ 只讓 momentum family 變弱，不能把整檔股票直接寫成「全面轉弱」。</p></div>
+        <div class="mini"><h3>例 3：結構跌破</h3><p><code>SUPPORT_BREAKDOWN</code> 且收盤同時低於 MA20 與 MA60，weakness 高於 70：</p><p><span class="tag red">BROKEN</span><span class="tag red">EXIT_CANDIDATE</span></p><p>即使 RSI 短線超賣，也只能說「可能超賣」，不能抵銷結構破壞。</p></div>
+        <div class="mini"><h3>例 4：突破但量價背離</h3><p>價格結構為 STRONG，但 <code>DISTRIBUTION</code> 使 volume_price = WEAKENING：</p><p><span class="tag amber">CONFLICTED</span><span class="tag amber">CAUTION</span></p><p>這是「突破成立、但需要確認量價是否支持」，不是直接否定突破。</p></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>六、下游在哪裡使用</h2>
+      <table>
+        <thead><tr><th>下游</th><th>使用方式</th><th>不允許的行為</th></tr></thead>
+        <tbody>
+          <tr><td>LLM Research / Reason</td><td>讀 canonical assessment，將 state、分數、信心度與 family signals 轉成繁體中文。</td><td>自行重算 MA、SNR、KDJ、MACD、RSI，或把 legacy <code>technical_status</code> 當另一套答案。</td></tr>
+          <tr><td>Global Selector</td><td>將技術 assessment 放進每檔 compact selection card；推薦理由若與 assessment 矛盾，後端會做一致性修正。</td><td>因單一技術 label 就改寫整體候選池。</td></tr>
+          <tr><td>Shadow Portfolio</td><td><code>WEAKENING</code>／<code>BROKEN</code> 可成為獲利保護的弱化證據；<code>BROKEN</code> 是強化弱化訊號。</td><td>只因單一 KDJ 或 RSI 轉弱就直接賣出。</td></tr>
+          <tr><td>魚尾 Phase 2</td><td>與價格結構、相對強度、量價、角色及風險一起決定候選是否進 LLM。</td><td>把技術分數當成唯一進場條件。</td></tr>
+        </tbody>
+      </table>
+      <div class="callout warn"><strong>版本邊界：</strong>這頁描述的是目前 production canonical output：<code>technical_v1</code>。若未來新增指標，應先放入既有 family 或明確建立新 family，再更新權重與測試；不能直接把新指標當第六、第七票疊加。</div>
+    </section>
+
+    <p class="footer">資料來源：<code>backend/app/signals/technical_assessment.py</code>。本頁為目前程式規則的人工閱讀版。</p>
+  </main>
+</body>
+</html>

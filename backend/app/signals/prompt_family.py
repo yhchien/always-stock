@@ -303,6 +303,14 @@ def reason_input(
                     "backend_priority_rank", "market_regime",
                 )
             },
+            # The legacy technical_status is only a compatibility enum.  Give
+            # the reason model the canonical multi-family assessment at the
+            # top level so it cannot mistake the old breakout label for the
+            # authoritative technical conclusion.
+            "technical_assessment": (
+                row.get("technical_assessment")
+                or (row.get("deterministic_signals") or {}).get("technical_assessment")
+            ),
             "evidence": {
                 "institutional": row.get("institutional_summary"),
                 "signals": row.get("signals") or row.get("deterministic_signals") or {},

@@ -423,6 +423,34 @@ def test_context_guard_fails_without_tournament_or_partial_selection(monkeypatch
     assert exc.value.code == "GLOBAL_SELECTION_CONTEXT_EXCEEDED"
 
 
+def test_selector_technical_text_guard_does_not_change_membership():
+    cards = [
+        {
+            "stock": "2330",
+            "technical_assessment": {
+                "state": "NEUTRAL",
+                "strength_score": 44.0,
+                "weakness_score": 30.0,
+            },
+        }
+    ]
+    payload = {
+        "items": [
+            {
+                "stock": "2330",
+                "decision": "RECOMMEND",
+                "recommendation_thesis": "強勢技術面帶動後續強格局",
+                "relative_advantage": "技術面偏強",
+                "selection_reason": "結構偏強",
+            }
+        ]
+    }
+    adjusted = global_selector._cohere_selection_technical_text(payload, cards)
+    assert adjusted == ["2330"]
+    assert "強勢技術面" not in payload["items"][0]["recommendation_thesis"]
+    assert "中性" in payload["items"][0]["recommendation_thesis"]
+
+
 def test_global_call_has_no_silent_fallback(monkeypatch):
     cards = _cards(2)
     monkeypatch.setattr(
