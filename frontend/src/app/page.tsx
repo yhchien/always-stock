@@ -18,22 +18,8 @@ import {
 } from "@/lib/api"
 import { todayInTaipei } from "@/lib/utils"
 
-const TradeQualityAnalysis = dynamic(() => import("@/components/TradeQualityAnalysis"), { ssr: false })
 const DailySignalsPanel = dynamic(() => import("@/components/DailySignalsPanel"), { ssr: false })
 const HotMoneyList = dynamic(() => import("@/components/HotMoneyList"), { ssr: false })
-const WatchlistTradeQualityTable = dynamic(
-  () => import("@/components/WatchlistTradeQualityTable"),
-  { ssr: false },
-)
-
-const TRADE_QUALITY_TOGGLE_STORAGE_KEY = "always-stock:show-trade-quality"
-
-function readStoredToggle(key: string, defaultValue: boolean): boolean {
-  if (typeof window === "undefined") return defaultValue
-  const stored = window.localStorage.getItem(key)
-  if (stored === null) return defaultValue
-  return stored === "true"
-}
 
 // 2026-08-11：入口已拔（見下方 render 處註解），元件保留供未來復活
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -223,17 +209,6 @@ function HomeContent() {
   const [initialIndustries, setInitialIndustries] = useState<IndustryFlowItem[] | null>(null)
   const [initialIndustriesDate, setInitialIndustriesDate] = useState<string | null>(null)
   const defaultDate = queryDate ?? latestTradeDate ?? (latestTradeDateReady ? todayInTaipei() : null)
-  const [showTradeQuality] = useState(() =>
-    readStoredToggle(TRADE_QUALITY_TOGGLE_STORAGE_KEY, false),
-  )
-
-  // M19 watchlist 卡片深連結帶 stock_id+buy_date → 強制展開分析欄位，
-  // 避免使用者跳過來但畫面看不到分析。
-  const stockIdParam = searchParams.get("stock_id")
-  const buyDateParam = searchParams.get("buy_date")
-  const forceShowTradeQuality = Boolean(stockIdParam && buyDateParam)
-  const effectiveShowTradeQuality = showTradeQuality || forceShowTradeQuality
-
   function markTask(task: BootTaskKey, state: BootTaskState) {
     setTasks((prev) => (prev[task] === state ? prev : { ...prev, [task]: state }))
   }
@@ -311,10 +286,7 @@ function HomeContent() {
   return (
     <>
       {showBootOverlay && <HomeBootstrapOverlay tasks={tasks} />}
-      {/* 2026-08-11：交易質量分析 sidebar toggle 拿掉入口（沒人用，一直卡在畫面邊緣）；
-          HomeSidebar 元件與 showTradeQuality state 保留，/watchlist 卡片「交易分析 →」
-          仍靠 forceShowTradeQuality（?stock_id=&buy_date=）深連結正常運作，
-          要復活 toggle bar 只要把 <HomeSidebar /> 加回來即可。 */}
+      {/* 首頁「交易質量分析」與「自選清單表現」已暫停；保留元件檔案供日後恢復。 */}
       <main>
         <div className="mx-auto w-full max-w-5xl px-4 py-8 flex flex-col gap-6">
         {defaultDate && (
@@ -330,10 +302,10 @@ function HomeContent() {
                 storageKey="always-stock:home:market-context:collapsed"
               />
             ) : null}
-            {effectiveShowTradeQuality && !showBootOverlay && (
-              <TradeQualityAnalysis initialLatestDate={latestTradeDate ?? defaultDate} />
-            )}
+            {/*
+            <TradeQualityAnalysis initialLatestDate={latestTradeDate ?? defaultDate} />
             <WatchlistTradeQualityTable />
+            */}
             <DeferredSection minHeight={180}>
               <DailySignalsPanel
                 initialSnapshot={initialSnapshot}
