@@ -2580,6 +2580,9 @@ export interface ShadowPortfolio {
   positions: ShadowPosition[]
   cycle_number: number
   cycle_start_trade_date: string | null
+  cycle_length_weeks: number | null
+  cycle_weeks_elapsed: number | null
+  // Deprecated compatibility fields; weekly cycles use the fields above.
   cycle_length_trading_days: number | null
   cycle_trading_days_elapsed: number | null
   strategy_config: Record<string, unknown> | null

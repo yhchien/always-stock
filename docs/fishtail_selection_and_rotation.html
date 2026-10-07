@@ -121,7 +121,7 @@
           <tr><td>7</td><td><code>PULLBACK_RECOVERY_FAILED</code></td><td>Recovery 後前 4 個交易日跌破觀察期間低點，視為假回穩。</td></tr>
           <tr><td>8</td><td><code>PROFIT_PROTECTION_EXIT</code></td><td>回落獲利保護：獲利門檻、弱化分數、強化弱化訊號與主要弱化訊號都符合，直接停利出場。</td></tr>
           <tr><td>9</td><td><code>PROFIT_PROTECTION_ROTATION</code></td><td>獲利持股轉弱且有合格新候選，賣舊股買新股；沒有新候選就不賣。</td></tr>
-          <tr><td>10</td><td><code>CYCLE_RESET</code> / <code>PERIOD_END_SETTLEMENT</code></td><td>25 個交易日循環重設，或回測期末結算；這是行政／期末事件，不是技術訊號。</td></tr>
+          <tr><td>10</td><td><code>CYCLE_RESET</code> / <code>PERIOD_END_SETTLEMENT</code></td><td>5 個交易週結束後，下一週第一個開盤日用當日最低價行政結算；這是行政／期末事件，不是技術訊號。</td></tr>
         </tbody>
       </table>
     </section>

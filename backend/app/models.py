@@ -1185,10 +1185,10 @@ class ShadowVirtualPortfolio(Base):
     strategy_version = Column(String(32), primary_key=True)  # e.g. "v1_frozen"
     cash = Column(Float, nullable=False)
     realized_pnl_cumulative = Column(Float, nullable=False, default=0.0)
-    # 2026-09-08：35 個交易日一循環，循環結束時全面強制清空重來（見
+    # 2026-10：v1_frozen 改為 5 個交易週一循環；下一週第一個開盤日用當日最低價
+    # 行政結算前一循環，並以同一天作為新循環起算日（見
     # shadow_portfolio.check_and_apply_cycle_reset）。cycle_start_trade_date=NULL
-    # 代表這個 strategy_version 尚未真正跑過第一天；交易日數用 COUNT query 算
-    # （不用遞增計數器），同一天重跑天然 idempotent，不需要額外判斷。
+    # 只代表舊資料或尚未初始化的 strategy_version。
     cycle_number = Column(Integer, nullable=False, default=1, server_default="1")
     cycle_start_trade_date = Column(Date, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
@@ -1392,7 +1392,7 @@ class ShadowCompletedTrade(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     strategy_version = Column(String(32), nullable=False, index=True)
-    cycle_number = Column(Integer, nullable=False, index=True)  # 屬於第幾個 35 交易日循環
+    cycle_number = Column(Integer, nullable=False, index=True)  # 屬於第幾個 5 交易週循環
 
     stock_id = Column(String, nullable=False, index=True)
     stock_name = Column(String, nullable=False)
@@ -1409,8 +1409,9 @@ class ShadowCompletedTrade(Base):
     entry_p4_decision = Column(String(32), nullable=True)
     entry_mark_to_market_return = Column(Float, nullable=True)
 
-    # CYCLE_RESET：35 交易日循環結束強制平倉（見 check_and_apply_cycle_reset），
-    # 不是策略訊號觸發的正常出場，exit_execution_date 就是觸發當天（不等 T+1）
+    # CYCLE_RESET：5 交易週循環結束後，下一週第一個開盤日用當日最低價行政平倉
+    # （見 check_and_apply_cycle_reset）；不是策略訊號觸發的正常出場，
+    # exit_execution_date 就是行政結算當天（不等 T+1）
     exit_reason = Column(String(32), nullable=False)
     exit_signal_date = Column(Date, nullable=False)
     exit_execution_date = Column(Date, nullable=False)

@@ -505,7 +505,7 @@ def main(argv: list) -> int:
 
     # A historical window ending before an explicit administrative settlement
     # must preserve the open positions until that settlement date.  Otherwise
-    # a 25-session production cycle can reset on the last signal day and leave
+    # the weekly production cycle can reset on the last signal day and leave
     # the explicit settlement with nothing to settle, understating the period
     # return and making it incomparable with the production period record.
     defer_cycle_reset_until_settlement = (
@@ -518,6 +518,18 @@ def main(argv: list) -> int:
         # 就 close，ORM 物件在區塊外變成 detached/expired，屬性存取會觸發對已
         # 關閉 session 的 lazy-load 而炸掉（DetachedInstanceError，真的撞過，
         # 撞到的當下讓整支 script 在第一天就當機）。
+        def _step_cycle_reset():
+            with SessionLocal() as db:
+                if defer_cycle_reset_until_settlement:
+                    return False
+                reset_triggered = sp.check_and_apply_cycle_reset(
+                    db, target_date=d, strategy_version=strategy_version
+                )
+                db.commit()
+                return reset_triggered
+
+        reset_triggered = _with_retry(_step_cycle_reset)
+
         def _step_execute_pending():
             with SessionLocal() as db:
                 executed = sp.execute_pending_strategy_orders(db, target_date=d, strategy_version=strategy_version)
@@ -558,16 +570,6 @@ def main(argv: list) -> int:
 
         snapshot_equity, snapshot_return_pct = _with_retry(_step_snapshot)
 
-        def _step_cycle_reset():
-            with SessionLocal() as db:
-                if defer_cycle_reset_until_settlement:
-                    return False
-                reset_triggered = sp.check_and_apply_cycle_reset(db, target_date=d, strategy_version=strategy_version)
-                db.commit()
-                return reset_triggered
-
-        reset_triggered = _with_retry(_step_cycle_reset)
-
         def _step_winner_tracking():
             if not sp.STRATEGY_PARAMS_BY_VERSION[strategy_version].get("track_winners"):
                 return 0
@@ -580,7 +582,7 @@ def main(argv: list) -> int:
 
         print(f"\n--- {d} ---")
         if reset_triggered:
-            print("  *** 25 個交易日循環結束，portfolio 已強制重置 ***")
+            print("  *** 5 個交易週循環於本週首個開盤日行政結算，portfolio 已重置 ***")
         if filled_today:
             print("  [今日成交]")
             for action, stock_id, stock_name, execution_price, reason in filled_today:

@@ -513,7 +513,7 @@ export default function ShadowPortfolioPage() {
                 <ul className="mt-1 list-disc space-y-1 pl-4">
                   <li><span className="text-slate-300">同時持股上限：</span>6 檔；只有 6 檔都占用時，才可能啟動符合條件的輪動換股。</li>
                   <li><span className="text-slate-300">固定單位：</span>每檔一次買進 100,000 元，不因中間現金餘額不足而跳過。</li>
-                  <li><span className="text-slate-300">週期結算：</span>每 25 個交易日把所有已完成交易的實際損益加總；例如 20 筆各賠 100,000 元，週期就是 -2,000,000 元。</li>
+                  <li><span className="text-slate-300">週期結算：</span>每 5 個交易週，於下一週第一個開盤日用當日最低價行政結算；例如第一循環 8/1～9/4，9/7 結算並開始下一循環。</li>
                 </ul>
 
                 <p className="mt-3 font-medium text-slate-300">Continuation 的七項證據</p>
@@ -575,7 +575,7 @@ export default function ShadowPortfolioPage() {
                 <p className="mt-2 font-medium text-slate-300">它和 Dual-Engine 最大的差異</p>
                 <ul className="mt-1 list-disc space-y-1 pl-4">
                   <li>不設固定停利，讓已經上漲的股票繼續發展；但仍有實際部位 -8% 停損與 P4／官方結束訊號。</li>
-                  <li>最多同時持有 5 檔不同股票；不設總單位上限，但單檔成本不得超過當下總權益 50%，也不做 35 交易日循環重置。</li>
+                  <li>最多同時持有 5 檔不同股票；不設總單位上限，但單檔成本不得超過當下總權益 50%，也不做固定週期重置。</li>
                   <li>滿倉時不普遍換股；只有候選當日重新被 P3 選中、動能超過 80、專用 entry score（進場評分）至少 6，且比持有至少 2 個交易日的虧損弱部位高至少 5 分時，才允許每天換掉 1 檔。已獲利 +10% 以上的 winner（獲利部位）不會被換掉。</li>
                 </ul>
               </div>
@@ -639,11 +639,11 @@ export default function ShadowPortfolioPage() {
             {portfolio.as_of_trade_date && (
               <>資料截至 {portfolio.as_of_trade_date}・起始本金 {formatMoney(portfolio.initial_capital)} 元・</>
             )}
-            {portfolio.cycle_length_trading_days !== null ? (
+            {portfolio.cycle_length_weeks !== null ? (
               <>
                 第 {portfolio.cycle_number} 個循環
-                {portfolio.cycle_trading_days_elapsed !== null && (
-                  <>（第 {portfolio.cycle_trading_days_elapsed} / {portfolio.cycle_length_trading_days} 個交易日）</>
+                {portfolio.cycle_weeks_elapsed !== null && (
+                  <>（第 {portfolio.cycle_weeks_elapsed} / {portfolio.cycle_length_weeks} 個交易週）</>
                 )}
               </>
             ) : (
@@ -726,14 +726,14 @@ export default function ShadowPortfolioPage() {
                   : "歷史交易區間"}
               </span>
               <span className="shrink-0 text-xs text-slate-500">
-                {historyCollapsed ? "點擊展開" : historyPeriods ? "點開區間查看 25 個交易日" : "收合"}
+                {historyCollapsed ? "點擊展開" : historyPeriods ? "點開區間查看 5 個交易週" : "收合"}
               </span>
             </button>
 
             {!historyCollapsed && (
               <div className="border-t border-slate-800 p-3">
                 <p className="mb-3 text-xs leading-5 text-slate-500">
-                  這裡只顯示已完成結算的 25 個交易日循環；目前尚未結算的新循環不會混進歷史區。
+                  這裡只顯示已完成結算的 5 個交易週循環；目前尚未結算的新循環不會混進歷史區。
                   每個區間一列，點開後再查看該區間的每日權益、成交動作與完成交易。
                 </p>
                 {historyLoading && <p className="text-sm text-slate-500">正在載入歷史回放…</p>}

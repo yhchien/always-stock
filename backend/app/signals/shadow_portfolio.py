@@ -81,7 +81,7 @@ portfolio_replay.py` 已移除「不可對 v1_frozen 執行 --execute」的舊�
   STRATEGY_VERSION_V1_FROZEN` 分流呼叫 `_run_v1_dual_engine_daily_strategy`
 - `execute_pending_strategy_orders`／`create_portfolio_daily_snapshot`／`check_
   and_apply_cycle_reset` 三個 orchestrator **維持通用、不分流**：T signal→T+1 執行、
-  equity 計算、25 交易日循環重置，這些行為在 Dual-Engine 規格裡完全沒有改變，v1_
+  equity 計算、5 交易週循環重置，這些行為在 Dual-Engine 規格裡完全沒有改變，v1_
   frozen 繼續共用同一份程式碼
 """
 from __future__ import annotations
@@ -167,7 +167,7 @@ def ensure_shadow_portfolio_tables(engine: Engine) -> None:
 
 
 def _ensure_shadow_virtual_portfolio_cycle_columns(engine: Engine) -> None:
-    """2026-09-08：25 交易日循環重置——`shadow_virtual_portfolios` 這張表在
+    """2026-09-08：循環重置——`shadow_virtual_portfolios` 這張表在
     production 早已有資料（本輪之前的 backfill 驗證），`create_all` 不會替既有表
     補欄位，需要顯式 ALTER TABLE（比照 `signal_watch_schema.py` 既有 dict pattern）。
     """
@@ -443,7 +443,7 @@ V1_STRATEGY_PARAMS: Dict[str, Any] = {
     "real_stop_loss_pct": -8.0,
 }
 
-CYCLE_LENGTH_TRADING_DAYS = 25
+CYCLE_LENGTH_WEEKS = 5
 
 STRATEGY_VERSION_V1_FROZEN = "v1_frozen"
 STRATEGY_VERSION_REPAIR_6933 = "REPAIR_6933_202609"
@@ -470,7 +470,9 @@ STRATEGY_VERSION_PROFIT_PROTECTION_202610 = "PROFIT_PROTECTION_202610"
 #       目前 portfolio equity 的 50%（FORWARD_V1 專用）
 #   add_requires_profit: True 時，加碼前必須 actual_position_return > 0，否則
 #       SKIP_ADD_POSITION_NOT_PROFITABLE（絕不攤平，FORWARD_V1 專用）
-#   cycle_reset_trading_days: None = 不做強制循環重置；v1_frozen 使用 25 交易日
+#   cycle_reset_weeks: None = 不做強制循環重置；v1_frozen 使用 5 個交易週。
+#       循環以每週第一個開盤日為起點，並在第 6 週第一個開盤日用當日最低價
+#       行政結算前一循環。
 #   granular_skip_reasons: True 時才會把「容量不足」拆成 SKIP_PORTFOLIO_FULL /
 #       SKIP_INSUFFICIENT_CASH / SKIP_POSITION_EXPOSURE_LIMIT 並寫入
 #       `ShadowMissedCandidate`；v1_frozen/Clean Baselines 維持既有單一
@@ -596,8 +598,9 @@ DUAL_ENGINE_PARAMS: Dict[str, Any] = {
     # PART 45：資料品質防護 —— 相鄰有效交易日收盤變動 >=50% 視為可疑（減資/分割/
     # 資料誤置），常數集中在這裡，判斷邏輯見 `_episode_has_corporate_action_suspect`。
     "corporate_action_suspect_pct": 0.50,
-    # v1_frozen 生產迴圈每 25 個交易日強制循環重置。
-    "cycle_reset_trading_days": CYCLE_LENGTH_TRADING_DAYS,
+    # v1_frozen 生產迴圈每 5 個交易週強制循環重置；不再用交易日數計算，
+    # 因此遇到國定假日也不會把週期邊界往後漂移。
+    "cycle_reset_weeks": CYCLE_LENGTH_WEEKS,
     # API 顯示用的全域名額；每檔只建立一個 100,000 元 lot。
     # 以下三個 flag 只有 `run_daily_trading_strategy` 的「通用」分支（非 v1_frozen 的
     # 其他策略版本）與 `run_shadow_portfolio.py`／`update_winner_tracking` 會讀取；
@@ -734,10 +737,10 @@ EXIT_REASON_TAKE_PROFIT = "TAKE_PROFIT"
 EXIT_REASON_REAL_STOP_LOSS = "REAL_POSITION_STOP_LOSS"
 # FORWARD_V1：只在新候選明顯更強、且舊部位仍虧損時使用；不會替換 winner。
 EXIT_REASON_FORWARD_HIGH_MOMENTUM_ROTATION = "FORWARD_HIGH_MOMENTUM_ROTATION"
-# 25 交易日循環強制重置（見 check_and_apply_cycle_reset）——不是策略訊號觸發的
+# 5 個交易週循環強制重置（見 check_and_apply_cycle_reset）——不是策略訊號觸發的
 # 正常出場，是行政性強制平倉，exit_execution_date 就是觸發當天，不等 T+1
 EXIT_REASON_CYCLE_RESET = "CYCLE_RESET"
-# 回測窗口結束的行政性結算；和 25 交易日循環重置分開，避免把兩種原因混在一起。
+# 回測窗口結束的行政性結算；和 5 交易週循環重置分開，避免把兩種原因混在一起。
 EXIT_REASON_PERIOD_END_SETTLEMENT = "PERIOD_END_SETTLEMENT"
 
 ACTION_WATCH = "WATCH"
@@ -4649,45 +4652,100 @@ def create_portfolio_daily_snapshot(
 
 
 # ---------------------------------------------------------------------------
-# Orchestrator 4：25 個交易日一循環，循環結束強制清空重來
+# Orchestrator 4：5 個交易週一循環，下一週第一個開盤日行政結算
 # ---------------------------------------------------------------------------
-def _count_cycle_trading_days(
-    db: Session, *, strategy_version: str, cycle_start_trade_date: date, target_date: date
-) -> int:
-    """比照全專案既有的 day_index 慣例（`_count_market_trading_days`）：用 COUNT
-    query 算天數，不用遞增計數器欄位——同一天重跑天然 idempotent，不需要額外判斷
-    這一天是否已經算過。"""
-    count = (
-        db.query(func.count(func.distinct(ShadowPortfolioDailySnapshot.trade_date)))
+def _week_start_trade_date(value: date) -> date:
+    """Return the Monday that anchors the calendar trading week."""
+    return value - timedelta(days=value.weekday())
+
+
+def _first_open_trade_date_of_week(db: Session, target_date: date) -> Optional[date]:
+    """Return the first market-open date in ``target_date``'s calendar week.
+
+    The query intentionally uses any daily_price row as the market calendar
+    source.  A week with a Monday holiday therefore starts on Tuesday, and the
+    cycle boundary remains tied to the first actual open rather than a calendar
+    date that had no session.
+    """
+    week_start = _week_start_trade_date(target_date)
+    week_end = week_start + timedelta(days=6)
+    row = (
+        db.query(func.min(DailyPrice.trade_date))
         .filter(
-            ShadowPortfolioDailySnapshot.strategy_version == strategy_version,
-            ShadowPortfolioDailySnapshot.trade_date >= cycle_start_trade_date,
-            ShadowPortfolioDailySnapshot.trade_date <= target_date,
+            DailyPrice.trade_date >= week_start,
+            DailyPrice.trade_date <= week_end,
+            DailyPrice.trade_date <= target_date,
         )
-        .scalar()
-        or 0
+        .first()
     )
-    return int(count)
+    return row[0] if row and row[0] is not None else None
+
+
+def _previous_market_trade_date(db: Session, *, before: date) -> Optional[date]:
+    row = (
+        db.query(func.max(DailyPrice.trade_date))
+        .filter(DailyPrice.trade_date < before)
+        .first()
+    )
+    return row[0] if row and row[0] is not None else None
+
+
+def _exact_low_price(db: Session, *, stock_id: str, trade_date: date) -> Optional[float]:
+    row = (
+        db.query(DailyPrice.low_price)
+        .filter(
+            DailyPrice.stock_id == stock_id,
+            DailyPrice.trade_date == trade_date,
+        )
+        .first()
+    )
+    return float(row[0]) if row and row[0] is not None else None
+
+
+def _cycle_boundary_for_week(
+    db: Session,
+    *,
+    cycle_start_trade_date: date,
+    target_date: date,
+    cycle_length_weeks: int,
+) -> Optional[date]:
+    """Return the prior cycle's final trading date when ``target_date`` is a boundary.
+
+    A boundary is only recognized on the first actual open of a week.  The
+    five-week cycle starting in the week of 2026-08-03 therefore ends on
+    2026-09-04 and is settled on 2026-09-07.
+    """
+    first_open = _first_open_trade_date_of_week(db, target_date)
+    if first_open is None or first_open != target_date:
+        return None
+    week_delta = (
+        _week_start_trade_date(target_date) - _week_start_trade_date(cycle_start_trade_date)
+    ).days // 7
+    if week_delta < cycle_length_weeks:
+        return None
+    return _previous_market_trade_date(db, before=target_date)
 
 
 def check_and_apply_cycle_reset(
     db: Session, *, target_date: date, strategy_version: str = STRATEGY_VERSION
 ) -> bool:
-    """必須排在 `create_portfolio_daily_snapshot(target_date=target_date)` 之後
-    （同一次呼叫的最後一步）——這個函式讀當天的 snapshot 判斷交易日數。
+    """行政結算一個 5 週循環，並準備下一循環的第一個開盤日。
+
+    呼叫端應在當日任何 pending order 執行與策略決策之前呼叫。這樣第 6 週的
+    第一個開盤日（例如 2026-09-07）會先用當日最低價結算上一循環，再以同一天
+    的收盤資料產生新循環訊號；新訊號的訂單仍於下一個交易日執行。
 
     回傳是否有觸發重置。**不會**清空 `ShadowStrategyDailyDecision`（append-only
     決策紀錄）或 `ShadowCompletedTrade`（永久保存的已平倉交易）——只清「目前部位」
     這個可變狀態，比照既有 `signal_watch_hits`（會清）vs
     `signal_watch_completed_archives`（永久）的既有分離原則。
 
-    `strategy_version` 的 `cycle_reset_trading_days` 若是 `None`（Clean Baselines /
-    FORWARD_V1_202609 皆是）——這個概念只屬於 v1_frozen 的既有生產迴圈設計，spec 對
-    FORWARD_V1_202609 完全沒有提到強制重置，直接整段 no-op。
+    `strategy_version` 的 `cycle_reset_weeks` 若是 `None`（Clean Baselines /
+    FORWARD_V1_202609 皆是）——直接 no-op。
     """
     params = STRATEGY_PARAMS_BY_VERSION[strategy_version]
-    cycle_length = params.get("cycle_reset_trading_days")
-    if cycle_length is None:
+    cycle_length_weeks = params.get("cycle_reset_weeks")
+    if cycle_length_weeks is None:
         return False
 
     portfolio = _get_or_create_portfolio(db, strategy_version)
@@ -4699,25 +4757,30 @@ def check_and_apply_cycle_reset(
     )
 
     if portfolio.cycle_start_trade_date is None:
-        # 這個 strategy_version 第一次真正運作（第一天不可能滿一個完整循環）
-        portfolio.cycle_start_trade_date = target_date
-        cycle_archive.cycle_start_trade_date = target_date
+        # 第一次真正運作時，起算日固定對齊該週第一個實際開盤日。
+        first_open = _first_open_trade_date_of_week(db, target_date) or target_date
+        portfolio.cycle_start_trade_date = first_open
+        cycle_archive.cycle_start_trade_date = first_open
         return False
 
-    days_in_cycle = _count_cycle_trading_days(
-        db, strategy_version=strategy_version,
-        cycle_start_trade_date=portfolio.cycle_start_trade_date, target_date=target_date,
+    previous_cycle_end = _cycle_boundary_for_week(
+        db,
+        cycle_start_trade_date=portfolio.cycle_start_trade_date,
+        target_date=target_date,
+        cycle_length_weeks=int(cycle_length_weeks),
     )
-    if days_in_cycle < cycle_length:
+    if previous_cycle_end is None:
         return False
 
     # ---- 觸發重置：強制平倉所有目前持倉，寫入永久交易紀錄 ----
     positions = _load_positions(db, strategy_version)
     for stock_id, position in positions.items():
-        close = _latest_close(db, stock_id=stock_id, as_of=target_date)
+        # 行政結算在 boundary date 實際執行，使用該日最低價；不能使用第五週
+        # 最後一天的價格，否則結算日與成交日的定義會分離。
+        settlement_price = _exact_low_price(db, stock_id=stock_id, trade_date=target_date)
         lots = db.query(ShadowPositionLot).filter(ShadowPositionLot.position_id == position.id).all()
         for lot in lots:
-            exit_price = close if close is not None else lot.entry_price  # 缺當日收盤價的保守 fallback
+            exit_price = settlement_price if settlement_price is not None else lot.entry_price
             proceeds = lot.shares * exit_price
             portfolio.cash += proceeds
             portfolio.realized_pnl_cumulative += proceeds - lot.allocation
@@ -4746,14 +4809,20 @@ def check_and_apply_cycle_reset(
         db,
         strategy_version=strategy_version,
         cycle_number=portfolio.cycle_number,
-        cycle_end_trade_date=target_date,
+        cycle_end_trade_date=previous_cycle_end,
     )
 
-    # ---- 重設 portfolio 現金/循環狀態 ----
+    # ---- 重設 portfolio 現金/循環狀態；target_date 同時是新循環起算日 ----
     portfolio.cash = params["initial_capital"]
     portfolio.realized_pnl_cumulative = 0.0
     portfolio.cycle_number += 1
-    portfolio.cycle_start_trade_date = None  # 下次呼叫的第一天會重新設定
+    portfolio.cycle_start_trade_date = target_date
+    _ensure_active_cycle_archive(
+        db,
+        strategy_version=strategy_version,
+        cycle_number=portfolio.cycle_number,
+        cycle_start_trade_date=target_date,
+    )
 
     return True
 
@@ -4761,11 +4830,12 @@ def check_and_apply_cycle_reset(
 def settle_shadow_portfolio_at_period_end(
     db: Session, *, target_date: date, strategy_version: str = STRATEGY_VERSION
 ) -> int:
-    """在指定回放終點平倉，並把下一循環本金重設為 initial_capital。
+    """在指定行政結算日平倉，並把下一循環本金重設為 initial_capital。
 
     這是歷史回放用的行政性結算，不是每日策略出場規則：
-    - 以 target_date 可用的最低價建立 SELL/ShadowCompletedTrade（回放窗口最後一天
-      沒有下一個交易日可執行，因此把 target_date 視為期末行政結算日）；
+    - 以 target_date 可用的最低價建立 SELL/ShadowCompletedTrade；
+    - 若 target_date 是下一週第一個開盤日，上一循環的 cycle_end_trade_date 記為
+      target_date 前一個交易日（例如 9/4），而不是行政結算日（例如 9/7）；
     - 保留結算前的 daily snapshot，讓期間報酬不被「重設本金」抹掉；
     - 清空目前持倉與 pending order，讓下一循環從固定本金開始。
 
@@ -4838,15 +4908,27 @@ def settle_shadow_portfolio_at_period_end(
         ShadowStrategyOrder.status == ORDER_STATUS_PENDING,
     ).update({"status": "CANCELLED"}, synchronize_session=False)
 
+    cycle_end_trade_date = target_date
+    if params.get("cycle_reset_weeks"):
+        first_open = _first_open_trade_date_of_week(db, target_date)
+        if first_open == target_date:
+            cycle_end_trade_date = _previous_market_trade_date(db, before=target_date) or target_date
+
     _complete_cycle_archive(
         db,
         strategy_version=strategy_version,
         cycle_number=portfolio.cycle_number,
-        cycle_end_trade_date=target_date,
+        cycle_end_trade_date=cycle_end_trade_date,
     )
 
     portfolio.cash = params["initial_capital"]
     portfolio.realized_pnl_cumulative = 0.0
     portfolio.cycle_number += 1
-    portfolio.cycle_start_trade_date = None
+    portfolio.cycle_start_trade_date = target_date
+    _ensure_active_cycle_archive(
+        db,
+        strategy_version=strategy_version,
+        cycle_number=portfolio.cycle_number,
+        cycle_start_trade_date=target_date,
+    )
     return settled

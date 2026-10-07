@@ -99,6 +99,22 @@ def _run_one_strategy_version(SessionLocal, sp, *, target_date: date, strategy_v
     （記 log），讓呼叫端可以繼續處理其他 strategy_version，不會因為某一版本出錯
     就讓整支腳本直接中止、連帶其他版本當天完全沒有機會執行。"""
     try:
+        # Weekly cycle boundaries are settled on the first open of the next
+        # week, before that day's pending orders or strategy decisions.  The
+        # settlement uses the boundary day's low, then the same day's close
+        # can generate the next cycle's T signal for T+1 execution.
+        with SessionLocal() as db:
+            reset_triggered = sp.check_and_apply_cycle_reset(
+                db, target_date=target_date, strategy_version=strategy_version
+            )
+            db.commit()
+            if reset_triggered:
+                logger.info(
+                    "[%s] weekly cycle settled on %s; new cycle starts on the same date",
+                    strategy_version,
+                    target_date,
+                )
+
         with SessionLocal() as db:
             executed = sp.execute_pending_strategy_orders(db, target_date=target_date, strategy_version=strategy_version)
             db.commit()
@@ -116,12 +132,6 @@ def _run_one_strategy_version(SessionLocal, sp, *, target_date: date, strategy_v
                 "[%s] create_portfolio_daily_snapshot: equity=%.2f return_pct=%.2f%% positions=%d",
                 strategy_version, snapshot.total_equity, snapshot.total_return_pct, snapshot.position_count,
             )
-
-        with SessionLocal() as db:
-            reset_triggered = sp.check_and_apply_cycle_reset(db, target_date=target_date, strategy_version=strategy_version)
-            db.commit()
-            if reset_triggered:
-                logger.info("[%s] cycle completed; portfolio has been reset for a new cycle", strategy_version)
 
         params = sp.STRATEGY_PARAMS_BY_VERSION[strategy_version]
         if params.get("track_winners"):

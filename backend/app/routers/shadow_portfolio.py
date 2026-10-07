@@ -14,7 +14,7 @@
 """
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -41,6 +41,10 @@ from app.signals.shadow_portfolio import (
 )
 
 router = APIRouter(prefix="/signals/shadow-portfolio", tags=["signals"])
+
+
+def _week_start(value: date) -> date:
+    return value - timedelta(days=value.weekday())
 
 
 def _resolve_params(strategy_version: str) -> dict:
@@ -89,7 +93,10 @@ class ShadowPortfolioResponse(BaseModel):
     positions: List[ShadowPositionResponse]
     cycle_number: int
     cycle_start_trade_date: Optional[date] = None
-    # None = 這個策略版本沒有強制循環重置概念（Clean Baselines / FORWARD_V1_202609）
+    # None = 這個策略版本沒有強制循環重置概念（Clean Baselines / FORWARD_V1_202609）。
+    # v1_frozen 現行以 5 個交易週計算，交易日欄位保留給舊 API consumer。
+    cycle_length_weeks: Optional[int] = None
+    cycle_weeks_elapsed: Optional[int] = None
     cycle_length_trading_days: Optional[int] = None
     cycle_trading_days_elapsed: Optional[int] = None
     strategy_config: Optional[Dict[str, Any]] = None
@@ -228,18 +235,11 @@ def get_shadow_portfolio(
         if active_cycle_archive is not None and active_cycle_archive.strategy_config_hash
         else strategy_config_hash(config_version, current_strategy_config)
     )
-    cycle_trading_days_elapsed: Optional[int] = None
+    cycle_weeks_elapsed: Optional[int] = None
     if cycle_start_trade_date is not None and latest_snapshot is not None:
-        cycle_trading_days_elapsed = (
-            db.query(func.count(func.distinct(ShadowPortfolioDailySnapshot.trade_date)))
-            .filter(
-                ShadowPortfolioDailySnapshot.strategy_version == strategy_version,
-                ShadowPortfolioDailySnapshot.trade_date >= cycle_start_trade_date,
-                ShadowPortfolioDailySnapshot.trade_date <= latest_snapshot.trade_date,
-            )
-            .scalar()
-            or 0
-        )
+        cycle_weeks_elapsed = (
+            (_week_start(latest_snapshot.trade_date) - _week_start(cycle_start_trade_date)).days // 7
+        ) + 1
 
     return ShadowPortfolioResponse(
         strategy_version=strategy_version,
@@ -261,8 +261,12 @@ def get_shadow_portfolio(
         positions=positions,
         cycle_number=cycle_number,
         cycle_start_trade_date=cycle_start_trade_date,
-        cycle_length_trading_days=params.get("cycle_reset_trading_days"),
-        cycle_trading_days_elapsed=cycle_trading_days_elapsed,
+        cycle_length_weeks=params.get("cycle_reset_weeks"),
+        cycle_weeks_elapsed=cycle_weeks_elapsed,
+        # Deprecated compatibility fields.  Weekly cycles must not be rendered
+        # as a fixed trading-day counter by older clients.
+        cycle_length_trading_days=None,
+        cycle_trading_days_elapsed=None,
         strategy_config=current_strategy_config,
         strategy_config_hash=current_strategy_config_hash,
     )

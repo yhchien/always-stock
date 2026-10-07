@@ -60,7 +60,8 @@ def test_shadow_portfolio_endpoint_returns_v1_caps_for_v1_frozen(api):
     assert body["max_units_per_stock"] == 1
     assert body["max_total_units"] == 6
     assert body["max_position_exposure_pct"] is None
-    assert body["cycle_length_trading_days"] == 25
+    assert body["cycle_length_weeks"] == 5
+    assert body["cycle_length_trading_days"] is None
 
 
 def test_shadow_portfolio_position_exposes_first_actual_execution_date(api):
