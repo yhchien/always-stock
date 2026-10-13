@@ -66,10 +66,10 @@ def _seed_pending_job(
         db.commit()
 
 
-def test_build_pipeline_market_context_reuses_successful_persisted_context(
+def test_build_pipeline_market_context_ignores_persisted_external_risk_context(
     monkeypatch, session_factory
 ):
-    """A rerun may skip only the prior successful market-risk lookup."""
+    """Production runs must not revive an old market-risk LLM result."""
     target_date = date(2026, 4, 25)
     with session_factory() as db:
         db.add(
@@ -96,8 +96,8 @@ def test_build_pipeline_market_context_reuses_successful_persisted_context(
         )
         monkeypatch.setattr(
             llm_caller,
-            "assemble_market_context",
-            lambda _snapshot: pytest.fail("persisted successful context should be reused"),
+            "reuse_persisted_market_context",
+            lambda *_args: pytest.fail("persisted market context must not be reused"),
         )
 
         out = pipeline_mod._build_pipeline_market_context(
@@ -110,7 +110,8 @@ def test_build_pipeline_market_context_reuses_successful_persisted_context(
             },
         )
 
-    assert out["external_risk_context"]["risk_summary"] == "saved"
+    assert out["external_risk_context"]["risk_summary"] != "saved"
+    assert out["llm_diagnostic"]["status"] == "deterministic_only"
     assert out["taiex_change_pct"] == 1.0
     assert out["otc_change_pct"] == -0.5
     assert out["market_regime"] == "RANGE"
@@ -136,7 +137,7 @@ def _stub_all_stages_noop(monkeypatch):
     monkeypatch.setattr(filters, "apply_hard_exclusions", lambda db, td, c: [])
     monkeypatch.setattr(filters, "apply_soft_filters", lambda db, td, c: [])
     monkeypatch.setattr(
-        llm_caller, "assemble_market_context", lambda snap: {"market_state": "RANGE"}
+        llm_caller, "build_deterministic_market_context", lambda snap: {"market_state": "RANGE"}
     )
     monkeypatch.setattr(
         llm_caller, "run_research_batch", lambda batch, ctx: list(batch)
@@ -767,11 +768,11 @@ def test_pipeline_passes_db_market_snapshot_into_step_zero(session_factory, monk
 
     captured = {}
 
-    def _assemble_market_context(snapshot):
+    def _build_market_context(snapshot):
         captured["snapshot"] = snapshot
         return {"market_state": "RANGE"}
 
-    monkeypatch.setattr(llm_caller, "assemble_market_context", _assemble_market_context)
+    monkeypatch.setattr(llm_caller, "build_deterministic_market_context", _build_market_context)
     monkeypatch.setattr(llm_caller, "run_research_batch", lambda batch, ctx: list(batch))
     monkeypatch.setattr(llm_caller, "run_explanation_batch", lambda research, ctx: [])
     monkeypatch.setattr(llm_caller, "run_watch_reason_batch", lambda watch, ctx: list(watch))
@@ -868,7 +869,7 @@ def test_pipeline_persists_signal_watch_hits_and_replaces_same_day(session_facto
     monkeypatch.setattr(classification, "classify_stocks", lambda db, td, pool: [])
     monkeypatch.setattr(filters, "apply_hard_exclusions", lambda db, td, c: [])
     monkeypatch.setattr(filters, "apply_soft_filters", lambda db, td, c: [])
-    monkeypatch.setattr(llm_caller, "assemble_market_context", lambda snap: {"market_state": "RANGE"})
+    monkeypatch.setattr(llm_caller, "build_deterministic_market_context", lambda snap: {"market_state": "RANGE"})
     monkeypatch.setattr(llm_caller, "run_research_batch", lambda batch, ctx: list(batch))
     monkeypatch.setattr(llm_caller, "run_explanation_batch", lambda research, ctx: [])
     monkeypatch.setattr(llm_caller, "run_watch_reason_batch", lambda watch, ctx: list(watch))

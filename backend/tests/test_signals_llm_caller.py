@@ -14,16 +14,13 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-from app.signals import llm_caller, market_cache
+from app.signals import llm_caller
 
 
 @pytest.fixture(autouse=True)
-def _reset_market_cache(monkeypatch):
-    """Legacy caller regressions stay on the supported P2-P4 rollback family."""
+def _legacy_prompt_family(monkeypatch):
+    """Keep the non-market caller regressions on the legacy prompt family."""
     monkeypatch.setenv("SIGNALS_PROMPT_FAMILY", "legacy_split")
-    market_cache._reset_for_tests()
-    yield
-    market_cache._reset_for_tests()
 
 
 # ---------- helpers ----------
@@ -145,97 +142,37 @@ def test_call_llm_json_passes_responses_structured_output(monkeypatch):
     }
 
 
-# ---------- assemble_market_context ----------
+# ---------- deterministic market context ----------
 
 
-def test_assemble_market_context_parses_json_happy_path(monkeypatch):
-    payload = {
-        "external_risk_context": {
-            "vix_status": "risk_on",
-            "us_market_bias": "positive",
-            "futures_bias": "LONG",
-            "fx_risk": "neutral",
-            "risk_summary": "VIX 低、台指期偏多",
-        },
+def test_market_context_is_deterministic_and_does_not_call_openai(monkeypatch):
+    fake_client = _patch_openai(monkeypatch, "this must not be read")
+    snapshot = {
+        "taiex": {"change_pct_1d": 1.2},
+        "otc": {"change_pct_1d": 1.8},
     }
-    fake_client = _patch_openai(monkeypatch, json.dumps(payload))
-    out = llm_caller.assemble_market_context(
-        {
-            "taiex": {"change_pct_1d": 1.2},
-            "otc": {"change_pct_1d": 1.8},
-        }
-    )
+
+    out = llm_caller.assemble_market_context(snapshot)
+
     assert out["market_state"] == "BACKEND_REGIME_AUTHORITATIVE"
     assert out["taiex_change_pct"] == 1.2
     assert out["otc_change_pct"] == 1.8
-    assert out["vix_status"] == "risk_on"
-    assert out["futures_bias"] == "LONG"
-    assert out["external_risk_context"]["us_market_bias"] == "positive"
-    assert "VIX" in out["market_state_reason"]
-    assert out["llm_diagnostic"]["status"] == llm_caller._DIAG_STATUS_OK
-    assert out["llm_diagnostic"]["stage"] == "market"
-    assert fake_client._responses_api.calls[0]["tools"] == [{"type": "web_search"}]
-    assert fake_client._responses_api.calls[0]["prompt_cache_key"] == llm_caller._CACHE_KEY_MARKET
-    assert fake_client.factory_kwargs["timeout"] == llm_caller._OPENAI_TIMEOUT_SECONDS
-    assert fake_client.factory_kwargs["max_retries"] == llm_caller._OPENAI_MAX_RETRIES
+    assert out["vix_status"] == "unavailable"
+    assert out["futures_bias"] == "unavailable"
+    assert out["external_risk_context"]["us_market_bias"] == "unavailable"
+    assert "LLM 已停用" in out["market_state_reason"]
+    assert out["llm_diagnostic"]["status"] == "deterministic_only"
+    assert out["llm_diagnostic"]["usage"]["total_tokens"] == 0
+    assert fake_client._responses_api.calls == []
 
 
-def test_assemble_market_context_keeps_backend_index_values_even_if_llm_mentions_zeros(monkeypatch):
-    payload = {
-        "taiex_change_pct": 0,
-        "otc_change_pct": 0,
-        "external_risk_context": {
-            "vix_status": "neutral",
-            "us_market_bias": "neutral",
-            "futures_bias": "NEUTRAL",
-            "fx_risk": "neutral",
-            "risk_summary": "外部資料不足，但 backend 數字仍可用。",
-        },
-    }
-    _patch_openai(monkeypatch, json.dumps(payload))
-    out = llm_caller.assemble_market_context(
-        {
-            "taiex": {"change_pct_1d": 3.23},
-            "otc": None,
-        }
+def test_build_deterministic_market_context_keeps_missing_backend_values():
+    out = llm_caller.build_deterministic_market_context(
+        {"taiex": {"change_pct_1d": 3.23}, "otc": None}
     )
     assert out["taiex_change_pct"] == 3.23
     assert out["otc_change_pct"] is None
-
-
-def test_assemble_market_context_strips_code_fence(monkeypatch):
-    raw = '```json\n{"external_risk_context": {"vix_status": "neutral", "risk_summary": "ok"}}\n```'
-    _patch_openai(monkeypatch, raw)
-    out = llm_caller.assemble_market_context({"taiex": {"change_pct_1d": 0.1}})
-    assert out["market_state"] == "BACKEND_REGIME_AUTHORITATIVE"
-    assert out["vix_status"] == "neutral"
-    assert out["taiex_change_pct"] == 0.1
-
-
-def test_assemble_market_context_fallback_when_api_key_missing(monkeypatch):
-    _patch_openai(monkeypatch, '{"market_state": "STRONG_BULL"}', api_key=None)
-    out = llm_caller.assemble_market_context({"taiex": {"change_pct_1d": 1.5}})
-    assert out["market_state"] == "BACKEND_REGIME_AUTHORITATIVE"
-    assert out["taiex_change_pct"] == 1.5
-    assert "OPENAI_API_KEY" in out["market_state_reason"]
-    assert out["external_risk_context"]["vix_status"] == "unavailable"
-    assert out["llm_diagnostic"]["status"] == llm_caller._DIAG_STATUS_API_KEY_MISSING
-
-
-def test_assemble_market_context_fallback_on_invalid_json(monkeypatch):
-    _patch_openai(monkeypatch, "not valid json")
-    out = llm_caller.assemble_market_context({})
-    assert out["market_state"] == "BACKEND_REGIME_AUTHORITATIVE"
-    assert out["llm_diagnostic"]["status"] == llm_caller._DIAG_STATUS_INVALID_JSON
-    assert "合法 JSON" in out["market_state_reason"]
-
-
-def test_assemble_market_context_fallback_on_openai_exception(monkeypatch):
-    _patch_openai(monkeypatch, "", raise_exc=RuntimeError("boom"))
-    out = llm_caller.assemble_market_context({})
-    assert out["market_state"] == "BACKEND_REGIME_AUTHORITATIVE"
-    assert out["llm_diagnostic"]["status"] == llm_caller._DIAG_STATUS_OPENAI_EXCEPTION
-    assert "RuntimeError" in out["market_state_reason"]
+    assert out["llm_diagnostic"]["status"] == "deterministic_only"
 
 
 # ---------- run_research_batch ----------
@@ -1093,60 +1030,15 @@ def test_run_research_batch_loads_v6_research_stage_prompt_with_body(monkeypatch
     assert "FALSE_SUPPLY_CHAIN_LINK" not in sent_instructions  # STEP 6 內文不該滲入 research
 
 
-def test_assemble_market_context_caches_for_subsequent_calls(monkeypatch):
-    """A3：第一次 LLM call 命中後寫 cache，第二次直接命中（不再打 OpenAI）。"""
-    response = {
-        "external_risk_context": {
-            "vix_status": "risk_on",
-            "us_market_bias": "positive",
-            "futures_bias": "LONG",
-            "fx_risk": "neutral",
-            "risk_summary": "fresh",
-        },
-    }
-    fake_client = _patch_openai(monkeypatch, json.dumps(response))
-    snapshot = {
-        "taiex": {"change_pct_1d": 1.2},
-        "otc": {"change_pct_1d": 0.8},
-    }
-    out1 = llm_caller.assemble_market_context(snapshot)
-    out2 = llm_caller.assemble_market_context(snapshot)
-    assert out1["market_state"] == "BACKEND_REGIME_AUTHORITATIVE"
-    assert out2["market_state"] == "BACKEND_REGIME_AUTHORITATIVE"
-    assert out2["external_risk_context"]["risk_summary"] == "fresh"
-    # 只打過一次 OpenAI
-    assert len(fake_client._responses_api.calls) == 1
-    # taiex/otc 仍以 backend 為準
-    assert out2["taiex_change_pct"] == 1.2
-    assert out2["otc_change_pct"] == 0.8
-
-
-def test_assemble_market_context_does_not_cache_fallback(monkeypatch):
-    """A3：fallback path（OpenAI 不可用）不該寫 cache，下次仍重試。"""
-    _patch_openai(monkeypatch, "", api_key=None)
-    snapshot = {"taiex": {"change_pct_1d": -0.5}, "otc": {"change_pct_1d": -1.0}}
-    llm_caller.assemble_market_context(snapshot)
-    # 第二次應該還是 fallback（cache 沒寫）
-    cached = llm_caller.market_cache.get_cached()
-    assert cached is None
-
-
-def test_assemble_market_context_use_cache_false_bypasses_cache(monkeypatch):
-    """A3：use_cache=False 強制 fresh（cron 用）。"""
-    response = {
-        "external_risk_context": {
-            "vix_status": "neutral",
-            "us_market_bias": "neutral",
-            "futures_bias": "NEUTRAL",
-            "fx_risk": "neutral",
-            "risk_summary": "r",
-        },
-    }
-    fake_client = _patch_openai(monkeypatch, json.dumps(response))
+def test_assemble_market_context_never_uses_market_cache(monkeypatch):
+    """The retired market stage must not use OpenAI or the old market cache."""
+    fake_client = _patch_openai(monkeypatch, "this must not be read")
     snapshot = {"taiex": {"change_pct_1d": 0.0}, "otc": {"change_pct_1d": 0.0}}
-    llm_caller.assemble_market_context(snapshot, use_cache=True)  # 寫 cache
-    llm_caller.assemble_market_context(snapshot, use_cache=False)  # 強制 fresh
-    assert len(fake_client._responses_api.calls) == 2
+
+    llm_caller.assemble_market_context(snapshot, use_cache=True)
+    llm_caller.assemble_market_context(snapshot, use_cache=False)
+
+    assert fake_client._responses_api.calls == []
 
 
 def test_reuse_persisted_market_context_refreshes_backend_index_values():

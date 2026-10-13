@@ -1,15 +1,16 @@
 """
-M23 Step 0 / 7 / 8 / 9：LLM batch research + short decision + WATCH 長理由 + market_state。
+ M23 Step 7 / 8 / 9：LLM batch research + short decision + WATCH 長理由。
 
 Slice 6（2026-04-26）：實作完成。
 
 對應 spec：
   - §3.2 LLM 上網查詢的資料 context
-  - §5 Step 0（market_state）/ Step 7（Research Layer）/ Step 8（Explanation Layer）/ Step 9（最終組裝）
+  - §5 Step 7（Research Layer）/ Step 8（Explanation Layer）/ Step 9（最終組裝）
   - §10 Input / Output JSON Schema
   - §11.5 LLM batch 後 commit progress
 
 設計：
+  - market context 由 backend deterministic layer 組裝，不再呼叫外部風險 LLM
   - research / explanation 分開調 batch，避免長 explanation 卡住整批
   - 第一版用可搭配 Responses API `web_search` 的模型（例如現有 signals model）
   - 沒 web search 或 OpenAI 不可用 → 每檔走 fallback dict（標記 `_unavailable`），pipeline 仍可完成 snapshot
@@ -28,7 +29,7 @@ from typing import Any, Dict, List, Optional
 from openai import OpenAI
 
 from app.settings import get_openai_api_key
-from app.signals import market_cache, prompt_family
+from app.signals import prompt_family
 
 logger = logging.getLogger(__name__)
 
@@ -55,10 +56,6 @@ DEFAULT_EXPLANATION_BATCH_SIZE = 8
 # 所有 entry function 預設參數都吃這個值，所以 caller 不必每次 explicit 傳 model。
 _FALLBACK_MODEL = "gpt-5.4-mini"
 DEFAULT_MODEL = os.getenv("OPENAI_MODEL", _FALLBACK_MODEL).strip()
-DEFAULT_MARKET_MODEL = os.getenv(
-    "OPENAI_SIGNALS_MARKET_MODEL",
-    "gpt-5.4-mini",
-).strip()
 DEFAULT_RESEARCH_MODEL = os.getenv(
     "OPENAI_SIGNALS_RESEARCH_MODEL",
     "gpt-5.4-mini",
@@ -137,7 +134,6 @@ _OPENAI_TIMEOUT_SECONDS = 120.0
 # 明確控制，避免「SDK retry × stage retry」疊加。
 _OPENAI_MAX_RETRIES = 0
 _PROMPT_CACHE_RETENTION = "in_memory"
-_CACHE_KEY_MARKET = "m23:market:v2"
 _CACHE_KEY_RESEARCH = "m23:research:v2"
 _CACHE_KEY_DECISION = "m23:decision:v2"
 _CACHE_KEY_WATCH_REASON = "m23:watch-reason:v2"
@@ -182,101 +178,49 @@ def current_research_batch_size() -> int:
 def assemble_market_context(
     db_market_snapshot: Dict[str, Any],
     *,
-    model: str = DEFAULT_MARKET_MODEL,
-    use_cache: bool = True,
+    model: Optional[str] = None,
+    use_cache: bool = False,
 ) -> Dict[str, Any]:
-    """Step 0：查外部風險背景。
+    """Backward-compatible entry point for the removed market-risk LLM stage.
 
-    v5 起，真正的大盤狀態由 pipeline 後續塞入 `market_regime`，LLM 不再判斷盤勢。
-    這裡只查 VIX / 美股 / 台指期 / USD-TWD，作為 external_risk_context。
-    LLM 不可用 → 回 fallback dict（外部風險為 neutral / unavailable）。
-
-    A3：4 小時 in-process cache。同日多人按「重新產生」、cron 03:00 之後 web UI 觸發都命中。
-    backend 的 taiex/otc 數字會 merge 進 cached payload（避免 cache 鎖死當日漲跌幅），
-    LLM 上網查的 market_state / vix / 期貨 4h 內不重打。`use_cache=False` 給測試 / cron 強制 fresh。
+    External-risk context is snapshot/UI metadata only.  Keep this function for
+    older callers and replay tools, but make it deterministic so no caller can
+    accidentally spend tokens on the retired Step 0 lookup.
     """
+    return build_deterministic_market_context(db_market_snapshot)
+
+
+def build_deterministic_market_context(
+    db_market_snapshot: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Build the market context without an external-risk LLM request."""
     taiex_change_pct = _get_index_change_pct(db_market_snapshot, "taiex")
     otc_change_pct = _get_index_change_pct(db_market_snapshot, "otc")
-
-    if use_cache:
-        cached = market_cache.get_cached()
-        if cached is not None:
-            # 覆蓋當日 backend authoritative 指數數字（cache 鎖了昨日的 taiex/otc 不合理）
-            merged = dict(cached)
-            merged["taiex_change_pct"] = taiex_change_pct
-            merged["otc_change_pct"] = otc_change_pct
-            return merged
-
-    system_prompt = _load_system_prompt(stage="market")
-    user_msg = (
-        "[只執行 STEP 0：讀取外部風險背景]\n"
-        "你必須使用 web search 查詢 VIX、美股、台指期、USD/TWD。"
-        "注意：真正的大盤狀態 market_regime 由 backend deterministic 決定，"
-        "你不可判斷、覆寫或另建一套盤勢分類；此處只輸出 external_risk_context。\n\n"
-        "[台指期查詢指引]\n"
-        "查詢台指期時，用『台指期 即時』『台指期 最新走勢』『台灣期貨交易所 加權指數期貨』"
-        "等關鍵字搜尋（可參考 Yahoo奇摩股市、MoneyDJ、期交所等來源）；"
-        "若找不到台指期本身的即時報價，改用當下可查到的美股期貨（S&P 500 期貨、那斯達克期貨）"
-        "與亞股夜盤／早盤動向推估台股開盤方向偏多或偏空，仍可判斷 futures_bias 為 LONG/SHORT/NEUTRAL，"
-        "不需要因為查不到台指期精確數字就直接回 unavailable；"
-        "只有連美股期貨與亞股動向都完全查不到任何線索時，才回傳 unavailable。\n\n"
-        "[硬規則]\n"
-        "1. backend 提供的加權/櫃買數字是 authoritative，不可改寫、不可補 0、不可自行重算。\n"
-        "2. 若 backend 某欄位為 null，必須明確說該欄位缺資料；不能寫成『DB 全空』。\n"
-        "3. 外部資訊只可作為風險背景，不能成為股票 WATCH 的主要理由。\n\n"
-        f"[backend 已知市場數字]\n"
-        f"{json.dumps(db_market_snapshot, ensure_ascii=False, indent=2)}\n\n"
-        "輸出格式（JSON only，不要 markdown code fence）：\n"
-        "{\n"
-        '  "external_risk_context": {\n'
-        '    "vix_status": "risk_on | neutral | risk_off | unavailable",\n'
-        '    "us_market_bias": "positive | neutral | negative | unavailable",\n'
-        '    "futures_bias": "LONG | SHORT | NEUTRAL | unavailable",\n'
-        '    "fx_risk": "positive | neutral | negative | unavailable",\n'
-        '    "risk_summary": "外部環境對台股動能延續的影響"\n'
-        "  }\n"
-        "}\n"
-    )
-
-    payload, diagnostic = _call_llm_json(
-        system_prompt,
-        user_msg,
-        model=model,
-        stage="market",
-        use_web_search=True,
-        prompt_cache_key=_CACHE_KEY_MARKET,
-    )
-    if payload is None:
-        # fallback 不寫 cache，避免使用者連續 4 小時都看到 RANGE 不可用文案
-        return _market_context_fallback(db_market_snapshot, diagnostic=diagnostic)
-
-    external = payload.get("external_risk_context")
-    if not isinstance(external, dict):
-        external = {}
-
-    result = {
-        # legacy field kept for old UI/summary consumers; backend market_regime is authoritative.
+    reason = "外部風險 LLM 已停用，選股與追蹤以 backend deterministic market context 為準。"
+    diagnostic = {
+        "stage": "market",
+        "status": "deterministic_only",
+        "message": "External-risk market LLM is disabled; using backend deterministic context.",
+        "response_id": None,
+        "usage": {"total_tokens": 0},
+    }
+    external_risk_context = {
+        "vix_status": "unavailable",
+        "us_market_bias": "unavailable",
+        "futures_bias": "unavailable",
+        "fx_risk": "unavailable",
+        "risk_summary": reason,
+    }
+    return {
         "market_state": "BACKEND_REGIME_AUTHORITATIVE",
         "taiex_change_pct": taiex_change_pct,
         "otc_change_pct": otc_change_pct,
-        "vix_status": external.get("vix_status"),
-        "futures_bias": external.get("futures_bias"),
-        "external_risk_context": external,
-        "market_state_reason": external.get("risk_summary", ""),
+        "vix_status": external_risk_context["vix_status"],
+        "futures_bias": external_risk_context["futures_bias"],
+        "external_risk_context": external_risk_context,
+        "market_state_reason": reason,
         "llm_diagnostic": diagnostic,
     }
-    if use_cache:
-        # 只 cache 「VIX / 期貨 / market_state」 等外部宏觀變數；
-        # 當日 taiex/otc 由 caller 端 backend 數字覆寫（見上方 cache hit branch）
-        market_cache.set_cached({
-            "market_state": result["market_state"],
-            "vix_status": result["vix_status"],
-            "futures_bias": result["futures_bias"],
-            "external_risk_context": result["external_risk_context"],
-            "market_state_reason": result["market_state_reason"],
-            "llm_diagnostic": diagnostic,
-        })
-    return result
 
 
 def reuse_persisted_market_context(
@@ -2293,32 +2237,6 @@ def _format_selection_audit_entry(item: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _market_context_fallback(
-    db_market_snapshot: Dict[str, Any],
-    *,
-    diagnostic: Dict[str, Any],
-) -> Dict[str, Any]:
-    taiex_change_pct = _get_index_change_pct(db_market_snapshot, "taiex")
-    otc_change_pct = _get_index_change_pct(db_market_snapshot, "otc")
-    external_risk_context = {
-        "vix_status": "unavailable",
-        "us_market_bias": "unavailable",
-        "futures_bias": "unavailable",
-        "fx_risk": "unavailable",
-        "risk_summary": _market_context_fallback_reason(diagnostic),
-    }
-    return {
-        "market_state": "BACKEND_REGIME_AUTHORITATIVE",
-        "taiex_change_pct": taiex_change_pct,
-        "otc_change_pct": otc_change_pct,
-        "vix_status": external_risk_context["vix_status"],
-        "futures_bias": external_risk_context["futures_bias"],
-        "external_risk_context": external_risk_context,
-        "market_state_reason": external_risk_context["risk_summary"],
-        "llm_diagnostic": diagnostic,
-    }
-
-
 def _to_evidence_view(stocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """B6：把 candidate_pool dict 投影成乾淨的「deterministic 證據卡」給 LLM。
 
@@ -2633,11 +2551,6 @@ def _with_status(
     updated["status"] = status
     updated["message"] = message
     return updated
-
-
-def _market_context_fallback_reason(diagnostic: Dict[str, Any]) -> str:
-    base = _stage_fallback_reason("market", diagnostic)
-    return f"{base} 外部風險背景暫不可用，選股仍以 backend market_regime 為準。"
 
 
 def _stage_fallback_reason(stage: str, diagnostic: Dict[str, Any]) -> str:

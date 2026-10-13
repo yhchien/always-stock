@@ -2229,7 +2229,7 @@ def replay_observation_lifecycle(
             momentum_frame,
             ingestion.get("stocks_master") or {},
         )
-        market_context = llm_caller.assemble_market_context(
+        market_context = llm_caller.build_deterministic_market_context(
             market_snapshot.build_db_market_snapshot(db, review_date)
         )
         market_context.update(

@@ -1645,7 +1645,7 @@ def test_replay_is_chronological_point_in_time_and_read_only(db, monkeypatch):
     )
     monkeypatch.setattr(
         lifecycle.llm_caller,
-        "assemble_market_context",
+        "build_deterministic_market_context",
         lambda *_args: {},
     )
     monkeypatch.setattr(

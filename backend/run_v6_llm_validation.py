@@ -78,7 +78,9 @@ def run_validation(
         print(f"  asset_type 分布: { {v: list(asset_types.values()).count(v) for v in set(asset_types.values())} }")
 
         db_market_snapshot = market_snapshot.build_db_market_snapshot(db, target_date)
-        market_context = llm_caller.assemble_market_context(db_market_snapshot)
+        market_context = llm_caller.build_deterministic_market_context(
+            db_market_snapshot
+        )
         market_context["market_regime"] = regime_info["regime"]
         market_context["market_regime_label"] = regime_info["regime_label"]
         market_context["market_regime_reason"] = regime_info["reason"]
