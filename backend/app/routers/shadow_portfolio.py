@@ -42,6 +42,11 @@ from app.signals.shadow_portfolio import (
 
 router = APIRouter(prefix="/signals/shadow-portfolio", tags=["signals"])
 
+# Replay backfills use PERIOD_END_SETTLEMENT, while the live five-week
+# scheduler uses CYCLE_RESET.  Both represent a completed strategy cycle and
+# must be included in the historical periods view.
+SETTLEMENT_EXIT_REASONS = ("PERIOD_END_SETTLEMENT", "CYCLE_RESET")
+
 
 def _week_start(value: date) -> date:
     return value - timedelta(days=value.weekday())
@@ -424,7 +429,7 @@ def _history_cycle_metadata(
     settlement_cycle_numbers = {
         int(trade.cycle_number)
         for trade in completed_trades
-        if trade.exit_reason == "PERIOD_END_SETTLEMENT" and trade.cycle_number is not None
+        if trade.exit_reason in SETTLEMENT_EXIT_REASONS and trade.cycle_number is not None
     }
     # The settlement date can also be the first snapshot of the next live
     # cycle. Prefer the cycle that owns the settlement trades over that live
@@ -506,7 +511,7 @@ def get_shadow_history(
             db.query(ShadowCompletedTrade.exit_execution_date)
             .filter(
                 ShadowCompletedTrade.strategy_version == strategy_version,
-                ShadowCompletedTrade.exit_reason == "PERIOD_END_SETTLEMENT",
+                ShadowCompletedTrade.exit_reason.in_(SETTLEMENT_EXIT_REASONS),
             )
             .distinct()
             .order_by(ShadowCompletedTrade.exit_execution_date.desc())
@@ -518,7 +523,7 @@ def get_shadow_history(
                 db.query(ShadowCompletedTrade.exit_execution_date)
                 .filter(
                     ShadowCompletedTrade.strategy_version == strategy_version,
-                    ShadowCompletedTrade.exit_reason == "PERIOD_END_SETTLEMENT",
+                    ShadowCompletedTrade.exit_reason.in_(SETTLEMENT_EXIT_REASONS),
                     ShadowCompletedTrade.exit_execution_date < end_date,
                 )
                 .distinct()
@@ -644,7 +649,7 @@ def get_shadow_history(
     settlement_dates = {
         trade.exit_execution_date
         for trade in completed_trades
-        if trade.exit_reason == "PERIOD_END_SETTLEMENT"
+        if trade.exit_reason in SETTLEMENT_EXIT_REASONS
     }
     settlement_cash = history_initial_capital if settlement_dates else None
     settlement_equity_by_date: dict[date, float] = {}
@@ -656,7 +661,7 @@ def get_shadow_history(
                 int(trade.cycle_number)
                 for trade in completed_trades
                 if trade.exit_execution_date == settlement_date
-                and trade.exit_reason == "PERIOD_END_SETTLEMENT"
+                and trade.exit_reason in SETTLEMENT_EXIT_REASONS
                 and trade.cycle_number is not None
             }
             snapshot = snapshots_by_date.get(settlement_date)
@@ -691,7 +696,7 @@ def get_shadow_history(
                 float(trade.realized_pnl)
                 for trade in completed_trades
                 if trade.exit_execution_date == settlement_date
-                and trade.exit_reason == "PERIOD_END_SETTLEMENT"
+                and trade.exit_reason in SETTLEMENT_EXIT_REASONS
             )
             # Snapshot 是期末結算前的收盤估值；把未實現損益換成實際以最低價
             # 平倉後的已實現損益，才是遵守 SELL 成交規則的期末權益。
@@ -763,7 +768,7 @@ def get_shadow_history_periods(
     strategy_version: str = STRATEGY_VERSION,
     db: Session = Depends(get_db),
 ) -> ShadowHistoryPeriodsResponse:
-    """Return each completed 25-trading-day settlement interval separately.
+    """Return each completed strategy-cycle settlement interval separately.
 
     A new live cycle begins on the settlement date but remains outside this
     endpoint until its own period-end settlement is recorded.  This keeps the
@@ -775,7 +780,7 @@ def get_shadow_history_periods(
         for row in db.query(ShadowCompletedTrade.exit_execution_date)
         .filter(
             ShadowCompletedTrade.strategy_version == strategy_version,
-            ShadowCompletedTrade.exit_reason == "PERIOD_END_SETTLEMENT",
+            ShadowCompletedTrade.exit_reason.in_(SETTLEMENT_EXIT_REASONS),
         )
         .distinct()
         .order_by(ShadowCompletedTrade.exit_execution_date.asc())

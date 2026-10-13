@@ -440,6 +440,11 @@ def test_shadow_history_periods_returns_only_completed_intervals(api):
             ]
         ]
     )
+    # The live scheduler records its cycle boundary as CYCLE_RESET, while the
+    # historical replay uses PERIOD_END_SETTLEMENT.  Both must create a period.
+    db.query(ShadowCompletedTrade).filter(ShadowCompletedTrade.cycle_number == 2).update(
+        {ShadowCompletedTrade.exit_reason: "CYCLE_RESET"}, synchronize_session=False
+    )
     db.commit()
 
     res = client.get(
