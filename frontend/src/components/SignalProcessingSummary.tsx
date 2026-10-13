@@ -54,7 +54,6 @@ export function SignalProcessingCounts({
             `Research ${summary.research_prompt_version ?? "—"}`,
             `Assessment ${summary.assessment_prompt_version ?? "—"}`,
             `Selector ${summary.global_selector_version ?? "—"}`,
-            `Reason ${summary.reason_prompt_version ?? "—"}`,
             `Tracking ${summary.tracking_prompt_version ?? "—"}`,
           ].join(" · ")}
         >

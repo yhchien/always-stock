@@ -170,30 +170,12 @@ export default function StockSignalSummaryPanel({
             </div>
           ) : null}
 
-          {item.business_summary ? (
-            <div className="mt-4 rounded-lg border border-slate-700/70 bg-slate-950/40 p-3">
-              <p className="text-xs text-slate-500">保留摘要</p>
-              <p className="mt-2 whitespace-pre-line text-sm leading-relaxed text-slate-200">
-                {item.business_summary}
-              </p>
-            </div>
-          ) : null}
-
           <div className="mt-4 grid grid-cols-2 gap-2 lg:grid-cols-4">
             <SignalMetric label="資金" value={item.signals?.capital_flow} />
             <SignalMetric label="籌碼" value={item.signals?.chip_trend} />
             <SignalMetric label="融資券" value={item.signals?.margin_short_signal} />
             <SignalMetric label="技術" value={item.signals?.technical_status} />
           </div>
-
-          {item.reason ? (
-            <div className="mt-4 rounded-lg border border-slate-700/70 bg-slate-950/40 p-3">
-              <p className="text-xs text-slate-500">入選理由</p>
-              <p className="mt-2 whitespace-pre-line text-sm leading-relaxed text-slate-200">
-                {item.reason}
-              </p>
-            </div>
-          ) : null}
         </div>
       ) : null}
 

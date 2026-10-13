@@ -928,7 +928,11 @@ def run_signal_pipeline_sync(
                     "global_selection_not_selected_count": (
                         len(selected_items) - len(recommend_candidates)
                     ),
-                    "long_reason_requested_count": len(recommend_candidates),
+                    # 使用者長篇報告已移除。推薦名單已由 Global Selector
+                    # 完成，這裡直接進入 persist / P4，不再另外呼叫
+                    # watch_reason 產生文字報告。
+                    "long_reason_requested_count": 0,
+                    "long_reason_completed_count": 0,
                 }
             )
             selection_diagnostic = selection_result.get("llm_diagnostic") or {}
@@ -937,52 +941,17 @@ def run_signal_pipeline_sync(
                     "global_selector"
                 ] = [selection_diagnostic["payload_metrics"]]
 
-            # Step 6c：只有正式 RECOMMEND 產生長理由。
-            total_for_watch_reason = max(len(recommend_candidates), 1)
+            # Step 6c：使用者長篇報告已移除。
+            # `selected_items` 已包含 Global Selector 的內部選股結果；
+            # watch_reason 原本只負責補上給人看的五段理由、動能文字與
+            # margin_analysis，不參與推薦決策或 P4 判斷。
             _set_progress(
                 db,
                 job,
                 stage=STAGE_LLM_EXPLAIN,
                 pct=90,
-                label=f"推薦理由（共 {len(recommend_candidates)} 檔）",
+                label="略過使用者長篇報告",
             )
-            watch_batches = _build_batches(recommend_candidates, explain_batch_size)
-            watch_reason_execution = _run_parallel_batches(
-                watch_batches,
-                lambda chunk: llm_caller.run_watch_reason_batch(chunk, market_context),
-                stage="reason_generation",
-                concurrency=LLM_BATCH_CONCURRENCY,
-                on_batch_done=lambda done_count: _set_progress(
-                    db,
-                    job,
-                    stage=STAGE_LLM_EXPLAIN,
-                    pct=90 + int(5 * done_count / total_for_watch_reason),
-                    label=f"推薦理由第 {done_count} / {len(recommend_candidates)} 檔",
-                ),
-            )
-            enriched_watch, watch_reason_failures = _partition_stage_results(
-                watch_reason_execution,
-                failure_status="REASON_GENERATION_FAILED",
-            )
-            processing_summary["long_reason_completed_count"] = len(enriched_watch)
-            processing_summary["prompt_payload_metrics"]["reason"] = (
-                _collect_prompt_payload_metrics(watch_reason_execution.results)
-            )
-
-            if enriched_watch:
-                watch_by_id = {
-                    str(item.get("stock") or item.get("stock_id") or ""): item
-                    for item in enriched_watch
-                }
-                merged_selected: list = []
-                for item in selected_items:
-                    sid = str(item.get("stock") or item.get("stock_id") or "")
-                    if sid and sid in watch_by_id:
-                        merged_selected.append({**item, **watch_by_id[sid]})
-                    else:
-                        merged_selected.append(item)
-                selected_items = merged_selected
-
             explanation = [*selected_items, *removed_assessments]
 
             # Step 7：Persist Snapshot
@@ -1001,7 +970,6 @@ def run_signal_pipeline_sync(
                 research_results=research_results,
                 decision_results=assessed_items,
                 global_selection_result=selection_result,
-                reason_results=enriched_watch,
             )
             final_payload = llm_caller.assemble_final_output(
                 market_context,
@@ -1013,7 +981,6 @@ def run_signal_pipeline_sync(
             technical_failures = [
                 *research_failures,
                 *decision_failures,
-                *watch_reason_failures,
             ]
             failed_stock_ids = {
                 str(item.get("stock_id") or "")
@@ -1204,7 +1171,6 @@ def run_signal_pipeline_sync(
                 research_results=research_results,
                 decision_results=assessed_items,
                 global_selection_result=selection_result,
-                reason_results=enriched_watch,
                 tracking_token_usage=tracking_result.get("tracking_summary", {}).get(
                     "token_usage"
                 ),

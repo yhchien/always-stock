@@ -121,7 +121,6 @@ export default function SignalDebugPage() {
                         ["research", "Research"],
                         ["decision", "Decision"],
                         ["global_selection", "Global Selection"],
-                        ["reason", "Reason（長理由）"],
                         ["tracking", "P4 Tracking"],
                       ] as const
                     ).map(([key, label]) => {

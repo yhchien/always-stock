@@ -34,10 +34,6 @@ import {
   isSignalProcessingIncomplete,
   SignalIncompleteWarning,
 } from "@/components/SignalProcessingSummary"
-import TradingPlanPanel, {
-  PanelBulletList,
-  type TradingPlanAccent,
-} from "@/components/TradingPlanPanel"
 import WatchlistAddButton from "@/components/WatchlistAddButton"
 
 const LAST_SEEN_KEY = "always-stock:signals:last_seen_snapshot_date"
@@ -50,11 +46,6 @@ const COLLAPSED_KEY = "always-stock:signals:collapsed"
 // TWSE，放大延遲與失敗機率。後端已加上短 TTL cache，這裡同步把首頁輪詢頻率
 // 降到跟其他頁面一致，從源頭減少請求量。
 const REALTIME_INTERVAL_MS = 60_000
-
-// 2026-05-27：暫時隱藏 SignalDetailDialog 內的融資融券分析紅色框框
-// 改回顯示時把這個常數改成 true 即可（保留 MarginAnalysisPanel 函式與後端資料）
-// 明確標型別 boolean（不能用 const false literal，否則 TS 會把三元 truthy branch narrow 成 unreachable）
-const SHOW_MARGIN_ANALYSIS: boolean = false
 
 // 2026-08-28：首頁隱藏「重新產生」整包每日訊號的按鈕（保留 handleRegenerate／
 // regenerateSignals 呼叫與 quota 顯示邏輯，改回顯示時把這個常數改成 true 即可）。
@@ -233,7 +224,6 @@ type ResolvedMomentum = {
   return60d: number | null
   fundamentalApplicability: string | null
   fundamentalScore: number | null
-  reasons: string[]
 }
 
 function resolveMomentum(item: SignalWatchlistItem): ResolvedMomentum | null {
@@ -259,7 +249,6 @@ function resolveMomentum(item: SignalWatchlistItem): ResolvedMomentum | null {
       det?.momentum_score_detail?.fundamental_applicability ??
       null,
     fundamentalScore: det?.momentum_score_detail?.fundamental ?? null,
-    reasons: Array.isArray(llm?.momentum_reason) ? llm.momentum_reason : [],
   }
   if (resolved.score == null && resolved.rsMarketPct == null) return null
   return resolved
@@ -358,16 +347,6 @@ function MomentumPanel({ item }: { item: SignalWatchlistItem }) {
         ) : null}
       </div>
 
-      {m.reasons.length > 0 ? (
-        <ul className="mt-3 space-y-1.5">
-          {m.reasons.map((r, i) => (
-            <li key={i} className="flex gap-2 text-xs leading-relaxed text-slate-300">
-              <span aria-hidden className="mt-0.5 shrink-0 text-violet-400">▸</span>
-              <span>{r}</span>
-            </li>
-          ))}
-        </ul>
-      ) : null}
     </section>
   )
 }
@@ -377,25 +356,6 @@ function decisionToTone(type: SignalDecisionType | null | undefined): EmotionTon
   if (type === "LAGGARD") return "laggard"
   return "leader"
 }
-
-type ReasonSection = {
-  key: keyof Pick<
-    SignalWatchlistItem,
-    "theme_reason" | "capital_reason" | "chip_reason" | "margin_reason" | "technical_reason"
-  >
-  number: number
-  title: string
-  accent: TradingPlanAccent
-}
-
-// 5 段 panel 順序 / 配色（對應 M2 backend 5 段 bullet）
-const REASON_PANELS: ReasonSection[] = [
-  { key: "theme_reason", number: 1, title: "題材", accent: "amber" },
-  { key: "capital_reason", number: 2, title: "資金", accent: "cyan" },
-  { key: "chip_reason", number: 3, title: "籌碼", accent: "emerald" },
-  { key: "margin_reason", number: 4, title: "融券", accent: "rose" },
-  { key: "technical_reason", number: 5, title: "技術", accent: "slate" },
-]
 
 function SignalCard({
   item,
@@ -408,12 +368,6 @@ function SignalCard({
   const themeFit = item.theme_fit
   // 首頁卡片只留產業名稱；資產類型徽章、子產業、canonical 分類 tag 移到詳情 popup 顯示
   const subtitle = item.industry != null ? <span>{item.industry}</span> : null
-
-  // 偵測是否有任一段 bullet array 有內容（舊快照可能全 null/empty → 不顯示「看細節」按鈕）
-  const hasReasonSections = REASON_PANELS.some((p) => {
-    const bullets = item[p.key]
-    return Array.isArray(bullets) && bullets.length > 0
-  })
 
   return (
     <>
@@ -453,9 +407,6 @@ function SignalCard({
               value={item.signals?.margin_short_signal}
             />
             <GreenOnlyChip label="技術" kind="technical_status" value={item.signals?.technical_status} />
-            {!hasReasonSections ? (
-              <span className="ml-auto text-[11px] text-slate-500">細節資料待更新</span>
-            ) : null}
           </div>
 
         </div>
@@ -535,37 +486,10 @@ function SignalDetailDialog({
             <ChipWithLabel label="技術" kind="technical_status" value={item.signals?.technical_status} />
           </div>
 
-          {/* 5 panel grid（modal 寬度 56rem，明顯比卡片寬，每行字數舒服） */}
-          <div className="grid gap-3 sm:grid-cols-2">
-            {REASON_PANELS.map((p) => {
-              const bullets = (item[p.key] ?? []) as string[]
-              if (bullets.length === 0) return null
-              return (
-                <TradingPlanPanel
-                  key={p.key}
-                  number={p.number}
-                  title={p.title}
-                  accent={p.accent}
-                >
-                  <PanelBulletList items={bullets} bulletAccent={p.accent} />
-                </TradingPlanPanel>
-              )
-            })}
-          </div>
-
-          {/* v2.2（2026-07-16）：動能分析（deterministic 分數 / RS / 階段 + v5 LLM 解讀 bullet） */}
+          {/* 只保留結構化動能指標；watch_reason 的文字解讀已停用。 */}
           <div className="mt-4">
             <MomentumPanel item={item} />
           </div>
-
-
-          {/* 2026-05-25：融資融券專屬結構化分析卡（比重 大盤 30% / 個股 70%） */}
-          {/* 2026-05-27：暫時隱藏紅色框框（改回顯示請把 SHOW_MARGIN_ANALYSIS 改 true） */}
-          {SHOW_MARGIN_ANALYSIS && item.margin_analysis ? (
-            <div className="mt-4">
-              <MarginAnalysisPanel analysis={item.margin_analysis} stockId={item.stock} />
-            </div>
-          ) : null}
 
           {/* Footer：兩個對等大按鈕（回上一頁 + 前往個股研究頁） */}
           <div className="mt-6 grid grid-cols-1 gap-3 border-t border-zinc-700 pt-5 sm:grid-cols-2">
@@ -1152,7 +1076,7 @@ export default function DailySignalsPanel({
                   首頁卡片固定顯示動能、觀察積極度、題材；資金／籌碼／融券／技術只顯示判定為正向的綠色 label，其他狀態會隱藏。因此顯示 3 個通常代表沒有額外正向維度，顯示 5 個代表還有兩個維度被判定為正向。
                 </p>
                 <p className="mt-1 text-slate-400">
-                  點開詳情後則是五個分析面向：題材、資金、籌碼、融券、技術。若某段沒有有效內容，該段會暫不顯示；每段通常有 3～5 個分析 bullet，融券段可能較少。
+                  點開詳情後只顯示五個面向的結果與結構化動能數值；不再顯示長篇分析文字。
                 </p>
               </section>
             </div>

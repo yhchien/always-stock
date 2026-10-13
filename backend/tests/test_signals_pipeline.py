@@ -1325,7 +1325,8 @@ def test_p3_pipeline_three_buckets_only_recommend_gets_reason_and_observation(
         assert len(snap.watchlist) == 10
         assert len(snap.summary["not_selected"]) == 20
         assert len(snap.removed) == 5
-        assert len(reason_stock_ids) == 10
+        # Global Selector 已完成選股後不再呼叫使用者長篇報告 stage。
+        assert reason_stock_ids == []
         assert len(hits) == 10
         assert len(observations) == 10
         assert db.query(SignalObservationReview).count() == 0
@@ -1343,7 +1344,9 @@ def test_p3_pipeline_three_buckets_only_recommend_gets_reason_and_observation(
         assert processing["global_selection_eligible_count"] == 30
         assert processing["global_selection_recommended_count"] == 10
         assert processing["global_selection_not_selected_count"] == 20
-        assert processing["long_reason_requested_count"] == 10
+        assert processing["long_reason_requested_count"] == 0
+        assert processing["long_reason_completed_count"] == 0
+        assert processing["token_usage"]["by_stage"]["reason"]["total_tokens"] == 0
         assert processing["selection_complete"] is True
         assert processing["jev_shadow"]["mode"] == "shadow"
         assert [item["stock"] for item in snap.watchlist] == [str(1000 + i) for i in range(10)]

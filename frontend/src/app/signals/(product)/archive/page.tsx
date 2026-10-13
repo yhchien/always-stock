@@ -6,7 +6,6 @@ import { Suspense, useCallback, useEffect, useMemo, useState, type ReactNode } f
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { Dialog } from "@base-ui/react/dialog"
 
-import { MarginAnalysisPanel } from "@/components/DailySignalsPanel"
 import ObservationStatusBadge from "@/components/ObservationStatusBadge"
 import StockChartDialog from "@/components/StockChartDialog"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -575,7 +574,7 @@ function MomentumScoreChart({
   )
 }
 
-// 每檔股票的「查看更多」popup：卡片極簡化後，所有數據 + 報告時間軸都收進這裡
+// 每檔股票的「查看更多」popup：只保留摘要數據與動能分數圖
 function StockDetailDialog({
   item,
   detail,
@@ -633,14 +632,6 @@ function StockDetailDialog({
                     {hitStopLoss && <StopLossWarnChip />}
                     {observation && <ObservationStatusBadge status={observation.status} />}
                   </div>
-                  {observation && (
-                    <Link
-                      href="/signals/observations"
-                      className="mt-1 inline-block text-[11px] text-sky-300 hover:text-sky-200"
-                    >
-                      查看完整追蹤紀錄（推薦論點／每日檢查）→
-                    </Link>
-                  )}
                 </div>
                 <Dialog.Close className="rounded border border-slate-600 bg-slate-800/50 px-2 py-1 text-xs text-slate-300 hover:bg-slate-700">
                   關閉 ✕
@@ -697,7 +688,11 @@ function StockDetailDialog({
                 </Metric>
               </div>
 
-              {detail && detail.stock_id === item.stock_id && (
+              {detailLoading && <p className="text-sm text-slate-400">載入動能資料中…</p>}
+              {detailError && !detailLoading && (
+                <p className="text-sm text-rose-300">{detailError}</p>
+              )}
+              {!detailLoading && !detailError && detail && detail.stock_id === item.stock_id && (
                 <MomentumScoreChart
                   history={detail.momentum_score_history}
                   events={detail.review_status_events}
@@ -720,68 +715,6 @@ function StockDetailDialog({
                 </Link>
               </div>
 
-              {detail && detail.stock_id === item.stock_id &&
-                (detail.recommendation_thesis || detail.relative_advantage) && (
-                  <div className="flex flex-col gap-2 border-t border-slate-800 pt-3 text-sm">
-                    {detail.recommendation_thesis && (
-                      <p>
-                        <span className="mr-1.5 text-xs text-slate-500">推薦論點</span>
-                        <span className="text-slate-200">{detail.recommendation_thesis}</span>
-                      </p>
-                    )}
-                    {detail.relative_advantage && (
-                      <p>
-                        <span className="mr-1.5 text-xs text-slate-500">相對優勢</span>
-                        <span className="text-slate-300">{detail.relative_advantage}</span>
-                      </p>
-                    )}
-                  </div>
-                )}
-
-              {detail && detail.stock_id === item.stock_id && detail.margin_analysis && (
-                <div className="border-t border-slate-800 pt-3">
-                  <MarginAnalysisPanel analysis={detail.margin_analysis} stockId={item.stock_id} />
-                </div>
-              )}
-
-              <div className="flex flex-col gap-3 border-t border-slate-800 pt-3">
-                <h4 className="text-sm font-medium text-slate-200">報告時間軸</h4>
-                {detailLoading && <p className="text-sm text-slate-400">載入報告中…</p>}
-                {detailError && !detailLoading && (
-                  <p className="text-sm text-rose-300">{detailError}</p>
-                )}
-                {!detailLoading &&
-                  !detailError &&
-                  detail &&
-                  detail.stock_id === item.stock_id &&
-                  detail.reports.map((report) => (
-                    <article
-                      key={`${report.snapshot_date}-${report.signal_type}`}
-                      className="rounded-lg border border-slate-800 bg-slate-800/30 p-4"
-                    >
-                      <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
-                        <span className="font-mono text-slate-200">{report.snapshot_date}</span>
-                        <span className="rounded border border-slate-600 px-1.5 py-0.5 text-[11px] text-slate-300">
-                          {report.signal_type}
-                        </span>
-                        {report.snapshot_generated_at && (
-                          <span>{report.snapshot_generated_at}</span>
-                        )}
-                      </div>
-                      {report.business_summary && (
-                        <p className="mt-2 text-xs text-slate-400">{report.business_summary}</p>
-                      )}
-                      <p className="mt-3 whitespace-pre-line text-sm leading-relaxed text-slate-200">
-                        {report.reason}
-                      </p>
-                    </article>
-                  ))}
-                {!detailLoading &&
-                  !detailError &&
-                  (!detail || detail.stock_id !== item.stock_id) && (
-                    <p className="text-sm text-slate-400">找不到 {item.stock_id} 的報告內容。</p>
-                  )}
-              </div>
             </div>
           )}
         </Dialog.Popup>
@@ -895,7 +828,11 @@ function StoppedObservationDetailDialog({
                 </Metric>
               </div>
 
-              {matches && detail && (
+              {detailLoading && <p className="text-sm text-slate-400">載入動能資料中…</p>}
+              {detailError && !detailLoading && (
+                <p className="text-sm text-rose-300">{detailError}</p>
+              )}
+              {!detailLoading && !detailError && matches && detail && (
                 <MomentumScoreChart
                   history={detail.momentum_score_history}
                   events={detail.review_status_events}
@@ -918,65 +855,6 @@ function StoppedObservationDetailDialog({
                 </Link>
               </div>
 
-              {matches && detail && (detail.recommendation_thesis || detail.relative_advantage) && (
-                <div className="flex flex-col gap-2 border-t border-slate-800 pt-3 text-sm">
-                  {detail.recommendation_thesis && (
-                    <p>
-                      <span className="mr-1.5 text-xs text-slate-500">推薦論點</span>
-                      <span className="text-slate-200">{detail.recommendation_thesis}</span>
-                    </p>
-                  )}
-                  {detail.relative_advantage && (
-                    <p>
-                      <span className="mr-1.5 text-xs text-slate-500">相對優勢</span>
-                      <span className="text-slate-300">{detail.relative_advantage}</span>
-                    </p>
-                  )}
-                </div>
-              )}
-
-              {matches && detail && detail.margin_analysis && (
-                <div className="border-t border-slate-800 pt-3">
-                  <MarginAnalysisPanel analysis={detail.margin_analysis} stockId={item.stock_id} />
-                </div>
-              )}
-
-              <div className="flex flex-col gap-3 border-t border-slate-800 pt-3">
-                <h4 className="text-sm font-medium text-slate-200">報告時間軸</h4>
-                {detailLoading && <p className="text-sm text-slate-400">載入報告中…</p>}
-                {detailError && !detailLoading && (
-                  <p className="text-sm text-rose-300">{detailError}</p>
-                )}
-                {!detailLoading &&
-                  !detailError &&
-                  matches &&
-                  detail &&
-                  detail.reports.map((report) => (
-                    <article
-                      key={`${report.snapshot_date}-${report.signal_type}`}
-                      className="rounded-lg border border-slate-800 bg-slate-800/30 p-4"
-                    >
-                      <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
-                        <span className="font-mono text-slate-200">{report.snapshot_date}</span>
-                        <span className="rounded border border-slate-600 px-1.5 py-0.5 text-[11px] text-slate-300">
-                          {report.signal_type}
-                        </span>
-                        {report.snapshot_generated_at && (
-                          <span>{report.snapshot_generated_at}</span>
-                        )}
-                      </div>
-                      {report.business_summary && (
-                        <p className="mt-2 text-xs text-slate-400">{report.business_summary}</p>
-                      )}
-                      <p className="mt-3 whitespace-pre-line text-sm leading-relaxed text-slate-200">
-                        {report.reason}
-                      </p>
-                    </article>
-                  ))}
-                {!detailLoading && !detailError && !matches && (
-                  <p className="text-sm text-slate-400">找不到 {item.stock_id} 的報告內容。</p>
-                )}
-              </div>
             </div>
           )}
         </Dialog.Popup>

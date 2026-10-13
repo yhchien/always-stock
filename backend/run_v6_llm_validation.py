@@ -114,15 +114,9 @@ def run_validation(
             item for item in selected
             if str(item.get("decision") or "").upper() == "RECOMMEND"
         ]
-        print(f"  → RECOMMEND {len(recommend_items)} 檔，呼叫 OpenAI reason batch...")
-        enriched_watch = llm_caller.run_watch_reason_batch(recommend_items, market_context)
-        if enriched_watch:
-            watch_by_id = {str(item.get("stock") or ""): item for item in enriched_watch}
-            merged = []
-            for item in selected:
-                sid = str(item.get("stock") or "")
-                merged.append({**item, **watch_by_id[sid]} if sid in watch_by_id else item)
-            selected = merged
+        # 使用者長篇報告已從正式流程移除；這個 replay 只驗證
+        # research / assessment / global selector，不再額外呼叫 reason batch。
+        print(f"  → RECOMMEND {len(recommend_items)} 檔，略過使用者長篇報告")
 
         explanation = [*selected, *removed]
 
