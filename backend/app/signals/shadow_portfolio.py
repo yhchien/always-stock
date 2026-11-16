@@ -131,7 +131,9 @@ from app.signals import momentum as momentum_features
 # 兩表 schema 相同、语意重疊，backfill/point-in-time 查詢一律兩張都查，見 M23 CLAUDE.md）
 _FISHTAIL_ARCHIVE_MODELS = (SignalWatchCompletedArchive, SignalWatchStoppedObservation)
 
-STRATEGY_VERSION = "v1_frozen"
+# Active daily strategy.  The historical v1_frozen portfolio remains
+# append-only and can still be queried explicitly for comparison/replay.
+STRATEGY_VERSION = "V1_MARKET_OVERLAY_202611"
 
 
 def ensure_shadow_portfolio_tables(engine: Engine) -> None:
@@ -451,6 +453,8 @@ STRATEGY_VERSION_CLEAN_FIXED_TP = "CLEAN_FIXED_TP"
 STRATEGY_VERSION_CLEAN_NO_FIXED_TP = "CLEAN_NO_FIXED_TP"
 STRATEGY_VERSION_FORWARD_V1 = "FORWARD_V1_202609"
 STRATEGY_VERSION_PROFIT_PROTECTION_202610 = "PROFIT_PROTECTION_202610"
+STRATEGY_VERSION_MARKET_POLICY_202611 = "V1_MARKET_POLICY_202611"
+STRATEGY_VERSION_MARKET_OVERLAY_202611 = "V1_MARKET_OVERLAY_202611"
 
 # ---------------------------------------------------------------------------
 # 多策略版本參數登記表 —— 2026-09 新增（Clean Baselines + FORWARD_V1_202609）。
@@ -648,6 +652,82 @@ _PROFIT_PROTECTION_RULES: Dict[str, Any] = {
 DUAL_ENGINE_PARAMS["profit_protection"] = copy.deepcopy(_PROFIT_PROTECTION_RULES)
 PROFIT_PROTECTION_PARAMS: Dict[str, Any] = copy.deepcopy(DUAL_ENGINE_PARAMS)
 
+# 2026-11：市場風險政策層的隔離回放版本。保留 Dual-Engine 原本的個股條件，
+# 只在「是否允許新增部位」前加 deterministic market-policy gate；不覆寫
+# v1_frozen 的 production 歷史。
+MARKET_POLICY_PARAMS: Dict[str, Any] = copy.deepcopy(DUAL_ENGINE_PARAMS)
+MARKET_POLICY_PARAMS["market_policy"] = {
+    "enabled": True,
+    "strict_states": ("EARLY_WARNING", "HARD_RISK_OFF", "DEFENSIVE_RANGE"),
+    "max_new_entries_per_day": {
+        "EARLY_WARNING": 1,
+        "HARD_RISK_OFF": 1,
+        "DEFENSIVE_RANGE": 1,
+        # Once the index confirms a rebound, return to the ordinary daily
+        # capacity; the tighter cap is only for warning/risk-off/range states.
+        "REBOUND": None,
+        "NORMAL": None,
+    },
+    # 風險狀態下只保留「真正突破且抗跌」的 continuation；Pullback Recovery
+    # 在瀑布段一律不進場，避免 3701／8213／6112 類型重演。
+    "exception_min_evidence": 7,
+    "exception_min_technical_strength": 75.0,
+    "exception_min_relative_strength": 96.5,
+    "defensive_pullback_min_momentum": 88.0,
+}
+
+# 2026-11：分層市場 Overlay。正常盤仍走完整 Dual-Engine；只有警戒、
+# 防守震盪與確認 Risk-off 才逐級收緊。這和上面的 MARKET_POLICY_PARAMS
+# 分開，保留前一版極嚴格回放作為對照組。
+MARKET_OVERLAY_PARAMS: Dict[str, Any] = copy.deepcopy(DUAL_ENGINE_PARAMS)
+MARKET_OVERLAY_PARAMS["market_policy"] = {
+    "enabled": True,
+    "strict_states": ("EARLY_WARNING", "HARD_RISK_OFF", "DEFENSIVE_RANGE"),
+    "max_new_entries_per_day": {
+        "EARLY_WARNING": 3,
+        "HARD_RISK_OFF": 1,
+        "DEFENSIVE_RANGE": 3,
+        "REBOUND": None,
+        "NORMAL": None,
+    },
+    # EARLY_WARNING：仍保留正常盤的強勢候選，只去掉弱證據與普通拉回。
+    "warning_min_evidence": 6,
+    "warning_min_relative_strength": 90.0,
+    # Warning is intentionally permissive for already-selected leaders; the
+    # hard 75-point technical threshold belongs only to confirmed Risk-off.
+    "warning_min_technical_strength": 30.0,
+    # DEFENSIVE_RANGE：曾經 Risk-off 後稍微放寬，但仍要求高相對強度、
+    # 法人流向與至少 7 項證據；不恢復成普通盤。
+    "defensive_min_evidence": 7,
+    "defensive_min_relative_strength": 93.0,
+    "defensive_min_technical_strength": 50.0,
+    "defensive_min_momentum": 70.0,
+    # Only a genuinely recent Risk-off episode should keep a later range in
+    # the defensive layer; an old shock must not suppress a new normal/rebound
+    # phase weeks later.
+    "risk_off_lookback_snapshots": 5,
+    # A BULL_CAUTION rebound is not yet a full reset to normal.  Rebuild one
+    # position first and wait for an unqualified BULL_TREND before filling the
+    # rest of the portfolio.
+    "rebound_caution_max_total_entries": 1,
+    # HARD_RISK_OFF 使用原本的極窄抗跌例外條件。
+    "exception_min_evidence": 7,
+    "exception_min_technical_strength": 75.0,
+    "exception_min_relative_strength": 96.5,
+    # Confirmed Risk-off still permits a very small class of anti-trend
+    # breakouts.  This is intentionally narrower than the warning layer:
+    # strong relative strength and institutional flow are required, but a
+    # neutral actionability label is acceptable when the price structure is
+    # already a confirmed breakout.  The gate is validated against C2's
+    # 1560/6226 cases while excluding C3's early-turn losers.
+    "breakout_exception_enabled": True,
+    "breakout_exception_min_evidence": 7,
+    "breakout_exception_min_relative_strength": 90.0,
+    "breakout_exception_min_technical_strength": 50.0,
+    "breakout_exception_actionabilities": ("POSITIVE", "NEUTRAL"),
+    "defensive_pullback_min_momentum": 88.0,
+}
+
 STRATEGY_PARAMS_BY_VERSION: Dict[str, Dict[str, Any]] = {
     # The validated profit-protection rules are now the active production
     # behavior under the stable v1_frozen identifier.
@@ -657,6 +737,8 @@ STRATEGY_PARAMS_BY_VERSION: Dict[str, Dict[str, Any]] = {
     # rewriting v1_frozen's append-only production history.
     STRATEGY_VERSION_REPAIR_6933: {**DUAL_ENGINE_PARAMS, "profit_protection": None},
     STRATEGY_VERSION_PROFIT_PROTECTION_202610: PROFIT_PROTECTION_PARAMS,
+    STRATEGY_VERSION_MARKET_POLICY_202611: MARKET_POLICY_PARAMS,
+    STRATEGY_VERSION_MARKET_OVERLAY_202611: MARKET_OVERLAY_PARAMS,
     STRATEGY_VERSION_CLEAN_FIXED_TP: {
         **V1_STRATEGY_PARAMS,
         "take_profit_basis": "actual_position",
@@ -787,6 +869,52 @@ ENTRY_TYPE_CONTINUATION_SUSTAINED_BREAKOUT = "CONTINUATION_SUSTAINED_BREAKOUT"
 ENTRY_TYPE_CONTINUATION_PULLBACK_RIDE = "CONTINUATION_PULLBACK_RIDE"
 ENTRY_TYPE_PULLBACK_RECOVERY = "PULLBACK_RECOVERY_ENTRY"
 
+# P3 recommendation rank is a cross-sectional strength signal.  It is used
+# only to resolve the P3/P4 boundary: a fresh P3 recommendation in ranks 1-15
+# may still enter despite an ordinary P4 STOP, while an existing position in
+# ranks 1-5 is allowed to remain under P3's stronger current view.  Real
+# position stop-loss, data-quality and capacity rules remain independent.
+P3_TOP_RANK_MAX = 5
+P3_MEDIUM_RANK_MAX = 15
+P3_STRENGTH_TOP = "TOP"
+P3_STRENGTH_MEDIUM = "MEDIUM"
+P3_STRENGTH_LOWER = "LOWER"
+P3_STRENGTH_NONE = "NONE"
+
+
+def normalize_p3_recommendation_rank(value: Any) -> Optional[int]:
+    """Return a valid one-based P3 recommendation rank, otherwise ``None``."""
+    if isinstance(value, bool):
+        return None
+    try:
+        rank = int(value)
+    except (TypeError, ValueError):
+        return None
+    return rank if rank >= 1 else None
+
+
+def p3_strength_tier(rank: Optional[int]) -> str:
+    rank = normalize_p3_recommendation_rank(rank)
+    if rank is None:
+        return P3_STRENGTH_NONE
+    if rank <= P3_TOP_RANK_MAX:
+        return P3_STRENGTH_TOP
+    if rank <= P3_MEDIUM_RANK_MAX:
+        return P3_STRENGTH_MEDIUM
+    return P3_STRENGTH_LOWER
+
+
+def p3_has_new_entry_priority(rank: Optional[int]) -> bool:
+    """P3 ranks 1-15 can keep a fresh recommendation actionable."""
+    rank = normalize_p3_recommendation_rank(rank)
+    return rank is not None and rank <= P3_MEDIUM_RANK_MAX
+
+
+def p3_has_existing_position_priority(rank: Optional[int]) -> bool:
+    """Only P3's top five outrank an ordinary P4 stop for an existing hold."""
+    rank = normalize_p3_recommendation_rank(rank)
+    return rank is not None and rank <= P3_TOP_RANK_MAX
+
 # 一個 position 屬於哪個 engine，看它「第一個 lot」（最早 entry_execution_date）的
 # entry_type 落在哪個集合——Confirmation Scale-in 的 lot 一定跟在 Starter 之後，
 # 不會被誤判成獨立的初始進場型態，但也不能拿它來判斷 engine 本身。
@@ -829,6 +957,8 @@ class EvidenceRow:
     p4_decision: Optional[str]
     mark_to_market_return_pct: Optional[float]
     is_official_exit_signal_day: bool
+    p3_recommendation_rank: Optional[int] = None
+    p3_strength_tier: str = P3_STRENGTH_NONE
     # PART 2~6（2026-09-09 第二輪重寫）：Dual-Engine 自己的「Episode Price Metrics」，
     # 跟上面的 `mark_to_market_return_pct`（給 P3/P4 evidence／reporting 用，不動）是
     # 完全獨立的兩套數字，不要混用。三者都保留在報告裡分別可見。
@@ -881,7 +1011,7 @@ def _in_range(value: Optional[float], lo: float, hi: Optional[float]) -> bool:
 
 def _matches_setup_a(row: EvidenceRow, cfg: dict) -> bool:
     return (
-        row.p4_decision == cfg["p4"]
+        _p4_entry_state_matches(row, cfg["p4"])
         and cfg["day_index_min"] <= row.day_index <= cfg["day_index_max"]
         and row.hit_count_so_far == cfg["hit_count"]
         and _in_range(row.momentum_score, cfg["momentum_min"], cfg["momentum_max"])
@@ -891,10 +1021,24 @@ def _matches_setup_a(row: EvidenceRow, cfg: dict) -> bool:
 
 def _matches_setup_b(row: EvidenceRow, cfg: dict) -> bool:
     return (
-        row.p4_decision == cfg["p4"]
+        _p4_entry_state_matches(row, cfg["p4"])
         and cfg["day_index_min"] <= row.day_index <= cfg["day_index_max"]
         and _in_range(row.momentum_score, cfg["momentum_min"], cfg["momentum_max"])
         and _in_range(row.mark_to_market_return_pct, cfg["return_min"], cfg["return_max"])
+    )
+
+
+def _p4_entry_state_matches(row: EvidenceRow, expected: str) -> bool:
+    """Allow P3 ranks 1-15 to keep a fresh entry actionable over P4 STOP.
+
+    The ordinary legacy setup still requires its configured P4 state.  The
+    only exception is a same-day P3 recommendation in the top/medium tiers;
+    no extra confirmation day is introduced.
+    """
+    return row.p4_decision == expected or (
+        expected == "CAUTION"
+        and row.p4_decision == "STOP_OBSERVING"
+        and p3_has_new_entry_priority(row.p3_recommendation_rank)
     )
 
 
@@ -954,7 +1098,10 @@ def generate_exit_signal(
     `actual_position_return` 未傳入時預設 None，對 `take_profit_basis="mark_to_market"`
     的既有呼叫端（v1_frozen）完全零影響。
     """
-    if row.p4_decision == "STOP_OBSERVING":
+    if (
+        row.p4_decision == "STOP_OBSERVING"
+        and not p3_has_existing_position_priority(row.p3_recommendation_rank)
+    ):
         return ExitSignal(reason=EXIT_REASON_P4_STOP, row=row)
     if row.is_official_exit_signal_day:
         return ExitSignal(reason=EXIT_REASON_OFFICIAL_EXIT, row=row)
@@ -1191,6 +1338,7 @@ def _continuation_evidence_from_payload(
     signal_type: Optional[str],
     payload: Optional[dict],
     p4_decision: Optional[str],
+    p3_recommendation_rank: Optional[int] = None,
 ) -> Tuple[Dict[str, Any], int, bool, bool]:
     """Build the D1 deterministic evidence ledger from existing P3 fields only.
 
@@ -1331,8 +1479,13 @@ def _continuation_evidence_from_payload(
     }
     available = [name for name, value in families.items() if value["available"]]
     positive = [name for name, value in families.items() if value["available"] and value["positive"]]
+    p3_recommendation_rank = normalize_p3_recommendation_rank(p3_recommendation_rank)
+    p3_entry_priority = p3_has_new_entry_priority(p3_recommendation_rank)
     hard_excluded = (
-        p4_decision == "STOP_OBSERVING"
+        (
+            p4_decision == "STOP_OBSERVING"
+            and not p3_entry_priority
+        )
         or "LAGGARD" in role_upper
         or entry_upper in {"STRUCTURE_DAMAGED", "COMPOSITE_RISK_EXCLUDE", "LIQUIDITY_FAILURE", "REVERSAL_FAILURE"}
     )
@@ -1357,6 +1510,9 @@ def _continuation_evidence_from_payload(
                           "SECTOR_FOLLOWER": 1, "FOLLOWER": 1,
                           "ROTATION_LAGGARD": 0}.get(role_upper, 0),
         "hard_excluded": hard_excluded,
+        "p3_recommendation_rank": p3_recommendation_rank,
+        "p3_strength_tier": p3_strength_tier(p3_recommendation_rank),
+        "p3_entry_priority": p3_entry_priority,
         "missing_families": [name for name in families if name not in available],
         "eligible": eligible,
         "report_features": report_features,
@@ -1615,14 +1771,19 @@ def _count_hits_so_far_from_snapshots(
 
 def _p3_selection_from_snapshot(
     db: Session, *, stock_id: str, target_date: date
-) -> Tuple[bool, Optional[float]]:
+) -> Tuple[bool, Optional[float], Optional[int]]:
     """週期已封存時的 fallback：從 `SignalSnapshot.watchlist` 讀 target_date 當天
     是否有這檔股票、以及當天的 momentum_score，取代已被硬刪除的 `signal_watch_hits`
-    單日查詢。"""
+    單日查詢；同時保留 P3 recommendation_rank 作為 P3/P4 衝突裁決依據。"""
     index = _snapshot_watchlist_index(db, target_date)
     if stock_id not in index:
-        return False, None
-    return True, index[stock_id]
+        return False, None, None
+    payload = _snapshot_watchlist_payload(db, target_date, stock_id)
+    return (
+        True,
+        index[stock_id],
+        normalize_p3_recommendation_rank(payload.get("recommendation_rank")),
+    )
 
 
 def _resolve_relevant_observation(
@@ -1786,6 +1947,7 @@ def build_daily_evidence(
     continuation_signal_metrics: Optional[dict] = None
     continuation_signal_type: Optional[str] = None
     continuation_payload: Optional[dict] = None
+    p3_recommendation_rank: Optional[int] = None
 
     if _fishtail_cohort_is_active(db, stock_id=stock_id, first_seen_date=first_seen_date):
         hit_count_so_far = _count_hits_so_far(
@@ -1809,7 +1971,7 @@ def build_daily_evidence(
         hit_count_so_far = _count_hits_so_far_from_snapshots(
             db, stock_id=stock_id, first_seen_date=first_seen_date, target_date=target_date
         )
-        p3_selected_today, momentum_score = _p3_selection_from_snapshot(
+        p3_selected_today, momentum_score, p3_recommendation_rank = _p3_selection_from_snapshot(
             db, stock_id=stock_id, target_date=target_date
         )
         continuation_payload = _snapshot_watchlist_payload(db, target_date, stock_id)
@@ -1831,6 +1993,12 @@ def build_daily_evidence(
         continuation_payload = snapshot_payload
         if continuation_signal_type is None:
             continuation_signal_type = snapshot_payload.get("type")
+        if p3_selected_today:
+            p3_recommendation_rank = normalize_p3_recommendation_rank(
+                snapshot_payload.get("recommendation_rank")
+            ) or normalize_p3_recommendation_rank(
+                (snapshot_metrics or {}).get("recommendation_rank")
+            ) or p3_recommendation_rank
 
     mark_to_market_return_pct: Optional[float] = None
     baseline_date, baseline_price = _resolve_baseline_price(db, stock_id=stock_id, first_seen_date=first_seen_date)
@@ -1892,6 +2060,7 @@ def build_daily_evidence(
         signal_type=continuation_signal_type,
         payload=continuation_payload,
         p4_decision=p4_decision,
+        p3_recommendation_rank=p3_recommendation_rank,
     )
 
     # PART 2~6, 45（2026-09-09 第二輪重寫）：Dual-Engine 專屬的 Episode Price
@@ -1930,6 +2099,8 @@ def build_daily_evidence(
         p4_decision=p4_decision,
         mark_to_market_return_pct=mark_to_market_return_pct,
         is_official_exit_signal_day=is_official_exit_signal_day,
+        p3_recommendation_rank=p3_recommendation_rank,
+        p3_strength_tier=p3_strength_tier(p3_recommendation_rank),
         close_price=close_price,
         low_price=low_price,
         first_seen_close=first_seen_close,
@@ -2317,6 +2488,331 @@ def _actual_position_return_as_of(
 # ---------------------------------------------------------------------------
 # Orchestrator 1：執行前一交易日排定的 pending orders（用今天真實成交的 high/low）
 # ---------------------------------------------------------------------------
+def resolve_market_trade_policy(db: Session, *, target_date: date, strategy_version: str) -> Dict[str, Any]:
+    """Resolve the point-in-time entry policy for the isolated market-policy replay.
+
+    The existing three-state ``market_regime`` remains authoritative.  This
+    overlay adds hysteresis: a VOLATILE_RANGE after a recent RISK_OFF is a
+    defensive range, while a first BULL_TREND after RISK_OFF is only a rebound
+    phase.  Missing snapshots fail closed into EARLY_WARNING.
+    """
+    params = STRATEGY_PARAMS_BY_VERSION[strategy_version]
+    policy_cfg = params.get("market_policy")
+    if not policy_cfg or not policy_cfg.get("enabled"):
+        return {"state": "NORMAL", "regime": None, "reason": "MARKET_POLICY_DISABLED"}
+
+    risk_lookback = int(policy_cfg.get("risk_off_lookback_snapshots", 12))
+    snapshots = (
+        db.query(SignalSnapshot)
+        .filter(SignalSnapshot.snapshot_date <= target_date)
+        .order_by(SignalSnapshot.snapshot_date.desc())
+        .limit(max(risk_lookback + 1, 12))
+        .all()
+    )
+    if not snapshots:
+        return {
+            "state": "EARLY_WARNING",
+            "regime": None,
+            "reason": "NO_MARKET_SNAPSHOT_FAIL_CLOSED",
+        }
+
+    current = snapshots[0]
+    context = current.market_context or {}
+    regime = context.get("market_regime") or "VOLATILE_RANGE"
+    prior_regimes = [
+        (row.market_context or {}).get("market_regime")
+        for row in snapshots[1:]
+    ]
+    recent_prior_regimes = prior_regimes[:risk_lookback]
+    had_recent_risk_off = "RISK_OFF" in recent_prior_regimes
+    risk_off_anchor = next(
+        (
+            row.snapshot_date
+            for row in snapshots[1 : risk_lookback + 1]
+            if (row.market_context or {}).get("market_regime") == "RISK_OFF"
+        ),
+        None,
+    )
+    risk_off_episode_anchor = next(
+        (
+            row.snapshot_date
+            for row in snapshots[1:]
+            if (row.market_context or {}).get("market_regime") == "RISK_OFF"
+        ),
+        None,
+    )
+    effective_state = context.get("effective_market_state")
+    cautious_bull = effective_state == "BULL_CAUTION" or context.get("market_stress") in {
+        "CAUTION",
+        "STRESS",
+    }
+
+    if regime == "RISK_OFF":
+        state = "HARD_RISK_OFF"
+        reason = "MARKET_REGIME_RISK_OFF"
+    elif regime == "VOLATILE_RANGE":
+        state = "DEFENSIVE_RANGE" if had_recent_risk_off else "EARLY_WARNING"
+        reason = "POST_RISK_OFF_DEFENSIVE_RANGE" if had_recent_risk_off else "MARKET_REGIME_VOLATILE_RANGE"
+    elif regime == "BULL_TREND":
+        if had_recent_risk_off:
+            state = "REBOUND"
+            reason = "FIRST_BULL_AFTER_RISK_OFF"
+        elif cautious_bull:
+            state = "EARLY_WARNING"
+            reason = "BULL_CAUTION_WITHOUT_PRIOR_RISK_OFF"
+        else:
+            state = "NORMAL"
+            reason = "MARKET_REGIME_BULL_TREND"
+    else:
+        state = "EARLY_WARNING"
+        reason = "UNKNOWN_MARKET_REGIME_FAIL_CLOSED"
+
+    return {
+        "state": state,
+        "regime": regime,
+        "reason": reason,
+        "snapshot_date": current.snapshot_date.isoformat(),
+        "market_stress": context.get("market_stress"),
+        "effective_market_state": effective_state,
+        "rebound_caution": cautious_bull and risk_off_episode_anchor is not None,
+        "risk_off_anchor_date": risk_off_anchor.isoformat() if risk_off_anchor else None,
+        "risk_off_episode_anchor_date": (
+            risk_off_episode_anchor.isoformat() if risk_off_episode_anchor else None
+        ),
+    }
+
+
+def _market_policy_breakout_exception_payload(
+    payload: dict, snapshot: dict, policy_cfg: dict
+) -> bool:
+    """Allow only a high-quality confirmed breakout during hard risk-off.
+
+    This is deliberately a separate, narrower exception from the normal
+    warning/defensive gates.  It recovers rare leaders that continue upward in
+    a falling market without reopening ordinary pullback or early-turn entries.
+    """
+    if not policy_cfg.get("breakout_exception_enabled"):
+        return False
+    features = payload.get("report_features") or {}
+    technical = features.get("technical_assessment") or {}
+    families = payload.get("families") or {}
+    relative = (families.get("relative_strength") or {}).get("value")
+    try:
+        relative = float(relative)
+        technical_strength = float(technical.get("strength_score"))
+        evidence_count = int(
+            payload.get("continuation_evidence_count")
+            or snapshot.get("continuation_evidence_count")
+            or 0
+        )
+    except (TypeError, ValueError):
+        return False
+    allowed_actions = set(
+        policy_cfg.get("breakout_exception_actionabilities") or ("POSITIVE",)
+    )
+    return bool(
+        snapshot.get("p3_selected_today", True)
+        and payload.get("eligible")
+        and evidence_count >= int(policy_cfg["breakout_exception_min_evidence"])
+        and (families.get("institutional_flow") or {}).get("positive") is True
+        and relative >= float(policy_cfg["breakout_exception_min_relative_strength"])
+        and technical_strength >= float(policy_cfg["breakout_exception_min_technical_strength"])
+        and technical.get("actionability") in allowed_actions
+        and features.get("technical_status") == "breakout"
+        and features.get("chip_trend") != "retail_overheated"
+        and snapshot.get("p4_decision") not in {"CAUTION", "STOP_OBSERVING"}
+    )
+
+
+def _market_policy_exception_candidate(evidence: EvidenceRow, policy_cfg: dict) -> bool:
+    """Keep only the narrow anti-trend exception during stressed markets."""
+    payload = evidence.continuation_evidence or {}
+    features = payload.get("report_features") or {}
+    technical = features.get("technical_assessment") or {}
+    families = payload.get("families") or {}
+    relative = (families.get("relative_strength") or {}).get("value")
+    try:
+        relative = float(relative)
+    except (TypeError, ValueError):
+        relative = None
+    try:
+        technical_strength = float(technical.get("strength_score"))
+    except (TypeError, ValueError):
+        technical_strength = None
+
+    strict_exception = bool(
+        evidence.p3_selected_today
+        and payload.get("eligible")
+        and (evidence.continuation_evidence_count or 0) >= int(policy_cfg["exception_min_evidence"])
+        and (payload.get("families", {}).get("institutional_flow", {}).get("positive") is True)
+        and relative is not None
+        and relative >= float(policy_cfg["exception_min_relative_strength"])
+        and technical.get("actionability") == "POSITIVE"
+        and technical_strength is not None
+        and technical_strength >= float(policy_cfg["exception_min_technical_strength"])
+        and features.get("technical_status") == "breakout"
+        and features.get("chip_trend") != "retail_overheated"
+        and evidence.p4_decision not in {"CAUTION", "STOP_OBSERVING"}
+    )
+    return strict_exception or _market_policy_breakout_exception_payload(
+        payload,
+        {
+            "p3_selected_today": evidence.p3_selected_today,
+            "p4_decision": evidence.p4_decision,
+        },
+        policy_cfg,
+    )
+
+
+def _market_policy_warning_candidate(evidence: EvidenceRow, policy_cfg: dict) -> bool:
+    """Warning layer: retain supported continuation, but remove weak/chasing entries."""
+    payload = evidence.continuation_evidence or {}
+    features = payload.get("report_features") or {}
+    technical = features.get("technical_assessment") or {}
+    families = payload.get("families") or {}
+    relative = (families.get("relative_strength") or {}).get("value")
+    try:
+        relative = float(relative)
+        technical_strength = float(technical.get("strength_score"))
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        evidence.p3_selected_today
+        and payload.get("eligible")
+        and (evidence.continuation_evidence_count or 0) >= int(policy_cfg["warning_min_evidence"])
+        and (families.get("institutional_flow") or {}).get("positive") is True
+        and relative >= float(policy_cfg["warning_min_relative_strength"])
+        and technical_strength >= float(policy_cfg["warning_min_technical_strength"])
+        and features.get("technical_status") not in {"distribution", "broken", "damaged"}
+        and features.get("chip_trend") != "retail_overheated"
+        and evidence.p4_decision not in {"STOP_OBSERVING"}
+    )
+
+
+def _market_policy_defensive_continuation_candidate(evidence: EvidenceRow, policy_cfg: dict) -> bool:
+    """Defensive range layer: loosen from waterfall rules, never back to normal."""
+    payload = evidence.continuation_evidence or {}
+    features = payload.get("report_features") or {}
+    technical = features.get("technical_assessment") or {}
+    families = payload.get("families") or {}
+    relative = (families.get("relative_strength") or {}).get("value")
+    try:
+        relative = float(relative)
+        technical_strength = float(technical.get("strength_score"))
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        evidence.p3_selected_today
+        and payload.get("eligible")
+        and (evidence.continuation_evidence_count or 0) >= int(policy_cfg["defensive_min_evidence"])
+        and (families.get("institutional_flow") or {}).get("positive") is True
+        and relative >= float(policy_cfg["defensive_min_relative_strength"])
+        and (evidence.momentum_score or 0.0) >= float(policy_cfg["defensive_min_momentum"])
+        and technical_strength >= float(policy_cfg["defensive_min_technical_strength"])
+        and features.get("technical_status") in {"breakout", "early_turn", "steady_uptrend"}
+        and features.get("chip_trend") != "retail_overheated"
+        and evidence.p4_decision not in {"STOP_OBSERVING"}
+    )
+
+
+def _market_policy_defensive_pullback_candidate(evidence: EvidenceRow, policy_cfg: dict) -> bool:
+    """Slightly loosen the gate in a confirmed defensive range, never in a waterfall."""
+    payload = evidence.continuation_evidence or {}
+    features = payload.get("report_features") or {}
+    technical = features.get("technical_assessment") or {}
+    families = payload.get("families") or {}
+    relative = (families.get("relative_strength") or {}).get("value")
+    try:
+        relative = float(relative)
+    except (TypeError, ValueError):
+        relative = None
+    return bool(
+        evidence.p3_selected_today
+        and (evidence.momentum_score or 0.0) >= float(policy_cfg["defensive_pullback_min_momentum"])
+        and (evidence.continuation_evidence_count or 0) >= int(policy_cfg["exception_min_evidence"])
+        and relative is not None
+        and relative >= float(policy_cfg["exception_min_relative_strength"])
+        and technical.get("actionability") == "POSITIVE"
+        and evidence.p4_decision not in {"CAUTION", "STOP_OBSERVING"}
+    )
+
+
+def _market_policy_order_is_exception(
+    order: ShadowStrategyOrder, policy_cfg: dict, policy_state: str = "HARD_RISK_OFF"
+) -> bool:
+    """Keep a queued BUY only when its signal-time evidence passed the narrow exception gate.
+
+    Pending orders do not carry the full ``EvidenceRow`` object, so this rechecks the
+    persisted signal snapshot.  The order itself is proof that P3 selected the stock;
+    the snapshot supplies the rest of the anti-trend evidence.
+    """
+    snapshot = order.signal_snapshot or {}
+    payload = snapshot.get("continuation_evidence") or {}
+    features = payload.get("report_features") or {}
+    technical = features.get("technical_assessment") or {}
+    families = payload.get("families") or {}
+    relative = (families.get("relative_strength") or {}).get("value")
+    try:
+        relative = float(relative)
+    except (TypeError, ValueError):
+        relative = None
+    try:
+        technical_strength = float(technical.get("strength_score"))
+    except (TypeError, ValueError):
+        technical_strength = None
+    evidence_count = payload.get("continuation_evidence_count")
+    if evidence_count is None:
+        evidence_count = snapshot.get("continuation_evidence_count")
+    try:
+        evidence_count = int(evidence_count or 0)
+    except (TypeError, ValueError):
+        evidence_count = 0
+
+    if policy_state == "EARLY_WARNING" and "warning_min_evidence" in policy_cfg:
+        return bool(
+            evidence_count >= int(policy_cfg["warning_min_evidence"])
+            and payload.get("eligible")
+            and (families.get("institutional_flow") or {}).get("positive") is True
+            and relative is not None
+            and relative >= float(policy_cfg["warning_min_relative_strength"])
+            and technical_strength is not None
+            and technical_strength >= float(policy_cfg["warning_min_technical_strength"])
+            and features.get("technical_status") not in {"distribution", "broken", "damaged"}
+            and features.get("chip_trend") != "retail_overheated"
+            and snapshot.get("p4_decision") not in {"STOP_OBSERVING"}
+        )
+    if policy_state == "DEFENSIVE_RANGE" and "defensive_min_evidence" in policy_cfg:
+        return bool(
+            evidence_count >= int(policy_cfg["defensive_min_evidence"])
+            and payload.get("eligible")
+            and (families.get("institutional_flow") or {}).get("positive") is True
+            and relative is not None
+            and relative >= float(policy_cfg["defensive_min_relative_strength"])
+            and (snapshot.get("momentum_score") or 0.0) >= float(policy_cfg["defensive_min_momentum"])
+            and technical_strength is not None
+            and technical_strength >= float(policy_cfg["defensive_min_technical_strength"])
+            and features.get("technical_status") in {"breakout", "early_turn", "steady_uptrend"}
+            and features.get("chip_trend") != "retail_overheated"
+            and snapshot.get("p4_decision") not in {"STOP_OBSERVING"}
+        )
+    strict_exception = bool(
+        evidence_count >= int(policy_cfg["exception_min_evidence"])
+        and payload.get("eligible")
+        and (families.get("institutional_flow") or {}).get("positive") is True
+        and relative is not None
+        and relative >= float(policy_cfg["exception_min_relative_strength"])
+        and technical.get("actionability") == "POSITIVE"
+        and technical_strength is not None
+        and technical_strength >= float(policy_cfg["exception_min_technical_strength"])
+        and features.get("technical_status") == "breakout"
+        and features.get("chip_trend") != "retail_overheated"
+        and snapshot.get("p4_decision") not in {"CAUTION", "STOP_OBSERVING"}
+    )
+    return strict_exception or _market_policy_breakout_exception_payload(
+        payload, snapshot, policy_cfg
+    )
+
+
 def execute_pending_strategy_orders(
     db: Session, *, target_date: date, strategy_version: str = STRATEGY_VERSION
 ) -> Dict[str, int]:
@@ -2330,6 +2826,23 @@ def execute_pending_strategy_orders(
     """
     params = STRATEGY_PARAMS_BY_VERSION[strategy_version]
     portfolio = _get_or_create_portfolio(db, strategy_version)
+    policy = resolve_market_trade_policy(db, target_date=target_date, strategy_version=strategy_version)
+    if policy["state"] in set((params.get("market_policy") or {}).get("strict_states", ())):
+        # A risk-policy transition invalidates queued risk-taking orders.  SELL
+        # orders remain executable and are deliberately not cancelled.  A BUY
+        # that passed the narrow anti-trend exception at signal time survives
+        # the transition; ordinary queued BUY/ADD orders do not.
+        policy_cfg = params.get("market_policy") or {}
+        queued_risk_orders = db.query(ShadowStrategyOrder).filter(
+            ShadowStrategyOrder.strategy_version == strategy_version,
+            ShadowStrategyOrder.status == ORDER_STATUS_PENDING,
+            ShadowStrategyOrder.action.in_((ACTION_BUY, ACTION_ADD)),
+            ShadowStrategyOrder.signal_date < target_date,
+        ).all()
+        for queued_order in queued_risk_orders:
+            if not _market_policy_order_is_exception(queued_order, policy_cfg, policy["state"]):
+                queued_order.status = "CANCELLED"
+        db.flush()
     orders = (
         db.query(ShadowStrategyOrder)
         .filter(
@@ -2542,7 +3055,10 @@ def evaluate_continuation_early_confirmation(
     day2_row: EvidenceRow, day1_row: EvidenceRow, cfg: dict
 ) -> bool:
     """D2 path confirmation; actual HIGH-entry P&L is intentionally ignored."""
-    if day2_row.p4_decision == "STOP_OBSERVING":
+    if (
+        day2_row.p4_decision == "STOP_OBSERVING"
+        and not p3_has_existing_position_priority(day2_row.p3_recommendation_rank)
+    ):
         return False
     if day2_row.episode_price_return_pct is None or day2_row.episode_price_return_pct < cfg["episode_return_min"]:
         return False
@@ -2560,7 +3076,10 @@ def evaluate_continuation_confirmation(
 ) -> bool:
     """D3 Final Confirmation. ``actual_position_return`` is accepted only for
     backwards-compatible callers and is not a prerequisite anymore."""
-    if day3_row.p4_decision == "STOP_OBSERVING":
+    if (
+        day3_row.p4_decision == "STOP_OBSERVING"
+        and not p3_has_existing_position_priority(day3_row.p3_recommendation_rank)
+    ):
         return False
     if day3_row.close_price is None or day2_row.close_price is None:
         return False
@@ -2585,7 +3104,10 @@ def evaluate_pullback_watch(row: EvidenceRow, cfg: dict) -> bool:
         and _in_range(row.episode_price_return_pct, cfg["episode_return_min"], cfg["episode_return_max"])
         and row.momentum_score is not None
         and row.momentum_score >= cfg["momentum_min"]
-        and row.p4_decision != "STOP_OBSERVING"
+        and (
+            row.p4_decision != "STOP_OBSERVING"
+            or p3_has_new_entry_priority(row.p3_recommendation_rank)
+        )
     )
 
 
@@ -2600,7 +3122,10 @@ def evaluate_pullback_recovery_entry(
     The price leg is measured against the lowest watch return over the prior
     watch window, while the momentum leg only requires ``today >= previous - 2``.
     """
-    if today_row.p4_decision == "STOP_OBSERVING":
+    if (
+        today_row.p4_decision == "STOP_OBSERVING"
+        and not p3_has_new_entry_priority(today_row.p3_recommendation_rank)
+    ):
         return False
     if today_row.episode_price_return_pct is None or prev_row.episode_price_return_pct is None:
         return False
@@ -3149,6 +3674,13 @@ def _run_v1_dual_engine_daily_strategy(
     params = STRATEGY_PARAMS_BY_VERSION[strategy_version]
     portfolio = _get_or_create_portfolio(db, strategy_version)
     positions = _load_positions(db, strategy_version)
+    market_policy = resolve_market_trade_policy(
+        db, target_date=target_date, strategy_version=strategy_version
+    )
+    market_policy_cfg = params.get("market_policy") or {}
+    market_policy_strict = market_policy["state"] in set(
+        market_policy_cfg.get("strict_states", ())
+    )
     universe = resolve_tracking_universe(db, strategy_version=strategy_version, target_date=target_date)
 
     already_decided = {
@@ -3189,6 +3721,25 @@ def _run_v1_dual_engine_daily_strategy(
     continuation_phase_by_stock: Dict[str, str] = {}
     continuation_skip_reason_by_stock: Dict[str, str] = {}
     continuation_rank_by_stock: Dict[str, int] = {}
+    market_policy_blocked_stock_ids: set = set()
+
+    def _market_policy_allows_entry(evidence: EvidenceRow, *, continuation: bool) -> bool:
+        state = market_policy["state"]
+        if not market_policy_cfg.get("enabled") or state in {"NORMAL", "REBOUND"}:
+            return True
+        if state == "EARLY_WARNING" and "warning_min_evidence" in market_policy_cfg:
+            return continuation and _market_policy_warning_candidate(evidence, market_policy_cfg)
+        if state == "HARD_RISK_OFF":
+            return continuation and _market_policy_exception_candidate(evidence, market_policy_cfg)
+        if state == "DEFENSIVE_RANGE":
+            if continuation:
+                if "defensive_min_evidence" in market_policy_cfg:
+                    return _market_policy_defensive_continuation_candidate(evidence, market_policy_cfg)
+                return _market_policy_exception_candidate(evidence, market_policy_cfg)
+            return _market_policy_defensive_pullback_candidate(evidence, market_policy_cfg)
+        if state == "EARLY_WARNING":
+            return continuation and _market_policy_exception_candidate(evidence, market_policy_cfg)
+        return False
 
     def _continuation_decision_fields(
         evidence: EvidenceRow, *, phase: Optional[str] = None,
@@ -3204,7 +3755,11 @@ def _run_v1_dual_engine_daily_strategy(
             }
         return {
             "continuation_evidence_count": evidence.continuation_evidence_count,
-            "continuation_evidence": evidence_payload,
+            "continuation_evidence": {
+                **(evidence_payload or {}),
+                "p3_recommendation_rank": evidence.p3_recommendation_rank,
+                "p3_strength_tier": evidence.p3_strength_tier,
+            },
             "continuation_eligible": evidence.continuation_eligible,
             "continuation_rank": rank,
             "continuation_skip_reason": skip_reason,
@@ -3257,7 +3812,10 @@ def _run_v1_dual_engine_daily_strategy(
             if is_starter_state:
                 continuation_phase_by_stock[stock_id] = "PROBATION"
                 # P4 and official exits apply on every state, including D2.
-                if evidence.p4_decision == "STOP_OBSERVING":
+                if (
+                    evidence.p4_decision == "STOP_OBSERVING"
+                    and not p3_has_existing_position_priority(evidence.p3_recommendation_rank)
+                ):
                     decided_exits[stock_id] = ExitSignal(reason=EXIT_REASON_P4_STOP, row=evidence)
                     continue
                 if evidence.is_official_exit_signal_day:
@@ -3320,7 +3878,11 @@ def _run_v1_dual_engine_daily_strategy(
             ):
                 decided_exits[stock_id] = ExitSignal(reason=EXIT_REASON_CONTINUATION_CONFIRMED_STOP, row=evidence)
                 continue
-            if evidence.p4_decision == "STOP_OBSERVING" and not is_profile_direct:
+            if (
+                evidence.p4_decision == "STOP_OBSERVING"
+                and not is_profile_direct
+                and not p3_has_existing_position_priority(evidence.p3_recommendation_rank)
+            ):
                 decided_exits[stock_id] = ExitSignal(reason=EXIT_REASON_P4_STOP, row=evidence)
                 continue
             if evidence.is_official_exit_signal_day and not is_profile_direct:
@@ -3349,7 +3911,10 @@ def _run_v1_dual_engine_daily_strategy(
                 decided_exits[stock_id] = ExitSignal(reason=EXIT_REASON_PULLBACK_REAL_STOP, row=evidence)
                 continue
             # PART 39：P4 STOP
-            if evidence.p4_decision == "STOP_OBSERVING":
+            if (
+                evidence.p4_decision == "STOP_OBSERVING"
+                and not p3_has_existing_position_priority(evidence.p3_recommendation_rank)
+            ):
                 decided_exits[stock_id] = ExitSignal(reason=EXIT_REASON_P4_STOP, row=evidence)
                 continue
             if evidence.is_official_exit_signal_day:
@@ -3483,17 +4048,23 @@ def _run_v1_dual_engine_daily_strategy(
             # D1 is the real P3 discovery day.  The pending BUY is scheduled
             # for D2 HIGH; no D2 price is consulted for Starter eligibility.
             if evaluate_continuation_starter(evidence, starter_cfg):
-                continuation_candidates.append(
-                    EntrySignal(
-                        row=evidence,
-                        entry_type=_profile_entry_type(
-                            evidence.continuation_evidence,
-                            enabled=bool(starter_cfg.get("report_profile_gate")),
-                        ),
-                        entry_score=0.0,
+                if _market_policy_allows_entry(evidence, continuation=True):
+                    continuation_candidates.append(
+                        EntrySignal(
+                            row=evidence,
+                            entry_type=_profile_entry_type(
+                                evidence.continuation_evidence,
+                                enabled=bool(starter_cfg.get("report_profile_gate")),
+                            ),
+                            entry_score=0.0,
+                        )
                     )
-                )
-                matched_continuation = True
+                    matched_continuation = True
+                else:
+                    market_policy_blocked_stock_ids.add(stock_id)
+                    continuation_skip_reason_by_stock[stock_id] = (
+                        f"MARKET_POLICY_{market_policy['state']}"
+                    )
             else:
                 continuation_skip_reason_by_stock[stock_id] = "NOT_ELIGIBLE"
 
@@ -3514,9 +4085,15 @@ def _run_v1_dual_engine_daily_strategy(
                 db, stock_id=stock_id, stock_name=evidence.stock_name, first_seen_date=evidence.first_seen_date,
                 target_date=target_date, watch_cfg=watch_cfg, window_trading_days=watch_window,
             ):
-                pullback_candidates.append(
-                    (EntrySignal(row=evidence, entry_type=ENTRY_TYPE_PULLBACK_RECOVERY, entry_score=0.0), prev_evidence)
-                )
+                if _market_policy_allows_entry(evidence, continuation=False):
+                    pullback_candidates.append(
+                        (EntrySignal(row=evidence, entry_type=ENTRY_TYPE_PULLBACK_RECOVERY, entry_score=0.0), prev_evidence)
+                    )
+                else:
+                    market_policy_blocked_stock_ids.add(stock_id)
+                    continuation_skip_reason_by_stock[stock_id] = (
+                        f"MARKET_POLICY_{market_policy['state']}"
+                    )
 
     # ---- D1 deterministic ranking: evidence count, then the specified family
     # qualities, then momentum and stock_id.  No price outcome is used here. ----
@@ -3623,6 +4200,10 @@ def _run_v1_dual_engine_daily_strategy(
         if params.get("confirmation_scale_in_enabled", True)
         else {}
     )
+    if market_policy_strict:
+        # ADD is still a risk increase; stressed-market policy is explicitly
+        # sell-only for existing positions as well as new positions.
+        confirmations_to_process = {}
     for stock_id, sig in confirmations_to_process.items():
         position_bucket = _position_funding_bucket(lots_by_stock.get(stock_id, []))
         if position_bucket == FUNDING_BUCKET_OPPORTUNITY:
@@ -3649,6 +4230,34 @@ def _run_v1_dual_engine_daily_strategy(
     accepted_new: Dict[str, EntrySignal] = {}
     new_funding_bucket_by_stock: Dict[str, Optional[str]] = {}
     skipped_capacity: Dict[str, EntrySignal] = {}
+    market_policy_new_entries = 0
+    market_policy_entry_limit = (market_policy_cfg.get("max_new_entries_per_day") or {}).get(
+        market_policy["state"]
+    )
+    if (
+        market_policy.get("rebound_caution")
+        and market_policy.get("risk_off_episode_anchor_date")
+        and market_policy_cfg.get("rebound_caution_max_total_entries") is not None
+    ):
+        rebound_anchor = date.fromisoformat(market_policy["risk_off_episode_anchor_date"])
+        rebound_entries_used = (
+            db.query(ShadowStrategyOrder)
+            .filter(
+                ShadowStrategyOrder.strategy_version == strategy_version,
+                ShadowStrategyOrder.action.in_((ACTION_BUY, ACTION_ADD)),
+                ShadowStrategyOrder.signal_date > rebound_anchor,
+                ShadowStrategyOrder.status != "CANCELLED",
+            )
+            .count()
+        )
+        rebound_remaining = max(
+            int(market_policy_cfg["rebound_caution_max_total_entries"]) - rebound_entries_used,
+            0,
+        )
+        if market_policy_entry_limit is None:
+            market_policy_entry_limit = rebound_remaining
+        else:
+            market_policy_entry_limit = min(market_policy_entry_limit, rebound_remaining)
 
     def _rotation_candidate_allowed(sig: EntrySignal) -> bool:
         """Apply only point-in-time quality gates to a full-bucket rotation.
@@ -3778,6 +4387,15 @@ def _run_v1_dual_engine_daily_strategy(
     for sig in continuation_candidates:
         stock_id = sig.row.stock_id
         funding_bucket: Optional[str] = None
+        if (
+            market_policy_entry_limit is not None
+            and market_policy_new_entries >= int(market_policy_entry_limit)
+        ):
+            market_policy_blocked_stock_ids.add(stock_id)
+            continuation_skip_reason_by_stock[stock_id] = (
+                f"MARKET_POLICY_{market_policy['state']}_DAILY_LIMIT"
+            )
+            continue
         if len(projected_stocks) >= params["max_stocks"]:
             if _rotation_candidate_allowed(sig):
                 victim_stock_id = _rotation_victim(sig)
@@ -3803,11 +4421,21 @@ def _run_v1_dual_engine_daily_strategy(
         new_funding_bucket_by_stock[stock_id] = funding_bucket
         continuation_skip_reason_by_stock[stock_id] = "SELECTED"
         projected_stocks.add(stock_id)
+        market_policy_new_entries += 1
 
     # Pullback candidates use the same global slots and 100,000-unit ledger;
     # there is intentionally no cash-availability calculation here.
     for sig, _prev_row in pullback_candidates:
         stock_id = sig.row.stock_id
+        if (
+            market_policy_entry_limit is not None
+            and market_policy_new_entries >= int(market_policy_entry_limit)
+        ):
+            market_policy_blocked_stock_ids.add(stock_id)
+            continuation_skip_reason_by_stock[stock_id] = (
+                f"MARKET_POLICY_{market_policy['state']}_DAILY_LIMIT"
+            )
+            continue
         if len(projected_stocks) >= params["max_stocks"]:
             skipped_capacity[stock_id] = sig
             continuation_skip_reason_by_stock[stock_id] = "PORTFOLIO_FULL"
@@ -3815,6 +4443,7 @@ def _run_v1_dual_engine_daily_strategy(
         accepted_new[stock_id] = sig
         projected_stocks.add(stock_id)
         new_funding_bucket_by_stock[stock_id] = None
+        market_policy_new_entries += 1
 
     counts = {
         "buy": 0, "confirm": 0, "sell": 0, "hold": 0, "watch": 0, "pullback_watch": 0,
@@ -3871,6 +4500,7 @@ def _run_v1_dual_engine_daily_strategy(
             "continuation_phase": continuation_phase_by_stock.get(stock_id),
             "continuation_evidence": evidence.continuation_evidence,
             "funding_bucket": _position_funding_bucket(lots_by_stock.get(stock_id, [])),
+            "market_policy_state": market_policy["state"],
         }
         db.add(
             ShadowStrategyOrder(
@@ -3946,6 +4576,7 @@ def _run_v1_dual_engine_daily_strategy(
             "continuation_phase": continuation_phase_by_stock.get(stock_id, "D1_STARTER"),
             "continuation_evidence": evidence.continuation_evidence,
             "funding_bucket": funding_bucket,
+            "market_policy_state": market_policy["state"],
         }
         db.add(
             ShadowStrategyOrder(
@@ -4035,6 +4666,12 @@ def _run_v1_dual_engine_daily_strategy(
         if held:
             action = ACTION_HOLD
             reason = "持有中，今日未觸發出場/確認條件"
+        elif stock_id in market_policy_blocked_stock_ids:
+            action = ACTION_WATCH
+            reason = (
+                f"市場政策 {market_policy['state']}：禁止一般新增部位，"
+                "僅保留極少數抗跌例外"
+            )
         elif stock_id in pullback_watch_today:
             action = ACTION_PULLBACK_WATCH
             reason = "符合 PULLBACK_WATCH 條件（尚未回穩確認，不進場）"
@@ -4092,6 +4729,8 @@ def run_daily_trading_strategy(
         STRATEGY_VERSION_V1_FROZEN,
         STRATEGY_VERSION_REPAIR_6933,
         STRATEGY_VERSION_PROFIT_PROTECTION_202610,
+        STRATEGY_VERSION_MARKET_POLICY_202611,
+        STRATEGY_VERSION_MARKET_OVERLAY_202611,
     }:
         return _run_v1_dual_engine_daily_strategy(db, target_date=target_date, strategy_version=strategy_version)
 
@@ -4201,7 +4840,10 @@ def run_daily_trading_strategy(
             return None
         if rotation_cfg.get("candidate_require_fresh_p3") and not sig.row.p3_selected_today:
             return None
-        if sig.row.p4_decision == rotation_cfg.get("candidate_p4_excluded", "STOP_OBSERVING"):
+        if (
+            sig.row.p4_decision == rotation_cfg.get("candidate_p4_excluded", "STOP_OBSERVING")
+            and not p3_has_new_entry_priority(sig.row.p3_recommendation_rank)
+        ):
             return None
         if rotation_cfg.get("candidate_exclude_official_exit") and sig.row.is_official_exit_signal_day:
             return None
