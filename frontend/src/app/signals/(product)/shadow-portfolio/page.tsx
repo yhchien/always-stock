@@ -24,14 +24,14 @@ const STRATEGY_META: Record<
 > = {
   v1_frozen: {
     label: "v1（Dual-Engine／雙引擎）",
-    badge: "ACTIVE（啟用中）",
+    badge: "BEFORE（原策略）",
     description:
       "2026-09-07 起的新週期：用 Continuation、Pullback 等標籤分類股票，" +
       "最多同時持有 6 檔，每檔固定以 100,000 元獨立計算損益；新增獲利保護停利與轉弱換股。",
   },
   V1_MARKET_OVERLAY_202611: {
     label: "202611（市場風險分層）",
-    badge: "ACTIVE（啟用中）",
+    badge: "AFTER（新策略）",
     description:
       "在 Dual-Engine 外加大盤風險分層：正常盤照常選股，警戒／防守盤收緊，" +
       "Risk-off 只保留高品質抗跌突破，並保留過去三個循環的歷史回放。",
