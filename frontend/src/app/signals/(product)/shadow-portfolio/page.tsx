@@ -29,12 +29,12 @@ const STRATEGY_META: Record<
       "2026-09-07 起的新週期：用 Continuation、Pullback 等標籤分類股票，" +
       "最多同時持有 6 檔，每檔固定以 100,000 元獨立計算損益；新增獲利保護停利與轉弱換股。",
   },
-  FORWARD_V1_202609: {
-    label: "FORWARD_V1_202609（前向測試）",
-    badge: "FORWARD TEST（測試中）",
+  V1_MARKET_OVERLAY_202611: {
+    label: "202611（市場風險分層）",
+    badge: "ACTIVE（啟用中）",
     description:
-      "2026-09-07 起正式 Forward Test：用較寬鬆的原始進場規則追蹤候選股，讓贏家續抱與加碼；" +
-      "動能超過 80 仍可進場；不固定停利、不攤平，單檔成本最多占總權益 50%。",
+      "在 Dual-Engine 外加大盤風險分層：正常盤照常選股，警戒／防守盤收緊，" +
+      "Risk-off 只保留高品質抗跌突破，並保留過去三個循環的歷史回放。",
   },
 }
 
@@ -361,7 +361,7 @@ function HistoryPeriodRow({
 }
 
 export default function ShadowPortfolioPage() {
-  const [strategyVersion, setStrategyVersion] = useState<ShadowStrategyVersion>("v1_frozen")
+  const [strategyVersion, setStrategyVersion] = useState<ShadowStrategyVersion>("V1_MARKET_OVERLAY_202611")
 
   // 讀 localStorage 記住上次選擇
   useEffect(() => {
@@ -477,8 +477,8 @@ export default function ShadowPortfolioPage() {
             >
               <span
                 className={`mr-1.5 rounded px-1.5 py-0.5 text-[9px] font-semibold ${
-                  v === "FORWARD_V1_202609"
-                    ? "bg-amber-500/20 text-amber-200"
+                  v === "V1_MARKET_OVERLAY_202611"
+                    ? "bg-emerald-500/20 text-emerald-200"
                     : "bg-slate-700/60 text-slate-300"
                 }`}
               >
@@ -563,21 +563,18 @@ export default function ShadowPortfolioPage() {
                 </ul>
                 <p className="mt-2 text-slate-500">所有訊號都在收盤後產生；BUY 使用下一交易日最高價模擬成交，SELL 使用下一交易日最低價模擬成交。線上「下一交易日動作」是待執行訊號，不是已成交。現金欄位只保留會計紀錄，不是進場門檻；週期損益以每筆交易的固定 100,000 元成本計算。</p>
               </div>
-              <div className="rounded-lg border border-amber-900/50 bg-amber-950/20 p-3">
-                <p className="font-semibold text-amber-200">FORWARD_V1_202609（Forward Test／前向測試）</p>
+              <div className="rounded-lg border border-emerald-900/50 bg-emerald-950/20 p-3">
+                <p className="font-semibold text-emerald-200">202611（市場風險分層版）</p>
                 <p className="mt-2 font-medium text-slate-300">這套策略在做什麼？</p>
-                <p className="mt-1">它是從 2026-09-07 的收盤訊號開始獨立觀察的新版本，不把 v1 Dual-Engine 的歷史績效混進來；買賣會在下一個交易日模擬成交。它沿用原本的兩種進場型態：</p>
+                <p className="mt-1">它沿用 Dual-Engine 的 Continuation 與 Pullback Recovery 選股，再依大盤狀態調整買進門檻，避免在大跌期間把一般候選誤當成可買進訊號。</p>
                 <ul className="mt-1 list-disc space-y-1 pl-4">
-                  <li><span className="text-slate-300">Early healthy pullback（健康小幅拉回）：</span>小幅拉回、仍在健康區間的候選。</li>
-                  <li><span className="text-slate-300">Deep pullback（深度拉回）：</span>較深幅度回落、但仍符合動能與 P4 條件的候選。</li>
-                  <li><span className="text-slate-300">BUY（買進）：</span>符合進場條件就用一個 100,000 元單位建立部位；<span className="text-slate-300">ADD（加碼）：</span>同一檔再次符合條件時才考慮加碼，而且目前部位必須已經獲利，絕不攤平。動能超過 80 的候選不會被上限直接排除。</li>
+                  <li><span className="text-slate-300">正常盤：</span>照原本 Dual-Engine 條件選股。</li>
+                  <li><span className="text-slate-300">警戒／防守盤：</span>只保留高證據、強相對強度的 Continuation，限制每日新進場數量。</li>
+                  <li><span className="text-slate-300">Risk-off：</span>停止一般新增部位，只允許高品質抗跌突破例外；Pullback Recovery 不進場。</li>
+                  <li><span className="text-slate-300">反彈初期：</span>先恢復少量部位，確認市場重新轉強後才恢復正常容量。</li>
                 </ul>
-                <p className="mt-2 font-medium text-slate-300">它和 Dual-Engine 最大的差異</p>
-                <ul className="mt-1 list-disc space-y-1 pl-4">
-                  <li>不設固定停利，讓已經上漲的股票繼續發展；但仍有實際部位 -8% 停損與 P4／官方結束訊號。</li>
-                  <li>最多同時持有 5 檔不同股票；不設總單位上限，但單檔成本不得超過當下總權益 50%，也不做固定週期重置。</li>
-                  <li>滿倉時不普遍換股；只有候選當日重新被 P3 選中、動能超過 80、專用 entry score（進場評分）至少 6，且比持有至少 2 個交易日的虧損弱部位高至少 5 分時，才允許每天換掉 1 檔。已獲利 +10% 以上的 winner（獲利部位）不會被換掉。</li>
-                </ul>
+                <p className="mt-2 font-medium text-slate-300">大盤與個股的最後決策</p>
+                <p className="mt-1">P3 的個股推薦只是候選層；最終是否建立 BUY／ADD，還要通過市場風險層。即使個股顯示 RECOMMEND，Risk-off 時仍可能被記錄為 WATCH 而不建立買單。</p>
               </div>
               <div className="rounded-lg border border-slate-800 bg-slate-950/30 p-3 lg:col-span-2">
                 <p className="font-semibold text-slate-300">兩套策略共用的回測／模擬成交方式</p>
@@ -587,7 +584,7 @@ export default function ShadowPortfolioPage() {
                   <li>每次 ADD 都會增加投入成本，持倉報酬以新的加權平均成本計算。</li>
                   <li>回測區間最後一天會強制結算；歷史回放可用日期選擇器查看任意已累積的交易日區間。</li>
                 </ul>
-                <p className="mt-2 text-slate-500">簡單說：Dual-Engine 比較像「分桶管理、主動挑更強的延續股」；Forward Test 比較像「保留原始候選、讓贏家續抱並在獲利後加碼」。</p>
+                <p className="mt-2 text-slate-500">簡單說：v1 是原始 Dual-Engine；202611 是加上市場風險分層的正式版本。兩者都保留歷史循環與每日交易明細。</p>
               </div>
             </div>
           )}

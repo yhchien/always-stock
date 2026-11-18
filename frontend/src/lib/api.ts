@@ -2589,7 +2589,7 @@ export interface ShadowPortfolio {
   strategy_config_hash: string | null
 }
 
-export const SHADOW_STRATEGY_VERSIONS = ["v1_frozen", "FORWARD_V1_202609"] as const
+export const SHADOW_STRATEGY_VERSIONS = ["v1_frozen", "V1_MARKET_OVERLAY_202611"] as const
 export type ShadowStrategyVersion = (typeof SHADOW_STRATEGY_VERSIONS)[number]
 
 export interface ShadowPendingAction {
