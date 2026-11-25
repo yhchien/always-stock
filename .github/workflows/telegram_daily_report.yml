@@ -1,9 +1,9 @@
-name: Telegram Market Calendar Strategy Broadcast
+name: Telegram Fishtail Strategy Broadcast
 
 on:
   schedule:
     # 台北 21:30（週一到週五）= UTC 13:30
-    # 時機：台股行事曆 daily action 完成後，讀取最新策略預測與 AI 解讀。
+    # 時機：台股行事曆 daily action 與模擬交易策略完成後，讀取完整策略狀態。
     - cron: '30 13 * * 1-5'
   workflow_dispatch:
     inputs:
@@ -18,7 +18,7 @@ on:
 jobs:
   run_telegram_report:
     runs-on: ubuntu-latest
-    # 廣播只讀台股行事曆策略；保留寬鬆上限供 production DB 查詢與 Telegram 重試。
+    # 廣播讀取台股行事曆與兩套模擬交易策略；保留寬鬆上限供 DB 查詢與 Telegram 重試。
     timeout-minutes: 120
 
     env:
