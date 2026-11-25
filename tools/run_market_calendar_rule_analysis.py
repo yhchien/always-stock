@@ -20,8 +20,9 @@ try:
         predict_with_rules,
         binary_label_from_return,
         binary_prediction_with_momentum,
-        expected_return_with_overnight,
+        expected_return_with_factor_blend,
         expected_return_interval,
+        fit_factor_return_model,
         fit_overnight_return_model,
         strict_label_from_return,
         walk_forward_rule_predictions,
@@ -36,8 +37,9 @@ except ModuleNotFoundError:  # direct ``python3 tools/run_...py`` execution
         predict_with_rules,
         binary_label_from_return,
         binary_prediction_with_momentum,
-        expected_return_with_overnight,
+        expected_return_with_factor_blend,
         expected_return_interval,
+        fit_factor_return_model,
         fit_overnight_return_model,
         strict_label_from_return,
         walk_forward_rule_predictions,
@@ -200,12 +202,13 @@ def main() -> int:
     test_states = add_factor_states(test, cutoffs)
     fallback = float(train["target_return"].mean())
     overnight_model = fit_overnight_return_model(train)
+    factor_model = fit_factor_return_model(train)
     predictions = []
     for _, row in test_states.iterrows():
         direction, expected_return, matched = predict_with_rules(row, rules, fallback)
         predicted_binary = binary_prediction_with_momentum(row, expected_return)
-        final_return = expected_return_with_overnight(
-            row, expected_return, predicted_binary, overnight_model
+        final_return = expected_return_with_factor_blend(
+            row, expected_return, predicted_binary, overnight_model, factor_model
         )
         predictions.append(
             {
@@ -275,8 +278,8 @@ def main() -> int:
     latest_row = latest_states.iloc[0]
     latest_direction, expected_return, matched = predict_with_rules(latest_row, rules, fallback)
     latest_binary = binary_prediction_with_momentum(latest_row, expected_return)
-    latest_return = expected_return_with_overnight(
-        latest_row, expected_return, latest_binary, overnight_model
+    latest_return = expected_return_with_factor_blend(
+        latest_row, expected_return, latest_binary, overnight_model, factor_model
     )
     interval_low, interval_high = expected_return_interval(
         train, latest_return, overnight_model

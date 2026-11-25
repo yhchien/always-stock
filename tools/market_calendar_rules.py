@@ -134,6 +134,42 @@ FACTOR_COLUMNS = {
     ],
 }
 
+# The return model is deliberately small enough for the current sample size.
+# Direction still comes from the rule layer; these factors only adjust the
+# magnitude of that direction.  Missing fields are imputed from the training
+# window, never from the target day.
+RETURN_MODEL_COLUMNS = [
+    "ret_1d",
+    "ret_3d",
+    "ret_5d",
+    "close_vs_ma20",
+    "kdj_j",
+    "foreign_5d_billion",
+    "inst_5d_billion",
+    "tw_vix_change",
+    "us_vix_change",
+    "mtx_net_oi_change",
+    "us10y_change",
+    "gold_change",
+    "usd_twd_change",
+    "margin_purchase_buy_change_pct",
+    "margin_balance_change_5d_pct",
+    "short_sale_buy_change_pct",
+    "short_balance_change_5d_pct",
+    "us_sp500_change",
+    "us_nasdaq_change",
+    "us_sox_change",
+    "us_es_change",
+    "us_nq_change",
+    "us_ym_change",
+    "tx_night_return_pct",
+    "tx_night_intraday_pct",
+    "tx_night_range_pct",
+    "mtx_night_return_pct",
+    "mtx_night_intraday_pct",
+    "mtx_night_range_pct",
+]
+
 
 @dataclass
 class Rule:
@@ -210,6 +246,83 @@ def fit_overnight_return_model(
     }
 
 
+def fit_factor_return_model(
+    history: pd.DataFrame,
+    minimum_samples: int = 15,
+    alpha: float = 10.0,
+) -> Optional[Dict[str, object]]:
+    """Fit a lag-safe, regularized magnitude model across the factor panel.
+
+    This is intentionally not allowed to choose the direction.  With only a
+    short history, the rule layer is the source of the binary decision and
+    this model only supplies a second estimate of the move size.  Standardized
+    factors, clipped to five standard deviations, keep one large OI or margin
+    number from overwhelming the other inputs.
+    """
+    columns = [column for column in RETURN_MODEL_COLUMNS if column in history]
+    if "target_return" not in history or len(columns) < 4:
+        return None
+    values = history[columns + ["target_return"]].apply(pd.to_numeric, errors="coerce")
+    values = values.replace([np.inf, -np.inf], np.nan)
+    target = values["target_return"]
+    usable = target.notna() & np.isfinite(target)
+    values = values.loc[usable]
+    if len(values) < minimum_samples:
+        return None
+    x = values[columns].copy()
+    y = values["target_return"].to_numpy(dtype=float)
+    medians = x.median().fillna(0.0)
+    x = x.fillna(medians)
+    means = x.mean()
+    scales = x.std(ddof=0).replace(0.0, 1.0).fillna(1.0).clip(lower=1e-8)
+    standardized = ((x - means) / scales).clip(-5.0, 5.0).to_numpy(dtype=float)
+    standardized = np.nan_to_num(standardized, nan=0.0, posinf=5.0, neginf=-5.0)
+    design = np.column_stack([np.ones(len(standardized)), standardized])
+    penalty = np.eye(design.shape[1]) * np.sqrt(float(alpha))
+    penalty[0, 0] = 0.0
+    augmented_design = np.vstack([design, penalty])
+    augmented_target = np.concatenate([y, np.zeros(design.shape[1])])
+    coefficients, _, _, _ = np.linalg.lstsq(
+        augmented_design, augmented_target, rcond=None
+    )
+    return {
+        "columns": columns,
+        "alpha": float(alpha),
+        "intercept": float(coefficients[0]),
+        "coefficients": [float(value) for value in coefficients[1:]],
+        "medians": [float(medians[column]) for column in columns],
+        "means": [float(means[column]) for column in columns],
+        "scales": [float(scales[column]) for column in columns],
+        "samples": int(len(values)),
+    }
+
+
+def factor_return_estimate(
+    row: pd.Series,
+    factor_model: Optional[Dict[str, object]],
+) -> Optional[float]:
+    if not factor_model:
+        return None
+    columns = list(factor_model.get("columns", []))
+    coefficients = list(factor_model.get("coefficients", []))
+    medians = list(factor_model.get("medians", []))
+    means = list(factor_model.get("means", []))
+    scales = list(factor_model.get("scales", []))
+    if not columns or len(coefficients) != len(columns):
+        return None
+    vector = []
+    for index, column in enumerate(columns):
+        value = pd.to_numeric(row.get(column), errors="coerce")
+        if pd.isna(value) or not np.isfinite(value):
+            value = medians[index]
+        scale = scales[index] if scales[index] else 1.0
+        vector.append(float(np.clip((value - means[index]) / scale, -5.0, 5.0)))
+    estimate = float(factor_model.get("intercept", 0.0)) + float(
+        np.dot(np.asarray(coefficients, dtype=float), np.asarray(vector, dtype=float))
+    )
+    return estimate if np.isfinite(estimate) else None
+
+
 def expected_return_with_overnight(
     row: pd.Series,
     rule_return: float,
@@ -218,11 +331,9 @@ def expected_return_with_overnight(
 ) -> float:
     """Combine rule and overnight estimates, then keep sign fields coherent.
 
-    When the overnight model is available, its estimate is used as the
-    numerical forecast because it is the explicit night-session adjustment.
-    If a directional override exists, the magnitude is retained but its sign
-    is aligned with that final direction; this prevents reports such as
-    ``偏跌`` with a positive predicted return.
+    The overnight estimate is the first numeric estimate.  A separate
+    wrapper blends the regularized factor estimate after this function so the
+    two stages remain independently auditable.
     """
     estimate = float(rule_return)
     if overnight_model:
@@ -239,6 +350,32 @@ def expected_return_with_overnight(
     if final_binary == "偏跌":
         return -abs(estimate)
     return estimate
+
+
+def expected_return_with_factor_blend(
+    row: pd.Series,
+    rule_return: float,
+    final_binary: Optional[str],
+    overnight_model: Optional[Dict[str, object]] = None,
+    factor_model: Optional[Dict[str, object]] = None,
+) -> float:
+    """Blend a factor magnitude estimate without changing the rule direction."""
+    overnight_estimate = expected_return_with_overnight(
+        row, rule_return, final_binary, overnight_model
+    )
+    factor_estimate = factor_return_estimate(row, factor_model)
+    if factor_estimate is None:
+        return overnight_estimate
+    if final_binary == "偏漲":
+        factor_estimate = abs(factor_estimate)
+    elif final_binary == "偏跌":
+        factor_estimate = -abs(factor_estimate)
+    blended = (overnight_estimate + factor_estimate) / 2.0
+    if final_binary == "偏漲":
+        return abs(blended)
+    if final_binary == "偏跌":
+        return -abs(blended)
+    return blended
 
 
 def expected_return_interval(
@@ -341,6 +478,49 @@ def binary_prediction_with_momentum(
     if abs(float(expected_return)) < weak_move_threshold and "ret_1d" in row and not pd.isna(row["ret_1d"]):
         return binary_label_from_return(row["ret_1d"])
     return binary_label_from_return(expected_return)
+
+
+def interpret_factor_changes(row: pd.Series) -> List[Dict[str, object]]:
+    """Turn the nine factor changes into auditable, non-decisive evidence.
+
+    This is the boundary for a future language-model explanation: it receives
+    structured observations and may describe their market meaning, but it
+    does not get to override the rule direction or the numeric forecast.
+    """
+    def value(name: str):
+        if name not in row:
+            return np.nan
+        return pd.to_numeric(row[name], errors="coerce")
+
+    evidence: List[Dict[str, object]] = []
+
+    def add(name: str, direction: str, meaning: str, factors: Sequence[str]):
+        evidence.append({
+            "name": name,
+            "direction": direction,
+            "meaning": meaning,
+            "factors": [factor for factor in factors if factor in row],
+        })
+
+    if value("ret_3d") <= -2.5 and value("ret_5d") <= -2.5:
+        add("短線超跌", "偏漲", "大盤短線跌幅擴大，若夜盤止穩，反彈機率上升。", ["ret_3d", "ret_5d"])
+    if value("close_vs_ma20") < 0 and value("close_vs_ma60") < 0:
+        add("均線下方", "偏跌", "指數位於中短期均線下方，反彈仍受趨勢壓力。", ["close_vs_ma20", "close_vs_ma60"])
+    if value("foreign_5d_billion") < 0 and value("inst_5d_billion") < 0:
+        add("法人同步偏空", "偏跌", "外資與法人近五日合計流向偏賣，資金面不利。", ["foreign_5d_billion", "inst_5d_billion"])
+    if value("margin_balance_change_5d_pct") < -3 and value("ret_5d") < 0:
+        add("融資去槓桿", "中性", "融資餘額跟著下滑，代表賣壓釋放，也可能反映風險降低。", ["margin_balance_change_5d_pct", "ret_5d"])
+    if value("margin_purchase_buy_change_pct") < 0 and value("margin_balance_change_5d_pct") < 0:
+        add("融資買進收縮", "偏跌", "融資買進量與餘額同步收縮，短線承接力偏弱。", ["margin_purchase_buy_change_pct", "margin_balance_change_5d_pct"])
+    if value("tw_vix_change") >= 5 or value("us_vix_change") >= 5:
+        add("波動升溫", "偏跌", "台美波動指標上升，隔日風險溢酬提高。", ["tw_vix_change", "us_vix_change"])
+    if value("us10y_change") < 0 and value("us_nq_change") >= 0:
+        add("利率下降且科技期貨止穩", "偏漲", "美債殖利率下降、Nasdaq期貨止穩，對成長股估值較有利。", ["us10y_change", "us_nq_change"])
+    if value("tx_night_return_pct") > 0 or value("mtx_night_return_pct") > 0:
+        add("台指夜盤支撐", "偏漲", "台指期夜盤收盤高於台股現貨基準，隔日開盤情緒偏正。", ["tx_night_return_pct", "mtx_night_return_pct"])
+    if value("us_nq_change") < -1 or value("us_sox_change") < -2:
+        add("美股科技隔夜轉弱", "偏跌", "Nasdaq或半導體期貨／現貨隔夜走弱，台股電子權值承壓。", ["us_nq_change", "us_sox_change"])
+    return evidence
 
 
 def build_rule_panel(
@@ -640,11 +820,12 @@ def walk_forward_rule_predictions(
         predicted_binary = binary_prediction_with_momentum(
             test_states.iloc[0], expected_return
         )
-        final_return = expected_return_with_overnight(
+        final_return = expected_return_with_factor_blend(
             test_states.iloc[0],
             expected_return,
             predicted_binary,
             fit_overnight_return_model(train),
+            fit_factor_return_model(train),
         )
         rows.append(
             {

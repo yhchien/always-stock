@@ -37,10 +37,12 @@ from tools.market_calendar_rules import (  # noqa: E402
     binary_prediction_with_momentum,
     build_rule_panel,
     discover_rules,
-    expected_return_with_overnight,
+    expected_return_with_factor_blend,
     expected_return_interval,
+    fit_factor_return_model,
     fit_overnight_return_model,
     format_rule,
+    interpret_factor_changes,
     predict_with_rules,
 )
 
@@ -179,11 +181,13 @@ def generate_daily_prediction(target_date: date, history_days: int = 120) -> Dic
     direction, expected_return, matched = predict_with_rules(latest_row, rules, fallback)
     binary = binary_prediction_with_momentum(latest_row, expected_return)
     overnight_model = fit_overnight_return_model(train)
-    final_return = expected_return_with_overnight(
+    factor_model = fit_factor_return_model(train)
+    final_return = expected_return_with_factor_blend(
         latest_row,
         expected_return,
         binary,
         overnight_model,
+        factor_model,
     )
     interval_low, interval_high = expected_return_interval(
         train, final_return, overnight_model
@@ -198,6 +202,8 @@ def generate_daily_prediction(target_date: date, history_days: int = 120) -> Dic
     explanation = {
         "rule_expected_return": _json_number(expected_return),
         "overnight_return_model": overnight_model,
+        "factor_return_model": factor_model,
+        "factor_interpretation": interpret_factor_changes(latest_row),
         "final_predicted_return": _json_number(final_return),
         "matched_rules": [format_rule(rule) for rule in matched],
         "history_count": int(len(history)),
@@ -228,7 +234,7 @@ def generate_daily_prediction(target_date: date, history_days: int = 120) -> Dic
         record.factor_snapshot = snapshot
         record.explanation = explanation
         record.result_status = "pending"
-        record.model_version = "market-calendar-v2-night"
+        record.model_version = "market-calendar-v3-blend"
         record.generated_at = datetime.utcnow()
         record.updated_at = datetime.utcnow()
         db.commit()
