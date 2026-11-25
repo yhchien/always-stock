@@ -1,4 +1,4 @@
-"""純文字訊息組裝（list show / list add 成功訊息 / list watch detail / 每日報告）。
+"""純文字訊息組裝（list 指令與模擬交易每日廣播）。
 
 設計：
 - 不依賴 Telegram client；單純收 dataclass / model → 回 string
@@ -6,7 +6,9 @@
 """
 from __future__ import annotations
 
-from typing import List, Optional
+from dataclasses import dataclass
+from datetime import date
+from typing import List, Optional, Sequence
 
 from app.models import TelegramChat
 from app.routers.analysis import KeyFactor, TradeQualityResponse
@@ -34,7 +36,7 @@ HELP_TEXT = (
     "`list run 2330` — 重跑 2330 分析（背景跑、跑完推送）\n"
     "`list run all` — 重跑全部清單（鎖定其他指令直到完成）\n\n"
     f"清單上限：{WATCHLIST_LIMIT} 檔\n"
-    "每日 21:30 自動推送清單報告"
+    "每日 21:30 自動推送台股行事曆策略報告"
 )
 
 
@@ -139,6 +141,52 @@ _RATING_EMOJI = {
 }
 
 
+@dataclass(frozen=True)
+class ShadowActionReport:
+    """一筆模擬策略的待執行動作。"""
+
+    action: str
+    stock_id: str
+    stock_name: str
+    units: int = 1
+
+
+@dataclass(frozen=True)
+class ShadowPositionReport:
+    """一檔模擬策略目前持倉的顯示資料。"""
+
+    stock_id: str
+    stock_name: str
+    entry_date: date
+    entry_price: float
+    current_price: Optional[float]
+    performance_pct: Optional[float]
+    units: int = 1
+
+
+@dataclass(frozen=True)
+class ShadowStrategyReport:
+    """一套模擬策略的每日廣播區塊。"""
+
+    label: str
+    actions: Sequence[ShadowActionReport]
+    positions: Sequence[ShadowPositionReport]
+
+
+@dataclass(frozen=True)
+class MarketCalendarStrategyReport:
+    """台股行事曆策略的 Telegram 廣播資料。"""
+
+    signal_date: date
+    target_date: Optional[date]
+    predicted_binary: str
+    predicted_direction: Optional[str]
+    predicted_return: Optional[float]
+    predicted_return_low: Optional[float]
+    predicted_return_high: Optional[float]
+    explanation: Optional[dict]
+
+
 def _factors_to_lines(factors: Optional[List[KeyFactor]]) -> List[str]:
     if not factors:
         return []
@@ -237,6 +285,122 @@ def format_daily_report(
             sections.append("  ⚠️ 尚無分析資料")
         sections.append("")
     return "\n".join(sections).rstrip()
+
+
+def _format_report_date(value: Optional[date]) -> str:
+    return value.isoformat() if value is not None else "—"
+
+
+def _format_report_price(value: Optional[float]) -> str:
+    return "—" if value is None else f"{value:.2f}"
+
+
+def _format_report_pct(value: Optional[float]) -> str:
+    return "—" if value is None else f"{value:+.2f}%"
+
+
+def format_shadow_daily_report(
+    reports: Sequence[ShadowStrategyReport],
+    *,
+    signal_date: date,
+    execution_date: date,
+) -> str:
+    """格式化兩套模擬策略的每日交易廣播。
+
+    這是 Telegram cron 專用格式，刻意不包含個人 watchlist 或交易品質分析，
+    只呈現每套策略的預計動作與目前持倉。
+    """
+    lines = [
+        "📊 魚尾模擬交易每日廣播",
+        f"資料日期：{_format_report_date(signal_date)}",
+        "",
+    ]
+
+    for index, report in enumerate(reports):
+        if index:
+            lines.append("")
+        lines.append(f"【{report.label}】")
+        lines.append(f"今日 {_format_report_date(execution_date)} 預計執行")
+        if report.actions:
+            for action in report.actions:
+                action_label = {
+                    "BUY": "買進",
+                    "ADD": "加碼",
+                    "SELL": "賣出",
+                }.get(action.action, action.action)
+                units = f"（{action.units} 單位）" if action.units != 1 else ""
+                lines.append(f"{action_label} {action.stock_id} {action.stock_name}{units}")
+        else:
+            lines.append("沒有交易動作")
+
+        lines.append("")
+        lines.append("目前持倉")
+        if report.positions:
+            for position in report.positions:
+                units = f"（{position.units} 單位）" if position.units != 1 else ""
+                lines.append(
+                    f"{position.stock_id} {position.stock_name}{units}｜"
+                    f"{_format_report_date(position.entry_date)} 買進｜"
+                    f"買進價 {_format_report_price(position.entry_price)}｜"
+                    f"現在價 {_format_report_price(position.current_price)}｜"
+                    f"績效 {_format_report_pct(position.performance_pct)}"
+                )
+        else:
+            lines.append("無持倉")
+
+    return "\n".join(lines)
+
+
+def format_market_calendar_strategy_report(
+    report: MarketCalendarStrategyReport,
+) -> str:
+    """格式化台股行事曆策略結果，不包含個股清單或持倉。"""
+    explanation = report.explanation or {}
+    ai = explanation.get("ai_interpretation") or {}
+    lines = [
+        "📅 魚尾台股行事曆策略",
+        f"訊號日：{_format_report_date(report.signal_date)}",
+        f"預測日：{_format_report_date(report.target_date)}",
+        "",
+        f"策略結論：*{report.predicted_binary}*",
+        f"盤勢類別：{report.predicted_direction or '—'}",
+        f"預估漲跌幅：{_format_report_pct(report.predicted_return)}",
+    ]
+    if report.predicted_return_low is not None or report.predicted_return_high is not None:
+        lines.append(
+            "預估區間："
+            f"{_format_report_pct(report.predicted_return_low)} ~ "
+            f"{_format_report_pct(report.predicted_return_high)}"
+        )
+
+    summary = ai.get("summary")
+    if summary:
+        lines.extend(["", f"AI 判讀：{summary}"])
+
+    regime = ai.get("regime")
+    if regime:
+        lines.append(f"市場狀態：{regime}")
+
+    bullish = ai.get("bullish_factors") or []
+    bearish = ai.get("bearish_factors") or []
+    if bullish:
+        lines.extend(["", "偏多因素："])
+        for item in bullish[:3]:
+            factor = item.get("factor") or item.get("name") or "因素"
+            meaning = item.get("interpretation") or item.get("meaning") or ""
+            lines.append(f"• {factor}：{meaning}")
+    if bearish:
+        lines.extend(["", "偏空因素："])
+        for item in bearish[:3]:
+            factor = item.get("factor") or item.get("name") or "因素"
+            meaning = item.get("interpretation") or item.get("meaning") or ""
+            lines.append(f"• {factor}：{meaning}")
+
+    risks = ai.get("risks") or []
+    if risks:
+        lines.extend(["", "風險："])
+        lines.extend(f"• {risk}" for risk in risks[:3])
+    return "\n".join(lines)
 
 
 def format_admin_chats(items: List[AdminChatSummary]) -> str:
