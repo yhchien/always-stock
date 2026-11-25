@@ -77,7 +77,7 @@ function HistoryTable({ rows }: { rows: MarketCalendarPredictionItem[] }) {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h2 className="text-xl font-semibold text-slate-100">最近預測紀錄</h2>
-          <p className="mt-1 text-sm text-slate-500">顯示近 10 日；資料庫保留最新 50 筆。</p>
+          <p className="mt-1 text-sm text-slate-500">顯示近 10 日；資料庫保留完整歷史。</p>
         </div>
         <span className="text-sm text-slate-500">預測日／目標日</span>
       </div>
@@ -167,7 +167,7 @@ export default function MarketCalendarPage() {
         <>
           <section className="mt-5 grid gap-3 sm:grid-cols-3">
             <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
-              <p className="text-sm text-slate-500">資料庫保留</p>
+              <p className="text-sm text-slate-500">近 50 日資料</p>
               <p className="mt-1 text-2xl font-semibold text-slate-100">{data.available} 日</p>
             </div>
             <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">

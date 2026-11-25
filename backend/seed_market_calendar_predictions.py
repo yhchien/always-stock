@@ -40,17 +40,6 @@ def _result_status(predicted: str, actual: str, actual_return: Optional[float]) 
     return "incorrect"
 
 
-def _trim_prediction_history(db, limit: int = 50) -> None:
-    stale = (
-        db.query(MarketCalendarPrediction)
-        .order_by(MarketCalendarPrediction.signal_date.desc())
-        .offset(limit)
-        .all()
-    )
-    for row in stale:
-        db.delete(row)
-
-
 def seed_predictions(input_path: Path, limit: int = 50, replace: bool = False) -> int:
     Base.metadata.create_all(bind=engine, tables=[MarketCalendarPrediction.__table__])
     with input_path.open(newline="", encoding="utf-8") as handle:
@@ -98,7 +87,6 @@ def seed_predictions(input_path: Path, limit: int = 50, replace: bool = False) -
             record.generated_at = datetime.utcnow()
             record.updated_at = datetime.utcnow()
 
-        _trim_prediction_history(db, limit=50)
         db.commit()
         return len(rows)
     except Exception:

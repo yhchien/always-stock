@@ -48,7 +48,6 @@ from app.database import Base, SessionLocal, engine  # noqa: E402
 from app.models import MarketCalendarPrediction  # noqa: E402
 
 logger = logging.getLogger("market_calendar_daily")
-MARKET_CALENDAR_RETENTION = 50
 
 
 def _json_number(value: Any) -> Optional[float]:
@@ -133,18 +132,6 @@ def _update_actuals(db, panel: pd.DataFrame) -> None:
         record.actual_broad = source.get("target_broad")
         record.result_status = _result_status(record.predicted_binary, actual_binary, actual_return)
         record.updated_at = datetime.utcnow()
-
-
-def _trim_prediction_history(db, limit: int = MARKET_CALENDAR_RETENTION) -> None:
-    """Keep exactly the newest signal-date rows in the prediction table."""
-    stale = (
-        db.query(MarketCalendarPrediction)
-        .order_by(MarketCalendarPrediction.signal_date.desc())
-        .offset(limit)
-        .all()
-    )
-    for row in stale:
-        db.delete(row)
 
 
 def generate_daily_prediction(target_date: date, history_days: int = 120) -> Dict[str, Any]:
@@ -244,7 +231,6 @@ def generate_daily_prediction(target_date: date, history_days: int = 120) -> Dic
         record.model_version = "market-calendar-v2-night"
         record.generated_at = datetime.utcnow()
         record.updated_at = datetime.utcnow()
-        _trim_prediction_history(db)
         db.commit()
     except Exception:
         db.rollback()
