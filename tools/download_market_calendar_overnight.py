@@ -22,19 +22,50 @@ from typing import Dict, Iterable, List
 import pandas as pd
 import requests
 
+from tools.download_market_calendar_data import (
+    FRED_CSV,
+    align_external_observations,
+    attach_source_metadata,
+)
+
 
 YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 TAIFEX_DAILY = "https://www.taifex.com.tw/cht/3/futDataDown"
 USER_AGENT = "always-stock-market-calendar/1.0"
 
 US_SYMBOLS = {
-    "us_sp500": "%5EGSPC",
-    "us_nasdaq": "%5EIXIC",
-    "us_sox": "%5ESOX",
     "us_es": "ES%3DF",
     "us_nq": "NQ%3DF",
     "us_ym": "YM%3DF",
 }
+
+US_SPOT_SERIES = {
+    "us_sp500": "SP500",
+    "us_nasdaq": "NASDAQCOM",
+    "us_sox": "NASDAQSOX",
+}
+
+
+def fetch_fred_spot_returns(start: date, end: date) -> pd.DataFrame:
+    frames = []
+    for name, series_id in US_SPOT_SERIES.items():
+        response = requests.get(
+            FRED_CSV,
+            params={"id": series_id, "cosd": str(start), "coed": str(end)},
+            timeout=45,
+            headers={"User-Agent": USER_AGENT},
+        )
+        response.raise_for_status()
+        frame = pd.read_csv(io.StringIO(response.text), na_values=[".", ""])
+        frame["trade_date"] = pd.to_datetime(frame["observation_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+        frame[series_id] = pd.to_numeric(frame[series_id], errors="coerce")
+        frame[name + "_change"] = frame[series_id].dropna().pct_change() * 100.0
+        frame[name + "_observation_date"] = frame["trade_date"]
+        frames.append(frame[["trade_date", name + "_change", name + "_observation_date"]])
+    result = frames[0]
+    for frame in frames[1:]:
+        result = result.merge(frame, on="trade_date", how="outer")
+    return result.sort_values("trade_date").reset_index(drop=True)
 
 
 def fetch_yahoo_returns(start: date, end: date) -> pd.DataFrame:
@@ -135,11 +166,36 @@ def fetch_taifex_session(start: date, end: date, commodity_id: str, prefix: str)
 
 
 def build_overnight(start: date, end: date) -> pd.DataFrame:
-    result = fetch_yahoo_returns(start, end)
+    # Cash indices use the explicitly requested FRED spot series.  Futures
+    # remain Yahoo's ES/NQ/YM overnight contracts and are kept separate.
+    result = fetch_fred_spot_returns(start, end)
+    futures = fetch_yahoo_returns(start, end)
+    if not futures.empty:
+        result = result.merge(futures, on="trade_date", how="outer")
+    taifex_frames = []
     for commodity, prefix in (("TX", "tx"), ("MTX", "mtx")):
         frame = fetch_taifex_session(start, end, commodity, prefix)
+        taifex_frames.append(frame)
+    target_dates = sorted({date_value for frame in taifex_frames for date_value in frame.get("trade_date", [])})
+    for name in US_SPOT_SERIES:
+        observation_column = name + "_observation_date"
+        if observation_column in result:
+            result = align_external_observations(result, target_dates, observation_column)
+            break
+    for frame in taifex_frames:
         result = frame if result.empty else result.merge(frame, on="trade_date", how="outer")
-    return result.sort_values("trade_date").reset_index(drop=True)
+    result = result.sort_values("trade_date").reset_index(drop=True)
+    specs = {
+        "us_sp500": {"columns": ["us_sp500_change"], "source": FRED_CSV, "series_id": "SP500", "unit": "percent change", "observation_date_column": "us_sp500_observation_date", "missing_reason": "FRED SP500 has no US-market observation for this date or was not yet published"},
+        "us_nasdaq": {"columns": ["us_nasdaq_change"], "source": FRED_CSV, "series_id": "NASDAQCOM", "unit": "percent change", "observation_date_column": "us_nasdaq_observation_date", "missing_reason": "FRED NASDAQCOM has no US-market observation for this date or was not yet published"},
+        "us_sox": {"columns": ["us_sox_change"], "source": FRED_CSV, "series_id": "NASDAQSOX", "unit": "percent change", "observation_date_column": "us_sox_observation_date", "missing_reason": "FRED NASDAQSOX has no US-market observation for this date or was not yet published"},
+        "us_es": {"columns": ["us_es_change"], "source": "Yahoo Finance chart API", "series_id": "ES=F", "unit": "percent change", "missing_reason": "Yahoo ES=F has no observation for this date or was not yet published"},
+        "us_nq": {"columns": ["us_nq_change"], "source": "Yahoo Finance chart API", "series_id": "NQ=F", "unit": "percent change", "missing_reason": "Yahoo NQ=F has no observation for this date or was not yet published"},
+        "us_ym": {"columns": ["us_ym_change"], "source": "Yahoo Finance chart API", "series_id": "YM=F", "unit": "percent change", "missing_reason": "Yahoo YM=F has no observation for this date or was not yet published"},
+        "tx_night": {"columns": ["tx_night_close"], "source": TAIFEX_DAILY, "series_id": "TX", "unit": "index points", "session": "盤後", "missing_reason": "TAIFEX TX after-hours session has no row for this trading date"},
+        "mtx_night": {"columns": ["mtx_night_close"], "source": TAIFEX_DAILY, "series_id": "MTX", "unit": "index points", "session": "盤後", "missing_reason": "TAIFEX MTX after-hours session has no row for this trading date"},
+    }
+    return attach_source_metadata(result, specs)
 
 
 def main() -> int:
@@ -150,12 +206,25 @@ def main() -> int:
     args = parser.parse_args()
     frame = build_overnight(args.start, args.end)
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    frame.to_csv(args.output, index=False)
+    output_frame = frame.copy()
+    if "source_metadata" in output_frame:
+        output_frame["source_metadata"] = output_frame["source_metadata"].map(
+            lambda value: json.dumps(value, ensure_ascii=False, sort_keys=True)
+        )
+    output_frame.to_csv(args.output, index=False)
     metadata = {
         "start": str(args.start),
         "end": str(args.end),
         "rows": len(frame),
-        "sources": {"us": "Yahoo Finance chart API", "taifex": TAIFEX_DAILY},
+        "sources": {
+            "us_cash": "FRED:SP500,NASDAQCOM,NASDAQSOX",
+            "us_futures": "Yahoo Finance chart API: ES=F,NQ=F,YM=F",
+            "taifex": TAIFEX_DAILY,
+        },
+        "definitions": {
+            "us_nasdaq": "Nasdaq Composite (FRED NASDAQCOM), not Nasdaq-100",
+            "us_spot_alignment": "US observation date is attached to the next Taiwan trading session; source_metadata retains the original date",
+        },
         "taifex_session": "盤後",
         "alignment": "TAIFEX trade_date D is the overnight session ending at 05:00 on D; join to TAIEX target_date D.",
     }

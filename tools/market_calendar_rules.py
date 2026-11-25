@@ -9,6 +9,7 @@ the later validation rows cannot influence their thresholds or outcomes.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from itertools import combinations
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -17,9 +18,9 @@ import numpy as np
 import pandas as pd
 
 try:
-    from tools.market_calendar import build_feature_panel
+    from tools.market_calendar import _effective_change, build_feature_panel
 except ModuleNotFoundError:  # direct ``python3 tools/run_...py`` execution
-    from market_calendar import build_feature_panel  # type: ignore
+    from market_calendar import _effective_change, build_feature_panel  # type: ignore
 
 
 BROAD_LABELS = ("走高", "震盪", "走低")
@@ -250,7 +251,9 @@ def build_rule_panel(
     frame["trade_date"] = pd.to_datetime(frame["trade_date"])
     frame["close_vs_ma60"] = frame["close_price"] / frame["close_price"].rolling(60).mean() - 1.0
     if "mtx_long_short_ratio" in frame:
-        frame["mtx_long_short_ratio_change"] = frame["mtx_long_short_ratio"].pct_change() * 100.0
+        frame["mtx_long_short_ratio_change"] = _effective_change(
+            frame["mtx_long_short_ratio"], percentage=True
+        )
 
     for source, target, periods in (
         ("foreign_net_amount", "foreign_5d_billion", 5),
@@ -329,6 +332,9 @@ def build_rule_panel(
         ]
         if missing_target.any() and not future_overnight.empty:
             frame.loc[missing_target, "overnight_join_date"] = future_overnight.min()
+        overnight_metadata = overnight_frame.pop("source_metadata") if "source_metadata" in overnight_frame else None
+        if overnight_metadata is not None:
+            overnight_frame["overnight_source_metadata"] = overnight_metadata
         frame = frame.merge(
             overnight_frame,
             left_on="overnight_join_date",
@@ -346,6 +352,33 @@ def build_rule_panel(
             frame[prefix + "_night_range_pct"] = (high - low) / frame["close_price"] * 100.0
             volume = pd.to_numeric(frame[prefix + "_night_volume"], errors="coerce")
             frame[prefix + "_night_volume_change_pct"] = _pct_change(volume)
+        if "overnight_source_metadata" in frame:
+            def merge_metadata(base, overnight_value):
+                if isinstance(base, str):
+                    try:
+                        base = json.loads(base)
+                    except json.JSONDecodeError:
+                        base = None
+                if isinstance(overnight_value, str):
+                    try:
+                        overnight_value = json.loads(overnight_value)
+                    except json.JSONDecodeError:
+                        overnight_value = None
+                result = {}
+                if isinstance(base, dict):
+                    result.update(base)
+                if isinstance(overnight_value, dict):
+                    result.update(overnight_value)
+                return result or None
+
+            frame["source_metadata"] = [
+                merge_metadata(base, overnight_value)
+                for base, overnight_value in zip(
+                    frame.get("source_metadata", pd.Series([None] * len(frame))),
+                    frame["overnight_source_metadata"],
+                )
+            ]
+            frame = frame.drop(columns=["overnight_source_metadata"])
         frame = frame.drop(columns=["overnight_join_date"])
     return frame
 

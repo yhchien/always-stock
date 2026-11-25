@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 
 from tools.market_calendar_rules import (
     _three_way_label,
@@ -7,6 +8,7 @@ from tools.market_calendar_rules import (
     binary_prediction_with_momentum,
     build_rule_panel,
 )
+from tools.market_calendar import _effective_change, _rolling_z
 
 
 def test_three_way_label_uses_requested_broad_cutoffs():
@@ -84,3 +86,21 @@ def test_overnight_session_is_joined_to_next_target_date():
     )
     panel = build_rule_panel(raw, overnight=overnight)
     assert round(panel.loc[0, "tx_night_return_pct"], 6) == round((102 / 101 - 1) * 100, 6)
+
+
+def test_external_changes_use_previous_valid_observations():
+    source = pd.Series([4.0, None, 4.2, 4.1, 4.3])
+    result = _effective_change(source)
+    assert pd.isna(result.iloc[0])
+    assert pd.isna(result.iloc[1])
+    assert result.iloc[2] == pytest.approx(0.2)
+    assert result.iloc[4] == pytest.approx(0.2)
+
+
+def test_vix_z_score_requires_twenty_valid_observations():
+    source = pd.Series([float(index) for index in range(1, 21)] + [None, 22.0])
+    result = _rolling_z(source, window=20)
+    assert pd.isna(result.iloc[18])
+    assert pd.notna(result.iloc[19])
+    assert pd.isna(result.iloc[20])
+    assert pd.notna(result.iloc[21])

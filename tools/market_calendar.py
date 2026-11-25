@@ -105,9 +105,33 @@ def _safe_pct_change(series: pd.Series, periods: int = 1) -> pd.Series:
 
 
 def _rolling_z(series: pd.Series, window: int = 20) -> pd.Series:
-    mean = series.rolling(window, min_periods=5).mean()
-    std = series.rolling(window, min_periods=5).std(ddof=0).replace(0, np.nan)
-    return (series - mean) / std
+    """Z-score over the last ``window`` valid observations.
+
+    External markets have holidays and publication gaps.  A row-based rolling
+    window would incorrectly treat those gaps as observations, so the window
+    is counted on the valid source values only.
+    """
+    values = pd.to_numeric(series, errors="coerce")
+    valid = values.dropna()
+    result = pd.Series(np.nan, index=series.index, dtype=float)
+    for position in range(window - 1, len(valid)):
+        sample = valid.iloc[position - window + 1 : position + 1]
+        std = float(sample.std(ddof=0))
+        if std == 0:
+            continue
+        result.loc[valid.index[position]] = (float(valid.iloc[position]) - float(sample.mean())) / std
+    return result
+
+
+def _effective_change(series: pd.Series, periods: int = 1, percentage: bool = False) -> pd.Series:
+    """Change against the previous valid source observation(s)."""
+    values = pd.to_numeric(series, errors="coerce")
+    valid = values.dropna()
+    if percentage:
+        changed = valid.pct_change(periods=periods, fill_method=None) * 100.0
+    else:
+        changed = valid.diff(periods=periods)
+    return changed.reindex(series.index)
 
 
 def _streak(series: pd.Series, positive: bool) -> pd.Series:
@@ -220,15 +244,15 @@ def build_feature_panel(raw: pd.DataFrame) -> pd.DataFrame:
     ):
         if source in frame:
             frame[target] = pd.to_numeric(frame[source], errors="coerce")
-            frame[target.replace("_level", "_change")] = frame[target].diff()
+            frame[target.replace("_level", "_change")] = _effective_change(frame[target])
 
     if "mtx_oi_long" in frame and "mtx_oi_short" in frame:
         long_oi = pd.to_numeric(frame["mtx_oi_long"], errors="coerce")
         short_oi = pd.to_numeric(frame["mtx_oi_short"], errors="coerce")
         frame["mtx_net_oi"] = long_oi - short_oi
-        frame["mtx_long_oi_change"] = long_oi.diff()
-        frame["mtx_short_oi_change"] = short_oi.diff()
-        frame["mtx_net_oi_change"] = frame["mtx_net_oi"].diff()
+        frame["mtx_long_oi_change"] = _effective_change(long_oi)
+        frame["mtx_short_oi_change"] = _effective_change(short_oi)
+        frame["mtx_net_oi_change"] = _effective_change(frame["mtx_net_oi"])
         frame["mtx_long_short_ratio"] = long_oi / short_oi.replace(0, np.nan)
 
     for source, target in (
@@ -238,8 +262,9 @@ def build_feature_panel(raw: pd.DataFrame) -> pd.DataFrame:
     ):
         if source in frame:
             frame[source] = pd.to_numeric(frame[source], errors="coerce")
-            frame[target] = _safe_pct_change(frame[source])
-            frame[target + "_5d"] = _safe_pct_change(frame[source], 5)
+            is_yield = source == "us10y"
+            frame[target] = _effective_change(frame[source], percentage=not is_yield)
+            frame[target + "_5d"] = _effective_change(frame[source], periods=5, percentage=not is_yield)
 
     frame["session_label"] = frame.apply(classify_session, axis=1)
     frame["target_label"] = frame["session_label"].shift(-1)

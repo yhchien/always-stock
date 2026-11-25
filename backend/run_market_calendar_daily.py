@@ -79,10 +79,24 @@ def _factor_snapshot(row: pd.Series) -> Dict[str, Any]:
                 available += 1
             values[column] = value
         groups[group] = values
+    missing_columns = [
+        column
+        for columns in FACTOR_COLUMNS.values()
+        for column in columns
+        if column in row and _json_number(row[column]) is None
+    ]
+    source_metadata = row.get("source_metadata")
+    if isinstance(source_metadata, str):
+        try:
+            source_metadata = json.loads(source_metadata)
+        except json.JSONDecodeError:
+            source_metadata = None
     return {
         "groups": groups,
         "available_columns": available,
         "total_columns": total,
+        "missing_columns": missing_columns,
+        "source_metadata": source_metadata or {},
     }
 
 
