@@ -19,6 +19,7 @@ export default function Navbar() {
   const isHome = pathname === "/"
   const isLoginPage = pathname === "/login"
   const isWatchlistPage = pathname === "/watchlist"
+  const isMarketCalendarPage = pathname === "/market-calendar"
   const { user, status, logout } = useAuth()
   const { total, capacity } = useWatchlist()
   const [query, setQuery] = useState("")
@@ -210,6 +211,15 @@ export default function Navbar() {
               className="text-xs text-slate-500 hover:text-slate-200 transition-colors border border-slate-700/40 hover:border-slate-500 rounded-md px-3 py-1"
             >
               回首頁
+            </Link>
+          )}
+
+          {!isMarketCalendarPage && (
+            <Link
+              href="/market-calendar"
+              className="text-xs text-slate-300 hover:text-white transition-colors border border-slate-700/40 hover:border-slate-500 rounded-md px-3 py-1"
+            >
+              台股行事曆
             </Link>
           )}
 

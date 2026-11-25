@@ -834,6 +834,51 @@ export async function fetchDailyBrief(date: string, options?: FetchOptions): Pro
   return res.json()
 }
 
+// ── Taiwan market calendar ───────────────────────────────────────────────
+
+export interface MarketCalendarPredictionItem {
+  signal_date: string
+  target_date: string | null
+  predicted_binary: "偏漲" | "偏跌" | string
+  predicted_direction: string | null
+  predicted_return: number | null
+  predicted_return_low: number | null
+  predicted_return_high: number | null
+  confidence: "high" | "medium" | "low" | string | null
+  data_completeness: number | null
+  factor_snapshot: Record<string, unknown> | null
+  explanation: Record<string, unknown> | null
+  actual_binary: string | null
+  actual_direction: string | null
+  actual_broad: string | null
+  actual_return: number | null
+  result_status: "pending" | "correct" | "incorrect" | "tolerated" | string
+  model_version: string
+  generated_at: string
+  updated_at: string
+}
+
+export interface MarketCalendarHistoryResponse {
+  items: MarketCalendarPredictionItem[]
+  limit: number
+  available: number
+  evaluated: number
+  correct: number
+  accuracy: number | null
+}
+
+export async function fetchMarketCalendarHistory(
+  limit = 10,
+  options?: FetchOptions,
+): Promise<MarketCalendarHistoryResponse> {
+  const params = new URLSearchParams({ limit: String(limit) })
+  const res = await apiFetch(`${API_BASE}/api/market-calendar/history?${params}`, {
+    signal: options?.signal,
+  })
+  if (!res.ok) throw new Error(await buildErrorMessage(res, "台股行事曆載入失敗"))
+  return res.json()
+}
+
 // ── Trade quality analysis ───────────────────────────────────────────────
 
 export interface StockSearchItem {

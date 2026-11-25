@@ -19,6 +19,7 @@ from app.routers import (
     gate,
     industries,
     market,
+    market_calendar,
     phase2_debug,
     realtime,
     shadow_portfolio as shadow_portfolio_router,
@@ -267,6 +268,17 @@ def _ensure_market_regime_v2_tables() -> None:
         logger.exception("Failed to create Market Regime v2 tables at startup")
 
 
+def _ensure_market_calendar_tables() -> None:
+    """啟動時確保台股行事曆預測歷史表存在。"""
+    from app.database import Base, engine
+    from app.models import MarketCalendarPrediction  # noqa: F401 — 註冊 metadata
+
+    try:
+        Base.metadata.create_all(bind=engine, tables=[MarketCalendarPrediction.__table__])
+    except Exception:
+        logger.exception("Failed to create market calendar prediction table at startup")
+
+
 def _ensure_shadow_portfolio_tables() -> None:
     """啟動時確保魚尾每日模擬交易（Shadow Portfolio）Phase 1 新表存在。純建表、不 seed、
     失敗不擋啟動。這批表完全獨立於既有 signal_* 選股/追蹤表，正式的 v1 策略邏輯只讀取既有表
@@ -301,6 +313,7 @@ async def lifespan(app: FastAPI):
     _ensure_classification_tables()
     _ensure_phase2_shadow_tables()
     _ensure_market_regime_v2_tables()
+    _ensure_market_calendar_tables()
     _ensure_shadow_portfolio_tables()
 
     app.state.bot_app = None
@@ -378,6 +391,7 @@ app.include_router(auth_router.router, prefix="/api")
 app.include_router(gate.router, prefix="/api")
 app.include_router(industries.router, prefix="/api")
 app.include_router(market.router, prefix="/api")
+app.include_router(market_calendar.router, prefix="/api")
 app.include_router(stocks.router, prefix="/api")
 app.include_router(realtime.router, prefix="/api")
 app.include_router(brokers.router, prefix="/api")

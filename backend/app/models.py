@@ -1169,6 +1169,41 @@ class MarketStressIndicator(Base):
     ingested_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
+class MarketCalendarPrediction(Base):
+    """台股行事曆每日隔日預測與事後結果。
+
+    這張表和個股訊號快照分離：一筆代表一個 signal_date，預測下一個
+    台股交易日。`factor_snapshot` 保留當時可見的因素，方便 UI 解釋與
+    後續檢查是否有資料延遲或規則變更。
+    """
+
+    __tablename__ = "market_calendar_predictions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    signal_date = Column(Date, nullable=False, unique=True, index=True)
+    target_date = Column(Date, nullable=True, index=True)
+
+    predicted_binary = Column(String(16), nullable=False)  # 偏漲 | 偏跌
+    predicted_direction = Column(String(16), nullable=True)  # 走高 | 震盪 | 走低
+    predicted_return = Column(Float, nullable=True)
+    predicted_return_low = Column(Float, nullable=True)
+    predicted_return_high = Column(Float, nullable=True)
+
+    confidence = Column(String(16), nullable=True)  # high | medium | low
+    data_completeness = Column(Float, nullable=True)  # 0~1
+    factor_snapshot = Column(JSON, nullable=True)
+    explanation = Column(JSON, nullable=True)  # reasons / matched rules
+
+    actual_binary = Column(String(16), nullable=True)
+    actual_direction = Column(String(16), nullable=True)
+    actual_broad = Column(String(32), nullable=True)
+    actual_return = Column(Float, nullable=True)
+    result_status = Column(String(16), nullable=False, default="pending")
+    model_version = Column(String(32), nullable=False, default="market-calendar-v1")
+    generated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
 class ShadowVirtualPortfolio(Base):
     """
     魚尾每日模擬交易（Shadow Portfolio）Phase 1：把獨立沙盒 fishtail_backtest/ 反覆驗證過的

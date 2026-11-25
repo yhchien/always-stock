@@ -1,0 +1,15 @@
+{
+  "start": "2026-07-15",
+  "end": "2026-11-15",
+  "rows": 83,
+  "sources": {
+    "taiex": "https://always-stock.onrender.com/api/stocks/TAIEX/history",
+    "institutional": "https://always-stock.onrender.com/api/industries",
+    "taiwan_vix": "https://www.taifex.com.tw/cht/7/getVixData",
+    "mtx": "https://www.taifex.com.tw/enl/eng3/futContractsDateDown",
+    "us_vix": "FRED:VIXCLS",
+    "us10y": "FRED:DGS10",
+    "usd_twd": "FRED:DEXTAUS",
+    "gold": "Yahoo Finance:GC=F"
+  }
+}

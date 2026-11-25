@@ -1,0 +1,49 @@
+name: Taiwan Market Calendar Daily
+
+on:
+  # 06:30 Asia/Taipei = 22:30 UTC on the previous day.
+  # TAIFEX after-hours data is complete at 05:00 Taiwan time; this leaves a
+  # 90-minute publication buffer before the pre-market prediction.
+  schedule:
+    - cron: "30 22 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      target_date:
+        description: "預測目標交易日 (YYYY-MM-DD)"
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      TZ: Asia/Taipei
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
+      INPUT_TARGET_DATE: ${{ github.event.inputs.target_date }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install --quiet -r backend/requirements.txt
+
+      - name: Seed existing fifty-day walk-forward history
+        run: |
+          python3 backend/seed_market_calendar_predictions.py \
+            --input docs/reports/market_calendar_rule_analysis_2026-08-03_2026-11-23_walk_forward.csv
+
+      - name: Generate and persist market calendar prediction
+        run: |
+          if [ -n "$INPUT_TARGET_DATE" ]; then
+            python3 backend/run_market_calendar_daily.py --target-date "$INPUT_TARGET_DATE"
+          else
+            python3 backend/run_market_calendar_daily.py
+          fi

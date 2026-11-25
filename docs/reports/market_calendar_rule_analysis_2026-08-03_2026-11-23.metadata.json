@@ -1,0 +1,50 @@
+{
+  "start": "2026-08-03",
+  "end": "2026-11-23",
+  "rows": 76,
+  "train_rows": 45,
+  "test_rows": 30,
+  "factor_groups": [
+    "技術",
+    "法人",
+    "VIX",
+    "小台期",
+    "美債殖利率",
+    "黃金",
+    "美元",
+    "融資",
+    "融券",
+    "美股隔夜",
+    "台指夜盤"
+  ],
+  "strict_target_counts": {
+    "震盪": 63,
+    "走低": 7,
+    "走高": 5
+  },
+  "direction_target_counts": {
+    "走低": 28,
+    "走高": 27,
+    "震盪": 20
+  },
+  "latest_forecast": {
+    "signal_date": "2026-11-23",
+    "direction": "走高",
+    "binary": "偏漲",
+    "strict_direction": "震盪",
+    "expected_return": 1.67936890841157,
+    "history_count": 48,
+    "q25": 1.4681601241192777,
+    "q75": 1.9286856204631775,
+    "matched_rules": [
+      "小台淨未平倉變化=高 + 台指期夜盤開收盤變化=高 → 走高 (n=7, precision=100%, lift=2.37, avg next=1.55%)",
+      "小台淨未平倉變化=高 + 小台夜盤開收盤變化=高 → 走高 (n=7, precision=100%, lift=2.37, avg next=1.55%)",
+      "外資5日累計(十億)=低 + 台指期夜盤開收盤變化=高 → 走高 (n=6, precision=100%, lift=2.37, avg next=1.63%)",
+      "外資5日累計(十億)=低 + 小台夜盤開收盤變化=高 → 走高 (n=6, precision=100%, lift=2.37, avg next=1.63%)",
+      "台指期夜盤收盤相對現貨=高 + 台指期夜盤振幅=高 → 走高 (n=6, precision=100%, lift=2.37, avg next=1.73%)",
+      "台指期夜盤振幅=高 + 小台夜盤收盤相對現貨=高 → 走高 (n=6, precision=100%, lift=2.37, avg next=1.73%)",
+      "法人5日累計(十億)=低 + 台指期夜盤開收盤變化=高 → 走高 (n=5, precision=100%, lift=2.37, avg next=1.82%)",
+      "法人5日累計(十億)=低 + 小台夜盤開收盤變化=高 → 走高 (n=5, precision=100%, lift=2.37, avg next=1.82%)"
+    ]
+  }
+}

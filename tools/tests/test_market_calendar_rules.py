@@ -1,0 +1,86 @@
+import pandas as pd
+
+from tools.market_calendar_rules import (
+    _three_way_label,
+    add_factor_states,
+    binary_label_from_return,
+    binary_prediction_with_momentum,
+    build_rule_panel,
+)
+
+
+def test_three_way_label_uses_requested_broad_cutoffs():
+    assert _three_way_label(3.0, 0.0) == "走高"
+    assert _three_way_label(1.0, 6.0) == "走高"
+    assert _three_way_label(0.0, 0.0) == "震盪"
+    assert _three_way_label(-3.0, 0.0) == "走低"
+
+
+def test_binary_label_collapses_by_return_sign():
+    assert binary_label_from_return(0.0) == "偏漲"
+    assert binary_label_from_return(-0.01) == "偏跌"
+    assert binary_prediction_with_momentum(pd.Series({"ret_1d": 1.0}), 0.1) == "偏漲"
+    assert binary_prediction_with_momentum(pd.Series({"ret_1d": -1.0}), 0.1) == "偏跌"
+    assert binary_prediction_with_momentum(
+        pd.Series({"tx_night_return_pct": 0.4, "us_nq_change": 0.0, "ret_1d": -2.0}),
+        -1.0,
+    ) == "偏漲"
+    assert binary_prediction_with_momentum(
+        pd.Series({
+            "tw_vix_change": 5.5,
+            "us_sox_change": -3.5,
+            "ret_3d": -6.0,
+            "close_vs_ma20": -0.08,
+            "tx_night_return_pct": 1.0,
+            "us_nq_change": 1.0,
+        }),
+        1.0,
+    ) == "偏跌"
+
+
+def test_factor_states_are_low_middle_high():
+    source = pd.DataFrame({"signal": [1.0, 2.0, 3.0, 4.0, 5.0]})
+    result = add_factor_states(source, {"signal": (2.0, 4.0)})
+    assert result["signal__state"].tolist() == ["低", "低", "中", "高", "高"]
+
+
+def test_rule_panel_lags_next_return():
+    raw = pd.DataFrame(
+        [
+            ["2026-08-%02d" % day, 100 + day, 101 + day, 99 + day, 100 + day]
+            for day in range(1, 24)
+        ],
+        columns=["trade_date", "open_price", "high_price", "low_price", "close_price"],
+    )
+    panel = build_rule_panel(raw)
+    assert panel.loc[0, "target_date"] == pd.Timestamp("2026-08-02")
+    assert panel.loc[len(panel) - 1, "target_broad"] is None
+
+
+def test_overnight_session_is_joined_to_next_target_date():
+    raw = pd.DataFrame(
+        [
+            ["2026-08-%02d" % day, 100 + day, 101 + day, 99 + day, 100 + day]
+            for day in range(1, 24)
+        ],
+        columns=["trade_date", "open_price", "high_price", "low_price", "close_price"],
+    )
+    overnight = pd.DataFrame(
+        [
+            {
+                "trade_date": "2026-08-02",
+                "tx_night_open": 100,
+                "tx_night_high": 103,
+                "tx_night_low": 99,
+                "tx_night_close": 102,
+                "tx_night_volume": 100,
+                "mtx_night_open": 100,
+                "mtx_night_high": 103,
+                "mtx_night_low": 99,
+                "mtx_night_close": 102,
+                "mtx_night_volume": 100,
+            }
+        ]
+    )
+    panel = build_rule_panel(raw, overnight=overnight)
+    assert round(panel.loc[0, "tx_night_return_pct"], 6) == round((102 / 101 - 1) * 100, 6)

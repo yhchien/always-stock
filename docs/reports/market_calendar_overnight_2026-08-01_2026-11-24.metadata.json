@@ -1,0 +1,11 @@
+{
+  "start": "2026-08-01",
+  "end": "2026-11-24",
+  "rows": 82,
+  "sources": {
+    "us": "Yahoo Finance chart API",
+    "taifex": "https://www.taifex.com.tw/cht/3/futDataDown"
+  },
+  "taifex_session": "盤後",
+  "alignment": "TAIFEX trade_date D is the overnight session ending at 05:00 on D; join to TAIEX target_date D."
+}
