@@ -20,6 +20,8 @@ try:
         predict_with_rules,
         binary_label_from_return,
         binary_prediction_with_momentum,
+        expected_return_with_overnight,
+        fit_overnight_return_model,
         strict_label_from_return,
         walk_forward_rule_predictions,
     )
@@ -33,6 +35,8 @@ except ModuleNotFoundError:  # direct ``python3 tools/run_...py`` execution
         predict_with_rules,
         binary_label_from_return,
         binary_prediction_with_momentum,
+        expected_return_with_overnight,
+        fit_overnight_return_model,
         strict_label_from_return,
         walk_forward_rule_predictions,
     )
@@ -142,14 +146,14 @@ def _render_report(
             "- 靜態 holdout 隔日報酬 MAE：%.2f 個百分點。" % static_metrics["mae"],
             "- 逐日 walk-forward：每一天重新只用之前資料找規則；方向準確率：%d/%d = %.1f%%。" % (walk["direction_correct"].iloc[0], walk["direction_total"].iloc[0], walk["direction_accuracy"].iloc[0] * 100.0),
             "- 逐日 walk-forward 若只分偏漲／偏跌：%d/%d = %.1f%%。" % (walk["binary_correct"].iloc[0], walk["binary_total"].iloc[0], walk["binary_accuracy"].iloc[0] * 100.0),
-            "- 剩下未判對的 3 天實際漲跌幅為 +0.16%、+0.30%、+0.26%；依兩位小數的 ±0.3% 容許規則，列為可接受的小幅盤整誤差。",
+            "- 逐日 walk-forward 含夜盤數值校準後，隔日報酬 MAE：%.2f 個百分點；誤差在 ±0.5%%：%.1f%%；±1.0%%：%.1f%%。" % (walk["return_mae"].iloc[0], walk["return_within_0_5"].iloc[0] * 100.0, walk["return_within_1_0"].iloc[0] * 100.0),
             "",
             "這些數字是用來檢查規律能否移到未見資料，不是模型『猜最多類別』的分數。若未來擴大樣本後仍維持，才有資格提高規則權重。",
             "",
             "## 最近一筆訊號與下一交易日推估",
             "",
             "- 訊號日：%s；預測目標：下一個交易日（資料截至訊號日，未使用目標日資料）。" % latest["signal_date"],
-            "- 實務方向：**%s**；規則推估隔日收盤報酬約 **%+.2f%%**。" % (latest["direction"], latest["expected_return"]),
+            "- 實務方向：**%s**；納入夜盤校準後的隔日收盤報酬約 **%+.2f%%**。" % (latest["direction"], latest["expected_return"]),
             "- 二分類結果：**%s**（夜盤綜合分數使用台指期夜盤相對現貨＋Nasdaq期貨隔夜變化，門檻為 +0.3 個百分點）。" % latest["binary"],
             "- 使用者指定嚴格三大類：**%s**。" % latest["strict_direction"],
             "- 同條件歷史樣本：%d 筆；中間 50%% 區間約 %+.2f%% ～ %+.2f%%。" % (latest["history_count"], latest["q25"], latest["q75"]),
@@ -193,17 +197,22 @@ def main() -> int:
     rules, cutoffs, train_states = discover_rules(train, min_support=4, target_column="target_direction")
     test_states = add_factor_states(test, cutoffs)
     fallback = float(train["target_return"].mean())
+    overnight_model = fit_overnight_return_model(train)
     predictions = []
     for _, row in test_states.iterrows():
         direction, expected_return, matched = predict_with_rules(row, rules, fallback)
+        predicted_binary = binary_prediction_with_momentum(row, expected_return)
+        final_return = expected_return_with_overnight(
+            row, expected_return, predicted_binary, overnight_model
+        )
         predictions.append(
             {
                 "signal_date": row["trade_date"],
                 "target_date": row["target_date"],
                 "predicted_direction": direction,
-                "predicted_strict": strict_label_from_return(expected_return),
-                "predicted_binary": binary_prediction_with_momentum(row, expected_return),
-                "predicted_return": expected_return,
+                "predicted_strict": strict_label_from_return(final_return),
+                "predicted_binary": predicted_binary,
+                "predicted_return": final_return,
                 "actual_direction": row["target_direction"],
                 "actual_strict": row["target_broad"],
                 "actual_return": row["target_return"],
@@ -251,6 +260,9 @@ def main() -> int:
             "binary_correct": walk_binary_correct,
             "binary_total": walk_binary_total,
             "binary_accuracy": walk_binary_accuracy,
+            "return_mae": float((evaluated_walk["actual_return"] - evaluated_walk["predicted_return"]).abs().mean()),
+            "return_within_0_5": float(((evaluated_walk["actual_return"] - evaluated_walk["predicted_return"]).abs() <= 0.5).mean()),
+            "return_within_1_0": float(((evaluated_walk["actual_return"] - evaluated_walk["predicted_return"]).abs() <= 1.0).mean()),
         }]
     )
     walk = pd.concat([walk, walk_summary], ignore_index=True)
@@ -260,15 +272,19 @@ def main() -> int:
     latest_states = add_factor_states(latest_raw, cutoffs)
     latest_row = latest_states.iloc[0]
     latest_direction, expected_return, matched = predict_with_rules(latest_row, rules, fallback)
+    latest_binary = binary_prediction_with_momentum(latest_row, expected_return)
+    latest_return = expected_return_with_overnight(
+        latest_row, expected_return, latest_binary, overnight_model
+    )
     history = _matching_history(train, train_states, rules, latest_row)
     if history.empty:
         history = train["target_return"]
     latest = {
         "signal_date": latest_row["trade_date"].date().isoformat(),
         "direction": latest_direction,
-        "binary": binary_prediction_with_momentum(latest_row, expected_return),
-        "strict_direction": strict_label_from_return(expected_return),
-        "expected_return": expected_return,
+        "binary": latest_binary,
+        "strict_direction": strict_label_from_return(latest_return),
+        "expected_return": latest_return,
         "history_count": len(history),
         "q25": history.quantile(0.25),
         "q75": history.quantile(0.75),

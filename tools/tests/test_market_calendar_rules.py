@@ -7,6 +7,8 @@ from tools.market_calendar_rules import (
     binary_label_from_return,
     binary_prediction_with_momentum,
     build_rule_panel,
+    expected_return_with_overnight,
+    fit_overnight_return_model,
 )
 from tools.market_calendar import _effective_change, _rolling_z
 
@@ -38,6 +40,17 @@ def test_binary_label_collapses_by_return_sign():
         }),
         1.0,
     ) == "偏跌"
+    assert binary_prediction_with_momentum(
+        pd.Series({
+            "ret_3d": 2.7,
+            "ret_1d": -0.4,
+            "kdj_j": 87.0,
+            "tx_night_return_pct": -0.1,
+            "us_nq_change": -0.3,
+            "tw_vix_change": 0.8,
+        }),
+        -0.2,
+    ) == "偏漲"
 
 
 def test_factor_states_are_low_middle_high():
@@ -104,3 +117,22 @@ def test_vix_z_score_requires_twenty_valid_observations():
     assert pd.notna(result.iloc[19])
     assert pd.isna(result.iloc[20])
     assert pd.notna(result.iloc[21])
+
+
+def test_overnight_return_model_changes_numeric_forecast_and_keeps_sign_coherent():
+    history = pd.DataFrame(
+        {
+            "tx_night_return_pct": [-1.0, -0.5, 0.5, 1.0] * 5,
+            "us_nq_change": [-0.5, -0.25, 0.25, 0.5] * 5,
+            "target_return": [-2.0, -1.0, 1.0, 2.0] * 5,
+        }
+    )
+    model = fit_overnight_return_model(history)
+    result = expected_return_with_overnight(
+        pd.Series({"tx_night_return_pct": 1.0, "us_nq_change": 0.5}),
+        rule_return=-0.2,
+        final_binary="偏漲",
+        overnight_model=model,
+    )
+    assert result > 0.0
+    assert result != pytest.approx(-0.2)

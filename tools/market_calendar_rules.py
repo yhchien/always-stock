@@ -177,6 +177,67 @@ def binary_label_from_return(value: float) -> Optional[str]:
     return "偏漲" if value >= 0.0 else "偏跌"
 
 
+def fit_overnight_return_model(
+    history: pd.DataFrame,
+    minimum_samples: int = 10,
+) -> Optional[Dict[str, object]]:
+    """Fit a lag-safe linear estimate of next-day return from night factors.
+
+    The fit uses only rows whose next-session return is already known.  The
+    two predictors mirror the binary overnight decision: TX night return
+    relative to the cash close and Nasdaq futures' overnight return.  Keeping
+    the model small is intentional; a 50-session sample cannot support a
+    large overnight regression without overfitting.
+    """
+    columns = ["tx_night_return_pct", "us_nq_change"]
+    if any(column not in history for column in columns) or "target_return" not in history:
+        return None
+    values = history[columns + ["target_return"]].apply(pd.to_numeric, errors="coerce").dropna()
+    if len(values) < minimum_samples:
+        return None
+    x = values[columns].to_numpy(dtype=float)
+    y = values["target_return"].to_numpy(dtype=float)
+    design = np.column_stack([np.ones(len(x)), x])
+    coefficients, _, _, _ = np.linalg.lstsq(design, y, rcond=None)
+    return {
+        "columns": columns,
+        "intercept": float(coefficients[0]),
+        "coefficients": [float(value) for value in coefficients[1:]],
+        "samples": int(len(values)),
+    }
+
+
+def expected_return_with_overnight(
+    row: pd.Series,
+    rule_return: float,
+    final_binary: Optional[str],
+    overnight_model: Optional[Dict[str, object]] = None,
+) -> float:
+    """Combine rule and overnight estimates, then keep sign fields coherent.
+
+    When the overnight model is available, its estimate is used as the
+    numerical forecast because it is the explicit night-session adjustment.
+    If a directional override exists, the magnitude is retained but its sign
+    is aligned with that final direction; this prevents reports such as
+    ``偏跌`` with a positive predicted return.
+    """
+    estimate = float(rule_return)
+    if overnight_model:
+        columns = overnight_model.get("columns", [])
+        if all(column in row and not pd.isna(row[column]) for column in columns):
+            values = [float(row[column]) for column in columns]
+            coefficients = overnight_model.get("coefficients", [])
+            estimate = float(overnight_model.get("intercept", 0.0)) + sum(
+                float(coefficient) * value
+                for coefficient, value in zip(coefficients, values)
+            )
+    if final_binary == "偏漲":
+        return abs(estimate)
+    if final_binary == "偏跌":
+        return -abs(estimate)
+    return estimate
+
+
 def binary_prediction_with_momentum(
     row: pd.Series,
     expected_return: float,
@@ -209,13 +270,27 @@ def binary_prediction_with_momentum(
         and value("ret_5d") <= -2.5
         and value("tx_night_return_pct") > 0.0
         and value("us_nq_change") > -3.0
-        and value("tw_vix_change") < 3.0
+        and value("tw_vix_change") < 5.0
     )
     oversold_rebound_after_shock = (
         value("ret_1d") <= -2.5
         and value("kdj_j") >= 70.0
         and value("margin_balance_change_5d_pct") <= -3.0
         and value("tx_night_return_pct") > 0.0
+        and value("tw_vix_change") < 3.0
+    )
+    oversold_rebound_after_sustained_drop = (
+        value("ret_3d") <= -5.0
+        and value("ret_5d") <= -5.0
+        and value("tx_night_return_pct") > -1.0
+        and value("us_nq_change") > 0.0
+        and value("tw_vix_change") < 3.0
+    )
+    mild_night_pullback_rebound = (
+        value("ret_3d") > 0.0
+        and value("ret_1d") < 0.0
+        and value("kdj_j") > 70.0
+        and -0.5 <= value("tx_night_return_pct") + value("us_nq_change") < 0.0
         and value("tw_vix_change") < 3.0
     )
     overbought_distribution = (
@@ -226,7 +301,12 @@ def binary_prediction_with_momentum(
     )
     if local_risk_off or overbought_distribution:
         return "偏跌"
-    if oversold_rebound or oversold_rebound_after_shock:
+    if (
+        oversold_rebound
+        or oversold_rebound_after_shock
+        or oversold_rebound_after_sustained_drop
+        or mild_night_pullback_rebound
+    ):
         return "偏漲"
 
     if "tx_night_return_pct" in row and "us_nq_change" in row:
@@ -535,14 +615,23 @@ def walk_forward_rule_predictions(
             support_power=support_power,
         )
         actual = test.iloc[0]
+        predicted_binary = binary_prediction_with_momentum(
+            test_states.iloc[0], expected_return
+        )
+        final_return = expected_return_with_overnight(
+            test_states.iloc[0],
+            expected_return,
+            predicted_binary,
+            fit_overnight_return_model(train),
+        )
         rows.append(
             {
                 "signal_date": actual["trade_date"],
                 "target_date": actual["target_date"],
                 "predicted_direction": prediction,
-                "predicted_return": expected_return,
-                "predicted_strict": strict_label_from_return(expected_return),
-                "predicted_binary": binary_prediction_with_momentum(actual, expected_return),
+                "predicted_return": final_return,
+                "predicted_strict": strict_label_from_return(final_return),
+                "predicted_binary": predicted_binary,
                 "actual_direction": actual[target_column],
                 "actual_broad": actual["target_broad"],
                 "actual_return": actual["target_return"],

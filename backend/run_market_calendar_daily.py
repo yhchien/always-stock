@@ -37,6 +37,8 @@ from tools.market_calendar_rules import (  # noqa: E402
     binary_prediction_with_momentum,
     build_rule_panel,
     discover_rules,
+    expected_return_with_overnight,
+    fit_overnight_return_model,
     format_rule,
     predict_with_rules,
 )
@@ -175,6 +177,13 @@ def generate_daily_prediction(target_date: date, history_days: int = 120) -> Dic
     fallback = float(train["target_return"].mean())
     direction, expected_return, matched = predict_with_rules(latest_row, rules, fallback)
     binary = binary_prediction_with_momentum(latest_row, expected_return)
+    overnight_model = fit_overnight_return_model(train)
+    final_return = expected_return_with_overnight(
+        latest_row,
+        expected_return,
+        binary,
+        overnight_model,
+    )
     snapshot = _factor_snapshot(signal_row)
     completeness = (
         snapshot["available_columns"] / snapshot["total_columns"]
@@ -183,6 +192,9 @@ def generate_daily_prediction(target_date: date, history_days: int = 120) -> Dic
     )
     history = train["target_return"]
     explanation = {
+        "rule_expected_return": _json_number(expected_return),
+        "overnight_return_model": overnight_model,
+        "final_predicted_return": _json_number(final_return),
         "matched_rules": [format_rule(rule) for rule in matched],
         "history_count": int(len(history)),
         "q25": _json_number(history.quantile(0.25)),
@@ -204,7 +216,7 @@ def generate_daily_prediction(target_date: date, history_days: int = 120) -> Dic
         record.target_date = target_date
         record.predicted_binary = binary or "偏跌"
         record.predicted_direction = direction
-        record.predicted_return = _json_number(expected_return)
+        record.predicted_return = _json_number(final_return)
         record.predicted_return_low = _json_number(history.quantile(0.25))
         record.predicted_return_high = _json_number(history.quantile(0.75))
         record.confidence = "high" if completeness is not None and completeness >= 0.85 else "low"
@@ -212,7 +224,7 @@ def generate_daily_prediction(target_date: date, history_days: int = 120) -> Dic
         record.factor_snapshot = snapshot
         record.explanation = explanation
         record.result_status = "pending"
-        record.model_version = "market-calendar-v1"
+        record.model_version = "market-calendar-v2-night"
         record.generated_at = datetime.utcnow()
         record.updated_at = datetime.utcnow()
         db.commit()
@@ -227,7 +239,7 @@ def generate_daily_prediction(target_date: date, history_days: int = 120) -> Dic
         "target_date": target_date.isoformat(),
         "predicted_binary": binary,
         "predicted_direction": direction,
-        "predicted_return": _json_number(expected_return),
+        "predicted_return": _json_number(final_return),
         "data_completeness": completeness,
         "matched_rule_count": len(matched),
     }
