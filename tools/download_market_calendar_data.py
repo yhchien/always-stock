@@ -166,7 +166,7 @@ def fetch_mtx(start: date, end: date) -> pd.DataFrame:
         })
     frame = pd.DataFrame(rows)
     if frame.empty:
-        return frame
+        return pd.DataFrame(columns=["trade_date", "mtx_oi_long", "mtx_oi_short", "mtx_oi_net"])
     return frame.groupby("trade_date", as_index=False).sum(numeric_only=True)
 
 

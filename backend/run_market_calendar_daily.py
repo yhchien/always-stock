@@ -117,7 +117,7 @@ def _update_actuals(db, panel: pd.DataFrame) -> None:
         record.updated_at = datetime.utcnow()
 
 
-def generate_daily_prediction(target_date: date, history_days: int = 365) -> Dict[str, Any]:
+def generate_daily_prediction(target_date: date, history_days: int = 120) -> Dict[str, Any]:
     history_start = target_date - timedelta(days=history_days)
     logger.info("fetching market-calendar data %s to %s", history_start, target_date)
 
@@ -222,7 +222,7 @@ def generate_daily_prediction(target_date: date, history_days: int = 365) -> Dic
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--target-date", type=date.fromisoformat)
-    parser.add_argument("--history-days", type=int, default=365)
+    parser.add_argument("--history-days", type=int, default=120)
     args = parser.parse_args()
     target_date = args.target_date or datetime.now(ZoneInfo("Asia/Taipei")).date()
     result = generate_daily_prediction(target_date, history_days=args.history_days)
