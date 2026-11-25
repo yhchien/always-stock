@@ -37,16 +37,6 @@ function resultClass(row: MarketCalendarPredictionItem): string {
   return "text-rose-300"
 }
 
-function completenessLabel(value: number | null): string {
-  if (value == null) return "歷史資料"
-  return `${Math.round(value * 100)}%`
-}
-
-function matchedRules(row: MarketCalendarPredictionItem): string[] {
-  const value = row.explanation?.matched_rules
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []
-}
-
 function LatestCard({ row }: { row: MarketCalendarPredictionItem }) {
   return (
     <section className="rounded-2xl border border-sky-800/50 bg-gradient-to-br from-slate-900 via-slate-900 to-sky-950/50 p-5 shadow-xl">
@@ -67,18 +57,8 @@ function LatestCard({ row }: { row: MarketCalendarPredictionItem }) {
           </p>
         </div>
       </div>
-      <div className="mt-5 grid gap-3 sm:grid-cols-3">
-        <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3">
-          <p className="text-sm text-slate-500">資料完整度</p>
-          <p className="mt-1 text-base font-semibold text-slate-200">
-            {completenessLabel(row.data_completeness)}
-          </p>
-        </div>
-        <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3">
-          <p className="text-sm text-slate-500">模型版本</p>
-          <p className="mt-1 text-base font-semibold text-slate-200">{row.model_version}</p>
-        </div>
-        <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3">
+      <div className="mt-5">
+        <div className="max-w-md rounded-xl border border-slate-800 bg-slate-950/40 p-3">
           <p className="text-sm text-slate-500">預估區間</p>
           <p className="mt-1 text-base font-semibold text-slate-200">
             {row.predicted_return_low != null && row.predicted_return_high != null
@@ -87,18 +67,6 @@ function LatestCard({ row }: { row: MarketCalendarPredictionItem }) {
           </p>
         </div>
       </div>
-      {matchedRules(row).length > 0 ? (
-        <div className="mt-4 rounded-xl border border-slate-800 bg-slate-950/40 p-4">
-          <p className="text-sm text-slate-500">主要規則依據</p>
-          <ul className="mt-2 space-y-2 text-base leading-6 text-slate-300">
-            {matchedRules(row).slice(0, 3).map((rule) => (
-              <li key={rule} className="border-l-2 border-sky-500/50 pl-3">
-                {rule}
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
     </section>
   )
 }
@@ -109,7 +77,7 @@ function HistoryTable({ rows }: { rows: MarketCalendarPredictionItem[] }) {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h2 className="text-xl font-semibold text-slate-100">最近預測紀錄</h2>
-          <p className="mt-1 text-sm text-slate-500">顯示近 10 日；資料庫保留近 50 日以上。</p>
+          <p className="mt-1 text-sm text-slate-500">顯示近 10 日；資料庫保留最新 50 筆。</p>
         </div>
         <span className="text-sm text-slate-500">預測日／目標日</span>
       </div>
@@ -209,7 +177,9 @@ export default function MarketCalendarPage() {
             <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
               <p className="text-sm text-slate-500">近 50 日方向準確率</p>
               <p className="mt-1 text-2xl font-semibold text-slate-100">
-                {data.accuracy == null ? "—" : `${(data.accuracy * 100).toFixed(1)}%`}
+                {data.accuracy == null
+                  ? "—"
+                  : `${data.correct}/${data.evaluated}（${(data.accuracy * 100).toFixed(1)}%）`}
               </p>
             </div>
           </section>

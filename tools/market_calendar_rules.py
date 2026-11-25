@@ -199,11 +199,14 @@ def fit_overnight_return_model(
     y = values["target_return"].to_numpy(dtype=float)
     design = np.column_stack([np.ones(len(x)), x])
     coefficients, _, _, _ = np.linalg.lstsq(design, y, rcond=None)
+    residuals = y - design @ coefficients
     return {
         "columns": columns,
         "intercept": float(coefficients[0]),
         "coefficients": [float(value) for value in coefficients[1:]],
         "samples": int(len(values)),
+        "residual_low": float(np.quantile(residuals, 0.25)),
+        "residual_high": float(np.quantile(residuals, 0.75)),
     }
 
 
@@ -236,6 +239,25 @@ def expected_return_with_overnight(
     if final_binary == "偏跌":
         return -abs(estimate)
     return estimate
+
+
+def expected_return_interval(
+    history: pd.DataFrame,
+    final_return: float,
+    overnight_model: Optional[Dict[str, object]] = None,
+) -> Tuple[float, float]:
+    """Return an interval centered on the final, overnight-adjusted forecast."""
+    if overnight_model and "residual_low" in overnight_model and "residual_high" in overnight_model:
+        low = final_return + float(overnight_model["residual_low"])
+        high = final_return + float(overnight_model["residual_high"])
+    else:
+        values = pd.to_numeric(history.get("target_return"), errors="coerce").dropna()
+        if values.empty:
+            return final_return, final_return
+        center = float(values.mean())
+        low = final_return + float(values.quantile(0.25)) - center
+        high = final_return + float(values.quantile(0.75)) - center
+    return min(low, high), max(low, high)
 
 
 def binary_prediction_with_momentum(

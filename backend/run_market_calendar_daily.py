@@ -38,6 +38,7 @@ from tools.market_calendar_rules import (  # noqa: E402
     build_rule_panel,
     discover_rules,
     expected_return_with_overnight,
+    expected_return_interval,
     fit_overnight_return_model,
     format_rule,
     predict_with_rules,
@@ -47,6 +48,7 @@ from app.database import Base, SessionLocal, engine  # noqa: E402
 from app.models import MarketCalendarPrediction  # noqa: E402
 
 logger = logging.getLogger("market_calendar_daily")
+MARKET_CALENDAR_RETENTION = 50
 
 
 def _json_number(value: Any) -> Optional[float]:
@@ -133,6 +135,18 @@ def _update_actuals(db, panel: pd.DataFrame) -> None:
         record.updated_at = datetime.utcnow()
 
 
+def _trim_prediction_history(db, limit: int = MARKET_CALENDAR_RETENTION) -> None:
+    """Keep exactly the newest signal-date rows in the prediction table."""
+    stale = (
+        db.query(MarketCalendarPrediction)
+        .order_by(MarketCalendarPrediction.signal_date.desc())
+        .offset(limit)
+        .all()
+    )
+    for row in stale:
+        db.delete(row)
+
+
 def generate_daily_prediction(target_date: date, history_days: int = 120) -> Dict[str, Any]:
     history_start = target_date - timedelta(days=history_days)
     logger.info("fetching market-calendar data %s to %s", history_start, target_date)
@@ -184,6 +198,9 @@ def generate_daily_prediction(target_date: date, history_days: int = 120) -> Dic
         binary,
         overnight_model,
     )
+    interval_low, interval_high = expected_return_interval(
+        train, final_return, overnight_model
+    )
     snapshot = _factor_snapshot(signal_row)
     completeness = (
         snapshot["available_columns"] / snapshot["total_columns"]
@@ -217,8 +234,8 @@ def generate_daily_prediction(target_date: date, history_days: int = 120) -> Dic
         record.predicted_binary = binary or "偏跌"
         record.predicted_direction = direction
         record.predicted_return = _json_number(final_return)
-        record.predicted_return_low = _json_number(history.quantile(0.25))
-        record.predicted_return_high = _json_number(history.quantile(0.75))
+        record.predicted_return_low = _json_number(interval_low)
+        record.predicted_return_high = _json_number(interval_high)
         record.confidence = "high" if completeness is not None and completeness >= 0.85 else "low"
         record.data_completeness = completeness
         record.factor_snapshot = snapshot
@@ -227,6 +244,7 @@ def generate_daily_prediction(target_date: date, history_days: int = 120) -> Dic
         record.model_version = "market-calendar-v2-night"
         record.generated_at = datetime.utcnow()
         record.updated_at = datetime.utcnow()
+        _trim_prediction_history(db)
         db.commit()
     except Exception:
         db.rollback()

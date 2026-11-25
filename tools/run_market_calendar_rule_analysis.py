@@ -21,6 +21,7 @@ try:
         binary_label_from_return,
         binary_prediction_with_momentum,
         expected_return_with_overnight,
+        expected_return_interval,
         fit_overnight_return_model,
         strict_label_from_return,
         walk_forward_rule_predictions,
@@ -36,6 +37,7 @@ except ModuleNotFoundError:  # direct ``python3 tools/run_...py`` execution
         binary_label_from_return,
         binary_prediction_with_momentum,
         expected_return_with_overnight,
+        expected_return_interval,
         fit_overnight_return_model,
         strict_label_from_return,
         walk_forward_rule_predictions,
@@ -276,6 +278,9 @@ def main() -> int:
     latest_return = expected_return_with_overnight(
         latest_row, expected_return, latest_binary, overnight_model
     )
+    interval_low, interval_high = expected_return_interval(
+        train, latest_return, overnight_model
+    )
     history = _matching_history(train, train_states, rules, latest_row)
     if history.empty:
         history = train["target_return"]
@@ -286,8 +291,8 @@ def main() -> int:
         "strict_direction": strict_label_from_return(latest_return),
         "expected_return": latest_return,
         "history_count": len(history),
-        "q25": history.quantile(0.25),
-        "q75": history.quantile(0.75),
+        "q25": interval_low,
+        "q75": interval_high,
         "matched_rules": [format_rule(rule) for rule in matched],
     }
 
