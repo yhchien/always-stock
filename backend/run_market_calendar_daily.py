@@ -45,6 +45,7 @@ from tools.market_calendar_rules import (  # noqa: E402
     interpret_factor_changes,
     predict_with_rules,
 )
+from app.market_calendar_ai import interpret_market_calendar  # noqa: E402
 
 from app.database import Base, SessionLocal, engine  # noqa: E402
 from app.models import MarketCalendarPrediction  # noqa: E402
@@ -210,6 +211,29 @@ def generate_daily_prediction(target_date: date, history_days: int = 120) -> Dic
         "q25": _json_number(history.quantile(0.25)),
         "q75": _json_number(history.quantile(0.75)),
     }
+    ai_payload = {
+        "as_of_date": signal_date.date().isoformat(),
+        "target_date": target_date.isoformat(),
+        "baseline_prediction": {
+            "predicted_binary": binary or "偏跌",
+            "predicted_return": _json_number(final_return),
+            "predicted_return_low": _json_number(interval_low),
+            "predicted_return_high": _json_number(interval_high),
+        },
+        "rule_expected_return": _json_number(expected_return),
+        "matched_rules": [format_rule(rule) for rule in matched],
+        "deterministic_evidence": interpret_factor_changes(latest_row),
+        "factors": {
+            group: {
+                name: _json_number(signal_row.get(name))
+                for name in names
+                if name in signal_row
+            }
+            for group, names in FACTOR_COLUMNS.items()
+        },
+    }
+    ai_interpretation = interpret_market_calendar(ai_payload)
+    explanation["ai_interpretation"] = ai_interpretation
 
     Base.metadata.create_all(bind=engine, tables=[MarketCalendarPrediction.__table__])
     db = SessionLocal()
