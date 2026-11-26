@@ -52,6 +52,8 @@ YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 # Yahoo fallback below remains available after these attempts.
 FRED_RETRIES = 2
 FRED_TIMEOUT = (10, 30)
+TAIFEX_RETRIES = 3
+TAIFEX_TIMEOUT = (10, 90)
 YAHOO_FALLBACK_SYMBOLS = {
     "VIXCLS": "^VIX",
     # Yahoo publishes ^TNX in percentage points (for example 4.30 means
@@ -161,8 +163,12 @@ def fetch_taiex(start: date, end: date) -> pd.DataFrame:
 def fetch_institutional_flows(dates: Iterable[date]) -> pd.DataFrame:
     rows: List[Dict[str, object]] = []
     for current in dates:
-        payload = _get_json(INDUSTRIES_API, {"date": str(current)})
-        items = payload if isinstance(payload, list) else payload.get("data", [])
+        try:
+            payload = _get_json(INDUSTRIES_API, {"date": str(current)})
+            items = payload if isinstance(payload, list) else payload.get("data", [])
+        except requests.RequestException as exc:
+            logger.warning("institutional flow unavailable for %s: %s", current, exc)
+            items = []
         aggregate = {"foreign_net_amount": float("nan"), "trust_net_amount": float("nan"), "dealer_net_amount": float("nan")}
         if items:
             aggregate = {"foreign_net_amount": 0.0, "trust_net_amount": 0.0, "dealer_net_amount": 0.0}
@@ -362,14 +368,18 @@ def fetch_cbc_usd_twd(start: date, end: date) -> pd.DataFrame:
 
 
 def fetch_yahoo(symbol: str, output_name: str) -> pd.DataFrame:
-    response = requests.get(
-        YAHOO_CHART.format(symbol=symbol),
-        params={"range": "1y", "interval": "1d", "events": "history"},
-        timeout=60,
-        headers={"User-Agent": "Mozilla/5.0"},
-    )
-    response.raise_for_status()
-    result = response.json()["chart"]["result"][0]
+    try:
+        response = requests.get(
+            YAHOO_CHART.format(symbol=symbol),
+            params={"range": "1y", "interval": "1d", "events": "history"},
+            timeout=60,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        response.raise_for_status()
+        result = response.json()["chart"]["result"][0]
+    except (requests.RequestException, KeyError, TypeError, IndexError) as exc:
+        logger.warning("Yahoo %s unavailable; leaving %s missing: %s", symbol, output_name, exc)
+        return _stamp(pd.DataFrame(columns=["trade_date", output_name]))
     quote = result["indicators"]["quote"][0]
     rows = []
     for timestamp, close in zip(result.get("timestamp", []), quote.get("close", [])):
@@ -384,12 +394,23 @@ def fetch_taiwan_vix(trading_dates: Iterable[str]) -> pd.DataFrame:
     rows = []
     months = sorted({trade_date[:7].replace("-", "") for trade_date in requested})
     for month in months:
-        response = requests.get(
-            TAIFEX_VIX_MONTH.format(month=month),
-            timeout=45,
-            headers={"User-Agent": "always-stock-market-calendar/1.0"},
-        )
-        response.raise_for_status()
+        response = None
+        for attempt in range(1, TAIFEX_RETRIES + 1):
+            try:
+                response = requests.get(
+                    TAIFEX_VIX_MONTH.format(month=month),
+                    timeout=TAIFEX_TIMEOUT,
+                    headers={"User-Agent": "always-stock-market-calendar/1.0"},
+                )
+                response.raise_for_status()
+                break
+            except requests.RequestException as exc:
+                logger.warning("TAIFEX Taiwan VIX %s attempt %s/%s failed: %s", month, attempt, TAIFEX_RETRIES, exc)
+                if attempt < TAIFEX_RETRIES:
+                    time.sleep(2 * attempt)
+        if response is None or response.status_code >= 400:
+            logger.warning("TAIFEX Taiwan VIX %s unavailable; leaving factor missing", month)
+            continue
         text = response.content.decode("cp950", errors="replace")
         for line in text.splitlines():
             numbers = re.findall(r"[-+]?\d+(?:\.\d+)?", line)
@@ -418,19 +439,30 @@ def fetch_mtx_general_session(start: date, end: date) -> pd.DataFrame:
     The latter is the strategy's three-institution aggregate and is not
     silently replaced by this total-market OI value.
     """
-    response = requests.post(
-        TAIFEX_DAILY,
-        data={
-            "queryStartDate": start.strftime("%Y/%m/%d"),
-            "queryEndDate": end.strftime("%Y/%m/%d"),
-            "commodity_id": "MTX",
-            "commodity_id2": "",
-            "down_type": "1",
-        },
-        timeout=120,
-        headers={"User-Agent": "always-stock-market-calendar/1.0"},
-    )
-    response.raise_for_status()
+    response = None
+    for attempt in range(1, TAIFEX_RETRIES + 1):
+        try:
+            response = requests.post(
+                TAIFEX_DAILY,
+                data={
+                    "queryStartDate": start.strftime("%Y/%m/%d"),
+                    "queryEndDate": end.strftime("%Y/%m/%d"),
+                    "commodity_id": "MTX",
+                    "commodity_id2": "",
+                    "down_type": "1",
+                },
+                timeout=TAIFEX_TIMEOUT,
+                headers={"User-Agent": "always-stock-market-calendar/1.0"},
+            )
+            response.raise_for_status()
+            break
+        except requests.RequestException as exc:
+            logger.warning("TAIFEX MTX general session attempt %s/%s failed: %s", attempt, TAIFEX_RETRIES, exc)
+            if attempt < TAIFEX_RETRIES:
+                time.sleep(2 * attempt)
+    if response is None or response.status_code >= 400:
+        logger.warning("TAIFEX MTX general session unavailable; leaving factor missing")
+        return _stamp(pd.DataFrame(columns=["trade_date", "mtx_day_oi"]))
     reader = csv.DictReader(io.StringIO(response.content.decode("cp950", errors="replace")))
     rows = []
     for row in reader:
@@ -482,19 +514,30 @@ def fetch_mtx(start: date, end: date) -> pd.DataFrame:
     if start > available_end:
         return _stamp(pd.DataFrame(columns=["trade_date", "mtx_oi_long", "mtx_oi_short", "mtx_oi_net"]))
     for range_start, range_end in _month_ranges(start, available_end):
-        response = requests.post(
-            TAIFEX_MTX,
-            data={
-                "queryStartDate": range_start.strftime("%Y/%m/%d"),
-                "queryEndDate": range_end.strftime("%Y/%m/%d"),
-                "commodityId": "MXF",
-                "firstDate": "2023-11-24 00:00:00.0",
-                "lastDate": str(range_end) + " 00:00:00.0",
-            },
-            timeout=90,
-            headers={"User-Agent": "always-stock-market-calendar/1.0"},
-        )
-        response.raise_for_status()
+        response = None
+        for attempt in range(1, TAIFEX_RETRIES + 1):
+            try:
+                response = requests.post(
+                    TAIFEX_MTX,
+                    data={
+                        "queryStartDate": range_start.strftime("%Y/%m/%d"),
+                        "queryEndDate": range_end.strftime("%Y/%m/%d"),
+                        "commodityId": "MXF",
+                        "firstDate": "2023-11-24 00:00:00.0",
+                        "lastDate": str(range_end) + " 00:00:00.0",
+                    },
+                    timeout=TAIFEX_TIMEOUT,
+                    headers={"User-Agent": "always-stock-market-calendar/1.0"},
+                )
+                response.raise_for_status()
+                break
+            except requests.RequestException as exc:
+                logger.warning("TAIFEX MTX institutional %s-%s attempt %s/%s failed: %s", range_start, range_end, attempt, TAIFEX_RETRIES, exc)
+                if attempt < TAIFEX_RETRIES:
+                    time.sleep(2 * attempt)
+        if response is None or response.status_code >= 400:
+            logger.warning("TAIFEX MTX institutional %s-%s unavailable; leaving factors missing", range_start, range_end)
+            continue
         text = response.content.decode("utf-8-sig", errors="replace")
         reader = csv.DictReader(io.StringIO(text))
         if not {"Date", "Contract Code", "Item"}.issubset(reader.fieldnames or set()):

@@ -155,7 +155,11 @@ def generate_daily_prediction(target_date: date, history_days: int = 120) -> Dic
     token = load_finmind_token()
     margin_raw = fetch_margin_raw(str(history_start), str(signal_date.date()), token)
     margin = aggregate_margin(margin_raw)
-    overnight = build_overnight(history_start, target_date)
+    overnight = build_overnight(
+        history_start,
+        target_date,
+        target_dates=raw["trade_date"].dt.strftime("%Y-%m-%d").tolist(),
+    )
     panel = build_rule_panel(raw, margin, overnight)
 
     signal_rows = panel[panel["trade_date"] == signal_date]

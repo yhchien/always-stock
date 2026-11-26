@@ -14,7 +14,9 @@ import calendar
 import csv
 import io
 import json
+import logging
 import re
+import time
 from datetime import date
 from pathlib import Path
 from typing import Dict, Iterable, List
@@ -33,6 +35,9 @@ from tools.download_market_calendar_data import (
 YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 TAIFEX_DAILY = "https://www.taifex.com.tw/cht/3/futDataDown"
 USER_AGENT = "always-stock-market-calendar/1.0"
+TAIFEX_RETRIES = 3
+TAIFEX_TIMEOUT = (10, 120)
+logger = logging.getLogger(__name__)
 
 US_SYMBOLS = {
     "us_es": "ES%3DF",
@@ -71,14 +76,18 @@ def fetch_yahoo_returns(start: date, end: date) -> pd.DataFrame:
     period_start = int(pd.Timestamp(start).tz_localize("UTC").timestamp())
     period_end = int((pd.Timestamp(end) + pd.Timedelta(days=1)).tz_localize("UTC").timestamp())
     for name, symbol in US_SYMBOLS.items():
-        response = requests.get(
-            YAHOO_CHART.format(symbol=symbol),
-            params={"period1": period_start, "period2": period_end, "interval": "1d", "events": "history"},
-            timeout=60,
-            headers={"User-Agent": USER_AGENT},
-        )
-        response.raise_for_status()
-        result = response.json()["chart"]["result"][0]
+        try:
+            response = requests.get(
+                YAHOO_CHART.format(symbol=symbol),
+                params={"period1": period_start, "period2": period_end, "interval": "1d", "events": "history"},
+                timeout=60,
+                headers={"User-Agent": USER_AGENT},
+            )
+            response.raise_for_status()
+            result = response.json()["chart"]["result"][0]
+        except (requests.RequestException, KeyError, TypeError, IndexError) as exc:
+            logger.warning("Yahoo %s unavailable; leaving futures factor missing: %s", symbol, exc)
+            continue
         timestamps = result.get("timestamp", [])
         closes = result["indicators"]["quote"][0].get("close", [])
         rows = []
@@ -117,20 +126,47 @@ def _number(value: object):
 
 def fetch_taifex_session(start: date, end: date, commodity_id: str, prefix: str) -> pd.DataFrame:
     rows: List[Dict[str, object]] = []
+    columns = [
+        "trade_date",
+        prefix + "_night_open",
+        prefix + "_night_high",
+        prefix + "_night_low",
+        prefix + "_night_close",
+        prefix + "_night_volume",
+    ]
     for range_start, range_end in _month_ranges(start, end):
-        response = requests.post(
-            TAIFEX_DAILY,
-            data={
-                "queryStartDate": range_start.strftime("%Y/%m/%d"),
-                "queryEndDate": range_end.strftime("%Y/%m/%d"),
-                "commodity_id": commodity_id,
-                "commodity_id2": "",
-                "down_type": "1",
-            },
-            timeout=120,
-            headers={"User-Agent": USER_AGENT},
-        )
-        response.raise_for_status()
+        response = None
+        for attempt in range(1, TAIFEX_RETRIES + 1):
+            try:
+                response = requests.post(
+                    TAIFEX_DAILY,
+                    data={
+                        "queryStartDate": range_start.strftime("%Y/%m/%d"),
+                        "queryEndDate": range_end.strftime("%Y/%m/%d"),
+                        "commodity_id": commodity_id,
+                        "commodity_id2": "",
+                        "down_type": "1",
+                    },
+                    timeout=TAIFEX_TIMEOUT,
+                    headers={"User-Agent": USER_AGENT},
+                )
+                response.raise_for_status()
+                break
+            except requests.RequestException as exc:
+                logger.warning(
+                    "TAIFEX %s %s-%s attempt %s/%s failed: %s",
+                    commodity_id,
+                    range_start,
+                    range_end,
+                    attempt,
+                    TAIFEX_RETRIES,
+                    exc,
+                )
+                if attempt < TAIFEX_RETRIES:
+                    time.sleep(2 * attempt)
+        if response is None or response.status_code >= 400:
+            logger.warning("TAIFEX %s %s-%s unavailable; leaving night-session factors missing", commodity_id, range_start, range_end)
+            continue
         text = response.content.decode("cp950", errors="replace")
         reader = csv.DictReader(io.StringIO(text))
         for row in reader:
@@ -158,13 +194,13 @@ def fetch_taifex_session(start: date, end: date, commodity_id: str, prefix: str)
                 }
             )
     if not rows:
-        return pd.DataFrame(columns=["trade_date"])
+        return pd.DataFrame(columns=columns)
     frame = pd.DataFrame(rows).sort_values(["trade_date", "expiry_key", "pure_month"], ascending=[True, True, False])
     return frame.drop_duplicates("trade_date", keep="first").drop(columns=["expiry", "expiry_key", "pure_month"])
 
 
-def build_overnight(start: date, end: date) -> pd.DataFrame:
-    # Cash indices use the explicitly requested FRED spot series.  Futures
+def build_overnight(start: date, end: date, target_dates: Iterable[str] | None = None) -> pd.DataFrame:
+    # Cash indices use the requested spot series.  Futures
     # remain Yahoo's ES/NQ/YM overnight contracts and are kept separate.
     result = fetch_fred_spot_returns(start, end)
     futures = fetch_yahoo_returns(start, end)
@@ -174,11 +210,14 @@ def build_overnight(start: date, end: date) -> pd.DataFrame:
     for commodity, prefix in (("TX", "tx"), ("MTX", "mtx")):
         frame = fetch_taifex_session(start, end, commodity, prefix)
         taifex_frames.append(frame)
-    target_dates = sorted({date_value for frame in taifex_frames for date_value in frame.get("trade_date", [])})
+    alignment_dates = sorted(
+        set(target_dates or [])
+        or {date_value for frame in taifex_frames for date_value in frame.get("trade_date", [])}
+    )
     for name in US_SPOT_SERIES:
         observation_column = name + "_observation_date"
         if observation_column in result:
-            result = align_external_observations(result, target_dates, observation_column)
+            result = align_external_observations(result, alignment_dates, observation_column)
             break
     for frame in taifex_frames:
         result = frame if result.empty else result.merge(frame, on="trade_date", how="outer")
