@@ -8,7 +8,8 @@ Examples
 
 Sources are deliberately explicit in the output metadata columns:
 TAIEX/stock institutional data comes from the deployed always-stock API;
-Taiwan VIX and MTX are from TAIFEX; US VIX and DGS10 are FRED series;
+Taiwan VIX and MTX are from TAIFEX; US VIX is from Cboe and US 10-year
+yield is from the US Treasury official XML feed;
 USD/TWD is the CBC NTD/USD interbank close; gold is the Yahoo Finance COMEX
 continuous front-month contract (GC=F).  Every output row includes source,
 observation-date, fetch-time, and missing-status metadata.
@@ -26,6 +27,7 @@ import logging
 import re
 import sys
 import time
+import xml.etree.ElementTree as ET
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
@@ -37,6 +39,8 @@ import requests
 TAIEX_API = "https://always-stock.onrender.com/api/stocks/TAIEX/history"
 INDUSTRIES_API = "https://always-stock.onrender.com/api/industries"
 FRED_CSV = "https://fred.stlouisfed.org/graph/fredgraph.csv"
+CBOE_VIX_CSV = "https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv"
+TREASURY_XML = "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/pages/xml"
 TAIFEX_VIX = "https://www.taifex.com.tw/cht/7/getVixData"
 TAIFEX_VIX_MONTH = "https://www.taifex.com.tw/file/taifex/Dailydownload/vix/log2data/{month}new.txt"
 TAIFEX_MTX = "https://www.taifex.com.tw/enl/eng3/futContractsDateDown"
@@ -207,6 +211,79 @@ def fetch_fred(series_id: str, start: date, end: date, output_name: str) -> pd.D
     frame.attrs["source_url"] = source_url
     frame.attrs["series_id"] = source_series_id
     return _stamp(frame[["trade_date", output_name]])
+
+
+def fetch_us_vix(start: date, end: date) -> pd.DataFrame:
+    """Fetch VIX from Cboe's daily-history file, then use FRED/Yahoo fallbacks."""
+    try:
+        response = requests.get(
+            CBOE_VIX_CSV,
+            timeout=(10, 30),
+            headers={"User-Agent": "always-stock-market-calendar/1.0"},
+        )
+        response.raise_for_status()
+        frame = pd.read_csv(io.StringIO(response.text))
+        date_column = next(column for column in frame.columns if str(column).strip().lower() == "date")
+        close_column = next(column for column in frame.columns if str(column).strip().lower() == "close")
+        result = pd.DataFrame(
+            {
+                "trade_date": pd.to_datetime(frame[date_column], errors="coerce").dt.strftime("%Y-%m-%d"),
+                "us_vix": pd.to_numeric(frame[close_column], errors="coerce"),
+            }
+        ).dropna(subset=["trade_date", "us_vix"])
+        result = result[
+            (result["trade_date"] >= str(start)) & (result["trade_date"] <= str(end))
+        ].copy()
+        result.attrs["source_url"] = CBOE_VIX_CSV
+        result.attrs["series_id"] = "VIX"
+        return _stamp(result)
+    except (requests.RequestException, ValueError, StopIteration, pd.errors.ParserError) as exc:
+        logger.warning("Cboe VIX unavailable; trying FRED/Yahoo fallbacks: %s", exc)
+        return fetch_fred("VIXCLS", start, end, "us_vix")
+
+
+def fetch_treasury_10y(start: date, end: date) -> pd.DataFrame:
+    """Fetch the official US Treasury daily 10-year par yield curve value."""
+    rows = []
+    try:
+        for year in range(start.year, end.year + 1):
+            response = requests.get(
+                TREASURY_XML,
+                params={"data": "daily_treasury_yield_curve", "field_tdr_date_value": str(year)},
+                timeout=(10, 30),
+                headers={"User-Agent": "always-stock-market-calendar/1.0"},
+            )
+            response.raise_for_status()
+            root = ET.fromstring(response.content)
+            for entry in root.iter():
+                if not str(entry.tag).lower().endswith("entry"):
+                    continue
+                values = {
+                    str(child.tag).split("}")[-1].upper(): (child.text or "").strip()
+                    for child in entry.iter()
+                }
+                observed = pd.to_datetime(values.get("NEW_DATE"), errors="coerce")
+                value = pd.to_numeric(values.get("BC_10YEAR"), errors="coerce")
+                if pd.isna(observed) or pd.isna(value):
+                    continue
+                rows.append(
+                    {
+                        "trade_date": observed.strftime("%Y-%m-%d"),
+                        "us10y": float(value),
+                    }
+                )
+        result = pd.DataFrame(rows, columns=["trade_date", "us10y"])
+        result = result[
+            (result["trade_date"] >= str(start)) & (result["trade_date"] <= str(end))
+        ].drop_duplicates("trade_date")
+        if result.empty:
+            raise RuntimeError("Treasury XML returned no 10-year observations")
+        result.attrs["source_url"] = TREASURY_XML
+        result.attrs["series_id"] = "BC_10YEAR"
+        return _stamp(result.reset_index(drop=True))
+    except (requests.RequestException, ET.ParseError, RuntimeError, ValueError) as exc:
+        logger.warning("US Treasury 10Y unavailable; trying FRED/Yahoo fallbacks: %s", exc)
+        return fetch_fred("DGS10", start, end, "us10y")
 
 
 def align_external_observations(
@@ -454,8 +531,8 @@ def build_panel(start: date, end: date) -> pd.DataFrame:
     datasets = {
         "institutional": fetch_institutional_flows(pd.to_datetime(dates).date),
         "tw_vix": fetch_taiwan_vix(dates),
-        "us_vix": fetch_fred("VIXCLS", start, end, "us_vix"),
-        "us10y": fetch_fred("DGS10", start, end, "us10y"),
+        "us_vix": fetch_us_vix(start, end),
+        "us10y": fetch_treasury_10y(start, end),
         "usd_twd": fetch_cbc_usd_twd(start, end),
         "gold": fetch_yahoo("GC%3DF", "gold"),
         "mtx_institutional": fetch_mtx(start, end),
@@ -476,8 +553,8 @@ def build_panel(start: date, end: date) -> pd.DataFrame:
         "taiex": {"columns": ["close_price"], "source": TAIEX_API, "unit": "index points", "fetched_at": taiex.attrs.get("fetched_at")},
         "institutional": {"columns": ["inst_total_net_amount"], "source": INDUSTRIES_API, "unit": "TWD", "fetched_at": datasets["institutional"].attrs.get("fetched_at"), "missing_reason": "always-stock institutional endpoint returned no rows for this Taiwan date"},
         "tw_vix": {"columns": ["tw_vix"], "source": TAIFEX_VIX_MONTH, "series_id": "TAIFEX Taiwan VIX", "unit": "index points", "fetched_at": datasets["tw_vix"].attrs.get("fetched_at"), "missing_reason": "TAIFEX Taiwan VIX has no observation for this date"},
-        "us_vix": {"columns": ["us_vix"], "source": datasets["us_vix"].attrs.get("source_url", FRED_CSV), "series_id": datasets["us_vix"].attrs.get("series_id", "VIXCLS"), "unit": "index points", "observation_date_column": "us_vix_observation_date", "fetched_at": datasets["us_vix"].attrs.get("fetched_at"), "missing_reason": "US VIX source has no observation for this date or was not yet published"},
-        "us10y": {"columns": ["us10y"], "source": datasets["us10y"].attrs.get("source_url", FRED_CSV), "series_id": datasets["us10y"].attrs.get("series_id", "DGS10"), "unit": "percent", "observation_date_column": "us10y_observation_date", "fetched_at": datasets["us10y"].attrs.get("fetched_at"), "missing_reason": "US 10-year yield source has no observation for this date or was not yet published"},
+        "us_vix": {"columns": ["us_vix"], "source": datasets["us_vix"].attrs.get("source_url", CBOE_VIX_CSV), "series_id": datasets["us_vix"].attrs.get("series_id", "VIX"), "unit": "index points", "observation_date_column": "us_vix_observation_date", "fetched_at": datasets["us_vix"].attrs.get("fetched_at"), "missing_reason": "US VIX source has no observation for this date or was not yet published"},
+        "us10y": {"columns": ["us10y"], "source": datasets["us10y"].attrs.get("source_url", TREASURY_XML), "series_id": datasets["us10y"].attrs.get("series_id", "BC_10YEAR"), "unit": "percent", "observation_date_column": "us10y_observation_date", "fetched_at": datasets["us10y"].attrs.get("fetched_at"), "missing_reason": "US 10-year yield source has no observation for this date or was not yet published"},
         "usd_twd": {"columns": ["usd_twd"], "source": CBC_USD_TWD, "series_id": "NTD/USD", "unit": "TWD per USD", "fetched_at": datasets["usd_twd"].attrs.get("fetched_at"), "missing_reason": "CBC has no Taiwan-business-day NTD/USD close for this date or was not yet published"},
         "gold": {"columns": ["gold"], "source": "Yahoo Finance chart API", "series_id": "GC=F", "unit": "USD per troy ounce", "fetched_at": datasets["gold"].attrs.get("fetched_at"), "missing_reason": "Yahoo GC=F has no observation for this date or was not yet published"},
         "mtx_institutional": {"columns": ["mtx_oi_long", "mtx_oi_short"], "source": TAIFEX_MTX, "series_id": "MTX", "unit": "contracts", "session": "institutional OI table; not session-mixed with night OHLC", "fetched_at": datasets["mtx_institutional"].attrs.get("fetched_at"), "missing_reason": "TAIFEX MTX institutional OI table returned no long/short positions for this date"},
@@ -511,8 +588,8 @@ def main() -> int:
             "taiwan_vix": TAIFEX_VIX,
             "mtx": TAIFEX_MTX,
             "mtx_general_session": TAIFEX_DAILY,
-            "us_vix": "FRED:VIXCLS",
-            "us10y": "FRED:DGS10",
+            "us_vix": "Cboe VIX daily history CSV (FRED/Yahoo fallback)",
+            "us10y": "US Treasury official XML: BC_10YEAR (FRED/Yahoo fallback)",
             "usd_twd": CBC_USD_TWD,
             "gold": "Yahoo Finance:GC=F",
         },
