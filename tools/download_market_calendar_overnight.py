@@ -35,8 +35,8 @@ from tools.download_market_calendar_data import (
 YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 TAIFEX_DAILY = "https://www.taifex.com.tw/cht/3/futDataDown"
 USER_AGENT = "always-stock-market-calendar/1.0"
-TAIFEX_RETRIES = 2
-TAIFEX_TIMEOUT = (10, 30)
+TAIFEX_RETRIES = 1
+TAIFEX_TIMEOUT = (5, 20)
 logger = logging.getLogger(__name__)
 
 US_SYMBOLS = {

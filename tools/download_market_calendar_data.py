@@ -52,8 +52,8 @@ YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 # Yahoo fallback below remains available after these attempts.
 FRED_RETRIES = 2
 FRED_TIMEOUT = (10, 30)
-TAIFEX_RETRIES = 2
-TAIFEX_TIMEOUT = (10, 30)
+TAIFEX_RETRIES = 1
+TAIFEX_TIMEOUT = (5, 20)
 YAHOO_FALLBACK_SYMBOLS = {
     "VIXCLS": "^VIX",
     # Yahoo publishes ^TNX in percentage points (for example 4.30 means
@@ -115,8 +115,8 @@ def attach_source_metadata(
     return result
 
 
-def _get_json(url: str, params: Optional[Dict[str, str]] = None) -> dict:
-    response = requests.get(url, params=params, timeout=45, headers={"User-Agent": "always-stock-market-calendar/1.0"})
+def _get_json(url: str, params: Optional[Dict[str, str]] = None, timeout: object = 45) -> dict:
+    response = requests.get(url, params=params, timeout=timeout, headers={"User-Agent": "always-stock-market-calendar/1.0"})
     response.raise_for_status()
     return response.json()
 
@@ -162,13 +162,18 @@ def fetch_taiex(start: date, end: date) -> pd.DataFrame:
 
 def fetch_institutional_flows(dates: Iterable[date]) -> pd.DataFrame:
     rows: List[Dict[str, object]] = []
+    consecutive_failures = 0
     for current in dates:
         try:
-            payload = _get_json(INDUSTRIES_API, {"date": str(current)})
+            if consecutive_failures >= 3:
+                raise requests.RequestException("institutional endpoint circuit breaker")
+            payload = _get_json(INDUSTRIES_API, {"date": str(current)}, timeout=(5, 15))
             items = payload if isinstance(payload, list) else payload.get("data", [])
+            consecutive_failures = 0
         except requests.RequestException as exc:
             logger.warning("institutional flow unavailable for %s: %s", current, exc)
             items = []
+            consecutive_failures += 1
         aggregate = {"foreign_net_amount": float("nan"), "trust_net_amount": float("nan"), "dealer_net_amount": float("nan")}
         if items:
             aggregate = {"foreign_net_amount": 0.0, "trust_net_amount": 0.0, "dealer_net_amount": 0.0}
