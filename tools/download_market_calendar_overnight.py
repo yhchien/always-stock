@@ -45,6 +45,12 @@ US_SYMBOLS = {
     "us_ym": "YM%3DF",
 }
 
+US_SPOT_SYMBOLS = {
+    "us_sp500": "^GSPC",
+    "us_nasdaq": "^IXIC",  # Nasdaq Composite, not Nasdaq-100.
+    "us_sox": "^SOX",
+}
+
 US_SPOT_SERIES = {
     "us_sp500": "SP500",
     "us_nasdaq": "NASDAQCOM",
@@ -53,16 +59,26 @@ US_SPOT_SERIES = {
 
 
 def fetch_fred_spot_returns(start: date, end: date) -> pd.DataFrame:
+    yahoo = fetch_yahoo_returns(start, end, US_SPOT_SYMBOLS)
     frames = []
     source_details = {}
     for name, series_id in US_SPOT_SERIES.items():
-        frame = fetch_fred(series_id, start, end, name + "_close")
-        frame[name + "_change"] = frame[name + "_close"].pct_change() * 100.0
+        change_column = name + "_change"
+        if change_column in yahoo:
+            frame = yahoo[["trade_date", change_column]].copy()
+            source_details[name] = yahoo.attrs.get("source_details", {}).get(
+                name,
+                {"source": "Yahoo Finance chart API", "series_id": US_SPOT_SYMBOLS[name]},
+            )
+        else:
+            frame = fetch_fred(series_id, start, end, name + "_close")
+            frame[change_column] = frame[name + "_close"].pct_change() * 100.0
+            frame = frame[["trade_date", change_column]]
+            source_details[name] = {
+                "source": frame.attrs.get("source_url", FRED_CSV),
+                "series_id": frame.attrs.get("series_id", series_id),
+            }
         frame[name + "_observation_date"] = frame["trade_date"]
-        source_details[name] = {
-            "source": frame.attrs.get("source_url", FRED_CSV),
-            "series_id": frame.attrs.get("series_id", series_id),
-        }
         frames.append(frame[["trade_date", name + "_change", name + "_observation_date"]])
     result = frames[0]
     for frame in frames[1:]:
@@ -71,11 +87,13 @@ def fetch_fred_spot_returns(start: date, end: date) -> pd.DataFrame:
     return result.sort_values("trade_date").reset_index(drop=True)
 
 
-def fetch_yahoo_returns(start: date, end: date) -> pd.DataFrame:
+def fetch_yahoo_returns(start: date, end: date, symbols=None) -> pd.DataFrame:
     frames = []
+    symbols = symbols or US_SYMBOLS
     period_start = int(pd.Timestamp(start).tz_localize("UTC").timestamp())
     period_end = int((pd.Timestamp(end) + pd.Timedelta(days=1)).tz_localize("UTC").timestamp())
-    for name, symbol in US_SYMBOLS.items():
+    source_details = {}
+    for name, symbol in symbols.items():
         try:
             response = requests.get(
                 YAHOO_CHART.format(symbol=symbol),
@@ -98,13 +116,18 @@ def fetch_yahoo_returns(start: date, end: date) -> pd.DataFrame:
         if frame.empty:
             continue
         frame[name + "_change"] = frame[name + "_close"].pct_change() * 100.0
+        source_details[name] = {"source": "Yahoo Finance chart API", "series_id": symbol}
         frames.append(frame[["trade_date", name + "_change"]])
     if not frames:
-        return pd.DataFrame(columns=["trade_date"])
+        result = pd.DataFrame(columns=["trade_date"])
+        result.attrs["source_details"] = source_details
+        return result
     result = frames[0]
     for frame in frames[1:]:
         result = result.merge(frame, on="trade_date", how="outer")
-    return result.sort_values("trade_date").reset_index(drop=True)
+    result = result.sort_values("trade_date").reset_index(drop=True)
+    result.attrs["source_details"] = source_details
+    return result
 
 
 def _month_ranges(start: date, end: date) -> Iterable[tuple]:
@@ -255,7 +278,7 @@ def main() -> int:
         "end": str(args.end),
         "rows": len(frame),
         "sources": {
-            "us_cash": "FRED:SP500,NASDAQCOM,NASDAQSOX",
+            "us_cash": "Yahoo Finance:^GSPC,^IXIC,^SOX (FRED fallback)",
             "us_futures": "Yahoo Finance chart API: ES=F,NQ=F,YM=F",
             "taifex": TAIFEX_DAILY,
         },
