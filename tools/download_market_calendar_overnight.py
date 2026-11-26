@@ -26,7 +26,7 @@ from tools.download_market_calendar_data import (
     FRED_CSV,
     align_external_observations,
     attach_source_metadata,
-    fetch_fred_csv,
+    fetch_fred,
 )
 
 
@@ -49,19 +49,20 @@ US_SPOT_SERIES = {
 
 def fetch_fred_spot_returns(start: date, end: date) -> pd.DataFrame:
     frames = []
+    source_details = {}
     for name, series_id in US_SPOT_SERIES.items():
-        frame = pd.read_csv(
-            io.StringIO(fetch_fred_csv(series_id, start, end)),
-            na_values=[".", ""],
-        )
-        frame["trade_date"] = pd.to_datetime(frame["observation_date"], errors="coerce").dt.strftime("%Y-%m-%d")
-        frame[series_id] = pd.to_numeric(frame[series_id], errors="coerce")
-        frame[name + "_change"] = frame[series_id].dropna().pct_change() * 100.0
+        frame = fetch_fred(series_id, start, end, name + "_close")
+        frame[name + "_change"] = frame[name + "_close"].pct_change() * 100.0
         frame[name + "_observation_date"] = frame["trade_date"]
+        source_details[name] = {
+            "source": frame.attrs.get("source_url", FRED_CSV),
+            "series_id": frame.attrs.get("series_id", series_id),
+        }
         frames.append(frame[["trade_date", name + "_change", name + "_observation_date"]])
     result = frames[0]
     for frame in frames[1:]:
         result = result.merge(frame, on="trade_date", how="outer")
+    result.attrs["source_details"] = source_details
     return result.sort_values("trade_date").reset_index(drop=True)
 
 
@@ -182,10 +183,11 @@ def build_overnight(start: date, end: date) -> pd.DataFrame:
     for frame in taifex_frames:
         result = frame if result.empty else result.merge(frame, on="trade_date", how="outer")
     result = result.sort_values("trade_date").reset_index(drop=True)
+    source_details = result.attrs.get("source_details", {})
     specs = {
-        "us_sp500": {"columns": ["us_sp500_change"], "source": FRED_CSV, "series_id": "SP500", "unit": "percent change", "observation_date_column": "us_sp500_observation_date", "missing_reason": "FRED SP500 has no US-market observation for this date or was not yet published"},
-        "us_nasdaq": {"columns": ["us_nasdaq_change"], "source": FRED_CSV, "series_id": "NASDAQCOM", "unit": "percent change", "observation_date_column": "us_nasdaq_observation_date", "missing_reason": "FRED NASDAQCOM has no US-market observation for this date or was not yet published"},
-        "us_sox": {"columns": ["us_sox_change"], "source": FRED_CSV, "series_id": "NASDAQSOX", "unit": "percent change", "observation_date_column": "us_sox_observation_date", "missing_reason": "FRED NASDAQSOX has no US-market observation for this date or was not yet published"},
+        "us_sp500": {"columns": ["us_sp500_change"], "source": source_details.get("us_sp500", {}).get("source", FRED_CSV), "series_id": source_details.get("us_sp500", {}).get("series_id", "SP500"), "unit": "percent change", "observation_date_column": "us_sp500_observation_date", "missing_reason": "US S&P 500 source has no observation for this date or was not yet published"},
+        "us_nasdaq": {"columns": ["us_nasdaq_change"], "source": source_details.get("us_nasdaq", {}).get("source", FRED_CSV), "series_id": source_details.get("us_nasdaq", {}).get("series_id", "NASDAQCOM"), "unit": "percent change", "observation_date_column": "us_nasdaq_observation_date", "missing_reason": "US Nasdaq source has no observation for this date or was not yet published"},
+        "us_sox": {"columns": ["us_sox_change"], "source": source_details.get("us_sox", {}).get("source", FRED_CSV), "series_id": source_details.get("us_sox", {}).get("series_id", "NASDAQSOX"), "unit": "percent change", "observation_date_column": "us_sox_observation_date", "missing_reason": "US SOX source has no observation for this date or was not yet published"},
         "us_es": {"columns": ["us_es_change"], "source": "Yahoo Finance chart API", "series_id": "ES=F", "unit": "percent change", "missing_reason": "Yahoo ES=F has no observation for this date or was not yet published"},
         "us_nq": {"columns": ["us_nq_change"], "source": "Yahoo Finance chart API", "series_id": "NQ=F", "unit": "percent change", "missing_reason": "Yahoo NQ=F has no observation for this date or was not yet published"},
         "us_ym": {"columns": ["us_ym_change"], "source": "Yahoo Finance chart API", "series_id": "YM=F", "unit": "percent change", "missing_reason": "Yahoo YM=F has no observation for this date or was not yet published"},

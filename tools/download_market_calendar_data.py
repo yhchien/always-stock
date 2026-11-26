@@ -22,6 +22,7 @@ import calendar
 import csv
 import io
 import json
+import logging
 import re
 import sys
 import time
@@ -44,6 +45,16 @@ CBC_USD_TWD = "https://www.cbc.gov.tw/public/data/OpenData/%E5%A4%96%E5%8C%AF%E5
 YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 FRED_RETRIES = 3
 FRED_TIMEOUT = (15, 90)
+YAHOO_FALLBACK_SYMBOLS = {
+    "VIXCLS": "^VIX",
+    # Yahoo publishes ^TNX in percentage points (for example 4.30 means
+    # 4.30%), which matches the DGS10 unit used by this panel.
+    "DGS10": "^TNX",
+    "SP500": "^GSPC",
+    "NASDAQCOM": "^IXIC",
+    "NASDAQSOX": "^SOX",
+}
+logger = logging.getLogger(__name__)
 
 
 def _fetched_at() -> str:
@@ -165,10 +176,33 @@ def fetch_institutional_flows(dates: Iterable[date]) -> pd.DataFrame:
 
 
 def fetch_fred(series_id: str, start: date, end: date, output_name: str) -> pd.DataFrame:
-    frame = pd.read_csv(io.StringIO(fetch_fred_csv(series_id, start, end)), na_values=[".", ""])
+    source_url = FRED_CSV
+    source_series_id = series_id
+    try:
+        csv_text = fetch_fred_csv(series_id, start, end)
+        frame = pd.read_csv(io.StringIO(csv_text), na_values=[".", ""])
+    except RuntimeError:
+        fallback_symbol = YAHOO_FALLBACK_SYMBOLS.get(series_id)
+        if not fallback_symbol:
+            raise
+        logger.warning(
+            "FRED %s unavailable; using Yahoo Finance fallback %s for %s",
+            series_id,
+            fallback_symbol,
+            output_name,
+        )
+        frame = fetch_yahoo(fallback_symbol, output_name)
+        frame = frame[
+            (frame["trade_date"] >= str(start)) & (frame["trade_date"] <= str(end))
+        ].copy()
+        frame.attrs["source_url"] = YAHOO_CHART.format(symbol=fallback_symbol)
+        frame.attrs["series_id"] = fallback_symbol
+        return frame
     frame = frame.rename(columns={"observation_date": "trade_date", series_id: output_name})
     frame["trade_date"] = pd.to_datetime(frame["trade_date"]).dt.strftime("%Y-%m-%d")
     frame[output_name] = pd.to_numeric(frame[output_name], errors="coerce")
+    frame.attrs["source_url"] = source_url
+    frame.attrs["series_id"] = source_series_id
     return _stamp(frame[["trade_date", output_name]])
 
 
@@ -439,8 +473,8 @@ def build_panel(start: date, end: date) -> pd.DataFrame:
         "taiex": {"columns": ["close_price"], "source": TAIEX_API, "unit": "index points", "fetched_at": taiex.attrs.get("fetched_at")},
         "institutional": {"columns": ["inst_total_net_amount"], "source": INDUSTRIES_API, "unit": "TWD", "fetched_at": datasets["institutional"].attrs.get("fetched_at"), "missing_reason": "always-stock institutional endpoint returned no rows for this Taiwan date"},
         "tw_vix": {"columns": ["tw_vix"], "source": TAIFEX_VIX_MONTH, "series_id": "TAIFEX Taiwan VIX", "unit": "index points", "fetched_at": datasets["tw_vix"].attrs.get("fetched_at"), "missing_reason": "TAIFEX Taiwan VIX has no observation for this date"},
-        "us_vix": {"columns": ["us_vix"], "source": FRED_CSV, "series_id": "VIXCLS", "unit": "index points", "observation_date_column": "us_vix_observation_date", "fetched_at": datasets["us_vix"].attrs.get("fetched_at"), "missing_reason": "FRED VIXCLS has no US-market observation for this date or was not yet published"},
-        "us10y": {"columns": ["us10y"], "source": FRED_CSV, "series_id": "DGS10", "unit": "percent", "observation_date_column": "us10y_observation_date", "fetched_at": datasets["us10y"].attrs.get("fetched_at"), "missing_reason": "FRED DGS10 has no US-market observation for this date or was not yet published"},
+        "us_vix": {"columns": ["us_vix"], "source": datasets["us_vix"].attrs.get("source_url", FRED_CSV), "series_id": datasets["us_vix"].attrs.get("series_id", "VIXCLS"), "unit": "index points", "observation_date_column": "us_vix_observation_date", "fetched_at": datasets["us_vix"].attrs.get("fetched_at"), "missing_reason": "US VIX source has no observation for this date or was not yet published"},
+        "us10y": {"columns": ["us10y"], "source": datasets["us10y"].attrs.get("source_url", FRED_CSV), "series_id": datasets["us10y"].attrs.get("series_id", "DGS10"), "unit": "percent", "observation_date_column": "us10y_observation_date", "fetched_at": datasets["us10y"].attrs.get("fetched_at"), "missing_reason": "US 10-year yield source has no observation for this date or was not yet published"},
         "usd_twd": {"columns": ["usd_twd"], "source": CBC_USD_TWD, "series_id": "NTD/USD", "unit": "TWD per USD", "fetched_at": datasets["usd_twd"].attrs.get("fetched_at"), "missing_reason": "CBC has no Taiwan-business-day NTD/USD close for this date or was not yet published"},
         "gold": {"columns": ["gold"], "source": "Yahoo Finance chart API", "series_id": "GC=F", "unit": "USD per troy ounce", "fetched_at": datasets["gold"].attrs.get("fetched_at"), "missing_reason": "Yahoo GC=F has no observation for this date or was not yet published"},
         "mtx_institutional": {"columns": ["mtx_oi_long", "mtx_oi_short"], "source": TAIFEX_MTX, "series_id": "MTX", "unit": "contracts", "session": "institutional OI table; not session-mixed with night OHLC", "fetched_at": datasets["mtx_institutional"].attrs.get("fetched_at"), "missing_reason": "TAIFEX MTX institutional OI table returned no long/short positions for this date"},
