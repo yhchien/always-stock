@@ -52,8 +52,8 @@ YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 # Yahoo fallback below remains available after these attempts.
 FRED_RETRIES = 2
 FRED_TIMEOUT = (10, 30)
-TAIFEX_RETRIES = 3
-TAIFEX_TIMEOUT = (10, 90)
+TAIFEX_RETRIES = 2
+TAIFEX_TIMEOUT = (10, 30)
 YAHOO_FALLBACK_SYMBOLS = {
     "VIXCLS": "^VIX",
     # Yahoo publishes ^TNX in percentage points (for example 4.30 means
