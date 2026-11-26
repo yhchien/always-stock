@@ -23,13 +23,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from tools.download_market_calendar_data import build_panel as download_base_panel  # noqa: E402
-from tools.download_market_calendar_margin import (  # noqa: E402
-    aggregate_margin,
-    fetch_margin_raw,
-    load_finmind_token,
-)
-from tools.download_market_calendar_overnight import build_overnight  # noqa: E402
+from tools.download_market_calendar_margin import load_finmind_token  # noqa: E402
+from market_calendar_raw_cache import load_or_update_market_calendar_data  # noqa: E402
 from tools.market_calendar_rules import (  # noqa: E402
     FACTOR_COLUMNS,
     add_factor_states,
@@ -48,7 +43,11 @@ from tools.market_calendar_rules import (  # noqa: E402
 from app.market_calendar_ai import interpret_market_calendar  # noqa: E402
 
 from app.database import Base, SessionLocal, engine  # noqa: E402
-from app.models import MarketCalendarPrediction  # noqa: E402
+from app.models import (  # noqa: E402
+    MarketCalendarOvernight,
+    MarketCalendarPrediction,
+    MarketCalendarRawData,
+)
 
 logger = logging.getLogger("market_calendar_daily")
 
@@ -140,27 +139,37 @@ def _update_actuals(db, panel: pd.DataFrame) -> None:
 def generate_daily_prediction(target_date: date, history_days: int = 120) -> Dict[str, Any]:
     history_start = target_date - timedelta(days=history_days)
     logger.info("fetching market-calendar data %s to %s", history_start, target_date)
-
-    raw = download_base_panel(history_start, target_date)
-    if raw.empty:
-        raise RuntimeError("TAIEX data source returned no rows")
-    raw["trade_date"] = pd.to_datetime(raw["trade_date"])
-    signal_date = raw["trade_date"].max()
-    if signal_date >= pd.Timestamp(target_date):
-        raw = raw[raw["trade_date"] < pd.Timestamp(target_date)].copy()
-        signal_date = raw["trade_date"].max()
-    if pd.isna(signal_date):
-        raise RuntimeError("no completed Taiwan session before target date")
-
     token = load_finmind_token()
-    margin_raw = fetch_margin_raw(str(history_start), str(signal_date.date()), token)
-    margin = aggregate_margin(margin_raw)
-    overnight = build_overnight(
-        history_start,
-        target_date,
-        target_dates=raw["trade_date"].dt.strftime("%Y-%m-%d").tolist(),
+    Base.metadata.create_all(
+        bind=engine,
+        tables=[
+            MarketCalendarPrediction.__table__,
+            MarketCalendarRawData.__table__,
+            MarketCalendarOvernight.__table__,
+        ],
     )
-    panel = build_rule_panel(raw, margin, overnight)
+    db = SessionLocal()
+    try:
+        raw, overnight = load_or_update_market_calendar_data(
+            db,
+            target_date,
+            history_days,
+            token,
+        )
+        if raw.empty:
+            raise RuntimeError("market calendar raw cache returned no rows")
+        raw["trade_date"] = pd.to_datetime(raw["trade_date"])
+        raw = raw[raw["trade_date"] < pd.Timestamp(target_date)].copy()
+        raw = raw.sort_values("trade_date").tail(180).reset_index(drop=True)
+        signal_date = raw["trade_date"].max()
+        if pd.isna(signal_date):
+            raise RuntimeError("no completed Taiwan session before target date")
+        panel = build_rule_panel(raw, None, overnight)
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
 
     signal_rows = panel[panel["trade_date"] == signal_date]
     if signal_rows.empty:
@@ -239,7 +248,6 @@ def generate_daily_prediction(target_date: date, history_days: int = 120) -> Dic
     ai_interpretation = interpret_market_calendar(ai_payload)
     explanation["ai_interpretation"] = ai_interpretation
 
-    Base.metadata.create_all(bind=engine, tables=[MarketCalendarPrediction.__table__])
     db = SessionLocal()
     try:
         _update_actuals(db, panel)

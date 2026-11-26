@@ -1204,6 +1204,35 @@ class MarketCalendarPrediction(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
 
+class MarketCalendarRawData(Base):
+    """Append-only daily raw factor panel used by the market-calendar job.
+
+    The daily Action adds the newly completed Taiwan session here and reads
+    the recent window for feature calculation.  Historical rows are retained;
+    the model window is limited in Python rather than deleting database data.
+    """
+
+    __tablename__ = "market_calendar_raw_data"
+
+    trade_date = Column(Date, primary_key=True)
+    payload = Column(JSON, nullable=False)
+    source_metadata = Column(JSON, nullable=True)
+    fetched_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class MarketCalendarOvernight(Base):
+    """Raw overnight factors keyed by the Taiwan target session date."""
+
+    __tablename__ = "market_calendar_overnight"
+
+    target_date = Column(Date, primary_key=True)
+    payload = Column(JSON, nullable=False)
+    source_metadata = Column(JSON, nullable=True)
+    fetched_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
 class ShadowVirtualPortfolio(Base):
     """
     魚尾每日模擬交易（Shadow Portfolio）Phase 1：把獨立沙盒 fishtail_backtest/ 反覆驗證過的
