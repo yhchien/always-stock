@@ -26,6 +26,7 @@ from tools.download_market_calendar_data import (
     FRED_CSV,
     align_external_observations,
     attach_source_metadata,
+    fetch_fred_csv,
 )
 
 
@@ -49,14 +50,10 @@ US_SPOT_SERIES = {
 def fetch_fred_spot_returns(start: date, end: date) -> pd.DataFrame:
     frames = []
     for name, series_id in US_SPOT_SERIES.items():
-        response = requests.get(
-            FRED_CSV,
-            params={"id": series_id, "cosd": str(start), "coed": str(end)},
-            timeout=45,
-            headers={"User-Agent": USER_AGENT},
+        frame = pd.read_csv(
+            io.StringIO(fetch_fred_csv(series_id, start, end)),
+            na_values=[".", ""],
         )
-        response.raise_for_status()
-        frame = pd.read_csv(io.StringIO(response.text), na_values=[".", ""])
         frame["trade_date"] = pd.to_datetime(frame["observation_date"], errors="coerce").dt.strftime("%Y-%m-%d")
         frame[series_id] = pd.to_numeric(frame[series_id], errors="coerce")
         frame[name + "_change"] = frame[series_id].dropna().pct_change() * 100.0

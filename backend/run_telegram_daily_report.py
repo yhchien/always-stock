@@ -140,6 +140,13 @@ def main(argv: list[str] | None = None) -> int:
             logger.warning("DB 無模擬交易行情資料，視為 holiday 跳過")
             return EXIT_HOLIDAY
         execution_date = next_trading_execution_date(db, latest_trade_date)
+        if prediction.target_date != execution_date:
+            logger.warning(
+                "最新台股行事曆預測已過期：target_date=%s，下一交易日=%s；停止發送舊訊息",
+                prediction.target_date,
+                execution_date,
+            )
+            return EXIT_HOLIDAY
         strategy_versions = (
             ("v1_frozen", "原策略｜v1 Dual-Engine"),
             ("V1_MARKET_OVERLAY_202611", "新策略｜202611 市場風險分層"),

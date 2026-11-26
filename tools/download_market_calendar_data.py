@@ -42,6 +42,8 @@ TAIFEX_MTX = "https://www.taifex.com.tw/enl/eng3/futContractsDateDown"
 TAIFEX_DAILY = "https://www.taifex.com.tw/cht/3/futDataDown"
 CBC_USD_TWD = "https://www.cbc.gov.tw/public/data/OpenData/%E5%A4%96%E5%8C%AF%E5%B1%80/FTDOpenData015.csv"
 YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+FRED_RETRIES = 3
+FRED_TIMEOUT = (15, 90)
 
 
 def _fetched_at() -> str:
@@ -99,6 +101,29 @@ def _get_json(url: str, params: Optional[Dict[str, str]] = None) -> dict:
     return response.json()
 
 
+def fetch_fred_csv(series_id: str, start: date, end: date) -> str:
+    """Fetch a FRED CSV with bounded retries for transient read timeouts."""
+    params = {"id": series_id, "cosd": str(start), "coed": str(end)}
+    last_error: Optional[Exception] = None
+    for attempt in range(1, FRED_RETRIES + 1):
+        try:
+            response = requests.get(
+                FRED_CSV,
+                params=params,
+                timeout=FRED_TIMEOUT,
+                headers={"User-Agent": "always-stock-market-calendar/1.0"},
+            )
+            response.raise_for_status()
+            return response.text
+        except requests.RequestException as exc:
+            last_error = exc
+            if attempt < FRED_RETRIES:
+                time.sleep(2 * attempt)
+    raise RuntimeError(
+        f"FRED {series_id} request failed after {FRED_RETRIES} attempts: {last_error}"
+    ) from last_error
+
+
 def _date_range(start: date, end: date) -> Iterable[date]:
     current = start
     while current <= end:
@@ -140,14 +165,7 @@ def fetch_institutional_flows(dates: Iterable[date]) -> pd.DataFrame:
 
 
 def fetch_fred(series_id: str, start: date, end: date, output_name: str) -> pd.DataFrame:
-    response = requests.get(
-        FRED_CSV,
-        params={"id": series_id, "cosd": str(start), "coed": str(end)},
-        timeout=45,
-        headers={"User-Agent": "always-stock-market-calendar/1.0"},
-    )
-    response.raise_for_status()
-    frame = pd.read_csv(io.StringIO(response.text), na_values=[".", ""])
+    frame = pd.read_csv(io.StringIO(fetch_fred_csv(series_id, start, end)), na_values=[".", ""])
     frame = frame.rename(columns={"observation_date": "trade_date", series_id: output_name})
     frame["trade_date"] = pd.to_datetime(frame["trade_date"]).dt.strftime("%Y-%m-%d")
     frame[output_name] = pd.to_numeric(frame[output_name], errors="coerce")
