@@ -54,6 +54,7 @@ def _payload_from_row(row: pd.Series) -> Tuple[dict, Any]:
 def _upsert_raw(db, frame: pd.DataFrame) -> None:
     if frame.empty:
         return
+    frame = frame.drop_duplicates("trade_date", keep="last")
     for _, row in frame.iterrows():
         trade_date = pd.to_datetime(row["trade_date"]).date()
         payload, metadata = _payload_from_row(row)
@@ -70,6 +71,7 @@ def _upsert_raw(db, frame: pd.DataFrame) -> None:
 def _upsert_overnight(db, frame: pd.DataFrame) -> None:
     if frame.empty or "trade_date" not in frame:
         return
+    frame = frame.drop_duplicates("trade_date", keep="last")
     for _, row in frame.iterrows():
         target_date = pd.to_datetime(row["trade_date"]).date()
         payload, metadata = _payload_from_row(row)
