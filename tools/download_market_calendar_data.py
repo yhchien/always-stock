@@ -43,8 +43,11 @@ TAIFEX_MTX = "https://www.taifex.com.tw/enl/eng3/futContractsDateDown"
 TAIFEX_DAILY = "https://www.taifex.com.tw/cht/3/futDataDown"
 CBC_USD_TWD = "https://www.cbc.gov.tw/public/data/OpenData/%E5%A4%96%E5%8C%AF%E5%B1%80/FTDOpenData015.csv"
 YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
-FRED_RETRIES = 3
-FRED_TIMEOUT = (15, 90)
+# FRED occasionally accepts the connection but never sends the CSV body.  A
+# short bounded read timeout keeps the 06:30 action from appearing hung; the
+# Yahoo fallback below remains available after these attempts.
+FRED_RETRIES = 2
+FRED_TIMEOUT = (10, 30)
 YAHOO_FALLBACK_SYMBOLS = {
     "VIXCLS": "^VIX",
     # Yahoo publishes ^TNX in percentage points (for example 4.30 means
