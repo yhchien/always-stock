@@ -168,8 +168,14 @@ def _apply_valid_recovery(
     for item in recovery.get("results", []) if isinstance(recovery, dict) else []:
         column = item.get("column") if isinstance(item, dict) else None
         value = _json_number(item.get("value")) if isinstance(item, dict) else None
-        observed_date = str(item.get("observed_date", ""))[:10] if isinstance(item, dict) else ""
-        source_url = str(item.get("source_url", "")) if isinstance(item, dict) else ""
+        observed_raw = item.get("observed_date", "") if isinstance(item, dict) else ""
+        observed_timestamp = pd.to_datetime(observed_raw, errors="coerce")
+        observed_date = (
+            observed_timestamp.date().isoformat()
+            if not pd.isna(observed_timestamp)
+            else ""
+        )
+        source_url = str(item.get("source_url", "")).strip() if isinstance(item, dict) else ""
         parsed_url = urlparse(source_url)
         valid = (
             column in missing
