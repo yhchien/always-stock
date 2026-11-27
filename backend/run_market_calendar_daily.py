@@ -426,7 +426,11 @@ def generate_daily_prediction(target_date: date, history_days: int = 120) -> Dic
         record.data_completeness = completeness
         record.factor_snapshot = snapshot
         record.explanation = explanation
-        record.result_status = "pending"
+        record.result_status = _result_status(
+            record.predicted_binary,
+            record.actual_binary,
+            record.actual_return,
+        )
         record.model_version = "market-calendar-v3-blend"
         record.generated_at = datetime.utcnow()
         record.updated_at = datetime.utcnow()
