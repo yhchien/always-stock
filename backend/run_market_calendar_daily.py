@@ -140,10 +140,10 @@ def _recovery_definitions(missing_columns: Iterable[str]) -> Dict[str, str]:
     definitions = {
         "us_sp500_change": "S&P 500 現貨相對前一個美國有效交易日的百分比變化",
         "us_nasdaq_change": "Nasdaq Composite 現貨相對前一個美國有效交易日的百分比變化，不是 Nasdaq-100 期貨",
-        "us_sox_change": "Philadelphia Semiconductor Index 現貨相對前一個美國有效交易日的百分比變化",
-        "us_es_change": "E-mini S&P 500 ES 連續期貨的隔夜百分比變化",
-        "us_nq_change": "E-mini Nasdaq-100 NQ 連續期貨的隔夜百分比變化",
-        "us_ym_change": "E-mini Dow YM 連續期貨的隔夜百分比變化",
+        "us_sox_change": "Philadelphia Semiconductor Index 現貨相對前一個美國有效交易日的百分比變化；優先查 Nasdaq SOX history、Nasdaq official SOX page 或 FRED NASDAQSOX",
+        "us_es_change": "E-mini S&P 500 ES 連續期貨的隔夜百分比變化；優先查 Yahoo ES=F history、Finabase ES=F history、Investing S&P 500 Futures historical data 或 CME",
+        "us_nq_change": "E-mini Nasdaq-100 NQ 連續期貨的隔夜百分比變化；優先查 Yahoo NQ=F history、Finabase NQ=F history、Trading-Commodity NQ daily history 或 CME",
+        "us_ym_change": "E-mini Dow YM 連續期貨的隔夜百分比變化；優先查 Yahoo YM=F history、Finabase YM=F history、Investing Dow Futures historical data 或 CME",
         "tx_night_return_pct": "TAIFEX TX 盤後收盤相對台股現貨訊號日收盤的百分比變化",
         "mtx_night_return_pct": "TAIFEX MTX 盤後收盤相對台股現貨訊號日收盤的百分比變化",
     }

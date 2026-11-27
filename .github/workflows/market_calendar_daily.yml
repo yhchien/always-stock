@@ -24,7 +24,7 @@ jobs:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      MARKET_CALENDAR_RECOVERY_MODEL: gpt-5.4-mini
+      MARKET_CALENDAR_RECOVERY_MODEL: gpt-5.4
       INPUT_TARGET_DATE: ${{ github.event.inputs.target_date }}
 
     steps:
