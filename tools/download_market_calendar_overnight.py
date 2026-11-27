@@ -33,6 +33,7 @@ from tools.download_market_calendar_data import (
 
 
 YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+STOOQ_CSV = "https://stooq.com/q/d/l/"
 TAIFEX_DAILY = "https://www.taifex.com.tw/cht/3/futDataDown"
 USER_AGENT = "always-stock-market-calendar/1.0"
 TAIFEX_RETRIES = 1
@@ -88,11 +89,67 @@ def fetch_fred_spot_returns(start: date, end: date) -> pd.DataFrame:
 
 
 def fetch_yahoo_returns(start: date, end: date, symbols=None) -> pd.DataFrame:
+    return _fetch_yahoo_returns(start, end, symbols, allow_stooq_fallback=False)
+
+
+def fetch_stooq_returns(start: date, end: date, symbols: Dict[str, str]) -> pd.DataFrame:
+    """Fetch daily continuous-futures closes from Stooq as a Yahoo fallback.
+
+    Stooq is used only when Yahoo has no usable series.  It is a daily close
+    fallback for the same continuous contracts, not a substitute for
+    TAIFEX's official Taiwan night-session OHLC data.
+    """
+    frames = []
+    source_details = {}
+    for name, symbol in symbols.items():
+        try:
+            response = requests.get(
+                STOOQ_CSV,
+                params={
+                    "s": symbol,
+                    "d1": start.strftime("%Y%m%d"),
+                    "d2": end.strftime("%Y%m%d"),
+                    "i": "d",
+                },
+                timeout=30,
+                headers={"User-Agent": USER_AGENT},
+            )
+            response.raise_for_status()
+            frame = pd.read_csv(io.StringIO(response.text))
+            if not {"Date", "Close"}.issubset(frame.columns):
+                raise ValueError("Stooq CSV has no Date/Close columns")
+            frame = frame.rename(columns={"Date": "trade_date", "Close": name + "_close"})
+            frame["trade_date"] = pd.to_datetime(frame["trade_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+            frame[name + "_close"] = pd.to_numeric(frame[name + "_close"], errors="coerce")
+            frame = frame.dropna(subset=["trade_date", name + "_close"])
+            if frame.empty:
+                raise ValueError("Stooq returned no usable rows")
+            frame[name + "_change"] = frame[name + "_close"].pct_change() * 100.0
+            frames.append(frame[["trade_date", name + "_change"]])
+            source_details[name] = {
+                "source": STOOQ_CSV,
+                "series_id": symbol,
+            }
+        except (requests.RequestException, ValueError, pd.errors.ParserError) as exc:
+            logger.warning("Stooq %s unavailable; leaving futures factor missing: %s", symbol, exc)
+    if not frames:
+        result = pd.DataFrame(columns=["trade_date"])
+    else:
+        result = frames[0]
+        for frame in frames[1:]:
+            result = result.merge(frame, on="trade_date", how="outer")
+        result = result.sort_values("trade_date").reset_index(drop=True)
+    result.attrs["source_details"] = source_details
+    return result
+
+
+def _fetch_yahoo_returns(start: date, end: date, symbols=None, allow_stooq_fallback: bool = False) -> pd.DataFrame:
     frames = []
     symbols = symbols or US_SYMBOLS
     period_start = int(pd.Timestamp(start).tz_localize("UTC").timestamp())
     period_end = int((pd.Timestamp(end) + pd.Timedelta(days=1)).tz_localize("UTC").timestamp())
     source_details = {}
+    missing_names = set(symbols)
     for name, symbol in symbols.items():
         try:
             response = requests.get(
@@ -117,7 +174,17 @@ def fetch_yahoo_returns(start: date, end: date, symbols=None) -> pd.DataFrame:
             continue
         frame[name + "_change"] = frame[name + "_close"].pct_change() * 100.0
         source_details[name] = {"source": "Yahoo Finance chart API", "series_id": symbol}
+        missing_names.discard(name)
         frames.append(frame[["trade_date", name + "_change"]])
+    if allow_stooq_fallback and missing_names:
+        stooq_symbols = {name: {"us_es": "es.f", "us_nq": "nq.f", "us_ym": "ym.f"}[name] for name in missing_names if name in {"us_es", "us_nq", "us_ym"}}
+        stooq = fetch_stooq_returns(start, end, stooq_symbols)
+        stooq_details = stooq.attrs.get("source_details", {})
+        for name in stooq_symbols:
+            change_column = name + "_change"
+            if change_column in stooq:
+                frames.append(stooq[["trade_date", change_column]])
+                source_details[name] = stooq_details.get(name, {"source": STOOQ_CSV, "series_id": stooq_symbols[name]})
     if not frames:
         result = pd.DataFrame(columns=["trade_date"])
         result.attrs["source_details"] = source_details
@@ -226,7 +293,9 @@ def build_overnight(start: date, end: date, target_dates: Iterable[str] | None =
     # Cash indices use the requested spot series.  Futures
     # remain Yahoo's ES/NQ/YM overnight contracts and are kept separate.
     result = fetch_fred_spot_returns(start, end)
-    futures = fetch_yahoo_returns(start, end)
+    futures = _fetch_yahoo_returns(start, end, allow_stooq_fallback=True)
+    source_details = result.attrs.get("source_details", {}).copy()
+    source_details.update(futures.attrs.get("source_details", {}))
     if not futures.empty:
         result = result.merge(futures, on="trade_date", how="outer")
     taifex_frames = []
@@ -245,14 +314,14 @@ def build_overnight(start: date, end: date, target_dates: Iterable[str] | None =
     for frame in taifex_frames:
         result = frame if result.empty else result.merge(frame, on="trade_date", how="outer")
     result = result.sort_values("trade_date").reset_index(drop=True)
-    source_details = result.attrs.get("source_details", {})
+    result.attrs["source_details"] = source_details
     specs = {
         "us_sp500": {"columns": ["us_sp500_change"], "source": source_details.get("us_sp500", {}).get("source", FRED_CSV), "series_id": source_details.get("us_sp500", {}).get("series_id", "SP500"), "unit": "percent change", "observation_date_column": "us_sp500_observation_date", "missing_reason": "US S&P 500 source has no observation for this date or was not yet published"},
         "us_nasdaq": {"columns": ["us_nasdaq_change"], "source": source_details.get("us_nasdaq", {}).get("source", FRED_CSV), "series_id": source_details.get("us_nasdaq", {}).get("series_id", "NASDAQCOM"), "unit": "percent change", "observation_date_column": "us_nasdaq_observation_date", "missing_reason": "US Nasdaq source has no observation for this date or was not yet published"},
         "us_sox": {"columns": ["us_sox_change"], "source": source_details.get("us_sox", {}).get("source", FRED_CSV), "series_id": source_details.get("us_sox", {}).get("series_id", "NASDAQSOX"), "unit": "percent change", "observation_date_column": "us_sox_observation_date", "missing_reason": "US SOX source has no observation for this date or was not yet published"},
-        "us_es": {"columns": ["us_es_change"], "source": "Yahoo Finance chart API", "series_id": "ES=F", "unit": "percent change", "missing_reason": "Yahoo ES=F has no observation for this date or was not yet published"},
-        "us_nq": {"columns": ["us_nq_change"], "source": "Yahoo Finance chart API", "series_id": "NQ=F", "unit": "percent change", "missing_reason": "Yahoo NQ=F has no observation for this date or was not yet published"},
-        "us_ym": {"columns": ["us_ym_change"], "source": "Yahoo Finance chart API", "series_id": "YM=F", "unit": "percent change", "missing_reason": "Yahoo YM=F has no observation for this date or was not yet published"},
+        "us_es": {"columns": ["us_es_change"], "source": source_details.get("us_es", {}).get("source", YAHOO_CHART), "series_id": source_details.get("us_es", {}).get("series_id", "ES=F"), "unit": "percent change", "missing_reason": "Yahoo/Stooq ES continuous future has no observation for this date or was not yet published"},
+        "us_nq": {"columns": ["us_nq_change"], "source": source_details.get("us_nq", {}).get("source", YAHOO_CHART), "series_id": source_details.get("us_nq", {}).get("series_id", "NQ=F"), "unit": "percent change", "missing_reason": "Yahoo/Stooq NQ continuous future has no observation for this date or was not yet published"},
+        "us_ym": {"columns": ["us_ym_change"], "source": source_details.get("us_ym", {}).get("source", YAHOO_CHART), "series_id": source_details.get("us_ym", {}).get("series_id", "YM=F"), "unit": "percent change", "missing_reason": "Yahoo/Stooq YM continuous future has no observation for this date or was not yet published"},
         "tx_night": {"columns": ["tx_night_close"], "source": TAIFEX_DAILY, "series_id": "TX", "unit": "index points", "session": "盤後", "missing_reason": "TAIFEX TX after-hours session has no row for this trading date"},
         "mtx_night": {"columns": ["mtx_night_close"], "source": TAIFEX_DAILY, "series_id": "MTX", "unit": "index points", "session": "盤後", "missing_reason": "TAIFEX MTX after-hours session has no row for this trading date"},
     }
@@ -279,7 +348,7 @@ def main() -> int:
         "rows": len(frame),
         "sources": {
             "us_cash": "Yahoo Finance:^GSPC,^IXIC,^SOX (FRED fallback)",
-            "us_futures": "Yahoo Finance chart API: ES=F,NQ=F,YM=F",
+            "us_futures": "Yahoo Finance chart API, Stooq fallback: ES=F/NQ=F/YM=F",
             "taifex": TAIFEX_DAILY,
         },
         "definitions": {

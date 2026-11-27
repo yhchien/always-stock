@@ -220,30 +220,52 @@ def fit_overnight_return_model(
     """Fit a lag-safe linear estimate of next-day return from night factors.
 
     The fit uses only rows whose next-session return is already known.  The
-    two predictors mirror the binary overnight decision: TX night return
-    relative to the cash close and Nasdaq futures' overnight return.  Keeping
-    the model small is intentional; a 50-session sample cannot support a
-    large overnight regression without overfitting.
+    The primary predictors mirror the binary overnight decision: TX and MTX
+    night returns relative to the cash close, plus Nasdaq futures when it is
+    available.  Smaller fallback models keep the Taiwan signal usable when a
+    US feed is late.  Keeping each model small is intentional; a 50-session
+    sample cannot support a large overnight regression without overfitting.
     """
-    columns = ["tx_night_return_pct", "us_nq_change"]
-    if any(column not in history for column in columns) or "target_return" not in history:
+    if "target_return" not in history:
         return None
-    values = history[columns + ["target_return"]].apply(pd.to_numeric, errors="coerce").dropna()
-    if len(values) < minimum_samples:
+
+    # Keep the US Nasdaq futures signal when it is present, but do not discard
+    # the two Taiwan night-session contracts when that one external feed is
+    # late or unavailable.  The alternatives are ordered from richest to
+    # most locally observable; the application step selects the first model
+    # whose columns are all available on the forecast row.
+    candidate_sets = [
+        ["tx_night_return_pct", "mtx_night_return_pct", "us_nq_change"],
+        ["tx_night_return_pct", "us_nq_change"],
+        ["tx_night_return_pct", "mtx_night_return_pct"],
+    ]
+    models = []
+    for columns in candidate_sets:
+        if any(column not in history for column in columns):
+            continue
+        values = history[columns + ["target_return"]].apply(pd.to_numeric, errors="coerce").dropna()
+        if len(values) < minimum_samples:
+            continue
+        x = values[columns].to_numpy(dtype=float)
+        y = values["target_return"].to_numpy(dtype=float)
+        design = np.column_stack([np.ones(len(x)), x])
+        coefficients, _, _, _ = np.linalg.lstsq(design, y, rcond=None)
+        residuals = y - design @ coefficients
+        models.append(
+            {
+                "columns": columns,
+                "intercept": float(coefficients[0]),
+                "coefficients": [float(value) for value in coefficients[1:]],
+                "samples": int(len(values)),
+                "residual_low": float(np.quantile(residuals, 0.25)),
+                "residual_high": float(np.quantile(residuals, 0.75)),
+            }
+        )
+    if not models:
         return None
-    x = values[columns].to_numpy(dtype=float)
-    y = values["target_return"].to_numpy(dtype=float)
-    design = np.column_stack([np.ones(len(x)), x])
-    coefficients, _, _, _ = np.linalg.lstsq(design, y, rcond=None)
-    residuals = y - design @ coefficients
-    return {
-        "columns": columns,
-        "intercept": float(coefficients[0]),
-        "coefficients": [float(value) for value in coefficients[1:]],
-        "samples": int(len(values)),
-        "residual_low": float(np.quantile(residuals, 0.25)),
-        "residual_high": float(np.quantile(residuals, 0.75)),
-    }
+    result = dict(models[0])
+    result["models"] = models
+    return result
 
 
 def fit_factor_return_model(
@@ -337,14 +359,18 @@ def expected_return_with_overnight(
     """
     estimate = float(rule_return)
     if overnight_model:
-        columns = overnight_model.get("columns", [])
-        if all(column in row and not pd.isna(row[column]) for column in columns):
+        candidate_models = overnight_model.get("models") or [overnight_model]
+        for model in candidate_models:
+            columns = model.get("columns", [])
+            if not all(column in row and not pd.isna(row[column]) for column in columns):
+                continue
             values = [float(row[column]) for column in columns]
-            coefficients = overnight_model.get("coefficients", [])
-            estimate = float(overnight_model.get("intercept", 0.0)) + sum(
+            coefficients = model.get("coefficients", [])
+            estimate = float(model.get("intercept", 0.0)) + sum(
                 float(coefficient) * value
                 for coefficient, value in zip(coefficients, values)
             )
+            break
     if final_binary == "偏漲":
         return abs(estimate)
     if final_binary == "偏跌":
@@ -415,6 +441,30 @@ def binary_prediction_with_momentum(
             return np.nan
         return pd.to_numeric(row[name], errors="coerce")
 
+    tx_night = value("tx_night_return_pct")
+    mtx_night = value("mtx_night_return_pct")
+    us_nq = value("us_nq_change")
+    taiwan_night_consensus = (
+        not pd.isna(tx_night)
+        and not pd.isna(mtx_night)
+        and min(float(tx_night), float(mtx_night)) >= overnight_threshold
+    )
+
+    # This is a rebound-continuation regime, not a generic "night session was
+    # green" override.  It requires a still-negative five-day backdrop, a
+    # positive three-day turn, depressed KDJ, both Taiwan night contracts
+    # agreeing, and no confirmed US-tech shock.  It is deliberately evaluated
+    # after the severe risk-off rule so a real external shock remains bearish.
+    rebound_continuation = (
+        value("ret_3d") > 0.0
+        and value("ret_5d") <= -3.0
+        and value("close_vs_ma20") < 0.0
+        and value("kdj_j") < 40.0
+        and taiwan_night_consensus
+        and (pd.isna(us_nq) or us_nq > -2.5)
+        and (pd.isna(value("us_sox_change")) or value("us_sox_change") > -4.0)
+    )
+
     # Local Taiwan conditions can override a positive/negative overnight
     # composite.  These are regime rules, not date-specific exceptions:
     # severe local risk-off, oversold rebound, and overbought distribution.
@@ -460,6 +510,8 @@ def binary_prediction_with_momentum(
     )
     if local_risk_off or overbought_distribution:
         return "偏跌"
+    if rebound_continuation:
+        return "偏漲"
     if (
         oversold_rebound
         or oversold_rebound_after_shock
@@ -504,6 +556,22 @@ def interpret_factor_changes(row: pd.Series) -> List[Dict[str, object]]:
 
     if value("ret_3d") <= -2.5 and value("ret_5d") <= -2.5:
         add("短線超跌", "偏漲", "大盤短線跌幅擴大，若夜盤止穩，反彈機率上升。", ["ret_3d", "ret_5d"])
+    if (
+        value("ret_3d") > 0.0
+        and value("ret_5d") <= -3.0
+        and value("close_vs_ma20") < 0.0
+        and value("kdj_j") < 40.0
+        and value("tx_night_return_pct") >= 0.3
+        and value("mtx_night_return_pct") >= 0.3
+        and (pd.isna(value("us_nq_change")) or value("us_nq_change") > -2.5)
+        and (pd.isna(value("us_sox_change")) or value("us_sox_change") > -4.0)
+    ):
+        add(
+            "下跌後反彈延續",
+            "偏漲",
+            "五日仍弱但三日已翻正，KDJ 位於低檔，且台指與小台夜盤同步走強；這是反彈延續，不宜只因均線與法人偏空就判成下跌。",
+            ["ret_3d", "ret_5d", "close_vs_ma20", "kdj_j", "tx_night_return_pct", "mtx_night_return_pct", "us_nq_change", "us_sox_change"],
+        )
     if value("close_vs_ma20") < 0 and value("close_vs_ma60") < 0:
         add("均線下方", "偏跌", "指數位於中短期均線下方，反彈仍受趨勢壓力。", ["close_vs_ma20", "close_vs_ma60"])
     if value("foreign_5d_billion") < 0 and value("inst_5d_billion") < 0:

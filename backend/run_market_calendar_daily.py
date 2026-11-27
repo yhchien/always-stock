@@ -15,6 +15,7 @@ import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -40,7 +41,10 @@ from tools.market_calendar_rules import (  # noqa: E402
     interpret_factor_changes,
     predict_with_rules,
 )
-from app.market_calendar_ai import interpret_market_calendar  # noqa: E402
+from app.market_calendar_ai import (  # noqa: E402
+    interpret_market_calendar,
+    recover_missing_market_calendar_factors,
+)
 
 from app.database import Base, SessionLocal, engine  # noqa: E402
 from app.models import (  # noqa: E402
@@ -76,9 +80,13 @@ def _factor_snapshot(row: pd.Series) -> Dict[str, Any]:
     for group, columns in FACTOR_COLUMNS.items():
         values: Dict[str, Optional[float]] = {}
         for column in columns:
-            if column not in row:
-                continue
+            # Count the declared schema, not only columns that happened to
+            # arrive in the DataFrame.  Otherwise a whole missing source can
+            # make the denominator smaller and falsely look complete.
             total += 1
+            if column not in row:
+                values[column] = None
+                continue
             value = _json_number(row[column])
             if value is not None:
                 available += 1
@@ -88,7 +96,7 @@ def _factor_snapshot(row: pd.Series) -> Dict[str, Any]:
         column
         for columns in FACTOR_COLUMNS.values()
         for column in columns
-        if column in row and _json_number(row[column]) is None
+        if column not in row or _json_number(row[column]) is None
     ]
     source_metadata = row.get("source_metadata")
     if isinstance(source_metadata, str):
@@ -103,6 +111,98 @@ def _factor_snapshot(row: pd.Series) -> Dict[str, Any]:
         "missing_columns": missing_columns,
         "source_metadata": source_metadata or {},
     }
+
+
+def _require_complete_factors(snapshot: Dict[str, Any]) -> None:
+    """Reject a forecast unless every declared factor is present.
+
+    A missing external observation is not a bearish or neutral observation.
+    The daily action must retry/fallback at the source layer instead of
+    writing a prediction from an incomplete factor row.
+    """
+    missing_columns = list(snapshot.get("missing_columns", []))
+    if not missing_columns and snapshot.get("available_columns") == snapshot.get("total_columns"):
+        return
+    metadata = snapshot.get("source_metadata") or {}
+    missing_sources = [
+        name
+        for name, value in metadata.items()
+        if isinstance(value, dict) and value.get("status") == "missing"
+    ]
+    source_text = ", ".join(missing_sources) if missing_sources else "derived fields"
+    raise RuntimeError(
+        "market calendar forecast blocked: data completeness is not 100%; "
+        f"missing columns={','.join(missing_columns)}; missing sources={source_text}"
+    )
+
+
+def _recovery_definitions(missing_columns: Iterable[str]) -> Dict[str, str]:
+    definitions = {
+        "us_sp500_change": "S&P 500 現貨相對前一個美國有效交易日的百分比變化",
+        "us_nasdaq_change": "Nasdaq Composite 現貨相對前一個美國有效交易日的百分比變化，不是 Nasdaq-100 期貨",
+        "us_sox_change": "Philadelphia Semiconductor Index 現貨相對前一個美國有效交易日的百分比變化",
+        "us_es_change": "E-mini S&P 500 ES 連續期貨的隔夜百分比變化",
+        "us_nq_change": "E-mini Nasdaq-100 NQ 連續期貨的隔夜百分比變化",
+        "us_ym_change": "E-mini Dow YM 連續期貨的隔夜百分比變化",
+        "tx_night_return_pct": "TAIFEX TX 盤後收盤相對台股現貨訊號日收盤的百分比變化",
+        "mtx_night_return_pct": "TAIFEX MTX 盤後收盤相對台股現貨訊號日收盤的百分比變化",
+    }
+    return {column: definitions.get(column, "已宣告的台股行事曆因素欄位；必須找到同日原始資料並依單位回傳") for column in missing_columns}
+
+
+def _apply_valid_recovery(
+    row: pd.Series,
+    snapshot: Dict[str, Any],
+    recovery: Dict[str, Any],
+    signal_date: pd.Timestamp,
+    target_date: date,
+) -> Dict[str, Any]:
+    """Apply only source-backed, same-date numeric recovery results."""
+    missing = set(snapshot.get("missing_columns", []))
+    accepted = []
+    rejected = []
+    allowed_dates = {signal_date.date().isoformat(), target_date.isoformat()}
+    metadata = snapshot.get("source_metadata") or {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    for item in recovery.get("results", []) if isinstance(recovery, dict) else []:
+        column = item.get("column") if isinstance(item, dict) else None
+        value = _json_number(item.get("value")) if isinstance(item, dict) else None
+        observed_date = str(item.get("observed_date", ""))[:10] if isinstance(item, dict) else ""
+        source_url = str(item.get("source_url", "")) if isinstance(item, dict) else ""
+        parsed_url = urlparse(source_url)
+        valid = (
+            column in missing
+            and value is not None
+            and observed_date in allowed_dates
+            and parsed_url.scheme in {"http", "https"}
+            and bool(parsed_url.netloc)
+            and bool(str(item.get("unit", "")).strip())
+        )
+        if not valid:
+            rejected.append({"item": item, "reason": "欄位、數值、觀測日、單位或來源 URL 驗證失敗"})
+            continue
+        row[column] = value
+        metadata[f"ai_recovery:{column}"] = {
+            "source": source_url,
+            "series_id": item.get("source_name"),
+            "unit": item.get("unit"),
+            "observed_date": observed_date,
+            "status": "available",
+            "recovered_by": "openai_web_search",
+            "evidence": item.get("evidence", ""),
+        }
+        accepted.append({
+            "column": column,
+            "value": value,
+            "unit": item.get("unit"),
+            "observed_date": observed_date,
+            "source_url": source_url,
+            "source_name": item.get("source_name"),
+        })
+    if accepted:
+        row["source_metadata"] = metadata
+    return {"accepted": accepted, "rejected": rejected}
 
 
 def _next_overnight_date(overnight: pd.DataFrame, signal_date: pd.Timestamp) -> Optional[date]:
@@ -182,6 +282,53 @@ def generate_daily_prediction(target_date: date, history_days: int = 120) -> Dic
             f"after {signal_date.date()} (found {overnight_target})"
         )
 
+    snapshot = _factor_snapshot(signal_row)
+    recovery_attempts = []
+    for attempt in range(1, 4):
+        completeness = (
+            snapshot["available_columns"] / snapshot["total_columns"]
+            if snapshot["total_columns"]
+            else None
+        )
+        if completeness == 1.0:
+            break
+        recovery_payload = {
+            "signal_date": signal_date.date().isoformat(),
+            "target_date": target_date.isoformat(),
+            "missing_columns": snapshot["missing_columns"],
+            "factor_definitions": _recovery_definitions(snapshot["missing_columns"]),
+            "source_metadata": snapshot.get("source_metadata", {}),
+            "previous_recovery_attempts": recovery_attempts,
+            "instruction": "只補齊缺失欄位；找到同日可靠來源前不要回傳數值。",
+        }
+        recovery = recover_missing_market_calendar_factors(recovery_payload)
+        applied = _apply_valid_recovery(
+            signal_row,
+            snapshot,
+            recovery,
+            signal_date,
+            target_date,
+        )
+        recovery_attempts.append({
+            "attempt": attempt,
+            "status": recovery.get("status") if isinstance(recovery, dict) else "invalid",
+            "search_notes": recovery.get("search_notes", "") if isinstance(recovery, dict) else "",
+            "accepted": applied["accepted"],
+            "rejected_count": len(applied["rejected"]),
+        })
+        snapshot = _factor_snapshot(signal_row)
+        if not applied["accepted"] and recovery.get("status") in {"not_found", "unavailable"}:
+            # A bounded retry prevents a source outage from causing an
+            # unbounded paid web-search loop.  The final completeness gate
+            # still blocks the forecast if all three attempts fail.
+            continue
+    completeness = (
+        snapshot["available_columns"] / snapshot["total_columns"]
+        if snapshot["total_columns"]
+        else None
+    )
+    _require_complete_factors(snapshot)
+
     train = panel[panel["trade_date"] < signal_date].dropna(
         subset=["target_direction", "target_return"]
     ).copy()
@@ -206,12 +353,6 @@ def generate_daily_prediction(target_date: date, history_days: int = 120) -> Dic
     interval_low, interval_high = expected_return_interval(
         train, final_return, overnight_model
     )
-    snapshot = _factor_snapshot(signal_row)
-    completeness = (
-        snapshot["available_columns"] / snapshot["total_columns"]
-        if snapshot["total_columns"]
-        else None
-    )
     history = train["target_return"]
     explanation = {
         "rule_expected_return": _json_number(expected_return),
@@ -223,6 +364,7 @@ def generate_daily_prediction(target_date: date, history_days: int = 120) -> Dic
         "history_count": int(len(history)),
         "q25": _json_number(history.quantile(0.25)),
         "q75": _json_number(history.quantile(0.75)),
+        "data_recovery": recovery_attempts,
     }
     ai_payload = {
         "as_of_date": signal_date.date().isoformat(),
@@ -236,6 +378,7 @@ def generate_daily_prediction(target_date: date, history_days: int = 120) -> Dic
         "rule_expected_return": _json_number(expected_return),
         "matched_rules": [format_rule(rule) for rule in matched],
         "deterministic_evidence": interpret_factor_changes(latest_row),
+        "data_recovery": recovery_attempts,
         "factors": {
             group: {
                 name: _json_number(signal_row.get(name))

@@ -51,6 +51,24 @@ def test_binary_label_collapses_by_return_sign():
         }),
         -0.2,
     ) == "偏漲"
+    # A green Taiwan night session can be used even when Nasdaq futures are
+    # missing, but only in the rebound-continuation regime: the five-day
+    # backdrop is weak, the three-day turn is positive, KDJ is depressed, and
+    # TX/MTX agree.  This is the pattern that was missed on 2026-11-25.
+    assert binary_prediction_with_momentum(
+        pd.Series({
+            "ret_3d": 6.0,
+            "ret_5d": -5.0,
+            "close_vs_ma20": -0.08,
+            "kdj_j": 30.0,
+            "tx_night_return_pct": 0.53,
+            "mtx_night_return_pct": 0.44,
+            "us_nq_change": float("nan"),
+            "us_sox_change": float("nan"),
+            "tw_vix_change": 32.0,
+        }),
+        -0.6,
+    ) == "偏漲"
 
 
 def test_factor_states_are_low_middle_high():
@@ -136,3 +154,23 @@ def test_overnight_return_model_changes_numeric_forecast_and_keeps_sign_coherent
     )
     assert result > 0.0
     assert result != pytest.approx(-0.2)
+
+
+def test_overnight_return_model_uses_taiwan_fallback_when_us_nq_is_missing():
+    history = pd.DataFrame(
+        {
+            "tx_night_return_pct": [-1.0, -0.5, 0.5, 1.0] * 5,
+            "mtx_night_return_pct": [-0.8, -0.4, 0.4, 0.8] * 5,
+            "target_return": [-2.0, -1.0, 1.0, 2.0] * 5,
+        }
+    )
+    model = fit_overnight_return_model(history)
+    assert model is not None
+    assert model["columns"] == ["tx_night_return_pct", "mtx_night_return_pct"]
+    result = expected_return_with_overnight(
+        pd.Series({"tx_night_return_pct": 0.5, "mtx_night_return_pct": 0.4}),
+        rule_return=-0.2,
+        final_binary="偏漲",
+        overnight_model=model,
+    )
+    assert result > 0.0
