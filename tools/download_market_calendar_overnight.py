@@ -296,8 +296,6 @@ def build_overnight(start: date, end: date, target_dates: Iterable[str] | None =
     futures = _fetch_yahoo_returns(start, end, allow_stooq_fallback=True)
     source_details = result.attrs.get("source_details", {}).copy()
     source_details.update(futures.attrs.get("source_details", {}))
-    if not futures.empty:
-        result = result.merge(futures, on="trade_date", how="outer")
     taifex_frames = []
     for commodity, prefix in (("TX", "tx"), ("MTX", "mtx")):
         frame = fetch_taifex_session(start, end, commodity, prefix)
@@ -311,6 +309,31 @@ def build_overnight(start: date, end: date, target_dates: Iterable[str] | None =
         if observation_column in result:
             result = align_external_observations(result, alignment_dates, observation_column)
             break
+    # Futures have the same US-calendar timing as the cash indices.  Align
+    # them to the next Taiwan session as well; otherwise a US holiday leaves
+    # the target row empty even though the latest effective futures session is
+    # present in the source response.
+    if not futures.empty and alignment_dates:
+        aligned_futures = []
+        for name in US_SYMBOLS:
+            change_column = name + "_change"
+            if change_column not in futures:
+                continue
+            observation_column = name + "_observation_date"
+            future_frame = futures[["trade_date", change_column]].copy()
+            future_frame[observation_column] = future_frame["trade_date"]
+            future_frame = align_external_observations(
+                future_frame,
+                alignment_dates,
+                observation_column,
+            )
+            aligned_futures.append(future_frame[["trade_date", change_column, observation_column]])
+        if aligned_futures:
+            futures = aligned_futures[0]
+            for frame in aligned_futures[1:]:
+                futures = futures.merge(frame, on="trade_date", how="outer")
+    if not futures.empty:
+        result = result.merge(futures, on="trade_date", how="outer")
     for frame in taifex_frames:
         result = frame if result.empty else result.merge(frame, on="trade_date", how="outer")
     result = result.sort_values("trade_date").reset_index(drop=True)

@@ -474,6 +474,18 @@ def binary_prediction_with_momentum(
         and value("ret_3d") < -5.0
         and value("close_vs_ma20") < -0.05
     )
+    positioned_night_rebound = (
+        value("ret_3d") >= 3.0
+        and value("close_vs_ma20") < 0.0
+        and value("tx_night_return_pct") >= 0.6
+        and value("mtx_night_return_pct") >= 0.6
+        and value("mtx_net_oi_change") > 0.0
+        and value("mtx_long_oi_change") > 0.0
+        and value("short_balance_change_5d_pct") < 0.0
+        and value("tw_vix_change") < 5.0
+        and (pd.isna(us_nq) or us_nq > -2.5)
+        and (pd.isna(value("us_sox_change")) or value("us_sox_change") > -4.0)
+    )
     oversold_rebound = (
         value("ret_3d") <= -2.5
         and value("ret_5d") <= -2.5
@@ -510,6 +522,8 @@ def binary_prediction_with_momentum(
     )
     if local_risk_off or overbought_distribution:
         return "偏跌"
+    if positioned_night_rebound:
+        return "偏漲"
     if rebound_continuation:
         return "偏漲"
     if (
@@ -586,6 +600,24 @@ def interpret_factor_changes(row: pd.Series) -> List[Dict[str, object]]:
         add("利率下降且科技期貨止穩", "偏漲", "美債殖利率下降、Nasdaq期貨止穩，對成長股估值較有利。", ["us10y_change", "us_nq_change"])
     if value("tx_night_return_pct") > 0 or value("mtx_night_return_pct") > 0:
         add("台指夜盤支撐", "偏漲", "台指期夜盤收盤高於台股現貨基準，隔日開盤情緒偏正。", ["tx_night_return_pct", "mtx_night_return_pct"])
+    if (
+        value("ret_3d") >= 3.0
+        and value("close_vs_ma20") < 0.0
+        and value("tx_night_return_pct") >= 0.6
+        and value("mtx_night_return_pct") >= 0.6
+        and value("mtx_net_oi_change") > 0.0
+        and value("mtx_long_oi_change") > 0.0
+        and value("short_balance_change_5d_pct") < 0.0
+        and value("tw_vix_change") < 5.0
+        and (pd.isna(value("us_nq_change")) or value("us_nq_change") > -2.5)
+        and (pd.isna(value("us_sox_change")) or value("us_sox_change") > -4.0)
+    ):
+        add(
+            "夜盤與部位反彈共振",
+            "偏漲",
+            "大盤短線已有反彈但仍在20日線下，台指與小台夜盤同步強勢，小台多方未平倉增加且融券餘額下降，屬反彈與空單回補共振；法人偏空不單獨壓過這個訊號。",
+            ["ret_3d", "close_vs_ma20", "tx_night_return_pct", "mtx_night_return_pct", "mtx_net_oi_change", "mtx_long_oi_change", "short_balance_change_5d_pct", "tw_vix_change", "us_nq_change", "us_sox_change"],
+        )
     if value("us_nq_change") < -1 or value("us_sox_change") < -2:
         add("美股科技隔夜轉弱", "偏跌", "Nasdaq或半導體期貨／現貨隔夜走弱，台股電子權值承壓。", ["us_nq_change", "us_sox_change"])
     return evidence

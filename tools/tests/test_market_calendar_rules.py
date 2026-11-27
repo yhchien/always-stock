@@ -69,6 +69,23 @@ def test_binary_label_collapses_by_return_sign():
         }),
         -0.6,
     ) == "偏漲"
+    # A positive night session can outweigh a bearish institutional backdrop
+    # when small-Tai long OI rises and short balances are being covered.
+    assert binary_prediction_with_momentum(
+        pd.Series({
+            "ret_3d": 6.3,
+            "close_vs_ma20": -0.04,
+            "tx_night_return_pct": 0.87,
+            "mtx_night_return_pct": 0.86,
+            "mtx_net_oi_change": 1199.0,
+            "mtx_long_oi_change": 1141.0,
+            "short_balance_change_5d_pct": -18.2,
+            "tw_vix_change": -3.2,
+            "us_nq_change": float("nan"),
+            "us_sox_change": float("nan"),
+        }),
+        -0.65,
+    ) == "偏漲"
 
 
 def test_factor_states_are_low_middle_high():

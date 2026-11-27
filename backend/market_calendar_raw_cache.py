@@ -143,6 +143,48 @@ def _latest_signal_date(target_date: date) -> date:
     return max(completed)
 
 
+def _source_is_missing(value: object) -> bool:
+    return isinstance(value, dict) and value.get("status") == "missing"
+
+
+def _needs_external_refresh(raw: pd.DataFrame, signal_date: date) -> bool:
+    """Refresh a cached signal row when a previously late source is missing.
+
+    A cached row is not treated as immutable if an external market had not
+    published its close when the first run happened.  The raw row is still
+    upserted by date (never deleted), so a later successful fetch can fill the
+    source without changing the append-only retention policy.
+    """
+    rows = raw[raw["trade_date"].dt.date == signal_date]
+    if rows.empty:
+        return True
+    metadata = rows.iloc[-1].get("source_metadata") or {}
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except json.JSONDecodeError:
+            return True
+    if not isinstance(metadata, dict):
+        return True
+    return any(
+        _source_is_missing(metadata.get(name))
+        for name in ("us_vix", "us10y")
+    )
+
+
+def _needs_overnight_refresh(db, target_date: date) -> bool:
+    record = db.get(MarketCalendarOvernight, target_date)
+    if record is None:
+        return True
+    metadata = record.source_metadata or {}
+    if not isinstance(metadata, dict):
+        return True
+    return any(
+        _source_is_missing(metadata.get(name))
+        for name in ("us_sp500", "us_nasdaq", "us_sox", "us_es", "us_nq", "us_ym")
+    )
+
+
 def load_or_update_market_calendar_data(db, target_date: date, history_days: int, token: str):
     """Return cached raw panel and overnight factors, fetching only new rows."""
     raw = _load_raw(db)
@@ -153,18 +195,25 @@ def load_or_update_market_calendar_data(db, target_date: date, history_days: int
     raw["trade_date"] = pd.to_datetime(raw["trade_date"])
     signal_date = _latest_signal_date(target_date)
     cached_dates = set(raw["trade_date"].dt.date)
-    if signal_date not in cached_dates:
-        latest = download_base_panel(signal_date, signal_date)
-        latest["trade_date"] = pd.to_datetime(latest["trade_date"])
+    if signal_date not in cached_dates or _needs_external_refresh(raw, signal_date):
+        # Include the preceding week so a US holiday or late publication can
+        # be aligned to the latest effective US observation before this
+        # Taiwan session.  We upsert only signal_date; historical rows stay in
+        # the database and are never discarded.
+        refresh_start = signal_date - timedelta(days=7)
+        latest_panel = download_base_panel(refresh_start, signal_date)
+        latest_panel["trade_date"] = pd.to_datetime(latest_panel["trade_date"])
+        latest = latest_panel[latest_panel["trade_date"].dt.date == signal_date].copy()
+        if latest.empty:
+            raise RuntimeError(f"market calendar refresh returned no signal row for {signal_date}")
         latest_margin = aggregate_margin(fetch_margin_raw(str(signal_date), str(signal_date), token))
         latest_margin["trade_date"] = pd.to_datetime(latest_margin["trade_date"])
         latest = latest.merge(latest_margin, on="trade_date", how="left")
         _upsert_raw(db, latest)
 
-    overnight_record = db.get(MarketCalendarOvernight, target_date)
-    if overnight_record is None:
+    if _needs_overnight_refresh(db, target_date):
         latest_overnight = build_overnight(
-            signal_date,
+            signal_date - timedelta(days=7),
             target_date,
             target_dates=[target_date.isoformat()],
         )

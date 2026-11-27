@@ -162,6 +162,19 @@ def _apply_valid_recovery(
     accepted = []
     rejected = []
     allowed_dates = {signal_date.date().isoformat(), target_date.isoformat()}
+    effective_market_min = signal_date.date() - timedelta(days=7)
+    effective_market_columns = {
+        "us_vix_change",
+        "us_vix_z20",
+        "us10y_change",
+        "us10y_change_5d",
+        "us_sp500_change",
+        "us_nasdaq_change",
+        "us_sox_change",
+        "us_es_change",
+        "us_nq_change",
+        "us_ym_change",
+    }
     metadata = snapshot.get("source_metadata") or {}
     if not isinstance(metadata, dict):
         metadata = {}
@@ -177,10 +190,16 @@ def _apply_valid_recovery(
         )
         source_url = str(item.get("source_url", "")).strip() if isinstance(item, dict) else ""
         parsed_url = urlparse(source_url)
+        observed_is_effective_market_date = (
+            column in effective_market_columns
+            and effective_market_min <= observed_timestamp.date() <= target_date
+            if not pd.isna(observed_timestamp)
+            else False
+        )
         valid = (
             column in missing
             and value is not None
-            and observed_date in allowed_dates
+            and (observed_date in allowed_dates or observed_is_effective_market_date)
             and parsed_url.scheme in {"http", "https"}
             and bool(parsed_url.netloc)
             and bool(str(item.get("unit", "")).strip())
