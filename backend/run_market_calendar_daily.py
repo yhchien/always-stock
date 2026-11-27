@@ -274,7 +274,7 @@ def generate_daily_prediction(target_date: date, history_days: int = 120) -> Dic
     signal_rows = panel[panel["trade_date"] == signal_date]
     if signal_rows.empty:
         raise RuntimeError(f"missing signal row for {signal_date.date()}")
-    signal_row = signal_rows.iloc[0]
+    signal_row = signal_rows.iloc[0].copy()
     overnight_target = _next_overnight_date(overnight, signal_date)
     if overnight_target != target_date:
         raise RuntimeError(
@@ -316,6 +316,14 @@ def generate_daily_prediction(target_date: date, history_days: int = 120) -> Dic
             "accepted": applied["accepted"],
             "rejected_count": len(applied["rejected"]),
         })
+        logger.info(
+            "market-calendar recovery attempt=%s status=%s accepted=%s unresolved=%s rejected=%s",
+            attempt,
+            recovery.get("status") if isinstance(recovery, dict) else "invalid",
+            [item.get("column") for item in applied["accepted"]],
+            recovery.get("unresolved", []) if isinstance(recovery, dict) else [],
+            len(applied["rejected"]),
+        )
         snapshot = _factor_snapshot(signal_row)
         if not applied["accepted"] and recovery.get("status") in {"not_found", "unavailable"}:
             # A bounded retry prevents a source outage from causing an

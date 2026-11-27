@@ -44,6 +44,16 @@ RECOVERY_WEB_SEARCH_TOOL = {
             "nasdaq.com",
             "cmegroup.com",
             "wantgoo.com",
+            "finabase.io",
+            "trading-commodity.com",
+            "investing.com",
+            "barchart.com",
+            "marketwatch.com",
+            "apnews.com",
+            "reuters.com",
+            "cnbc.com",
+            "portfolio-terminal.com",
+            "metacap.si",
         ]
     },
 }
